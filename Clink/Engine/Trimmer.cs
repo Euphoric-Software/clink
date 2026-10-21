@@ -1,4 +1,7 @@
+using System.Buffers.Binary;
+using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
 using Windows.Win32;
 using Windows.Win32.Foundation;
 using Windows.Win32.Media.MediaFoundation;
@@ -24,10 +27,14 @@ internal static unsafe class Trimmer
     private const uint AnyStream = 0xFFFFFFFE;
     private const uint AllStreams = 0xFFFFFFFE;
 
-    public static void Trim(string src, string dst, double startSec, double endSec, string[]? audioNames)
+    public static string[] Trim(string src, string dst, double startSec, double endSec, string[]? audioNames)
         => Trim(src, dst, startSec, endSec, audioNames, null);
 
-    public static void Trim(string src, string dst, double startSec, double endSec, string[]? audioNames, TrackMix[]? mix)
+    /// <param name="audioNames">Names of the source's audio tracks in file order; null (or a count that does not match the file)
+    /// reads them from the file.</param>
+    /// <param name="mix">Per source audio track, in file order (the order <see cref="AudioInFileOrder"/> gives).</param>
+    /// <returns>The names of the audio tracks written to <paramref name="dst"/>, in file order.</returns>
+    public static string[] Trim(string src, string dst, double startSec, double endSec, string[]? audioNames, TrackMix[]? mix)
     {
         Mf.EnsureStarted();
         // Round rather than truncate: a start snapped to a keyframe must equal that keyframe's tick exactly.
@@ -41,8 +48,7 @@ internal static unsafe class Trimmer
             // Discover streams (native/compressed types).
             int videoIndex = -1;
             bool hevc = false; int w = 0, h = 0; byte[]? seqHeader = null;
-            var audioStreams = new List<(uint index, AudioTrackDesc desc, float gain, bool reencode)>();
-            int audioOrdinal = 0;
+            var audioIdx = new List<uint>();
             for (uint i = 0; ; i++)
             {
                 IMFMediaType* t;
@@ -59,36 +65,49 @@ internal static unsafe class Trimmer
                     seqHeader = Mf.GetBlob(a, PInvoke.MF_MT_MPEG_SEQUENCE_HEADER);
                     reader->SetStreamSelection(i, true);
                 }
-                else if (major == PInvoke.MFMediaType_Audio && sub == PInvoke.MFAudioFormat_AAC)
-                {
-                    int n = audioOrdinal++;
-                    TrackMix m = mix != null && n < mix.Length ? mix[n] : new TrackMix(true, 1f);
-                    if (!m.Include)
-                    {
-                        reader->SetStreamSelection(i, false); // dropped from the export
-                    }
-                    else
-                    {
-                        bool reencode = Math.Abs(m.Gain - 1f) >= 0.001f;
-                        var ud = Mf.GetBlob(a, PInvoke.MF_MT_USER_DATA);
-                        byte[] asc = ud != null && ud.Length > 12 ? ud.AsSpan(12).ToArray() : new byte[] { 0x11, 0x90 };
-                        var desc = new AudioTrackDesc
-                        {
-                            Name = audioNames != null && n < audioNames.Length ? audioNames[n] : $"Audio {n + 1}",
-                            AudioSpecificConfig = asc,
-                            SampleRate = reencode ? 48000 : (int)Mf.GetU32(a, PInvoke.MF_MT_AUDIO_SAMPLES_PER_SECOND, 48000),
-                            Channels = reencode ? 2 : (int)Mf.GetU32(a, PInvoke.MF_MT_AUDIO_NUM_CHANNELS, 2),
-                            Bitrate = reencode ? 24000 * 8 : (int)Mf.GetU32(a, PInvoke.MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 24000) * 8,
-                        };
-                        audioStreams.Add((i, desc, m.Gain, reencode));
-                        // Re-encoded tracks are decoded by their own reader later; the compressed samples are not needed here.
-                        reader->SetStreamSelection(i, !reencode);
-                    }
-                }
+                else if (major == PInvoke.MFMediaType_Audio && sub == PInvoke.MFAudioFormat_AAC) audioIdx.Add(i);
                 else reader->SetStreamSelection(i, false);
                 t->Release();
             }
             if (videoIndex < 0) throw new InvalidOperationException("No H.264/HEVC video stream in file");
+
+            // n is the track's position in the file, so the output keeps the source order (the mix stays track 1) and the
+            // names and mix entries line up with the editor's rows.
+            AudioInFileOrder(audioIdx, (uint)videoIndex);
+            string[]? names = audioNames != null && audioNames.Length == audioIdx.Count ? audioNames : ReadAudioTrackNames(src);
+            if (names != null && names.Length != audioIdx.Count) names = null;
+            var audioStreams = new List<(uint index, AudioTrackDesc desc, float gain, bool reencode)>();
+            for (int n = 0; n < audioIdx.Count; n++)
+            {
+                uint i = audioIdx[n];
+                TrackMix m = mix != null && n < mix.Length ? mix[n] : new TrackMix(true, 1f);
+                if (!m.Include)
+                {
+                    reader->SetStreamSelection(i, false); // dropped from the export
+                    continue;
+                }
+                IMFMediaType* t;
+                reader->GetNativeMediaType(i, 0, &t).Check("GetNativeMediaType(audio)");
+                try
+                {
+                    var a = (IMFAttributes*)t;
+                    bool reencode = Math.Abs(m.Gain - 1f) >= 0.001f;
+                    var ud = Mf.GetBlob(a, PInvoke.MF_MT_USER_DATA);
+                    byte[] asc = ud != null && ud.Length > 12 ? ud.AsSpan(12).ToArray() : new byte[] { 0x11, 0x90 };
+                    var desc = new AudioTrackDesc
+                    {
+                        Name = names != null && !string.IsNullOrWhiteSpace(names[n]) ? names[n] : $"Audio {n + 1}",
+                        AudioSpecificConfig = asc,
+                        SampleRate = reencode ? 48000 : (int)Mf.GetU32(a, PInvoke.MF_MT_AUDIO_SAMPLES_PER_SECOND, 48000),
+                        Channels = reencode ? 2 : (int)Mf.GetU32(a, PInvoke.MF_MT_AUDIO_NUM_CHANNELS, 2),
+                        Bitrate = reencode ? 24000 * 8 : (int)Mf.GetU32(a, PInvoke.MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 24000) * 8,
+                    };
+                    audioStreams.Add((i, desc, m.Gain, reencode));
+                    // Re-encoded tracks are decoded by their own reader later; the compressed samples are not needed here.
+                    reader->SetStreamSelection(i, !reencode);
+                }
+                finally { t->Release(); }
+            }
 
             // Read everything in range. Video: from the last keyframe at/before start; audio: frames overlapping [start,end].
             var video = new List<VideoSample>();
@@ -165,8 +184,80 @@ internal static unsafe class Trimmer
                 }
             }
             ClipWriter.Write(dst, video, hevc, w, h, seqHeader, tracks, origin, 0);
+            return tracks.Select(tr => tr.desc.Name).ToArray();
         }
         finally { reader->Release(); }
+    }
+
+    /// <summary>
+    /// Puts audio stream indices (ascending, as the source reader numbers them) into file order. Media Foundation's MPEG-4
+    /// source lists the traks of a Clink file last-first: the video, which Clink always writes as trak 1, comes out with the
+    /// highest index and the mix (the first audio trak) right before it. Index order would reverse every track.
+    /// </summary>
+    internal static void AudioInFileOrder(List<uint> audio, uint videoIndex)
+    {
+        if (audio.Count > 1 && videoIndex != uint.MaxValue && videoIndex > audio[^1]) audio.Reverse();
+    }
+
+    /// <summary>
+    /// Names of the audio tracks as the file itself has them (the 'hdlr' names Clink writes: Mix, Game, Mic…), in file
+    /// order; null when the file cannot be parsed. Only box headers are read, so a long clip's sample tables are skipped.
+    /// </summary>
+    internal static string[]? ReadAudioTrackNames(string path)
+    {
+        try
+        {
+            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 4096, FileOptions.RandomAccess);
+            var moov = Boxes(fs, 0, fs.Length).FirstOrDefault(b => b.type == "moov");
+            if (moov.type == null) return null;
+            var names = new List<string>();
+            foreach (var trak in Boxes(fs, moov.start, moov.end).Where(b => b.type == "trak").ToList())
+            {
+                var mdia = Boxes(fs, trak.start, trak.end).FirstOrDefault(b => b.type == "mdia");
+                if (mdia.type == null) return null;
+                var hdlr = Boxes(fs, mdia.start, mdia.end).FirstOrDefault(b => b.type == "hdlr");
+                if (hdlr.type == null || hdlr.end - hdlr.start < 24) return null;
+                var buf = new byte[(int)Math.Min(hdlr.end - hdlr.start, 512)];
+                fs.Position = hdlr.start;
+                fs.ReadExactly(buf);
+                // version/flags, pre_defined, handler type, 3 reserved words, then the zero-terminated UTF-8 name.
+                if (Encoding.ASCII.GetString(buf, 8, 4) != "soun") continue;
+                int z = Array.IndexOf(buf, (byte)0, 24);
+                names.Add(Encoding.UTF8.GetString(buf, 24, (z < 0 ? buf.Length : z) - 24).Trim());
+            }
+            return names.ToArray();
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"Track names of {Path.GetFileName(path)}: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>The boxes directly inside [from, to): type and payload range. Stops at the first malformed header.</summary>
+    private static List<(string type, long start, long end)> Boxes(FileStream fs, long from, long to)
+    {
+        var list = new List<(string, long, long)>();
+        Span<byte> h = stackalloc byte[16];
+        for (long o = from; o + 8 <= to;)
+        {
+            fs.Position = o;
+            fs.ReadExactly(h.Slice(0, 8));
+            long size = BinaryPrimitives.ReadUInt32BigEndian(h);
+            int hdr = 8;
+            if (size == 1)
+            {
+                if (o + 16 > to) break;
+                fs.ReadExactly(h.Slice(8, 8));
+                size = (long)BinaryPrimitives.ReadUInt64BigEndian(h.Slice(8));
+                hdr = 16;
+            }
+            else if (size == 0) size = to - o;
+            if (size < hdr || size > to - o) break;
+            list.Add((Encoding.ASCII.GetString(h.Slice(4, 4)), o + hdr, o + size));
+            o += size;
+        }
+        return list;
     }
 
     /// <summary>

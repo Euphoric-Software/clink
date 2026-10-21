@@ -31,9 +31,11 @@ public partial class TrimWindow : Window
     private double _dragSeek = double.NaN;
     private double _shownPts = double.NaN;
     private int _monitor = -1;
+    private int _openGen; // bumped per OpenAsync so a keyframe scan of an earlier version of the file is ignored
 
     private sealed class TrackRow
     {
+        public string Name = "";
         public CheckBox Include = null!;
         public RadioButton Listen = null!;
         public Slider Volume = null!;
@@ -68,9 +70,17 @@ public partial class TrimWindow : Window
 
     // ------------------------------------------------------------------ setup
 
-    private async Task OpenAsync()
+    /// <summary>
+    /// Opens the preview and sets the editor up for the whole clip with fresh track rows. Also used when the original was
+    /// just replaced by its trim and the window stays open: the old timeline, keyframes and volumes described the old file.
+    /// </summary>
+    private async Task OpenAsync(bool keepStatus = false)
     {
         string path = _entry.Path;
+        string status = StatusText.Text;
+        int gen = ++_openGen;
+        _duration = Math.Max(TimelineControl.MinSelection, _entry.Duration);
+        Timeline.Keyframes = null;
         var player = await CreatePlayerAsync();
         if (_closed) { player?.Dispose(); return; }
         if (player != null)
@@ -79,9 +89,17 @@ public partial class TrimWindow : Window
             BuildTrackRows(player);
             StatusText.Text = "";
         }
+        else
+        {
+            TracksPanel.Children.Clear();
+            _rows.Clear();
+            _monitor = -1;
+        }
+        if (keepStatus) StatusText.Text = status;
         Timeline.Duration = _duration;
         Timeline.SelectionStart = 0;
         Timeline.SelectionEnd = _duration;
+        Timeline.Position = 0;
         UpdateTexts(0);
         _tick.Start();
 
@@ -90,7 +108,7 @@ public partial class TrimWindow : Window
             try
             {
                 var keys = Trimmer.GetKeyframeTimes(path);
-                Dispatcher.BeginInvoke(() => { if (!_closed) Timeline.Keyframes = keys; });
+                Dispatcher.BeginInvoke(() => { if (!_closed && gen == _openGen) Timeline.Keyframes = keys; });
             }
             catch (Exception ex) { Log.Warn("keyframe scan: " + ex.Message); }
         });
@@ -156,7 +174,9 @@ public partial class TrimWindow : Window
             return;
         }
         TracksHint.Text = "Ticked tracks are saved, each at its volume · Listen picks the one the preview plays (players play one track, usually the first)";
-        string[]? names = _entry.AudioTracks != null && _entry.AudioTracks.Length == player.TrackCount ? _entry.AudioTracks : null;
+        // The file's own names first: the library's list can also name tracks that were not recorded (mix-only sources).
+        string[]? names = player.TrackNames
+            ?? (_entry.AudioTracks != null && _entry.AudioTracks.Length == player.TrackCount ? _entry.AudioTracks : null);
         for (int i = 0; i < player.TrackCount; i++)
         {
             int index = i;
@@ -204,7 +224,7 @@ public partial class TrimWindow : Window
             grid.Children.Add(volume);
             grid.Children.Add(percent);
             TracksPanel.Children.Add(grid);
-            _rows.Add(new TrackRow { Include = include, Listen = listen, Volume = volume });
+            _rows.Add(new TrackRow { Name = name, Include = include, Listen = listen, Volume = volume });
         }
         _rows[0].Listen.IsChecked = true; // what a player plays by default
         SyncPlayerMix();
@@ -414,20 +434,22 @@ public partial class TrimWindow : Window
         int n = 2;
         while (File.Exists(dst)) dst = Path.Combine(dir, stem + $" (trim {n++}).mp4");
         bool trimmed = false; // once true the output is complete and is never deleted, whatever happens after
+        bool replaced = false; // the original is now the trim: what the editor shows describes a file that is gone
         try
         {
             if (end - start < 0.1) throw new InvalidOperationException("Selection is too short");
             Directory.CreateDirectory(dir);
-            string[]? names = _entry.AudioTracks;
+            // The rows' names (file order, as the mix); without rows the trimmer reads them from the file itself.
+            string[]? names = _rows.Count > 0 ? _rows.Select(r => r.Name).ToArray() : null;
             TrackMix[]? mix = _rows.Count > 0 ? _rows.Select(r => new TrackMix(r.Included, r.Gain)).ToArray() : null;
             if (mix != null && !mix.Any(m => m.Include)) StatusText.Text = "Trimming (no audio)…";
-            await Task.Run(() => Trimmer.Trim(src, dst, start, end, names, mix));
+            string[] keptNames = await Task.Run(() => Trimmer.Trim(src, dst, start, end, names, mix));
             trimmed = true;
-            string[] keptNames = KeptTrackNames(names, mix);
             ClipEntry result;
             string? replaceProblem = replace ? await ReplaceOriginalAsync(src, dst) : null;
             if (replace && replaceProblem == null)
             {
+                replaced = true;
                 _entry.Duration = end - start;
                 _entry.Size = new FileInfo(src).Length;
                 _entry.AudioTracks = keptNames;
@@ -455,7 +477,7 @@ public partial class TrimWindow : Window
                     string why = refusal.Length > 1 ? char.ToLowerInvariant(refusal[0]) + refusal[1..] : refusal;
                     StatusText.Text = $"Saved {Path.GetFileName(result.Path)}, not uploaded: {why} - tighten the selection, or tick 'I have Copium+' if you do";
                     SaveButton.IsEnabled = SaveShareButton.IsEnabled = true;
-                    if (_playerReleased && !_closed) await ReopenPreviewAsync();
+                    await RestoreEditorAsync(replaced);
                     return;
                 }
                 StatusText.Text = ok ? "Uploaded, link copied" : "Upload failed";
@@ -478,9 +500,25 @@ public partial class TrimWindow : Window
                 StatusText.Text = $"Saved {Path.GetFileName(kept)}, but: {ex.Message}";
             }
             SaveButton.IsEnabled = SaveShareButton.IsEnabled = true;
-            if (_playerReleased && !_closed) await ReopenPreviewAsync();
+            await RestoreEditorAsync(replaced);
         }
         finally { _busy = false; }
+    }
+
+    /// <summary>
+    /// After a save that keeps the window open. When the original was replaced, the editor starts over on the new file
+    /// (whole clip, fresh rows, Replace unticked); otherwise the old selection would be cut out of the already-cut file and
+    /// the volumes applied a second time. When it was not, only the preview released for the replace attempt comes back.
+    /// </summary>
+    private async Task RestoreEditorAsync(bool replaced)
+    {
+        if (_closed) return;
+        if (replaced)
+        {
+            ReplaceCheck.IsChecked = false;
+            await OpenAsync(keepStatus: true);
+        }
+        else if (_playerReleased) await ReopenPreviewAsync();
     }
 
     /// <summary>
@@ -512,19 +550,6 @@ public partial class TrimWindow : Window
             const int SharingViolation = unchecked((int)0x80070020), LockViolation = unchecked((int)0x80070021);
             return ex.HResult is SharingViolation or LockViolation ? "file in use" : ex.Message;
         }
-    }
-
-    /// <summary>Names of the tracks that end up in the exported file (dropped ones removed), in file order.</summary>
-    private static string[] KeptTrackNames(string[]? names, TrackMix[]? mix)
-    {
-        if (mix == null) return names ?? Array.Empty<string>();
-        var kept = new List<string>();
-        for (int i = 0; i < mix.Length; i++)
-        {
-            if (!mix[i].Include) continue;
-            kept.Add(names != null && i < names.Length ? names[i] : $"Audio {i + 1}");
-        }
-        return kept.ToArray();
     }
 
     private void Header_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)

@@ -45,8 +45,12 @@
             <!-- Bottom row: replace / save / share / status -->
             <Border DockPanel.Dock="Bottom" Padding="16,10,16,14" BorderBrush="{StaticResource Border}" BorderThickness="0,1,0,0">
                 <Grid>
-                    <TextBlock x:Name="StatusText" Style="{StaticResource MutedText}" Foreground="{StaticResource Accent}" VerticalAlignment="Center" Margin="0,0,260,0" Text="" />
-                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock x:Name="StatusText" Style="{StaticResource MutedText}" Foreground="{StaticResource Accent}" VerticalAlignment="Center" Margin="0,0,12,0" TextWrapping="Wrap" Text="" />
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
                         <CheckBox x:Name="ReplaceCheck" Content="Replace original" VerticalAlignment="Center" Margin="0,0,14,0" />
                         <Button x:Name="SaveButton" Content="Save trimmed" Click="Save_Click" Margin="0,0,8,0" />
                         <Button x:Name="SaveShareButton" Style="{StaticResource AccentButton}" Content="Save &amp; share" Click="SaveShare_Click" />
