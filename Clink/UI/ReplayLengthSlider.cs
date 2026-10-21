@@ -118,12 +118,9 @@ internal sealed class ReplayLengthSlider : FrameworkElement
         if (_dragging) { _dragging = false; ValueCommitted?.Invoke(Value); }
     }
 
-    protected override void OnMouseWheel(MouseWheelEventArgs e)
-    {
-        base.OnMouseWheel(e);
-        Step(e.Delta > 0 ? 1 : -1, false);
-        e.Handled = true;
-    }
+    // No OnMouseWheel on purpose: the slider sits in the middle of the scrolling Capture tab, so a wheel notch while the row passes
+    // under the pointer must keep scrolling the pane; a step here would also save the length and restart the engine, dropping the
+    // buffered replay. The length is set by dragging or with the keys below, as the tooltip says.
 
     protected override void OnKeyDown(KeyEventArgs e)
     {

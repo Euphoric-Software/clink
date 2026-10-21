@@ -28,9 +28,9 @@ click and the link lands in your clipboard.
   Rockstar), or by being on your custom-apps list; while nothing runs the capture, encoder and RAM buffer are stopped.
 * **A list of hotkeys**: each one is a key combo plus what it does (clip, pause/resume, share last clip) and, for clips,
   how much to save (e.g. F9 = the replay length, Shift+F9 = the last 30 s).
-* **Replay length slider** from 5 s to 60 min with the RAM it costs next to it, live **size estimates** (per minute and
-  per clip) and **size targets** (Copium 200 MB / 10 min, the default; Discord 10 / 50 / 500 MB) that lower the bitrate, only
-  when needed, so a clip of that length fits.
+* **Replay length slider** from 5 s to 60 min with one readout under it: the **size** per minute and per clip of that
+  length and the **RAM** the buffer costs, live; and **size targets** (Copium 200 MB / 10 min, the default; Discord
+  10 / 50 / 500 MB) that lower the bitrate, only when needed, so a clip of that length fits.
 * H.264 or HEVC, and AV1 (experimental) when the GPU has an AV1 encoder; codecs the GPU lacks are listed greyed out.
 * Toasts for *clip saved*, *shared* and *recording started*, each with its own switch, duration and a preview; eight
   positions on the captured monitor. Optional always-on **status dot** in a corner (green recording, amber waiting, red error).
@@ -68,7 +68,7 @@ something newer.
 
 1. Run `Clink.exe`. The header says *Waiting for a game…* until a game or custom app starts, then *Recording · Overwatch*
    (switch to *Always* under *Capture → Recording* to record whatever is on the monitor, as before).
-2. Press **F9** (or any hotkey from your list under *Clip → Hotkeys*) while gaming. You hear a short click; the clip is
+2. Press **F9** (or any hotkey from your list under *Capture → Hotkeys*) while gaming. You hear a short click; the clip is
    saved to `Videos\Clink\<game> <date>.mp4` and a small "Clip saved" toast appears.
 3. Click **Share** (in the toast or the clip list). The clip is uploaded to Copium and the link is copied.
    By default the copied link is the raw video file, so pasting it in Discord plays the video inline with no
@@ -89,21 +89,25 @@ size limit. Sizes are shown in decimal MB everywhere, the unit the limits use.
 
 ### The window
 
-* **Capture**: the monitor map, resolution / FPS / bitrate / codec, a one-line description of each codec (the ones your
-  GPU cannot encode are greyed out), the **size target** (*None*, *Discord 10 MB*, *Nitro Basic 50 MB*, *Copium 200 MB,
-  10 min* (the default), *Nitro 500 MB*: when a clip of the replay length would not fit, the encode bitrate is lowered just
-  enough, audio tracks included; it is never raised above the bitrate you chose, and the note under the controls says what
-  it did, in yellow when the replay length is over Copium's 10 minutes - the Copium target then fits a 10-minute clip, not
-  the whole replay, since a longer clip has to be trimmed before Share anyway), the live estimate (*≈ 190 MB per minute · ≈ 380 MB
-  per 2:00 clip*), the **audio tracks** (the per-track rows with their source pickers; a *Set up your audio* banner sits
-  above them until you hover over the group or change an option, then it is gone for good), the recording mode and the
-  custom-apps list (type an exe name or pick one of the apps running right now).
-* **Clip**: the hotkey list (click the keys box, press the combo; Esc cancels), the replay-length slider (the 30–90 s
-  stretch is the sweet spot; the line under it says how much RAM the buffer takes, turns red above half of your RAM and
-  the slider refuses lengths that could not be allocated at all), click sound / cursor / run at startup, the Copium
-  token and the *I have Copium+* switch, and **Storage**: the local clips folder and the archive (below).
-* **Alerts**: toast position and the three toast switches with their durations and a *Preview* button each, the status
-  dot and its corner, and auto-update.
+* **Capture**, top to bottom: **Capturing** - the monitor map, resolution / FPS / bitrate / codec with a one-line
+  description of each codec (the ones your GPU cannot encode are greyed out), the **size target** (*None*, *Discord 10 MB*,
+  *Nitro Basic 50 MB*, *Copium 200 MB, 10 min* (the default), *Nitro 500 MB*: when a clip of the replay length would not
+  fit, the encode bitrate is lowered just enough, audio tracks included; it is never raised above the bitrate you chose)
+  and *Capture cursor*; **Audio tracks** - the per-track rows with their source pickers (a *Set up your audio* banner sits
+  above them until you hover over the group or change an option, then it is gone for good); **Recording** - the recording
+  mode and the custom-apps list (type an exe name or pick one of the apps running right now); **Replay length** - the slider
+  (the 30–90 s stretch is the sweet spot) with the one size/RAM readout right under it, recomputed on every resolution, FPS,
+  bitrate, codec, size-target, audio-track or length change; the figures are bitrate × audio tracks × length (resolution and
+  codec decide how good a clip looks at that bitrate, not how big it is): *≈ 124 MB per minute · ≈ 52 MB per 25 s clip*
+  (16 Mbps, three tracks; at 1 h the clip figure becomes the per-hour figure), *≈ 62 MB of RAM for 25 s at 16 Mbps* (red
+  above half of your RAM; the slider refuses lengths that could not be allocated at all) and what the size target did, in
+  yellow when the replay length is over Copium's 10 minutes - the Copium target then fits a 10-minute clip, not the whole
+  replay, since a longer clip has to be trimmed before Share anyway; **Hotkeys** - the list (click the keys box, press the
+  combo; Esc cancels) with *Clip now* in its header and the click sound under it.
+* **Clip**: **Copium** - the upload token and the *I have Copium+* switch - and **Storage**: the local clips folder and the
+  archive (below).
+* **Alerts**: **Toasts** - the position and the three toast switches with their durations and a *Preview* button each;
+  **Status dot** - the dot and its corner; **Updates** - auto-update, *Check now* and *Run at startup*.
 * **Clips** (right pane when the window is at least 900 px wide, otherwise the last tab): **Local** lists every file
   with small icons (cloud = shared, scissors = trimmed, PC = local only, drive = archived) and Trim / Share / folder
   buttons; **Cloud** lists everything you shared with the link (click = copy), *Open page* and the local file if it

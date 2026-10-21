@@ -18,10 +18,12 @@ namespace Clink;
 internal sealed record Choice(string Label, object Value, bool Header = false, bool Disabled = false) { public override string ToString() => Label; }
 
 /// <summary>
-/// The main window (docs/SPEC-v2.md §1): resizable, settings tabs (Capture · Clip · Alerts; the audio tracks live on Capture,
-/// under a "set up your audio" banner that goes away for good once the group is hovered over or changed) and the clips pane,
-/// which sits in a right column when the window is ≥ 900 px wide and becomes a fourth tab when it is narrower. Every control
-/// writes its setting on change and, where the engine is affected, restarts it after a short debounce (<see cref="ScheduleRestart"/>).
+/// The main window (docs/SPEC-v2.md §1, §10): resizable, settings tabs and the clips pane, which sits in a right column when the
+/// window is ≥ 900 px wide and becomes a fourth tab when it is narrower. Capture holds, top to bottom, Capturing (monitor,
+/// quality, size target, cursor) · Audio tracks (under a "set up your audio" banner that goes away for good once the group is
+/// hovered over or changed) · Recording · Replay length (the slider with the one size/RAM readout under it) · Hotkeys; Clip holds
+/// Copium and Storage; Alerts holds Toasts, Status dot and Updates (with "run at startup"). Every control writes its setting on
+/// change and, where the engine is affected, restarts it after a short debounce (<see cref="ScheduleRestart"/>).
 /// </summary>
 public partial class MainWindow : Window
 {
@@ -257,7 +259,12 @@ public partial class MainWindow : Window
 
     private int AudioTrackCount() => _app.AudioTrackCount;   // the mix is always track 1; the same count the engine's bitrate is resolved with
 
-    /// <summary>Per-minute / per-clip estimates, the size-target bitrate (read-only in the combo) and the RAM line under the slider.</summary>
+    /// <summary>
+    /// The readout under the replay-length slider (§10, the only place size and RAM are shown): per-minute / per-clip sizes
+    /// (<see cref="EstimateText"/>), the buffer's RAM (<see cref="RamText"/>, Danger over half of it) and the size-target note
+    /// (<see cref="SizeNote"/>, Warn when no bitrate can make the clip fit); plus the bitrate combo's tooltip and the slider's RAM
+    /// limit. Called on every resolution / FPS / bitrate / codec / size-target / audio-track / length change.
+    /// </summary>
     private void UpdateEstimates(int? previewSeconds = null)
     {
         var s = _app.Settings;
@@ -992,7 +999,7 @@ public partial class MainWindow : Window
         if (!_hintShown)
         {
             _hintShown = true;
-            string how = _app.ClipHotkeyLabel is string key ? $"Press {key} to save a clip." : "Add a hotkey under Clip → Hotkeys to save clips.";
+            string how = _app.ClipHotkeyLabel is string key ? $"Press {key} to save a clip." : "Add a hotkey under Capture → Hotkeys to save clips.";
             _app.ShowBalloon("Clink is still running", how + " Right-click the tray icon to quit.");
         }
     }
