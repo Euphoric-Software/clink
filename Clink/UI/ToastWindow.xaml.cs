@@ -14,9 +14,9 @@ using Clink.Services;
 namespace Clink.UI;
 
 /// <summary>
-/// The toast service (docs/SPEC-v2.md §7): "Clip saved", "Shared" and "Recording started" toasts, each with its own enable
-/// switch and duration (<see cref="Settings.ToastClip"/> etc.), at one of 8 positions on the captured monitor's work area
-/// (<see cref="Settings.ToastPosition"/>, 16 px margin). Several toasts stack, the newest nearest the chosen edge; each fades in
+/// The toast service (docs/SPEC-v2.md §7): "Clip saved", "Shared" and "Recording started" toasts (plus the share-last hotkey's
+/// "Uploading" / "Clip not uploaded" notices, under the "Shared" switch), each with its own enable switch and duration
+/// (<see cref="Settings.ToastClip"/> etc.), at one of 8 positions on the captured monitor's work area (<see cref="Settings.ToastPosition"/>, 16 px margin). Several toasts stack, the newest nearest the chosen edge; each fades in
 /// (180 ms) and fades out (260 ms) before it closes, and the rest re-stack once it has. All methods may be called from any thread.
 /// </summary>
 internal sealed class Toasts
@@ -58,6 +58,23 @@ internal sealed class Toasts
         if (!_settings.ToastRecording.Enabled) return;
         Add(new ToastWindow(this, "recording", null, null, "Recording started", game, Duration(_settings.ToastRecording), false));
     });
+
+    /// <summary>"Uploading to Copium…" for the share-last hotkey / tray / --share-last, which have no progress UI of their own. Follows the "Shared" switch.</summary>
+    public void ShowUploading(ClipEntry entry, string title = "Uploading to Copium…") => Post(() =>
+    {
+        if (!_settings.ToastShared.Enabled) return;
+        Add(new ToastWindow(this, "info", entry, null, title, ClipSubtitle(entry), Duration(_settings.ToastShared), false));
+    });
+
+    /// <summary>Why something asked for from the hotkey / tray did not happen ("Clip not uploaded" and the reason): no buttons, the text wraps, at least 8 s.</summary>
+    public void ShowProblem(string title, string text) => Post(() =>
+    {
+        var seconds = Math.Max(8, Duration(_settings.ToastShared).TotalSeconds);
+        Add(new ToastWindow(this, "problem", null, null, title, text, TimeSpan.FromSeconds(seconds), false));
+    });
+
+    /// <summary>Re-stacks the open toasts after one changed its height.</summary>
+    internal void Relayout() => Post(Layout);
 
     /// <summary>Shows a sample toast of a kind ("clip" | "shared" | "recording") with the current position and duration, ignoring the enable switch.</summary>
     public void Preview(string kind) => Post(() =>
@@ -175,7 +192,8 @@ public partial class ToastWindow : Window
         TitleText.Text = title;
         Subtitle.Text = subtitle;
         Subtitle.ToolTip = subtitle;
-        Dot.Fill = TryFindResource(kind switch { "shared" => "Accent", "recording" => "Danger", _ => "Good" }) as Brush ?? Brushes.LimeGreen;
+        Dot.Fill = TryFindResource(kind switch { "shared" or "info" => "Accent", "recording" => "Danger", "problem" => "Warn", _ => "Good" }) as Brush ?? Brushes.LimeGreen;
+        if (kind == "problem") Subtitle.TextWrapping = TextWrapping.Wrap;   // the reason is the point: all of it, not an ellipsis
         ClipButtons.Visibility = kind == "clip" ? Visibility.Visible : Visibility.Collapsed;
         SharedButtons.Visibility = kind == "shared" ? Visibility.Visible : Visibility.Collapsed;
         if (kind == "clip") ShareButton.Content = entry?.IsShared == true ? "Copy link" : "Share to Copium";
@@ -239,7 +257,18 @@ public partial class ToastWindow : Window
         _busy = false;
         if (ok) { Dismiss(); return; }   // the "Shared" toast takes over
         if (_dismissed) return;          // closed while it was uploading
-        ShareButton.Content = AppController.Instance.ShareRefusal != null ? "Over Copium's free limit" : "Upload failed";
+        var app = AppController.Instance;
+        ShareButton.Content = app.ShareRefusal != null ? "Over Copium's free limit" : "Upload failed";
+        if (app.ShareRefusal == null && app.ShareError is string why)
+        {
+            // The reason belongs here, where the user is looking: the footer that also has it is usually in the tray.
+            Subtitle.Text = why;
+            Subtitle.ToolTip = why;
+            ShareButton.ToolTip = why;
+            Subtitle.TextWrapping = TextWrapping.Wrap;
+            UpdateLayout();
+            _owner?.Relayout();          // it may have grown a line: keep the stack inside the work area
+        }
         ShareButton.IsEnabled = true;
         _hide.Interval = TimeSpan.FromSeconds(8);
         _hide.Start();

@@ -34,6 +34,8 @@ internal sealed class AppController : IDisposable
     public string LastNotice { get; private set; } = "";
     /// <summary>Why the last <see cref="ShareAsync"/> refused to upload (Copium's free limits), for the clip row and the toast to show instead of "Upload failed"; null when it was not refused.</summary>
     public string? ShareRefusal { get; private set; }
+    /// <summary>Why the last <see cref="ShareAsync"/> failed (no token, Copium's answer, the network), for the clip row, the toast and the trim editor to show; null when it did not fail.</summary>
+    public string? ShareError { get; private set; }
     /// <summary>Version of a downloaded update waiting to be installed, or null.</summary>
     public Version? PendingVersion => Updater.PendingVersion;
 
@@ -86,6 +88,7 @@ internal sealed class AppController : IDisposable
     private StatusDotWindow? _dot;
     private static Mutex? s_mutex;
     private int _saving;
+    private readonly Dictionary<ClipEntry, Task<bool>> _uploads = new(ReferenceEqualityComparer.Instance);   // Copium uploads in flight (UI thread)
     private DateTime _lastClipAt = DateTime.MinValue;
     private int _startGen;
     private bool _starting;
@@ -549,17 +552,28 @@ internal sealed class AppController : IDisposable
     /// <summary>Shares the newest clip (the "share last clip" hotkey / tray item): uploads it, or copies its link if it already has one.</summary>
     public async void ShareLast()
     {
+        // "Clip, then share" (a Stream Deck multi-action, --clip then --share-last, two quick presses) means the clip being saved
+        // right now: the library only gets it once the save is done, so wait for that instead of sharing the one before it.
+        for (int i = 0; i < 100 && Volatile.Read(ref _saving) == 1; i++) await Task.Delay(100);
         var entry = Library.Entries.FirstOrDefault(e => e.IsShared || e.IsArchived || e.Exists);
-        if (entry == null) { Say("No clips to share yet"); return; }
-        bool ok = await ShareAsync(entry);
+        bool ok = false;
+        if (entry == null) Say("No clips to share yet");
+        else ok = await ShareAsync(entry, announce: true);
         // The hotkey, the tray item and --share-last have no UI of their own, and the window is usually in the tray while a game
-        // runs: a refusal (or a failure) that only reached the footer would be invisible, so raise a balloon with the same text.
-        if (!ok && !MainWindowVisible && LastNotice.Length > 0) ShowBalloon("Clip not uploaded", LastNotice);
+        // runs: a refusal (or a failure) that only reached the footer would be invisible. A Clink toast shows over the game; a
+        // shell balloon (which Windows holds back while a game runs fullscreen) is only the fallback for "Shared" toasts off.
+        if (!ok && !MainWindowVisible && LastNotice.Length > 0)
+        {
+            if (Settings.ToastShared.Enabled) Toasts.ShowProblem("Clip not uploaded", LastNotice);
+            else ShowBalloon("Clip not uploaded", LastNotice);
+        }
     }
 
-    public async Task<bool> ShareAsync(ClipEntry entry, IProgress<double>? progress = null)
+    /// <param name="announce">From the hotkey / tray / --share-last, which have no progress UI of their own: with the window in the tray, a toast says the upload started.</param>
+    public async Task<bool> ShareAsync(ClipEntry entry, IProgress<double>? progress = null, bool announce = false)
     {
         ShareRefusal = null;
+        ShareError = null;
         if (!string.IsNullOrEmpty(entry.CopiumLink))
         {
             CopyToClipboard(entry.CopiumLink);
@@ -568,20 +582,37 @@ internal sealed class AppController : IDisposable
             return true;
         }
         string? token = Settings.CopiumToken;
-        if (string.IsNullOrWhiteSpace(token)) { Say("Add your Copium token first"); ShowRequested?.Invoke(); return false; }
+        if (string.IsNullOrWhiteSpace(token)) { ShareError = "Add your Copium token first (Clip tab)"; Say(ShareError); ShowRequested?.Invoke(); return false; }
         // Copium refuses files over 200 MB or 10 min without Copium+: say so now instead of uploading for a while and failing.
         if (!Settings.CopiumPlus && (entry.Size > Capabilities.CopiumFreeBytes || entry.Duration > Capabilities.CopiumFreeSeconds))
         {
-            int secs = (int)Math.Round(Math.Max(0, entry.Duration));
+            // Rounded up: a full 10:00 replay saves a moment over 10 min (it starts on a keyframe) and must not read "10:00".
+            int secs = (int)Math.Ceiling(Math.Max(0, entry.Duration));
+            string length = entry.Duration > 0 ? $" / {secs / 60}:{secs % 60:00}" : "";   // folder-scanned clips have no duration
             ShareRefusal = "Over Copium's free limit (200 MB / 10 min)";
-            Say($"Copium free accepts up to 200 MB / 10 min; this clip is {Capabilities.FormatBytes(entry.Size)} / {secs / 60}:{secs % 60:00} - trim it, or tick 'I have Copium+' if you do");
+            Say($"Copium free accepts up to 200 MB / 10 min; this clip is {Capabilities.FormatBytes(entry.Size)}{length} - trim it, or tick 'I have Copium+' if you do");
             return false;
         }
+        // One upload per clip: the hotkey, the tray, the toast and the clip list can all ask for the same clip while it is going
+        // up (nothing marks it shared until it is done). A second ask waits for the running upload and gets its result.
+        if (_uploads.TryGetValue(entry, out var running))
+        {
+            Say("Already uploading this clip…");
+            if (announce && !MainWindowVisible) Toasts.ShowUploading(entry, "Already uploading to Copium…");
+            return await running;
+        }
+        var done = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _uploads[entry] = done.Task;
+        bool ok = false;
         try
         {
             Say("Uploading to Copium…");
+            if (announce && !MainWindowVisible) Toasts.ShowUploading(entry);
             string title = (entry.Game ?? "Clip") + " " + entry.Created.ToString("yyyy-MM-dd HH:mm");
-            var up = await CopiumClient.UploadAsync(token, entry.Path, title, progress, _cts.Token);
+            string path = entry.Path;
+            // Off the UI thread: opening an archived clip on an unreachable share blocks in the FileStream constructor for ~20 s.
+            // The callers' Progress<T> were made on the UI thread and still report there.
+            var up = await Task.Run(() => CopiumClient.UploadAsync(token, path, title, progress, _cts.Token));
             entry.CopiumLink = up.Link;
             entry.CopiumPageUrl = up.PageUrl;
             entry.CopiumId = up.Id;
@@ -589,14 +620,21 @@ internal sealed class AppController : IDisposable
             CopyToClipboard(up.Link);
             Say("Uploaded, link copied");
             Toasts.ShowShared(entry, up.Link);
-            return true;
+            ok = true;
         }
         catch (Exception ex)
         {
             Log.Error("Copium upload", ex);
+            ShareRefusal = null;   // another clip's Share may have been refused while this one was going up
+            ShareError = ex.Message;
             Say("Upload failed: " + ex.Message);
-            return false;
         }
+        finally
+        {
+            _uploads.Remove(entry);
+            done.SetResult(ok);
+        }
+        return ok;
     }
 
     /// <summary>Asks the window to open the trim editor on a clip. False when no window has subscribed to <see cref="TrimRequested"/>.</summary>

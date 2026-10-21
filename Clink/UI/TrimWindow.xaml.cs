@@ -448,17 +448,21 @@ public partial class TrimWindow : Window
                 StatusText.Text = "Uploading…";
                 var progress = new Progress<double>(p => StatusText.Text = $"Uploading… {p:P0}");
                 bool ok = await app.ShareAsync(result, progress);
-                if (!ok && app.ShareRefusal is string refusal)
+                if (!ok)
                 {
-                    // Copium's free limit refused the cut (the trim itself is saved): stay open so the selection can be tightened
-                    // and shared again, instead of flashing "Upload failed" and closing on a reason only the footer knows.
-                    string why = refusal.Length > 1 ? char.ToLowerInvariant(refusal[0]) + refusal[1..] : refusal;
-                    StatusText.Text = $"Saved {Path.GetFileName(result.Path)}, not uploaded: {why} - tighten the selection, or tick 'I have Copium+' if you do";
+                    // Not uploaded, but the trim itself is saved: stay open with the reason instead of flashing "Upload failed" and
+                    // closing on a reason only the footer knows. Over Copium's free limit the selection can be tightened and shared again.
+                    if (app.ShareRefusal is string refusal)
+                    {
+                        string why = refusal.Length > 1 ? char.ToLowerInvariant(refusal[0]) + refusal[1..] : refusal;
+                        StatusText.Text = $"Saved {Path.GetFileName(result.Path)}, not uploaded: {why} - tighten the selection, or tick 'I have Copium+' if you do";
+                    }
+                    else StatusText.Text = $"Saved {Path.GetFileName(result.Path)}, not uploaded: {app.ShareError ?? "upload failed"} - share it from the clip list to try again";
                     SaveButton.IsEnabled = SaveShareButton.IsEnabled = true;
                     if (_playerReleased && !_closed) await ReopenPreviewAsync();
                     return;
                 }
-                StatusText.Text = ok ? "Uploaded, link copied" : "Upload failed";
+                StatusText.Text = "Uploaded, link copied";
             }
             await Task.Delay(replaceProblem != null ? 3000 : 1200);
             Close();
