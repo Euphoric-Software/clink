@@ -60,6 +60,12 @@ internal sealed unsafe class VideoEncoder : IDisposable
         _ => PInvoke.MFVideoFormat_H264,
     };
 
+    /// <summary>Hardware H.264 encoders (NVENC, AMF, QuickSync) stop at 4096 px per side; a 5120x1440 super-ultrawide needs HEVC or AV1.</summary>
+    public const uint MaxH264Side = 4096;
+
+    /// <summary>Whether a hardware H.264 encoder can take this output size (0 = unknown counts as fitting).</summary>
+    public static bool H264Fits(uint width, uint height) => width <= MaxH264Side && height <= MaxH264Side;
+
     public VideoEncoder(D3DDevice d3d, VideoEncoderConfig cfg)
     {
         Mf.EnsureStarted();
@@ -67,11 +73,28 @@ internal sealed unsafe class VideoEncoder : IDisposable
         _cfg = cfg;
         _frameDuration = 10_000_000L / cfg.Fps;
 
+        // The MFT would only fail SetOutputType with "The input type is not supported for D3D device"; say what is wrong instead.
+        if (!cfg.Hevc && !cfg.Av1 && !H264Fits(cfg.Width, cfg.Height))
+            throw new InvalidOperationException($"H.264 encoders stop at {MaxH264Side} px per side and the output is {cfg.Width}x{cfg.Height}; pick HEVC or a lower resolution.");
+
         Guid outSub = SubtypeFor(cfg.Codec);
         _mft = FindHardwareEncoder(outSub, out string name);
         EncoderName = name;
         Log.Info($"Video encoder: {name} ({cfg.CodecName}{(cfg.Av1 ? ", experimental" : "")}) {cfg.Width}x{cfg.Height}@{cfg.Fps} {cfg.BitrateBps / 1_000_000.0:0.#} Mbps");
 
+        try { Open(cfg, outSub); }
+        catch (Exception ex)
+        {
+            // The engine only disposes an encoder whose constructor returned: shut the half-configured MFT down here, or its
+            // hardware session (NVENC counts them per GPU) and the allocator's textures stay open until Clink exits.
+            Dispose();
+            throw new InvalidOperationException($"Could not open {name} for {cfg.CodecName} {cfg.Width}x{cfg.Height}@{cfg.Fps}: {ex.Message}", ex);
+        }
+    }
+
+    /// <summary>Configures the activated MFT (media types, rate control, sample allocator), starts streaming and the event thread.</summary>
+    private void Open(VideoEncoderConfig cfg, Guid outSub)
+    {
         IMFAttributes* attrs;
         _mft->GetAttributes(&attrs).Check("IMFTransform.GetAttributes");
         try
@@ -128,6 +151,7 @@ internal sealed unsafe class VideoEncoder : IDisposable
             Mf.SetGuid((IMFAttributes*)inType, PInvoke.MF_MT_MAJOR_TYPE, PInvoke.MFMediaType_Video);
             Mf.SetGuid((IMFAttributes*)inType, PInvoke.MF_MT_SUBTYPE, PInvoke.MFVideoFormat_NV12);
         }
+        _inputType = inType;   // owned from here on, so Dispose releases it when SetInputType fails
         {
             var a = (IMFAttributes*)inType;
             Mf.SetSize(a, PInvoke.MF_MT_FRAME_SIZE, cfg.Width, cfg.Height);
@@ -140,7 +164,6 @@ internal sealed unsafe class VideoEncoder : IDisposable
             Mf.SetU32(a, PInvoke.MF_MT_TRANSFER_FUNCTION, (uint)MFVideoTransferFunction.MFVideoTransFunc_709);
             _mft->SetInputType(0, inType, 0).Check("SetInputType(NV12)");
         }
-        _inputType = inType;
 
         ConfigureCodecApi();
 
@@ -484,6 +507,7 @@ internal sealed unsafe class VideoEncoder : IDisposable
 
     public void Dispose()
     {
+        if (_mft == null) return;   // already disposed (also by a failed constructor)
         _stop = true;
         try
         {

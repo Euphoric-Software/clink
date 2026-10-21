@@ -420,11 +420,18 @@ internal sealed class AppController : IDisposable
             try
             {
                 if (gen != _startGen) return;
-                // A codec this GPU cannot encode falls back to one it can (the Capture tab says so); the probe runs here, not on the UI thread.
+                // A codec this GPU cannot encode (or H.264 above 4096 px) falls back to one it can (the Capture tab says so); the
+                // probe runs here, not on the UI thread.
                 try
                 {
-                    string effective = Capabilities.EffectiveCodec(cfg.Codec);
-                    if (effective != cfg.Codec) { Log.Info($"Codec {cfg.Codec} has no hardware encoder here, recording {effective}"); cfg.Codec = effective; }
+                    string effective = Capabilities.EffectiveCodec(cfg.Codec, cfg.OutWidth, cfg.OutHeight);
+                    if (effective != cfg.Codec)
+                    {
+                        Log.Info(Capabilities.IsSupported(cfg.Codec)
+                            ? $"H.264 cannot encode {cfg.OutWidth}x{cfg.OutHeight}, recording {effective}"
+                            : $"Codec {cfg.Codec} has no hardware encoder here, recording {effective}");
+                        cfg.Codec = effective;
+                    }
                 }
                 catch (Exception ex) { Log.Warn("codec check: " + ex.Message); }
                 try { Engine.Start(cfg); }
