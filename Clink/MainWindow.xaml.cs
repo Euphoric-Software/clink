@@ -883,7 +883,12 @@ public partial class MainWindow : Window
         try
         {
             var dlg = new Microsoft.Win32.OpenFolderDialog { Title = title, Multiselect = false };
-            if (!string.IsNullOrWhiteSpace(initial)) { try { if (Directory.Exists(initial)) dlg.InitialDirectory = initial; } catch { } }
+            if (!string.IsNullOrWhiteSpace(initial))
+            {
+                // An offline share blocks Directory.Exists for the SMB timeout (~20 s): look on a worker, give up on the hint quickly.
+                var probe = Task.Run(() => { try { return Directory.Exists(initial); } catch { return false; } });
+                if (probe.Wait(300) && probe.Result) dlg.InitialDirectory = initial;
+            }
             return dlg.ShowDialog(this) == true ? dlg.FolderName : null;
         }
         catch (Exception ex) { _app.Say("Folder picker failed: " + ex.Message); return null; }
@@ -911,8 +916,18 @@ public partial class MainWindow : Window
         if (_loading) return;
         var s = _app.Settings;
         string path = ArchivePathBox.Text.Trim().Trim('"');
+        if (path.Length == 2 && path[1] == ':' && char.IsAsciiLetter(path[0])) { path += "\\"; ArchivePathBox.Text = path; }   // "E:" = the drive's root
         string? value = path.Length == 0 ? null : path;
         if (string.Equals(value, s.ArchivePath, StringComparison.OrdinalIgnoreCase)) return;
+        if (value != null && !Path.IsPathFullyQualified(value))
+        {
+            // "\nas\clips" or "nas\clips" (a lost backslash) would resolve against the current folder: C:\nas\clips, or next to the exe.
+            _app.Say(ArchiveService.FullPathHint);
+            ArchiveStatus.Text = ArchiveService.FullPathHint;
+            ArchiveStatus.Foreground = (Brush)FindResource("Warn");
+            ArchivePathBox.Text = s.ArchivePath ?? "";
+            return;
+        }
         if (value != null && ArchiveService.IsSameFolder(value, s.ClipsFolder))
         {
             // Moving a clip onto itself would be "copy verified, delete local": the one copy gone. Refused here and in the service.
@@ -962,16 +977,35 @@ public partial class MainWindow : Window
     {
         if (!_app.Settings.ArchiveEnabled || string.IsNullOrWhiteSpace(_app.Settings.ArchivePath)) { _app.Say("Turn the archive on and set its location first"); return; }
         ArchiveNowButton.IsEnabled = false;
-        try { await _app.Archive.RunNowAsync(); }
+        try
+        {
+            await _app.Archive.RunNowAsync();
+            if (_app.Archive.LastRunEligible == 0)
+            {
+                // The run looked and nothing is due: say why, or the button seems to do nothing.
+                var s = _app.Settings;
+                var why = new List<string>();
+                if (s.ArchiveAfterDays > 0) why.Add(s.ArchiveAfterDays == 1 ? "no clip is older than 1 day" : $"no clip is older than {s.ArchiveAfterDays} days");
+                if (s.ArchiveWhenLocalExceedsGB > 0) why.Add($"the clips folder is under {s.ArchiveWhenLocalExceedsGB.ToString("0.##", CultureInfo.InvariantCulture)} GB");
+                _app.Say("Nothing to archive yet" + (why.Count > 0 ? ": " + string.Join(" and ", why) : ""));
+            }
+        }
         finally { ArchiveNowButton.IsEnabled = true; RefreshArchiveStatus(); }
     }
 
+    private bool _archiveReachable;
+
     private void RefreshArchiveStatus()
     {
+        // Archived rows checked while the archive was offline (at login, before the NAS was up) look again once it answers.
+        bool reachable = _app.Archive.IsReachable;
+        if (reachable && !_archiveReachable) Clips.Refresh();
+        _archiveReachable = reachable;
         if (!IsLoaded) return;
         ArchiveStatus.Text = _app.Archive.Status;
         string t = ArchiveStatus.Text;
-        ArchiveStatus.Foreground = (Brush)FindResource(t.Contains("unreachable") || t.Contains("denied") || t.Contains("no rule") ? "Warn" : "Muted");
+        bool problem = t.Contains("will retry") || t.Contains("unreachable") || t.Contains("denied") || t.Contains("no rule") || t.Contains("archive location");
+        ArchiveStatus.Foreground = (Brush)FindResource(problem ? "Warn" : "Muted");
     }
 
     // ------------------------------------------------------------------ window chrome
