@@ -507,12 +507,12 @@ internal sealed unsafe class Engine : IDisposable
         int frames = video.Count;
         // The writer streams the samples into the file and drops each one's bytes as it goes, so a long clip needs one copy in
         // managed memory (the snapshot), not two.
-        ClipWriter.Write(path, video, enc.Codec, (int)_cfg.OutWidth, (int)_cfg.OutHeight, enc.SequenceHeader, audio, origin, _cfg.Fps);
+        string[] audioNames = ClipWriter.Write(path, video, enc.Codec, (int)_cfg.OutWidth, (int)_cfg.OutHeight, enc.SequenceHeader, audio, origin, _cfg.Fps);
         video.Clear();
         double duration = (end - origin) / 10_000_000.0;
         long size = new FileInfo(path).Length;
         Log.Info($"Clip saved: {path} ({duration:0.0}s, {size / 1_048_576.0:0.0} MB, {frames} frames, {audio.Count} audio tracks, {enc.Codec}{(enc.IsAv1 ? " experimental" : "")}, mux {t0.ElapsedMilliseconds} ms)");
-        return new ClipResult(path, duration, size, string.IsNullOrEmpty(game) ? null : game);
+        return new ClipResult(path, duration, size, string.IsNullOrEmpty(game) ? null : game, audioNames);
     }
 
     private static string SanitizeName(string s)

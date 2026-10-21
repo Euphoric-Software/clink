@@ -3,7 +3,8 @@ using Clink.Encode;
 
 namespace Clink.Engine;
 
-internal sealed record ClipResult(string Path, double DurationSeconds, long SizeBytes, string? Game);
+/// <param name="AudioTracks">Names of the audio tracks in the file, in file order (what the library and the trim editor label them with).</param>
+internal sealed record ClipResult(string Path, double DurationSeconds, long SizeBytes, string? Game, string[] AudioTracks);
 
 /// <summary>
 /// Turns a replay-buffer snapshot into an MP4 file. Samples are streamed: each one is converted and handed to the muxer in
@@ -13,14 +14,15 @@ internal sealed record ClipResult(string Path, double DurationSeconds, long Size
 internal static class ClipWriter
 {
     /// <summary>H.264 / HEVC only (kept for callers that still think in terms of a bool).</summary>
-    public static void Write(string path, IEnumerable<VideoSample> video, bool hevc, int width, int height, byte[]? sequenceHeader,
+    public static string[] Write(string path, IEnumerable<VideoSample> video, bool hevc, int width, int height, byte[]? sequenceHeader,
         List<(AudioTrackDesc desc, List<AacFrame> frames)> audio, long origin100ns, uint fps)
         => Write(path, video, hevc ? "hevc" : "h264", width, height, sequenceHeader, audio, origin100ns, fps);
 
     /// <param name="video">Video samples in order, starting on a keyframe. Each sample's <see cref="VideoSample.Data"/> is released once written.</param>
     /// <param name="codec">"h264" | "hevc" | "av1" (experimental). Video samples are Annex B access units for H.264/HEVC, temporal units for AV1.</param>
     /// <param name="sequenceHeader">Encoder-provided parameter sets (Annex B) or AV1 Sequence Header OBU; may be null when the samples carry them in-band.</param>
-    public static void Write(string path, IEnumerable<VideoSample> video, string codec, int width, int height, byte[]? sequenceHeader,
+    /// <returns>Names of the audio tracks written, in file order (a track with no frames is left out of the file).</returns>
+    public static string[] Write(string path, IEnumerable<VideoSample> video, string codec, int width, int height, byte[]? sequenceHeader,
         List<(AudioTrackDesc desc, List<AacFrame> frames)> audio, long origin100ns, uint fps)
     {
         bool av1 = codec == "av1", hevc = codec == "hevc";
@@ -30,7 +32,7 @@ internal static class ClipWriter
         else if (sequenceHeader != null) Nal.ToLengthPrefixed(sequenceHeader, hevc, ps);
 
         // Snap capture timestamps to the nominal frame grid so the file is clean constant-frame-rate
-        // (the pacer jitters by a millisecond or two); keep timestamps strictly increasing.
+        // (the pacer jitters by a millisecond or two); keep timestamps strictly increasing (see SnapToGrid).
         double period = fps > 0 ? 10_000_000.0 / fps : 0;
         long prev = long.MinValue;
         Mp4Muxer? mux = null;
@@ -43,11 +45,7 @@ internal static class ClipWriter
             foreach (var v in video)
             {
                 long q = v.Pts;
-                if (fps > 0)
-                {
-                    q = origin100ns + (long)Math.Round((v.Pts - origin100ns) / period) * (long)Math.Round(period);
-                    if (q <= prev) q = prev + (long)Math.Round(period);
-                }
+                if (fps > 0) q = SnapToGrid(v.Pts, prev, origin100ns, period);
                 else if (q <= prev) q = prev + 1;
                 prev = q;
                 byte[] data;
@@ -90,8 +88,29 @@ internal static class ClipWriter
                 while (ai[t] < frames.Count) { mux.WriteAudio(t, frames[ai[t]].Pts, frames[ai[t]].Data); ai[t]++; }
             }
             mux.Finish();
+            return mux.WrittenAudioTracks;
         }
         finally { mux?.Dispose(); }
+    }
+
+    /// <summary>
+    /// Puts a frame on the nearest slot of the exact frame grid (origin + round(k * period)), after <paramref name="prev"/>.
+    /// When that slot is taken, the frame moves to the next free slot if that is at most 3/4 of a period after its real time:
+    /// that is jitter around a half-slot boundary (the pacer steps by a whole number of 100 ns units, so over a long clip its
+    /// frames drift against the exact grid, and its catch-up reset can land on any phase), and staying on the upper slot keeps
+    /// the file one stts run. A free slot further ahead than that means a catch-up burst after a late wake: the frame keeps its
+    /// real time, so the frames after it land on their own slots instead of all running late against the audio. Either way a
+    /// frame ends up at most 3/4 of a period from when it was captured.
+    /// </summary>
+    private static long SnapToGrid(long pts, long prev, long origin100ns, double period)
+    {
+        long k = (long)Math.Round((pts - origin100ns) / period);
+        long q = origin100ns + (long)Math.Round(k * period);
+        if (q > prev) return q;
+        k = (long)Math.Floor((prev - origin100ns) / period) + 1;   // first slot after prev
+        long next = origin100ns + (long)Math.Round(k * period);
+        if (next <= prev) next = origin100ns + (long)Math.Round((k + 1) * period);
+        return next - pts <= 0.75 * period ? next : Math.Max(prev + 1, pts);
     }
 
     /// <summary>Writes the audio frames due up to this video sample, then the sample.</summary>
