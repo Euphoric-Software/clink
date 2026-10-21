@@ -387,7 +387,10 @@ internal sealed unsafe class Engine : IDisposable
                 _detectedSeen = app?.Pid ?? 0;
                 if (fg is { Fullscreen: true } f && f.Pid != _gamePid) { _gamePid = f.Pid; _gameName = f.Name; Log.Info($"Game detected: {f.Name} pid={f.Pid}"); }
                 else if (_gamePid != 0 && !GameProcessTracker.IsAlive(_gamePid)) { Log.Info($"Game exited: {_gameName}"); GameProcessTracker.Forget(_gamePid); _gamePid = 0; _gameName = null; }
-                else if (app != null && app.Pid != _gamePid && (_gamePid == 0 || newFromApp) && fg is not { Fullscreen: true } && GameProcessTracker.IsAlive(app.Pid))
+                // Never the voice app or another ignored process (a custom app can be any typed name, Discord included): the Mix
+                // would sum the voice tree twice and lose the "everything except" fallback that holds the game audio.
+                else if (app != null && app.Pid != _gamePid && app.Pid != _voicePid && !GameProcessTracker.IsIgnored(app.Name)
+                         && (_gamePid == 0 || newFromApp) && fg is not { Fullscreen: true } && GameProcessTracker.IsAlive(app.Pid))
                 {
                     _gamePid = app.Pid; _gameName = app.Name;
                     Log.Info($"Game (app detection): {app.Name} pid={app.Pid}");
