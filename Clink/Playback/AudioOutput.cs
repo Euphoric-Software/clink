@@ -122,7 +122,6 @@ internal sealed unsafe class AudioOutput : IDisposable
         int limit = fillLimit <= 0 ? (int)_bufferFrames : Math.Min(fillLimit, (int)_bufferFrames);
         int remaining = interleavedStereo.Length / 2;
         int offset = 0;
-        int idleSpins = 0;
         while (remaining > 0)
         {
             int written;
@@ -135,8 +134,9 @@ internal sealed unsafe class AudioOutput : IDisposable
                 int room = limit - (int)padding;
                 if (room <= 0)
                 {
-                    // Nothing drains while stopped: give up instead of spinning forever (the caller re-sends after a seek anyway).
-                    if (!_started && ++idleSpins > 50) return true;
+                    // Nothing drains while stopped: give up right away (the caller re-sends after a seek anyway). Waiting here
+                    // would only hold up ClipPlayer.Close, which stops the stream to release a Write blocked on a full buffer.
+                    if (!_started) return true;
                     written = 0;
                 }
                 else
@@ -152,7 +152,6 @@ internal sealed unsafe class AudioOutput : IDisposable
                 }
             }
             if (written == 0) { Thread.Sleep(3); continue; }
-            idleSpins = 0;
             offset += written;
             remaining -= written;
         }
