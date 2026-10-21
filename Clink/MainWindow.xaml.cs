@@ -911,6 +911,13 @@ public partial class MainWindow : Window
         RefreshArchiveStatus();
     }
 
+    /// <summary>
+    /// Why the path last typed into the archive box was refused (the box went back to the saved path), until the user leaves the
+    /// box again or a path is accepted. Clicking Test moves the focus first, so the refusal happens before Test runs: Test then
+    /// keeps this reason on screen instead of testing the old saved path and reporting it as reachable.
+    /// </summary>
+    private string? _archiveRefusal;
+
     private void ArchivePathBox_LostFocus(object sender, RoutedEventArgs e)
     {
         if (_loading) return;
@@ -918,29 +925,38 @@ public partial class MainWindow : Window
         string path = ArchivePathBox.Text.Trim().Trim('"');
         if (path.Length == 2 && path[1] == ':' && char.IsAsciiLetter(path[0])) { path += "\\"; ArchivePathBox.Text = path; }   // "E:" = the drive's root
         string? value = path.Length == 0 ? null : path;
-        if (string.Equals(value, s.ArchivePath, StringComparison.OrdinalIgnoreCase)) return;
+        if (string.Equals(value, s.ArchivePath, StringComparison.OrdinalIgnoreCase))
+        {
+            if (ReferenceEquals(sender, ArchivePathBox)) _archiveRefusal = null;   // the user left the box on the saved path: nothing refused now
+            return;
+        }
         if (value != null && !Path.IsPathFullyQualified(value))
         {
             // "\nas\clips" or "nas\clips" (a lost backslash) would resolve against the current folder: C:\nas\clips, or next to the exe.
             _app.Say(ArchiveService.FullPathHint);
-            ArchiveStatus.Text = ArchiveService.FullPathHint;
-            ArchiveStatus.Foreground = (Brush)FindResource("Warn");
-            ArchivePathBox.Text = s.ArchivePath ?? "";
+            RefuseArchivePath(ArchiveService.FullPathHint);
             return;
         }
         if (value != null && ArchiveService.IsSameFolder(value, s.ClipsFolder))
         {
             // Moving a clip onto itself would be "copy verified, delete local": the one copy gone. Refused here and in the service.
             _app.Say("The archive location cannot be the clips folder itself");
-            ArchiveStatus.Text = "Archive location is the clips folder: pick another folder, share or drive";
-            ArchiveStatus.Foreground = (Brush)FindResource("Warn");
-            ArchivePathBox.Text = s.ArchivePath ?? "";
+            RefuseArchivePath("Archive location is the clips folder: pick another folder, share or drive");
             return;
         }
+        _archiveRefusal = null;
         s.ArchivePath = value;
         s.Save();
         _app.Archive.Reevaluate();
         RefreshArchiveStatus();
+    }
+
+    private void RefuseArchivePath(string reason)
+    {
+        _archiveRefusal = reason;
+        ArchiveStatus.Text = reason;
+        ArchiveStatus.Foreground = (Brush)FindResource("Warn");
+        ArchivePathBox.Text = _app.Settings.ArchivePath ?? "";
     }
 
     private void ArchiveRulesChanged(object sender, RoutedEventArgs e)
@@ -960,6 +976,14 @@ public partial class MainWindow : Window
     private async void ArchiveTest_Click(object sender, RoutedEventArgs e)
     {
         ArchivePathBox_LostFocus(sender, e);
+        if (_archiveRefusal is string refused)
+        {
+            // What the user typed was refused and the box shows the saved path again: say why, do not test (and approve) the old path.
+            _archiveRefusal = null;
+            ArchiveStatus.Text = refused;
+            ArchiveStatus.Foreground = (Brush)FindResource("Warn");
+            return;
+        }
         string path = ArchivePathBox.Text.Trim().Trim('"');
         ArchiveTestButton.IsEnabled = false;
         ArchiveStatus.Text = "Testing…";
