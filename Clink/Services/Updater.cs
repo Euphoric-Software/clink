@@ -42,6 +42,7 @@ internal sealed class Updater : IDisposable
     private readonly Settings _settings;
     private readonly CancellationTokenSource _cts = new();
     private readonly SemaphoreSlim _gate = new(1, 1);        // one check/download at a time
+    private readonly SemaphoreSlim _wake = new(0, 1);        // released by Wake(): cuts the background loop's wait short
     private readonly Dictionary<Version, int> _attempts = new();
     private Task? _loop;
     private bool _loggedBadRepo;
@@ -637,9 +638,10 @@ internal sealed class Updater : IDisposable
     // ------------------------------------------------------------------ background loop
 
     /// <summary>
-    /// Cleans up after a finished install 30 s after start, then (only with <see cref="Settings.AutoUpdate"/> on) checks GitHub
-    /// right away and every 6 hours, downloading a newer release automatically. With auto-update off Clink never contacts GitHub
-    /// on its own; the version label in the footer still checks on demand.
+    /// Cleans up after a finished install 30 s after start, then (only while <see cref="Settings.AutoUpdate"/> is on) checks
+    /// GitHub right away and every 6 hours, downloading a newer release automatically. The switch is read on every pass, so
+    /// turning it off stops the checks without a restart, and <see cref="Wake"/> runs a check at once when it is turned on.
+    /// With auto-update off Clink never contacts GitHub on its own; the version label in the footer still checks on demand.
     /// </summary>
     public void StartBackgroundChecks()
     {
@@ -651,16 +653,23 @@ internal sealed class Updater : IDisposable
             {
                 await Task.Delay(FirstCheckDelay, ct).ConfigureAwait(false);
                 CleanupInstalled();   // after the delay: right after an update the apply process may still be exiting
-                if (!_settings.AutoUpdate) { Log.Info("updater: AutoUpdate is off, not checking GitHub (click the version in the footer to check by hand)"); return; }
+                if (!_settings.AutoUpdate) Log.Info("updater: AutoUpdate is off, not checking GitHub (click the version in the footer to check by hand)");
                 while (!ct.IsCancellationRequested)
                 {
-                    await CheckAndMaybeDownloadAsync(ct, manual: false).ConfigureAwait(false);
-                    await Task.Delay(CheckInterval, ct).ConfigureAwait(false);
+                    _wake.Wait(0);   // a Wake() from before this pass is answered by it
+                    if (_settings.AutoUpdate) await CheckAndMaybeDownloadAsync(ct, manual: false).ConfigureAwait(false);
+                    await _wake.WaitAsync(CheckInterval, ct).ConfigureAwait(false);
                 }
             }
             catch (OperationCanceledException) { }
             catch (Exception ex) { Log.Warn("updater: loop stopped: " + ex.Message); }
         }, ct);
+    }
+
+    /// <summary>Runs the background loop's next pass now instead of at the end of its 6 h wait (auto-update was just turned on).</summary>
+    public void Wake()
+    {
+        try { if (_wake.CurrentCount == 0) _wake.Release(); } catch (SemaphoreFullException) { }
     }
 
     /// <summary>Manual check (also downloads when auto-update is on, and retries a download whose install failed). Never throws; null = nothing newer or the check failed (see <see cref="LastError"/>).</summary>

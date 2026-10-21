@@ -101,7 +101,7 @@ size limit. Sizes are shown in decimal MB everywhere, the unit the limits use.
   codec decide how good a clip looks at that bitrate, not how big it is): *≈ 124 MB per minute · ≈ 52 MB per 25 s clip*
   (16 Mbps, three tracks; at 1 h the clip figure becomes the per-hour figure), *≈ 62 MB of RAM for 25 s at 16 Mbps* (red
   above half of your RAM; the slider refuses lengths that could not be allocated at all) and what the size target did, in
-  yellow when the replay length is over Copium's 10 minutes - the Copium target then fits a 10-minute clip, not the whole
+  yellow when the replay length is Copium's 10 minutes or more - the Copium target then fits a 10-minute clip, not the whole
   replay, since a longer clip has to be trimmed before Share anyway; **Hotkeys** - the list (click the keys box, press the
   combo; Esc cancels) with *Clip now* in its header and the click sound under it.
 * **Clip**: **Copium** - the upload token and the *I have Copium+* switch - and **Storage**: the local clips folder and the
@@ -143,7 +143,7 @@ update, handy for a debug build), `--selftest [seconds]` (records headless and w
 ### Settings
 
 `%APPDATA%\Clink\settings.json` (the UI writes it; it and the clip index `clips.json` are replaced in one rename on every
-save and keep the previous version as `.bak`, which is read when the file is damaged). The audio track pickers (*Capture → Audio tracks*) store
+save and keep the previous version as `.bak`, which is read when the file is damaged; a hand edit that does not parse is kept as `settings.json.unreadable` and Clink says so at start). The audio track pickers (*Capture → Audio tracks*) store
 `AllDeviceId` (the Desktop track: `out:<id>` or a bare id = that output's loopback, `in:<id>` = a capture device) /
 `MicDeviceId` (endpoint ids; `null` = the default device, and a device that is unplugged stays selected until you pick another) and
 `GameProcess` / `VoiceApp` (a process name, `.exe` optional, any case; `auto` = detect: the fullscreen app on the captured

@@ -194,6 +194,7 @@ internal sealed class AppController : IDisposable
         Updater.StartBackgroundChecks();
         // A downloaded update was skipped at startup (install failed earlier, read-only folder, elevated): tell the user, once per start.
         if (Updater.InstallProblem is string problem) { Say(problem); ShowBalloon("Clink update not installed", problem); }
+        if (Settings.LoadProblem is string unread) { Say(unread); ShowBalloon("Clink settings not loaded", unread); }   // a hand edit of settings.json that does not parse
         RaiseStateChanged();
     }
 
