@@ -32,9 +32,7 @@ internal static class ClipWriter
         else if (sequenceHeader != null) Nal.ToLengthPrefixed(sequenceHeader, hevc, ps);
 
         // Snap capture timestamps to the nominal frame grid so the file is clean constant-frame-rate
-        // (the pacer jitters by a millisecond or two); keep timestamps strictly increasing. A frame whose slot is already
-        // taken (the catch-up burst after the pacer woke late) keeps its real time rather than taking the next slot, so the
-        // frames after it land on their own slots again instead of all running late against the audio.
+        // (the pacer jitters by a millisecond or two); keep timestamps strictly increasing (see SnapToGrid).
         double period = fps > 0 ? 10_000_000.0 / fps : 0;
         long prev = long.MinValue;
         Mp4Muxer? mux = null;
@@ -47,12 +45,7 @@ internal static class ClipWriter
             foreach (var v in video)
             {
                 long q = v.Pts;
-                if (fps > 0)
-                {
-                    long k = (long)Math.Round((v.Pts - origin100ns) / period);
-                    q = origin100ns + (long)Math.Round(k * period);
-                    if (q <= prev) q = Math.Max(prev + 1, v.Pts);
-                }
+                if (fps > 0) q = SnapToGrid(v.Pts, prev, origin100ns, period);
                 else if (q <= prev) q = prev + 1;
                 prev = q;
                 byte[] data;
@@ -98,6 +91,26 @@ internal static class ClipWriter
             return mux.WrittenAudioTracks;
         }
         finally { mux?.Dispose(); }
+    }
+
+    /// <summary>
+    /// Puts a frame on the nearest slot of the exact frame grid (origin + round(k * period)), after <paramref name="prev"/>.
+    /// When that slot is taken, the frame moves to the next free slot if that is at most 3/4 of a period after its real time:
+    /// that is jitter around a half-slot boundary (the pacer steps by a whole number of 100 ns units, so over a long clip its
+    /// frames drift against the exact grid, and its catch-up reset can land on any phase), and staying on the upper slot keeps
+    /// the file one stts run. A free slot further ahead than that means a catch-up burst after a late wake: the frame keeps its
+    /// real time, so the frames after it land on their own slots instead of all running late against the audio. Either way a
+    /// frame ends up at most 3/4 of a period from when it was captured.
+    /// </summary>
+    private static long SnapToGrid(long pts, long prev, long origin100ns, double period)
+    {
+        long k = (long)Math.Round((pts - origin100ns) / period);
+        long q = origin100ns + (long)Math.Round(k * period);
+        if (q > prev) return q;
+        k = (long)Math.Floor((prev - origin100ns) / period) + 1;   // first slot after prev
+        long next = origin100ns + (long)Math.Round(k * period);
+        if (next <= prev) next = origin100ns + (long)Math.Round((k + 1) * period);
+        return next - pts <= 0.75 * period ? next : Math.Max(prev + 1, pts);
     }
 
     /// <summary>Writes the audio frames due up to this video sample, then the sample.</summary>
