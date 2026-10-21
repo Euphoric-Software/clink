@@ -336,3 +336,19 @@ HWND_TOPMOST
 GetDpiForWindow
 GetCurrentProcess
 IAudioRenderClient
+
+// ---- v2: status dot (click-through window), archive (free space) ----
+SetWindowLongPtr
+GetDiskFreeSpaceEx
+
+// ---- v2: codec probing / RAM (Capabilities, AV1) ----
+MFVideoFormat_AV1
+eAVEncAV1VProfile
+GlobalMemoryStatusEx
+MEMORYSTATUSEX
+
+// ---- v2 fixes: live modifier state in the hook, process identity (PID reuse), file identity (archive == clips folder) ----
+GetAsyncKeyState
+GetProcessTimes
+GetFileInformationByHandle
+BY_HANDLE_FILE_INFORMATION

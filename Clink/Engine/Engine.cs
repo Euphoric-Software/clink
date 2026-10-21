@@ -16,28 +16,43 @@ internal sealed class EngineConfig
     public MonitorInfo Monitor = null!;
     public uint OutWidth, OutHeight;
     public uint Fps = 60;
-    public uint BitrateMbps = 25;
-    public bool Hevc;
+    /// <summary>Video bitrate; fractional values are fine (a Discord size target can land below 1 Mbps).</summary>
+    public double BitrateMbps = 25;
+    /// <summary>"h264" | "hevc" | "av1" (AV1 is experimental). Normalized by <see cref="NormalizeCodec"/>.</summary>
+    public string Codec = "h264";
+    /// <summary>Alias of <see cref="Codec"/> == "hevc"; setting it only switches between h264 and hevc (so `Codec = "av1"; Hevc = false` keeps AV1).</summary>
+    public bool Hevc { get => Codec == "hevc"; set { if (value) Codec = "hevc"; else if (Codec == "hevc") Codec = "h264"; } }
     public float GopSeconds = 1f;
     public int BufferSeconds = 120;
     public bool CaptureCursor = true;
     // Track 1 is always the mix of game + mic + voice. These flags say whether each part is also written as its own track.
     public bool TrackGame = true, TrackMic = true, TrackVoice = false;
-    public bool TrackDesktop = false;      // extra track: everything you hear (loopback of an output device)
-    public string? AllDeviceId;            // render device for the desktop loopback; null = default output
+    public bool TrackDesktop = false;      // extra track: everything you hear (loopback of an output device), or an audio input
+    public string? AllDeviceId;            // Desktop track: "out:<id>" / bare render id = loopback of that output, "in:<id>" = capture device; null = default output
     public string? MicDeviceId;
     public string GameProcess = "auto";    // process name (no .exe) for the Game track, or "auto" = detect the fullscreen app
     public string VoiceApp = "auto";
     public float HdrKnee = 0.75f, HdrPeak = 4f;
     public string ClipsFolder = "";
+
+    /// <summary>"h264" / "hevc" / "av1" in any case or spacing; anything else (or null) is h264.</summary>
+    public static string NormalizeCodec(string? codec)
+    {
+        string c = (codec ?? "").Trim().ToLowerInvariant().Replace(".", "").Replace(" ", "");
+        return c switch { "hevc" or "h265" or "x265" => "hevc", "av1" or "av01" => "av1", _ => "h264" };
+    }
 }
 
 /// <param name="Detail">Running: what the track captures beyond its name (device, process, fallback), or null. Not running: why.</param>
 internal sealed record AudioTrackStatus(string Name, bool Running, string? Detail);
 
+/// <param name="RingBytes">Bytes the ring actually holds (after the RAM clamp / allocation retry).</param>
+/// <param name="RingSeconds">Replay length the ring can really keep at the configured bitrate (equals BufferSeconds unless it was clamped).</param>
+/// <param name="Codec">"h264" | "hevc" | "av1".</param>
 internal sealed record EngineStats(
     string Encoder, long FramesIn, long FramesOut, long Dropped, long CaptureFrames,
-    double BufferedSeconds, long RingBytes, IReadOnlyList<AudioTrackStatus> Audio, string? Game, bool Hdr);
+    double BufferedSeconds, long RingBytes, IReadOnlyList<AudioTrackStatus> Audio, string? Game, bool Hdr,
+    int RingSeconds, string Codec);
 
 /// <summary>Runs the whole replay-buffer pipeline: capture → convert → encode → ring, plus the audio tracks.</summary>
 internal sealed unsafe class Engine : IDisposable
@@ -60,6 +75,7 @@ internal sealed unsafe class Engine : IDisposable
     private uint _gamePid; private string? _gameName;
     private uint _voicePid; private string? _voiceName;
     private AudioTrack? _gameTrack, _voiceTrack;
+    private int _ringSeconds;
 
     public string Status { get; private set; } = "Stopped";
     public string? Error { get; private set; }
@@ -72,7 +88,9 @@ internal sealed unsafe class Engine : IDisposable
     public void Start(EngineConfig cfg)
     {
         Stop();
+        cfg.Codec = EngineConfig.NormalizeCodec(cfg.Codec);
         _cfg = cfg;
+        _ringSeconds = cfg.BufferSeconds;
         _stop = false;
         Error = null;
         _ready.Reset();
@@ -110,11 +128,25 @@ internal sealed unsafe class Engine : IDisposable
             {
                 IsHdr = m.IsHdr, SdrWhiteNits = m.SdrWhiteNits, Knee = _cfg.HdrKnee, Peak = _cfg.HdrPeak,
             };
-            uint bitrate = _cfg.BitrateMbps * 1_000_000;
-            _encoder = new VideoEncoder(_d3d, new VideoEncoderConfig(_cfg.OutWidth, _cfg.OutHeight, _cfg.Fps, bitrate, _cfg.Hevc, _cfg.GopSeconds));
-            long ringBytes = (long)(bitrate / 8.0 * (_cfg.BufferSeconds + 4) * 1.3);
-            ringBytes = Math.Clamp(ringBytes, 32L << 20, 3L << 30);
+            double mbps = Math.Clamp(_cfg.BitrateMbps, 0.1, 500);
+            uint bitrate = (uint)Math.Round(mbps * 1_000_000);
+            _encoder = new VideoEncoder(_d3d, new VideoEncoderConfig(_cfg.OutWidth, _cfg.OutHeight, _cfg.Fps, bitrate, _cfg.Codec, _cfg.GopSeconds));
+
+            // Ring: what the replay length needs at this bitrate, clamped to half of physical RAM; a failed allocation is retried
+            // smaller inside RingStore. The effective replay length is what the ring really holds, and is what the UI shows.
+            long want = RingStore.BytesFor(mbps, _cfg.BufferSeconds);
+            long max = RingStore.MaxBytes();
+            long ringBytes = Math.Min(want, max);
+            if (ringBytes < want)
+                Log.Warn($"Ring buffer clamped to {ringBytes >> 20} MB (half of {RingStore.PhysicalRamBytes() >> 20} MB physical RAM); {_cfg.BufferSeconds}s at {mbps:0.#} Mbps would need {want >> 20} MB");
             _ring = new RingStore(ringBytes);
+            if (_ring.Capacity < ringBytes)
+                Log.Warn($"Ring buffer allocation fell back to {_ring.Capacity >> 20} MB of the {ringBytes >> 20} MB wanted");
+            _ringSeconds = _ring.Capacity < want ? Math.Min(_cfg.BufferSeconds, RingStore.SecondsFor(mbps, _ring.Capacity)) : _cfg.BufferSeconds;
+            if (_ringSeconds < _cfg.BufferSeconds)
+                Log.Warn($"Replay length limited to {_ringSeconds}s (asked for {_cfg.BufferSeconds}s)");
+            else
+                Log.Info($"Ring buffer {_ring.Capacity >> 20} MB for {_cfg.BufferSeconds}s at {mbps:0.#} Mbps ({_cfg.Codec}{(_cfg.Codec == "av1" ? ", experimental" : "")})");
             var ring = _ring;
             _encoder.OnOutput = (pts, key, data) => ring.Push(pts, key, data);
 
@@ -241,7 +273,13 @@ internal sealed unsafe class Engine : IDisposable
             _tracks.Add(_gameTrack);
             _tracks.Add(mic);
             _tracks.Add(_voiceTrack);
-            if (_cfg.TrackDesktop) _tracks.Add(new AudioTrack("Desktop") { Source = new EndpointSource(true, _cfg.AllDeviceId, "System loopback") });
+            if (_cfg.TrackDesktop)
+            {
+                // "in:<id>" = a capture device (a Wave Link mix, a virtual cable), "out:<id>" = that output's loopback; a bare id from
+                // an older settings file is an output loopback, null the default output.
+                if (!TryDeviceSource(_cfg.AllDeviceId, "Desktop device", out var desktopDevice)) desktopDevice = new EndpointSource(true, _cfg.AllDeviceId, "System loopback");
+                _tracks.Add(new AudioTrack("Desktop") { Source = desktopDevice });
+            }
         }
         if (_tracks.Count == 0) return;
         _audioThread = new Thread(AudioLoop) { IsBackground = true, Name = "Clink.Audio", Priority = ThreadPriority.Highest };
@@ -335,8 +373,14 @@ internal sealed unsafe class Engine : IDisposable
             {
                 var fg = GameProcessTracker.Detect(m.Left, m.Top, m.Left + m.Width, m.Top + m.Height, m.Handle);
                 if (fg is { Fullscreen: true } f && f.Pid != _gamePid) { _gamePid = f.Pid; _gameName = f.Name; Log.Info($"Game detected: {f.Name} pid={f.Pid}"); }
-                else if (_gamePid != 0 && !GameProcessTracker.IsAlive(_gamePid)) { Log.Info($"Game exited: {_gameName}"); _gamePid = 0; _gameName = null; }
-                else if (_gamePid == 0 && fg is { } g) { _gamePid = g.Pid; _gameName = g.Name; Log.Info($"Foreground app used as game: {g.Name} pid={g.Pid}"); }
+                else if (_gamePid != 0 && !GameProcessTracker.IsAlive(_gamePid)) { Log.Info($"Game exited: {_gameName}"); GameProcessTracker.Forget(_gamePid); _gamePid = 0; _gameName = null; }
+                else if (_gamePid == 0 && fg is { } g && (g.InLibrary || _voicePid == 0))
+                {
+                    // A windowed foreground app counts only when it is a game (installed in a game library) or when there is no
+                    // voice app to exclude: "everything except Discord" beats recording whatever window happens to be focused.
+                    _gamePid = g.Pid; _gameName = g.Name;
+                    Log.Info($"Foreground app used as game: {g.Name} pid={g.Pid}{(g.InLibrary ? " (game library)" : "")}");
+                }
             }
         }
         catch (Exception ex) { Log.Warn("process tracking: " + ex.Message); }
@@ -391,8 +435,12 @@ internal sealed unsafe class Engine : IDisposable
             }).ToList();
         return new EngineStats(_encoder?.EncoderName ?? "", _encoder?.FramesIn ?? 0, _encoder?.FramesOut ?? 0,
             (_encoder?.Dropped ?? 0) + Interlocked.Read(ref _pacerDropped), _capture?.FramesReceived ?? 0,
-            BufferedSeconds, _ring?.Capacity ?? 0, audio, _gameName, _capture?.IsHdr ?? false);
+            BufferedSeconds, _ring?.Capacity ?? 0, audio, _gameName, _capture?.IsHdr ?? false,
+            _ring != null ? _ringSeconds : _cfg.BufferSeconds, _cfg.Codec);
     }
+
+    /// <summary>Replay length the ring really holds (BufferSeconds unless the RAM clamp or an allocation retry shortened it).</summary>
+    public int RingSeconds => _ring != null ? _ringSeconds : _cfg.BufferSeconds;
 
     public Task<ClipResult> SaveClipAsync(int? seconds = null) => Task.Run(() => SaveClip(seconds));
 
@@ -401,7 +449,10 @@ internal sealed unsafe class Engine : IDisposable
         var ring = _ring; var enc = _encoder;
         if (!IsRunning || ring == null || enc == null) throw new InvalidOperationException("Not recording");
         long end = ComUtil.QpcNow100ns();
-        long length = (seconds ?? _cfg.BufferSeconds) * 10_000_000L;
+        // Never more than the buffer holds: the audio timelines keep BufferSeconds (+6 s), and the video ring may hold a little
+        // more than that at low motion, so a longer hotkey length would open with silent video.
+        int want = Math.Clamp(seconds ?? _cfg.BufferSeconds, 1, Math.Max(1, RingSeconds));
+        long length = want * 10_000_000L;
         long from = end - length;
 
         // Let the audio timelines catch up to "now" (packets lag by a few tens of ms).
@@ -434,10 +485,14 @@ internal sealed unsafe class Engine : IDisposable
         while (File.Exists(path)) path = Path.Combine(_cfg.ClipsFolder, $"{baseName} {DateTime.Now:yyyy-MM-dd HH-mm-ss} ({n++}).mp4");
 
         var t0 = Stopwatch.StartNew();
-        ClipWriter.Write(path, video, enc.Hevc, (int)_cfg.OutWidth, (int)_cfg.OutHeight, enc.SequenceHeader, audio, origin, _cfg.Fps);
+        int frames = video.Count;
+        // The writer streams the samples into the file and drops each one's bytes as it goes, so a long clip needs one copy in
+        // managed memory (the snapshot), not two.
+        ClipWriter.Write(path, video, enc.Codec, (int)_cfg.OutWidth, (int)_cfg.OutHeight, enc.SequenceHeader, audio, origin, _cfg.Fps);
+        video.Clear();
         double duration = (end - origin) / 10_000_000.0;
         long size = new FileInfo(path).Length;
-        Log.Info($"Clip saved: {path} ({duration:0.0}s, {size / 1_048_576.0:0.0} MB, {video.Count} frames, {audio.Count} audio tracks, mux {t0.ElapsedMilliseconds} ms)");
+        Log.Info($"Clip saved: {path} ({duration:0.0}s, {size / 1_048_576.0:0.0} MB, {frames} frames, {audio.Count} audio tracks, {enc.Codec}{(enc.IsAv1 ? " experimental" : "")}, mux {t0.ElapsedMilliseconds} ms)");
         return new ClipResult(path, duration, size, string.IsNullOrEmpty(game) ? null : game);
     }
 

@@ -208,27 +208,282 @@ internal static class Nal
         }
     }
 
-    private sealed class BitReader
+}
+
+/// <summary>MSB-first bit reader shared by the H.264/HEVC parameter-set and AV1 sequence-header parsers. Reads past the end return 0.</summary>
+internal sealed class BitReader
+{
+    private readonly byte[] _d; private int _pos;
+    public BitReader(byte[] d) => _d = d;
+    public int Position => _pos;
+    public uint Read(int bits)
     {
-        private readonly byte[] _d; private int _pos;
-        public BitReader(byte[] d) => _d = d;
-        public uint Read(int bits)
+        uint v = 0;
+        for (int i = 0; i < bits; i++)
         {
-            uint v = 0;
-            for (int i = 0; i < bits; i++)
-            {
-                int byteIdx = _pos >> 3;
-                int bit = byteIdx < _d.Length ? (_d[byteIdx] >> (7 - (_pos & 7))) & 1 : 0;
-                v = (v << 1) | (uint)bit;
-                _pos++;
-            }
-            return v;
+            int byteIdx = _pos >> 3;
+            int bit = byteIdx < _d.Length ? (_d[byteIdx] >> (7 - (_pos & 7))) & 1 : 0;
+            v = (v << 1) | (uint)bit;
+            _pos++;
         }
-        public uint ReadUE()
-        {
-            int zeros = 0;
-            while (Read(1) == 0 && zeros < 32) zeros++;
-            return zeros == 0 ? 0 : (1u << zeros) - 1 + Read(zeros);
-        }
+        return v;
     }
+    /// <summary>H.26x Exp-Golomb ue(v).</summary>
+    public uint ReadUE()
+    {
+        int zeros = 0;
+        while (Read(1) == 0 && zeros < 32) zeros++;
+        return zeros == 0 ? 0 : (1u << zeros) - 1 + Read(zeros);
+    }
+    /// <summary>AV1 uvlc().</summary>
+    public uint ReadUvlc()
+    {
+        int zeros = 0;
+        while (Read(1) == 0 && zeros < 32) zeros++;
+        if (zeros >= 32) return uint.MaxValue;
+        return Read(zeros) + (1u << zeros) - 1;
+    }
+}
+
+/// <summary>
+/// AV1 helpers (experimental): walks the OBUs of a temporal unit in the low-overhead bitstream format (every OBU carries
+/// obu_size), finds keyframes and the Sequence Header OBU, strips what must not be stored in an MP4 sample, and builds the
+/// AV1CodecConfigurationRecord ('av1C') from the Sequence Header.
+/// </summary>
+internal static class Av1
+{
+    public const int OBU_SEQUENCE_HEADER = 1, OBU_TEMPORAL_DELIMITER = 2, OBU_FRAME_HEADER = 3, OBU_TILE_GROUP = 4,
+        OBU_METADATA = 5, OBU_FRAME = 6, OBU_REDUNDANT_FRAME_HEADER = 7, OBU_TILE_LIST = 8, OBU_PADDING = 15;
+
+    /// <summary>One OBU in a temporal unit: where it starts and how long it is (header + size field + payload), its type and where the payload is.</summary>
+    public readonly record struct Obu(int Offset, int Length, int Type, int PayloadOffset, int PayloadLength, bool HasSize, bool HasExtension);
+
+    /// <summary>What the Sequence Header says; the fields av1C needs plus the coded size.</summary>
+    public readonly record struct SequenceInfo(int Profile, int LevelIdx, int Tier, bool HighBitDepth, bool TwelveBit, bool Monochrome,
+        int SubsamplingX, int SubsamplingY, int ChromaSamplePosition, int MaxWidth, int MaxHeight);
+
+    /// <summary>
+    /// Splits a temporal unit into OBUs. Returns false with a reason when the bytes are not a valid OBU sequence (forbidden bit,
+    /// obu_size past the end, truncated header). An OBU without obu_size is accepted only as the last one.
+    /// </summary>
+    public static bool TryParse(ReadOnlySpan<byte> tu, List<Obu> obus, out string? error)
+    {
+        error = null;
+        int i = 0;
+        while (i < tu.Length)
+        {
+            int start = i;
+            byte h = tu[i++];
+            if ((h & 0x80) != 0) { error = $"forbidden bit set at byte {start}"; return false; }
+            int type = (h >> 3) & 0xF;
+            bool ext = (h & 0x04) != 0;
+            bool hasSize = (h & 0x02) != 0;
+            if (ext) { if (i >= tu.Length) { error = $"truncated extension header at byte {start}"; return false; } i++; }
+            int payloadLen;
+            if (hasSize)
+            {
+                if (!TryReadLeb128(tu, ref i, out ulong size)) { error = $"bad obu_size at byte {start}"; return false; }
+                if (size > (ulong)(tu.Length - i)) { error = $"obu_size {size} runs past the end at byte {start}"; return false; }
+                payloadLen = (int)size;
+            }
+            else payloadLen = tu.Length - i;
+            obus.Add(new Obu(start, i + payloadLen - start, type, i, payloadLen, hasSize, ext));
+            i += payloadLen;
+        }
+        return true;
+    }
+
+    private static bool TryReadLeb128(ReadOnlySpan<byte> d, ref int pos, out ulong value)
+    {
+        value = 0;
+        for (int k = 0; k < 8; k++)
+        {
+            if (pos >= d.Length) return false;
+            byte b = d[pos++];
+            value |= (ulong)(b & 0x7F) << (7 * k);
+            if ((b & 0x80) == 0) return true;
+        }
+        return false;
+    }
+
+    private static byte[] Leb128(int v)
+    {
+        var o = new List<byte>(4);
+        uint u = (uint)v;
+        do
+        {
+            byte b = (byte)(u & 0x7F);
+            u >>= 7;
+            if (u != 0) b |= 0x80;
+            o.Add(b);
+        } while (u != 0);
+        return o.ToArray();
+    }
+
+    /// <summary>
+    /// True when the temporal unit starts a random-access point: its first frame (OBU_FRAME / OBU_FRAME_HEADER) is a KEY_FRAME that is
+    /// not show_existing_frame, or, when there is no frame header to look at, when it carries a Sequence Header OBU.
+    /// Assumes reduced_still_picture_header = 0, which every video encoder uses.
+    /// </summary>
+    public static bool ContainsKeyframe(ReadOnlySpan<byte> tu)
+    {
+        var obus = new List<Obu>();
+        if (!TryParse(tu, obus, out _)) return false;
+        bool seq = false;
+        foreach (var o in obus)
+        {
+            if (o.Type == OBU_SEQUENCE_HEADER) { seq = true; continue; }
+            if (o.Type is OBU_FRAME or OBU_FRAME_HEADER && o.PayloadLength > 0)
+            {
+                byte b = tu[o.PayloadOffset];
+                bool showExisting = (b & 0x80) != 0;   // uncompressed_header(): show_existing_frame f(1), frame_type f(2)
+                int frameType = (b >> 5) & 3;
+                return !showExisting && frameType == 0;  // KEY_FRAME
+            }
+        }
+        return seq;
+    }
+
+    /// <summary>The first Sequence Header OBU in the temporal unit as a complete OBU (header + obu_size + payload), or null.</summary>
+    public static byte[]? FindSequenceHeader(ReadOnlySpan<byte> tu)
+    {
+        var obus = new List<Obu>();
+        if (!TryParse(tu, obus, out _)) return null;
+        foreach (var o in obus) if (o.Type == OBU_SEQUENCE_HEADER) return WithSize(tu, o);
+        return null;
+    }
+
+    /// <summary>
+    /// Turns an encoder temporal unit into an ISOBMFF AV1 sample: temporal delimiters and padding are dropped (they must not be
+    /// stored), every OBU gets an obu_size field. A temporal unit that does not parse is stored as-is.
+    /// </summary>
+    public static byte[] ToSample(ReadOnlySpan<byte> tu)
+    {
+        var obus = new List<Obu>();
+        if (!TryParse(tu, obus, out _)) return tu.ToArray();
+        bool clean = true;
+        foreach (var o in obus) if (o.Type is OBU_TEMPORAL_DELIMITER or OBU_PADDING || !o.HasSize) { clean = false; break; }
+        if (clean) return tu.ToArray();
+        using var ms = new MemoryStream(tu.Length);
+        foreach (var o in obus)
+        {
+            if (o.Type is OBU_TEMPORAL_DELIMITER or OBU_PADDING) continue;
+            ms.Write(WithSize(tu, o));
+        }
+        return ms.ToArray();
+    }
+
+    private static byte[] WithSize(ReadOnlySpan<byte> tu, Obu o)
+    {
+        if (o.HasSize) return tu.Slice(o.Offset, o.Length).ToArray();
+        int hdrLen = o.HasExtension ? 2 : 1;
+        byte[] size = Leb128(o.PayloadLength);
+        var r = new byte[hdrLen + size.Length + o.PayloadLength];
+        r[0] = (byte)(tu[o.Offset] | 0x02);
+        if (o.HasExtension) r[1] = tu[o.Offset + 1];
+        size.CopyTo(r, hdrLen);
+        tu.Slice(o.PayloadOffset, o.PayloadLength).CopyTo(r.AsSpan(hdrLen + size.Length));
+        return r;
+    }
+
+    /// <summary>Parses sequence_header_obu() (AV1 spec 5.5) up to and including color_config().</summary>
+    public static SequenceInfo ParseSequenceHeader(ReadOnlySpan<byte> payload)
+    {
+        var br = new BitReader(payload.ToArray());
+        int profile = (int)br.Read(3);
+        br.Read(1);                                   // still_picture
+        bool reduced = br.Read(1) == 1;               // reduced_still_picture_header
+        int levelIdx = 0, tier = 0;
+        if (reduced)
+        {
+            levelIdx = (int)br.Read(5);
+        }
+        else
+        {
+            bool decoderModelInfo = false;
+            int bufferDelayLength = 0;
+            if (br.Read(1) == 1)                      // timing_info_present_flag
+            {
+                br.Read(32); br.Read(32);             // num_units_in_display_tick, time_scale
+                if (br.Read(1) == 1) br.ReadUvlc();   // equal_picture_interval -> num_ticks_per_picture_minus_1
+                decoderModelInfo = br.Read(1) == 1;
+                if (decoderModelInfo)
+                {
+                    bufferDelayLength = (int)br.Read(5) + 1;
+                    br.Read(32); br.Read(5); br.Read(5);
+                }
+            }
+            bool initialDisplayDelay = br.Read(1) == 1;
+            int opCount = (int)br.Read(5) + 1;
+            for (int i = 0; i < opCount; i++)
+            {
+                br.Read(12);                          // operating_point_idc
+                int lv = (int)br.Read(5);
+                int tr = lv > 7 ? (int)br.Read(1) : 0;
+                if (i == 0) { levelIdx = lv; tier = tr; }
+                if (decoderModelInfo && br.Read(1) == 1) { br.Read(bufferDelayLength); br.Read(bufferDelayLength); br.Read(1); }
+                if (initialDisplayDelay && br.Read(1) == 1) br.Read(4);
+            }
+        }
+        int wBits = (int)br.Read(4) + 1, hBits = (int)br.Read(4) + 1;
+        int maxW = (int)br.Read(wBits) + 1, maxH = (int)br.Read(hBits) + 1;
+        bool frameIdNumbers = !reduced && br.Read(1) == 1;
+        if (frameIdNumbers) { br.Read(4); br.Read(3); }
+        br.Read(1); br.Read(1); br.Read(1);           // use_128x128_superblock, enable_filter_intra, enable_intra_edge_filter
+        if (!reduced)
+        {
+            br.Read(1); br.Read(1); br.Read(1); br.Read(1); // enable_interintra_compound, enable_masked_compound, enable_warped_motion, enable_dual_filter
+            bool orderHint = br.Read(1) == 1;
+            if (orderHint) { br.Read(1); br.Read(1); } // enable_jnt_comp, enable_ref_frame_mvs
+            int forceSct = br.Read(1) == 1 ? 2 : (int)br.Read(1);
+            if (forceSct > 0) { if (br.Read(1) == 0) br.Read(1); } // seq_choose_integer_mv ? SELECT : seq_force_integer_mv
+            if (orderHint) br.Read(3);                // order_hint_bits_minus_1
+        }
+        br.Read(1); br.Read(1); br.Read(1);           // enable_superres, enable_cdef, enable_restoration
+        // color_config()
+        bool hbd = br.Read(1) == 1;
+        bool twelve = profile == 2 && hbd && br.Read(1) == 1;
+        bool mono = profile != 1 && br.Read(1) == 1;
+        int cp = 2, tc = 2, mc = 2;
+        if (br.Read(1) == 1) { cp = (int)br.Read(8); tc = (int)br.Read(8); mc = (int)br.Read(8); }
+        int ssx, ssy, csp = 0;
+        if (mono) { br.Read(1); ssx = ssy = 1; }
+        else if (cp == 1 && tc == 13 && mc == 0) { ssx = ssy = 0; }
+        else
+        {
+            br.Read(1);                               // color_range
+            if (profile == 0) { ssx = ssy = 1; }
+            else if (profile == 1) { ssx = ssy = 0; }
+            else if (twelve) { ssx = (int)br.Read(1); ssy = ssx == 1 ? (int)br.Read(1) : 0; }
+            else { ssx = 1; ssy = 0; }
+            if (ssx == 1 && ssy == 1) csp = (int)br.Read(2);
+        }
+        return new SequenceInfo(profile, levelIdx, tier, hbd, twelve, mono, ssx, ssy, csp, maxW, maxH);
+    }
+
+    /// <summary>
+    /// AV1CodecConfigurationRecord: marker=1, version=1, seq_profile / seq_level_idx_0 / seq_tier_0 / high_bitdepth / twelve_bit /
+    /// monochrome / chroma_subsampling_x / chroma_subsampling_y / chroma_sample_position from the Sequence Header,
+    /// initial_presentation_delay_present=0, configOBUs = the Sequence Header OBU.
+    /// </summary>
+    public static byte[] BuildAv1C(byte[] sequenceHeaderObu)
+    {
+        var obus = new List<Obu>();
+        if (!TryParse(sequenceHeaderObu, obus, out string? err) || obus.Count == 0 || obus[0].Type != OBU_SEQUENCE_HEADER)
+            throw new InvalidOperationException("AV1: not a Sequence Header OBU" + (err != null ? $" ({err})" : ""));
+        var o = obus[0];
+        var info = ParseSequenceHeader(sequenceHeaderObu.AsSpan(o.PayloadOffset, o.PayloadLength));
+        byte[] cfg = WithSize(sequenceHeaderObu, o);
+        var r = new byte[4 + cfg.Length];
+        r[0] = 0x81;                                                   // marker | version 1
+        r[1] = (byte)((info.Profile << 5) | (info.LevelIdx & 0x1F));
+        r[2] = (byte)((info.Tier << 7) | ((info.HighBitDepth ? 1 : 0) << 6) | ((info.TwelveBit ? 1 : 0) << 5) | ((info.Monochrome ? 1 : 0) << 4)
+                    | (info.SubsamplingX << 3) | (info.SubsamplingY << 2) | (info.ChromaSamplePosition & 3));
+        r[3] = 0;                                                      // reserved, initial_presentation_delay_present = 0, reserved
+        cfg.CopyTo(r, 4);
+        return r;
+    }
+
+    public static string Describe(SequenceInfo s) =>
+        $"profile {s.Profile} level_idx {s.LevelIdx} tier {s.Tier} {(s.TwelveBit ? 12 : s.HighBitDepth ? 10 : 8)}-bit {(s.Monochrome ? "mono" : s.SubsamplingX == 1 && s.SubsamplingY == 1 ? "4:2:0" : s.SubsamplingX == 1 ? "4:2:2" : "4:4:4")} {s.MaxWidth}x{s.MaxHeight}";
 }

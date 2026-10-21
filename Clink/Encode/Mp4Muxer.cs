@@ -6,10 +6,19 @@ namespace Clink.Encode;
 
 internal sealed class VideoTrackDesc
 {
-    public bool Hevc;
+    /// <summary>"h264" | "hevc" | "av1" (AV1 is experimental).</summary>
+    public string Codec = "h264";
+    /// <summary>Alias of <see cref="Codec"/> == "hevc"; setting it only switches between h264 and hevc.</summary>
+    public bool Hevc { get => Codec == "hevc"; set { if (value) Codec = "hevc"; else if (Codec == "hevc") Codec = "h264"; } }
+    public bool Av1 => Codec == "av1";
     public int Width, Height;
-    public byte[] CodecConfig = Array.Empty<byte>(); // avcC or hvcC payload
+    public byte[] CodecConfig = Array.Empty<byte>(); // avcC, hvcC or av1C payload
     public int Timescale = 90000;
+
+    /// <summary>Sample entry fourcc: avc1 / hvc1 / av01.</summary>
+    public string SampleEntry => Av1 ? "av01" : Hevc ? "hvc1" : "avc1";
+    /// <summary>Decoder configuration box: avcC / hvcC / av1C.</summary>
+    public string ConfigBox => Av1 ? "av1C" : Hevc ? "hvcC" : "avcC";
 }
 
 internal sealed class AudioTrackDesc
@@ -23,7 +32,7 @@ internal sealed class AudioTrackDesc
 }
 
 /// <summary>
-/// Minimal ISO BMFF writer: one video track (avc1/hvc1) + any number of AAC audio tracks, with edit lists so
+/// Minimal ISO BMFF writer: one video track (avc1/hvc1, or av01 for experimental AV1) + any number of AAC audio tracks, with edit lists so
 /// every track starts exactly at the clip origin. Samples go to a temp file first; Finish() writes a
 /// fast-start file (ftyp, moov, mdat).
 /// </summary>
@@ -118,7 +127,7 @@ internal sealed class Mp4Muxer : IDisposable
             movieDurationMs = Math.Max(movieDurationMs, (end100ns - _origin100ns) / 10_000);
         }
 
-        byte[] ftyp = BuildFtyp(_video.V!.Hevc);
+        byte[] ftyp = BuildFtyp(_video.V!);
         // moov size depends on chunk offsets which depend on moov size: compute with a placeholder first (stco vs co64
         // decided up front), then rebuild with real offsets.
         bool use64 = _payload + 1_000_000 > uint.MaxValue;
@@ -173,11 +182,11 @@ internal sealed class Mp4Muxer : IDisposable
 
     // ---------------------------------------------------------------- boxes
 
-    private static byte[] BuildFtyp(bool hevc)
+    private static byte[] BuildFtyp(VideoTrackDesc v)
     {
         var b = new Box("ftyp");
         b.Fourcc("isom"); b.U32(0x200);
-        b.Fourcc("isom"); b.Fourcc("iso2"); b.Fourcc(hevc ? "hvc1" : "avc1"); b.Fourcc("mp41");
+        b.Fourcc("isom"); b.Fourcc("iso2"); b.Fourcc(v.SampleEntry); b.Fourcc("mp41");
         return b.ToArray();
     }
 
@@ -288,7 +297,7 @@ internal sealed class Mp4Muxer : IDisposable
         if (t.IsVideo)
         {
             var v = t.V!;
-            var entry = new Box(v.Hevc ? "hvc1" : "avc1");
+            var entry = new Box(v.SampleEntry);         // avc1 / hvc1 / av01 VisualSampleEntry
             entry.Zero(6); entry.U16(1);                // reserved, data_reference_index
             entry.U16(0); entry.U16(0); entry.Zero(12); // pre_defined/reserved
             entry.U16((ushort)v.Width); entry.U16((ushort)v.Height);
@@ -297,7 +306,7 @@ internal sealed class Mp4Muxer : IDisposable
             entry.U16(1);                               // frame_count
             var name = new byte[32]; var nm = Encoding.ASCII.GetBytes("Clink"); name[0] = (byte)nm.Length; nm.CopyTo(name, 1); entry.Bytes(name);
             entry.U16(0x0018); entry.I16(-1);
-            var cfg = new Box(v.Hevc ? "hvcC" : "avcC"); cfg.Bytes(v.CodecConfig); entry.Child(cfg);
+            var cfg = new Box(v.ConfigBox); cfg.Bytes(v.CodecConfig); entry.Child(cfg);
             var colr = new Box("colr"); colr.Fourcc("nclx"); colr.U16(1); colr.U16(1); colr.U16(1); colr.U8(0); entry.Child(colr);
             var pasp = new Box("pasp"); pasp.U32(1); pasp.U32(1); entry.Child(pasp);
             stsd.Child(entry);

@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using Microsoft.Win32;
 using Windows.Win32;
 using Windows.Win32.Foundation;
 using Windows.Win32.UI.Input.KeyboardAndMouse;
@@ -6,35 +7,91 @@ using Windows.Win32.UI.WindowsAndMessaging;
 
 namespace Clink.Services;
 
-/// <summary>Global low-level keyboard hook (works while games have focus, including injected keys from Stream Deck).</summary>
+/// <summary>
+/// Global low-level keyboard hook (works while games have focus, including injected keys from Stream Deck). Matches any of
+/// a list of bindings (<see cref="HotkeyAction"/>: key combo + what to do) and reports which one was pressed.
+/// Modifier state is read live (GetAsyncKeyState) when a key is matched: the hook only sees the current desktop, so the
+/// key-ups of a Win+L / Ctrl+Alt+Del / UAC chord never arrive and tracked flags would stay stuck. A key-up is swallowed only
+/// when its key-down was, so a game never ends up with a key it saw go down but not up.
+/// </summary>
 internal static unsafe class Hotkeys
 {
-    private static HHOOK s_hook;
-    private static HotkeyBinding? s_binding;
-    private static Action? s_onPressed;
-    private static bool s_ctrl, s_alt, s_shift, s_win;
-    private static bool s_down;
-    private static Action<int, bool, bool, bool, bool>? s_captureNext;
+    private const int VK_SHIFT = 0x10, VK_CONTROL = 0x11, VK_MENU = 0x12, VK_LWIN = 0x5B, VK_RWIN = 0x5C;
+    private const int VK_TAB = 0x09, VK_RETURN = 0x0D, VK_SPACE = 0x20, VK_ESCAPE = 0x1B, VK_F4 = 0x73, VK_DELETE = 0x2E;
 
-    public static void Install(HotkeyBinding binding, Action onPressed)
+    private static HHOOK s_hook;
+    private static HotkeyAction[] s_actions = Array.Empty<HotkeyAction>();
+    private static Action<HotkeyAction>? s_onPressed;
+    private static readonly bool[] s_swallowed = new bool[256];   // keys whose key-down we ate (binding fired, or capture): their key-up is eaten too, auto-repeat does not re-fire
+    private static Action<int, bool, bool, bool, bool>? s_captureNext;
+    private static bool s_sessionHooked;
+
+    /// <summary>The bindings the hook currently matches (snapshot).</summary>
+    public static IReadOnlyList<HotkeyAction> Actions => s_actions;
+
+    /// <summary>Installs the hook (once) and sets the bindings. <paramref name="onPressed"/> runs on the hook thread: marshal to the UI.</summary>
+    public static void Install(IReadOnlyList<HotkeyAction> actions, Action<HotkeyAction> onPressed)
     {
-        s_binding = binding;
+        Rebind(actions);
         s_onPressed = onPressed;
         if (s_hook.IsNull)
         {
             s_hook = PInvoke.SetWindowsHookEx(WINDOWS_HOOK_ID.WH_KEYBOARD_LL, &HookProc, default, 0);
             if (s_hook.IsNull) Log.Warn("Keyboard hook failed: " + Marshal.GetLastWin32Error());
         }
+        if (!s_sessionHooked)
+        {
+            // Lock / unlock / switch user: whatever was held when the desktop changed is not held any more as far as we know.
+            try { SystemEvents.SessionSwitch += (_, _) => Reset(); s_sessionHooked = true; }
+            catch (Exception ex) { Log.Warn("hotkeys: session events: " + ex.Message); }
+        }
     }
 
-    public static void Rebind(HotkeyBinding binding) => s_binding = binding;
+    /// <summary>Forgets every half-seen key (after a desktop switch nothing we tracked can be trusted).</summary>
+    public static void Reset() => Array.Clear(s_swallowed);
 
-    /// <summary>The next non-modifier key press is reported (with modifiers) and swallowed; used by the "change hotkey" UI.</summary>
+    /// <summary>Replaces the bindings (after the list in settings changed). Entries without a key are skipped.</summary>
+    public static void Rebind(IReadOnlyList<HotkeyAction> actions) =>
+        s_actions = actions.Where(a => a?.Keys != null && a.Keys.Vk > 0).ToArray();
+
+    /// <summary>v1 single-hotkey API: changes the keys of the first "clip" binding (or adds one). The v2 UI uses <see cref="Rebind(IReadOnlyList{HotkeyAction})"/>.</summary>
+    public static void Rebind(HotkeyBinding binding)
+    {
+        var list = s_actions.ToList();
+        var clip = list.FirstOrDefault(a => IsClip(a.Action));
+        if (clip != null) clip.Keys = binding;
+        else list.Add(new HotkeyAction { Keys = binding, Action = "clip", Seconds = 0 });
+        Rebind(list);
+    }
+
+    public static bool IsClip(string? action) => string.IsNullOrEmpty(action) || action.Equals("clip", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The next non-modifier key press is reported (with modifiers) and swallowed; used by the "change hotkey" UI. Combos the
+    /// system owns (Alt+Tab, Alt+Esc, Alt+F4, Ctrl+Esc, Ctrl+Shift+Esc, any Win chord) and a plain Enter / Space / Tab are
+    /// passed through untouched and leave the capture armed. Esc is reported (the UI cancels on it).
+    /// </summary>
     public static void CaptureNext(Action<int, bool, bool, bool, bool>? handler) => s_captureNext = handler;
 
     public static void Uninstall()
     {
         if (!s_hook.IsNull) { PInvoke.UnhookWindowsHookEx(s_hook); s_hook = default; }
+        Reset();
+    }
+
+    private static bool IsModifier(int vk) => vk is 0xA0 or 0xA1 or VK_SHIFT or 0xA2 or 0xA3 or VK_CONTROL or 0xA4 or 0xA5 or VK_MENU or VK_LWIN or VK_RWIN;
+
+    private static bool IsDown(int vk) => (PInvoke.GetAsyncKeyState(vk) & 0x8000) != 0;
+
+    /// <summary>A key the capture must not take: it belongs to the shell / window manager, or it is a bare editing key.</summary>
+    private static bool IsReservedForCapture(int vk, bool ctrl, bool alt, bool shift, bool win)
+    {
+        if (win) return true;
+        if (alt && vk is VK_TAB or VK_ESCAPE or VK_F4) return true;
+        if (ctrl && vk == VK_ESCAPE) return true;
+        if (ctrl && alt && vk == VK_DELETE) return true;
+        if (!ctrl && !alt && !shift && vk is VK_TAB or VK_RETURN or VK_SPACE) return true;
+        return false;
     }
 
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(System.Runtime.CompilerServices.CallConvStdcall) })]
@@ -48,36 +105,58 @@ internal static unsafe class Hotkeys
                 uint msg = (uint)wParam.Value;
                 bool down = msg == PInvoke.WM_KEYDOWN || msg == PInvoke.WM_SYSKEYDOWN;
                 int vk = (int)ks->vkCode;
-                switch (vk)
+                if (vk > 0 && vk < 256 && !IsModifier(vk))
                 {
-                    case 0xA2: case 0xA3: case 0x11: s_ctrl = down; break;
-                    case 0xA4: case 0xA5: case 0x12: s_alt = down; break;
-                    case 0xA0: case 0xA1: case 0x10: s_shift = down; break;
-                    case 0x5B: case 0x5C: s_win = down; break;
-                    default:
-                        if (s_captureNext != null)
+                    if (!down)
+                    {
+                        // Only a key-up whose key-down we ate is eaten: anything else the game saw go down must see come up.
+                        if (s_swallowed[vk]) { s_swallowed[vk] = false; return (LRESULT)1; }
+                    }
+                    else
+                    {
+                        // A held key whose first down we ate keeps being eaten while it auto-repeats (even if a modifier was let
+                        // go meanwhile): the game never saw it go down, so it must not see a repeat either. Nothing re-fires.
+                        if (s_swallowed[vk]) return (LRESULT)1;
+                        // Live modifier state: the modifiers' own events were processed before this one arrived.
+                        bool ctrl = IsDown(VK_CONTROL), alt = IsDown(VK_MENU), shift = IsDown(VK_SHIFT), win = IsDown(VK_LWIN) || IsDown(VK_RWIN);
+                        var capture = s_captureNext;
+                        if (capture != null)
                         {
-                            if (down)
+                            if (!IsReservedForCapture(vk, ctrl, alt, shift, win))
                             {
-                                var h = s_captureNext; s_captureNext = null;
-                                h(vk, s_ctrl, s_alt, s_shift, s_win);
+                                s_captureNext = null;
+                                s_swallowed[vk] = true;
+                                capture(vk, ctrl, alt, shift, win);
+                                return (LRESULT)1;
                             }
-                            return (LRESULT)1;
                         }
-                        var b = s_binding;
-                        if (b != null && vk == b.Vk && s_ctrl == b.Ctrl && s_alt == b.Alt && s_shift == b.Shift && s_win == b.Win)
+                        else
                         {
-                            if (down && !s_down) { s_down = true; s_onPressed?.Invoke(); }
-                            else if (!down) s_down = false;
-                            return (LRESULT)1; // swallow so the game doesn't see it
+                            var match = Match(vk, ctrl, alt, shift, win);
+                            if (match != null)
+                            {
+                                s_swallowed[vk] = true;
+                                s_onPressed?.Invoke(match);
+                                return (LRESULT)1; // swallow so the game doesn't see it
+                            }
                         }
-                        if (!down && vk == b?.Vk) s_down = false;
-                        break;
+                    }
                 }
             }
             catch { }
         }
         return PInvoke.CallNextHookEx(s_hook, code, wParam, lParam);
+    }
+
+    private static HotkeyAction? Match(int vk, bool ctrl, bool alt, bool shift, bool win)
+    {
+        var actions = s_actions;
+        for (int i = 0; i < actions.Length; i++)
+        {
+            var k = actions[i].Keys;
+            if (vk == k.Vk && ctrl == k.Ctrl && alt == k.Alt && shift == k.Shift && win == k.Win) return actions[i];
+        }
+        return null;
     }
 
     public static string KeyName(int vk)

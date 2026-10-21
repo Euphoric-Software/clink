@@ -1,4 +1,6 @@
 using System.Runtime.InteropServices;
+using Windows.Win32;
+using Windows.Win32.System.SystemInformation;
 
 namespace Clink.Engine;
 
@@ -17,6 +19,8 @@ internal sealed unsafe class RingStore : IDisposable
 {
     private struct Entry { public long Offset; public int Length; public long Pts; public bool Key; }
 
+    public const long MinBytes = 32L << 20;
+
     private byte* _buf;
     private readonly long _cap;
     private long _head;              // next write offset
@@ -25,13 +29,78 @@ internal sealed unsafe class RingStore : IDisposable
     private int _count;
     private readonly object _gate = new();
 
+    /// <summary>Bytes actually allocated (may be less than asked for when the allocation had to be retried smaller).</summary>
     public long Capacity => _cap;
+    /// <summary>Bytes asked for in the constructor.</summary>
+    public long Requested { get; }
     public long SamplesStored { get { lock (_gate) return _count; } }
 
+    // ------------------------------------------------------------------ sizing (shared with Capabilities so the UI estimate matches)
+
+    /// <summary>Ring size for a replay length: bitrate × (seconds + 4 s slack) × 1.3 headroom for bitrate overshoot, at least <see cref="MinBytes"/>.</summary>
+    public static long BytesFor(double bitrateMbps, int seconds)
+    {
+        double bytes = bitrateMbps * 1_000_000 / 8.0 * (Math.Max(0, seconds) + 4) * 1.3;
+        return Math.Max(MinBytes, (long)Math.Ceiling(bytes));
+    }
+
+    /// <summary>Inverse of <see cref="BytesFor"/>: how many seconds of replay a ring of this size holds at the bitrate.</summary>
+    public static int SecondsFor(double bitrateMbps, long bytes)
+    {
+        if (bitrateMbps <= 0) return 0;
+        double seconds = bytes / (bitrateMbps * 1_000_000 / 8.0 * 1.3) - 4;
+        return (int)Math.Max(0, Math.Floor(seconds));
+    }
+
+    private static long s_ram;
+
+    /// <summary>Installed physical RAM (GlobalMemoryStatusEx; falls back to what the GC reports).</summary>
+    public static long PhysicalRamBytes()
+    {
+        if (s_ram > 0) return s_ram;
+        long ram = 0;
+        try
+        {
+            MEMORYSTATUSEX ms = default;
+            ms.dwLength = (uint)sizeof(MEMORYSTATUSEX);
+            if (PInvoke.GlobalMemoryStatusEx(&ms)) ram = (long)ms.ullTotalPhys;
+        }
+        catch { }
+        if (ram <= 0)
+        {
+            try { ram = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes; } catch { }
+        }
+        if (ram <= 0) ram = 8L << 30;
+        return s_ram = ram;
+    }
+
+    /// <summary>The most the ring may take: half of physical RAM.</summary>
+    public static long MaxBytes() => Math.Max(MinBytes, PhysicalRamBytes() / 2);
+
+    /// <summary>
+    /// Allocates the ring. Asks for <paramref name="capacityBytes"/> (at least <see cref="MinBytes"/>); when the allocation fails it is
+    /// retried at half the size down to the minimum instead of crashing, so a too-large replay length degrades to a shorter one.
+    /// </summary>
     public RingStore(long capacityBytes)
     {
-        _cap = Math.Max(capacityBytes, 16 << 20);
-        _buf = (byte*)NativeMemory.Alloc((nuint)_cap);
+        long want = Math.Max(capacityBytes, MinBytes);
+        Requested = want;
+        long cap = want;
+        while (true)
+        {
+            try
+            {
+                _buf = (byte*)NativeMemory.Alloc((nuint)cap);
+                break;
+            }
+            catch (OutOfMemoryException) when (cap > MinBytes)
+            {
+                long smaller = Math.Max(MinBytes, cap / 2);
+                Log.Warn($"Ring buffer: could not allocate {cap >> 20} MB, retrying with {smaller >> 20} MB");
+                cap = smaller;
+            }
+        }
+        _cap = cap;
     }
 
     private ref Entry At(int i) => ref _entries[(_first + i) % _entries.Length];
@@ -41,6 +110,7 @@ internal sealed unsafe class RingStore : IDisposable
         if (data.Length > _cap / 2) return; // absurd sample; drop
         lock (_gate)
         {
+            if (_buf == null) return;
             if (_count == 0) _head = 0;
             long oldHead = _head;
             if (_head + data.Length > _cap)
@@ -91,6 +161,8 @@ internal sealed unsafe class RingStore : IDisposable
     {
         lock (_gate)
         {
+            var list = new List<VideoSample>();
+            if (_buf == null) return list;
             int start = -1;
             for (int i = 0; i < _count; i++)
             {
@@ -100,7 +172,6 @@ internal sealed unsafe class RingStore : IDisposable
             }
             if (start < 0)
                 for (int i = 0; i < _count; i++) if (At(i).Key && At(i).Pts >= fromPts) { start = i; break; }
-            var list = new List<VideoSample>();
             if (start < 0) return list;
             for (int i = start; i < _count; i++)
             {

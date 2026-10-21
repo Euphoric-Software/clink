@@ -1,7 +1,7 @@
 ﻿<Window x:Class="Clink.UI.ToastWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Clip saved" Width="330" SizeToContent="Height"
+        Title="Clink" Width="330" SizeToContent="Height"
         WindowStyle="None" ResizeMode="NoResize" AllowsTransparency="True" Background="Transparent"
         Topmost="True" ShowInTaskbar="False" ShowActivated="False" FontFamily="Segoe UI">
     <Border Background="{StaticResource Panel}" CornerRadius="10" BorderBrush="{StaticResource Border}" BorderThickness="1" Padding="14,12">
@@ -12,17 +12,21 @@
                 <RowDefinition />
             </Grid.RowDefinitions>
             <Grid>
-                <StackPanel Orientation="Horizontal">
-                    <Ellipse Width="8" Height="8" Fill="{StaticResource Good}" VerticalAlignment="Center" />
-                    <TextBlock Text="Clip saved" FontWeight="SemiBold" Margin="8,0,0,0" />
+                <StackPanel Orientation="Horizontal" Margin="0,0,24,0">
+                    <Ellipse x:Name="Dot" Width="8" Height="8" Fill="{StaticResource Good}" VerticalAlignment="Center" />
+                    <TextBlock x:Name="TitleText" Text="Clip saved" FontWeight="SemiBold" Margin="8,0,0,0" />
                 </StackPanel>
-                <Button Style="{StaticResource IconButton}" Content="✕" HorizontalAlignment="Right" Margin="0,-6,-8,0" Click="Close_Click" />
+                <Button Style="{StaticResource IconButton}" Content="✕" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,-6,-8,0" Click="Close_Click" />
             </Grid>
-            <TextBlock x:Name="Subtitle" Grid.Row="1" Style="{StaticResource MutedText}" Margin="16,2,0,0" Text="" />
-            <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="16,10,0,0">
+            <TextBlock x:Name="Subtitle" Grid.Row="1" Style="{StaticResource MutedText}" Margin="16,2,0,0" Text="" TextTrimming="CharacterEllipsis" />
+            <StackPanel x:Name="ClipButtons" Grid.Row="2" Orientation="Horizontal" Margin="16,10,0,0">
                 <Button x:Name="ShareButton" Style="{StaticResource AccentButton}" Content="Share to Copium" Click="Share_Click" />
                 <Button Content="Trim" Margin="8,0,0,0" Click="Trim_Click" />
                 <Button Content="Folder" Margin="8,0,0,0" Click="Folder_Click" />
+            </StackPanel>
+            <StackPanel x:Name="SharedButtons" Grid.Row="2" Orientation="Horizontal" Margin="16,10,0,0" Visibility="Collapsed">
+                <Button x:Name="CopyButton" Style="{StaticResource AccentButton}" Content="Copy link" Click="Copy_Click" />
+                <Button Content="Open" Margin="8,0,0,0" Click="Open_Click" />
             </StackPanel>
         </Grid>
     </Border>

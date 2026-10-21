@@ -2,17 +2,34 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:ui="clr-namespace:Clink.UI"
-        Title="Clink" Width="470" SizeToContent="Height" MaxHeight="820"
-        WindowStyle="None" ResizeMode="NoResize" AllowsTransparency="True" Background="Transparent"
+        Title="Clink" Width="470" Height="780" MinWidth="470" MinHeight="700"
+        WindowStyle="None" ResizeMode="CanResizeWithGrip" AllowsTransparency="True" Background="Transparent"
         WindowStartupLocation="CenterScreen" ShowInTaskbar="True" FontFamily="Segoe UI" TextOptions.TextFormattingMode="Display">
+    <Window.Resources>
+        <!-- long device names / window titles get an ellipsis in the closed box; the dropdown shows them in full -->
+        <DataTemplate x:Key="SourceLabel">
+            <TextBlock Text="{Binding}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
+        </DataTemplate>
+        <Style x:Key="FieldLabel" TargetType="TextBlock" BasedOn="{StaticResource MutedText}">
+            <Setter Property="Margin" Value="2,0,0,3" />
+        </Style>
+        <Style x:Key="ToastSlider" TargetType="Slider" BasedOn="{StaticResource {x:Type Slider}}">
+            <Setter Property="Minimum" Value="1" />
+            <Setter Property="Maximum" Value="30" />
+            <Setter Property="IsSnapToTickEnabled" Value="True" />
+            <Setter Property="TickFrequency" Value="1" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="Margin" Value="10,0,8,0" />
+        </Style>
+    </Window.Resources>
     <Border Background="{StaticResource Bg}" CornerRadius="10" BorderBrush="{StaticResource Border}" BorderThickness="1">
         <DockPanel>
             <!-- header / drag area -->
             <Grid DockPanel.Dock="Top" Height="44" MouseLeftButtonDown="Header_MouseLeftButtonDown" Background="Transparent">
-                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="16,0,0,0">
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="16,0,80,0">
                     <Ellipse x:Name="StatusDot" Width="9" Height="9" Fill="{StaticResource Muted}" VerticalAlignment="Center" />
                     <TextBlock Text="Clink" FontWeight="Bold" FontSize="15" Margin="9,0,0,0" VerticalAlignment="Center" />
-                    <TextBlock x:Name="StatusText" Style="{StaticResource MutedText}" Margin="10,1,0,0" VerticalAlignment="Center" Text="Starting…" />
+                    <TextBlock x:Name="StatusText" Style="{StaticResource MutedText}" Margin="10,1,0,0" VerticalAlignment="Center" Text="Starting…" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
                 </StackPanel>
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,8,0">
                     <Button Style="{StaticResource IconButton}" Content="–" Click="Minimize_Click" ToolTip="Minimize" />
@@ -21,7 +38,7 @@
             </Grid>
 
             <!-- footer -->
-            <Border DockPanel.Dock="Bottom" Padding="16,8" BorderBrush="{StaticResource Border}" BorderThickness="0,1,0,0">
+            <Border DockPanel.Dock="Bottom" Padding="16,8,20,8" BorderBrush="{StaticResource Border}" BorderThickness="0,1,0,0">
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
@@ -38,229 +55,344 @@
                 </Grid>
             </Border>
 
-            <ScrollViewer VerticalScrollBarVisibility="Auto">
-                <StackPanel Margin="16,4,16,12">
+            <!-- body: settings tabs (+ Clips tab when narrow) | clips pane when wide -->
+            <Grid x:Name="Body" Margin="16,4,16,8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition x:Name="SplitCol" Width="0" />
+                    <ColumnDefinition x:Name="RightCol" Width="0" />
+                </Grid.ColumnDefinitions>
 
-                    <!-- Capture -->
-                    <TextBlock Style="{StaticResource H}" Text="CAPTURING" />
-                    <Border Background="{StaticResource Panel}" CornerRadius="8" Padding="10">
-                        <StackPanel>
-                            <ui:MonitorMap x:Name="MonitorMap" />
-                            <TextBlock x:Name="MonitorLabel" Margin="2,6,0,0" FontWeight="SemiBold" Text="" />
-                            <TextBlock x:Name="MonitorDetail" Style="{StaticResource MutedText}" Margin="2,2,0,0" Text="" />
-                            <UniformGrid Columns="4" Margin="0,10,0,0">
-                                <StackPanel Margin="0,0,6,0">
-                                    <TextBlock Style="{StaticResource MutedText}" Text="Resolution" Margin="2,0,0,3" />
-                                    <ComboBox x:Name="ResolutionCombo" SelectionChanged="QualityChanged" />
-                                </StackPanel>
-                                <StackPanel Margin="0,0,6,0">
-                                    <TextBlock Style="{StaticResource MutedText}" Text="FPS" Margin="2,0,0,3" />
-                                    <ComboBox x:Name="FpsCombo" SelectionChanged="QualityChanged" />
-                                </StackPanel>
-                                <StackPanel Margin="0,0,6,0">
-                                    <TextBlock Style="{StaticResource MutedText}" Text="Bitrate" Margin="2,0,0,3" />
-                                    <ComboBox x:Name="BitrateCombo" SelectionChanged="QualityChanged" />
-                                </StackPanel>
-                                <StackPanel>
-                                    <TextBlock Style="{StaticResource MutedText}" Text="Codec" Margin="2,0,0,3" />
-                                    <ComboBox x:Name="CodecCombo" SelectionChanged="QualityChanged" />
-                                </StackPanel>
-                            </UniformGrid>
-                        </StackPanel>
-                    </Border>
+                <TabControl x:Name="Tabs">
+                    <!-- ===================================================== Capture -->
+                    <TabItem Header="Capture">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,0,4,0">
+                            <StackPanel Margin="0,0,0,4">
+                                <TextBlock Style="{StaticResource H}" Text="CAPTURING" Margin="0,10,0,6" />
+                                <Border Style="{StaticResource Card}">
+                                    <StackPanel>
+                                        <ui:MonitorMap x:Name="MonitorMap" />
+                                        <TextBlock x:Name="MonitorLabel" Margin="2,6,0,0" FontWeight="SemiBold" Text="" />
+                                        <TextBlock x:Name="MonitorDetail" Style="{StaticResource MutedText}" Margin="2,2,0,0" Text="" />
+                                        <UniformGrid Columns="4" Margin="0,10,0,0">
+                                            <StackPanel Margin="0,0,6,0">
+                                                <TextBlock Style="{StaticResource FieldLabel}" Text="Resolution" />
+                                                <ComboBox x:Name="ResolutionCombo" SelectionChanged="QualityChanged" />
+                                            </StackPanel>
+                                            <StackPanel Margin="0,0,6,0">
+                                                <TextBlock Style="{StaticResource FieldLabel}" Text="FPS" />
+                                                <ComboBox x:Name="FpsCombo" SelectionChanged="QualityChanged" />
+                                            </StackPanel>
+                                            <StackPanel Margin="0,0,6,0">
+                                                <TextBlock Style="{StaticResource FieldLabel}" Text="Bitrate" />
+                                                <ComboBox x:Name="BitrateCombo" SelectionChanged="QualityChanged" ItemTemplate="{StaticResource SourceLabel}" />
+                                            </StackPanel>
+                                            <StackPanel>
+                                                <TextBlock Style="{StaticResource FieldLabel}" Text="Codec" />
+                                                <ComboBox x:Name="CodecCombo" SelectionChanged="QualityChanged" ItemContainerStyle="{StaticResource ChoiceItem}" ItemTemplate="{StaticResource SourceLabel}" />
+                                            </StackPanel>
+                                        </UniformGrid>
+                                        <TextBlock x:Name="CodecDescription" Style="{StaticResource Hint}" Margin="2,6,0,0" Text="" />
+                                        <Grid Margin="0,10,0,0">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Style="{StaticResource MutedText}" Text="Size target" VerticalAlignment="Center" Margin="2,0,0,0" />
+                                            <ComboBox x:Name="SizeTargetCombo" Grid.Column="1" Margin="10,0,0,0" SelectionChanged="SizeTargetChanged"
+                                                      ToolTip="Pick the bitrate so a clip of the replay length fits the limit (audio tracks counted); None = the bitrate above" />
+                                        </Grid>
+                                        <TextBlock x:Name="SizeNote" Style="{StaticResource Hint}" Margin="2,6,0,0" Text="" Visibility="Collapsed" />
+                                        <TextBlock x:Name="EstimateText" Style="{StaticResource MutedText}" Margin="2,6,0,0" Text="" />
+                                    </StackPanel>
+                                </Border>
 
-                    <!-- Clip -->
-                    <TextBlock Style="{StaticResource H}" Text="CLIP" Margin="0,14,0,6" />
-                    <Border Background="{StaticResource Panel}" CornerRadius="8" Padding="10">
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="Auto" />
-                            </Grid.RowDefinitions>
-                            <StackPanel Margin="0,0,8,0">
-                                <TextBlock Style="{StaticResource MutedText}" Text="Hotkey" Margin="2,0,0,3" />
-                                <Button x:Name="HotkeyButton" Content="F9" Click="Hotkey_Click" HorizontalContentAlignment="Left" FontWeight="SemiBold" ToolTip="Click, then press the key combo you want" />
+                                <TextBlock Style="{StaticResource H}" Text="RECORDING" Margin="0,14,0,6" />
+                                <Border Style="{StaticResource Card}">
+                                    <StackPanel>
+                                        <ComboBox x:Name="ModeCombo" SelectionChanged="ModeChanged" ItemTemplate="{StaticResource SourceLabel}"
+                                                  ToolTip="Game-only stops the capture, encoder and RAM buffer while no game runs" />
+                                        <TextBlock x:Name="ModeStatus" Style="{StaticResource MutedText}" Margin="2,6,0,0" Text="" />
+                                        <TextBlock Style="{StaticResource FieldLabel}" Text="Custom apps (always count as a game, windowed or not)" Margin="2,10,0,4" />
+                                        <ItemsControl x:Name="CustomAppsList">
+                                            <ItemsControl.ItemsPanel>
+                                                <ItemsPanelTemplate>
+                                                    <WrapPanel />
+                                                </ItemsPanelTemplate>
+                                            </ItemsControl.ItemsPanel>
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Border Style="{StaticResource Chip}">
+                                                        <StackPanel Orientation="Horizontal">
+                                                            <TextBlock Text="{Binding}" VerticalAlignment="Center" FontSize="12" />
+                                                            <Button Style="{StaticResource IconButton}" Content="✕" FontSize="11" Padding="6,0" Click="RemoveApp_Click" ToolTip="Remove" />
+                                                        </StackPanel>
+                                                    </Border>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBox x:Name="CustomAppBox" KeyDown="CustomAppBox_KeyDown" ToolTip="Exe name, e.g. overwatch or RocketLeague.exe · Enter adds it" />
+                                            <Button Grid.Column="1" Content="Add" Margin="6,0,0,0" Click="AddApp_Click" />
+                                            <ComboBox x:Name="RunningAppsCombo" Grid.Column="2" Margin="6,0,0,0" MinWidth="150" MaxWidth="190" DropDownOpened="RunningAppsCombo_DropDownOpened" SelectionChanged="RunningAppsCombo_SelectionChanged"
+                                                      ItemContainerStyle="{StaticResource ChoiceItem}" ItemTemplate="{StaticResource SourceLabel}" ToolTip="Pick one of the apps running right now" />
+                                        </Grid>
+                                    </StackPanel>
+                                </Border>
                             </StackPanel>
-                            <StackPanel Grid.Column="1" Margin="0,0,8,0">
-                                <TextBlock Style="{StaticResource MutedText}" Text="Replay length" Margin="2,0,0,3" />
-                                <ComboBox x:Name="BufferCombo" SelectionChanged="BufferChanged" />
-                            </StackPanel>
-                            <StackPanel Grid.Column="2" VerticalAlignment="Bottom">
-                                <Button x:Name="ClipNowButton" Style="{StaticResource AccentButton}" Content="Clip now" Click="ClipNow_Click" Padding="14,6" />
-                            </StackPanel>
-                            <StackPanel Grid.Row="1" Grid.ColumnSpan="3" Orientation="Horizontal" Margin="2,12,0,0">
-                                <CheckBox x:Name="ClickSoundCheck" Content="Click sound" Checked="MiscChanged" Unchecked="MiscChanged" />
-                                <CheckBox x:Name="CursorCheck" Content="Capture cursor" Margin="16,0,0,0" Checked="QualityChanged" Unchecked="QualityChanged" />
-                                <CheckBox x:Name="StartupCheck" Content="Run at startup" Margin="16,0,0,0" Checked="StartupChanged" Unchecked="StartupChanged" />
-                            </StackPanel>
-                        </Grid>
-                    </Border>
+                        </ScrollViewer>
+                    </TabItem>
 
-                    <!-- Audio -->
-                    <TextBlock Style="{StaticResource H}" Text="AUDIO TRACKS" Margin="0,14,0,6" />
-                    <Border Background="{StaticResource Panel}" CornerRadius="8" Padding="10">
-                        <StackPanel>
-                            <!-- one row per track: [x] name | source -->
-                            <Grid Margin="2,0,0,0">
-                                <Grid.Resources>
-                                    <!-- long device names / window titles get an ellipsis in the closed box; the dropdown shows them in full -->
-                                    <DataTemplate x:Key="SourceLabel">
-                                        <TextBlock Text="{Binding}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
-                                    </DataTemplate>
-                                    <Style TargetType="ComboBox" BasedOn="{StaticResource {x:Type ComboBox}}">
-                                        <Setter Property="Margin" Value="0,3" />
-                                        <Setter Property="ItemTemplate" Value="{StaticResource SourceLabel}" />
-                                        <!-- section headers inside the source lists ("Audio inputs", "Outputs") are not selectable -->
-                                        <Setter Property="ItemContainerStyle">
-                                            <Setter.Value>
-                                                <Style TargetType="ComboBoxItem" BasedOn="{StaticResource {x:Type ComboBoxItem}}">
+                    <!-- ===================================================== Clip -->
+                    <TabItem Header="Clip">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,0,4,0">
+                            <StackPanel Margin="0,0,0,4">
+                                <Grid Margin="0,10,0,6">
+                                    <TextBlock Style="{StaticResource H}" Text="HOTKEYS" Margin="0" VerticalAlignment="Center" />
+                                    <Button x:Name="ClipNowButton" Style="{StaticResource AccentButton}" Content="Clip now" Click="ClipNow_Click" Padding="12,4" HorizontalAlignment="Right" />
+                                </Grid>
+                                <Border Style="{StaticResource Card}">
+                                    <ui:HotkeyListEditor x:Name="HotkeyEditor" />
+                                </Border>
+
+                                <TextBlock Style="{StaticResource H}" Text="REPLAY LENGTH" Margin="0,14,0,6" />
+                                <Border Style="{StaticResource Card}">
+                                    <StackPanel>
+                                        <ui:ReplayLengthSlider x:Name="ReplaySlider" Margin="0,2,0,0" />
+                                        <TextBlock x:Name="RamText" Style="{StaticResource MutedText}" Margin="2,4,0,0" Text="" />
+                                        <WrapPanel Margin="2,12,0,0">
+                                            <CheckBox x:Name="ClickSoundCheck" Content="Click sound" Margin="0,0,16,4" Checked="MiscChanged" Unchecked="MiscChanged" />
+                                            <CheckBox x:Name="CursorCheck" Content="Capture cursor" Margin="0,0,16,4" Checked="QualityChanged" Unchecked="QualityChanged" />
+                                            <CheckBox x:Name="StartupCheck" Content="Run at startup" Margin="0,0,0,4" Checked="StartupChanged" Unchecked="StartupChanged" />
+                                        </WrapPanel>
+                                    </StackPanel>
+                                </Border>
+
+                                <TextBlock Style="{StaticResource H}" Text="COPIUM" Margin="0,14,0,6" />
+                                <Border Style="{StaticResource Card}">
+                                    <StackPanel>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <PasswordBox x:Name="TokenBox" PasswordChanged="Token_Changed" ToolTip="Upload token (starts with eup_) from copium.pics → ShareX &amp; API" />
+                                            <Button x:Name="TokenSaveButton" Grid.Column="1" Content="Save" Margin="8,0,0,0" Click="TokenSave_Click" />
+                                        </Grid>
+                                        <StackPanel Orientation="Horizontal" Margin="2,8,0,0">
+                                            <TextBlock x:Name="CopiumStatus" Style="{StaticResource MutedText}" Text="Not connected" VerticalAlignment="Center" />
+                                            <Button Style="{StaticResource LinkButton}" Content="Get a token" Click="CopiumSite_Click" Margin="8,0,0,0" FontSize="12" />
+                                        </StackPanel>
+                                        <TextBlock Style="{StaticResource Hint}" Margin="2,4,0,0"
+                                                   Text="Share uploads the clip and copies the link. By default the link is the raw video file (plays inline in Discord, no embed card) unless you turn on custom embeds on copium.pics." />
+                                    </StackPanel>
+                                </Border>
+
+                                <TextBlock Style="{StaticResource H}" Text="STORAGE" Margin="0,14,0,6" />
+                                <Border Style="{StaticResource Card}">
+                                    <StackPanel>
+                                        <TextBlock Style="{StaticResource FieldLabel}" Text="Local clips folder (clips are always written here first)" />
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBox x:Name="ClipsFolderBox" LostFocus="ClipsFolderBox_LostFocus" KeyDown="PathBox_KeyDown" ToolTip="Where new clips are saved" />
+                                            <Button Grid.Column="1" Content="Browse…" Margin="6,0,0,0" Click="BrowseClips_Click" />
+                                            <Button Grid.Column="2" Style="{StaticResource GlyphButton}" Content="&#xE8B7;" Margin="6,0,0,0" Click="Folder_Click" ToolTip="Open the folder" />
+                                        </Grid>
+                                        <CheckBox x:Name="ArchiveCheck" Content="Archive older clips elsewhere (NAS share, drive or folder)" Margin="2,12,0,0" Checked="ArchiveChanged" Unchecked="ArchiveChanged"
+                                                  ToolTip="Clips move there in the background, slowly, after the rules below; the library keeps working from the archive path" />
+                                        <StackPanel x:Name="ArchivePanel" Margin="0,8,0,0">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBox x:Name="ArchivePathBox" LostFocus="ArchivePathBox_LostFocus" KeyDown="PathBox_KeyDown" ToolTip="\\nas\clips, D:\Clips, … Sign in to a share once in Explorer; Clink never asks for credentials" />
+                                                <Button Grid.Column="1" Content="Browse…" Margin="6,0,0,0" Click="BrowseArchive_Click" />
+                                                <Button x:Name="ArchiveTestButton" Grid.Column="2" Content="Test" Margin="6,0,0,0" Click="ArchiveTest_Click" ToolTip="Reachable? Writable? Free space?" />
+                                            </Grid>
+                                            <WrapPanel Margin="2,8,0,0">
+                                                <TextBlock Style="{StaticResource MutedText}" Text="Move clips older than" VerticalAlignment="Center" Margin="0,0,6,4" />
+                                                <TextBox x:Name="ArchiveDaysBox" Width="46" Padding="6,4" TextAlignment="Center" Margin="0,0,6,4" LostFocus="ArchiveRulesChanged" KeyDown="PathBox_KeyDown" ToolTip="0 = off" />
+                                                <TextBlock Style="{StaticResource MutedText}" Text="days, or when the local folder exceeds" VerticalAlignment="Center" Margin="0,0,6,4" />
+                                                <TextBox x:Name="ArchiveGbBox" Width="54" Padding="6,4" TextAlignment="Center" Margin="0,0,6,4" LostFocus="ArchiveRulesChanged" KeyDown="PathBox_KeyDown" ToolTip="0 = off" />
+                                                <TextBlock Style="{StaticResource MutedText}" Text="GB · whichever comes first" VerticalAlignment="Center" Margin="0,0,0,4" />
+                                            </WrapPanel>
+                                            <Grid Margin="2,6,0,0">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock x:Name="ArchiveStatus" Style="{StaticResource MutedText}" Text="Archive off" VerticalAlignment="Center" />
+                                                <Button x:Name="ArchiveNowButton" Grid.Column="1" Style="{StaticResource LinkButton}" Content="Archive now" FontSize="12" Margin="8,0,0,0" Click="ArchiveNow_Click" />
+                                            </Grid>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </TabItem>
+
+                    <!-- ===================================================== Audio -->
+                    <TabItem Header="Audio">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,0,4,0">
+                            <StackPanel Margin="0,0,0,4">
+                                <TextBlock Style="{StaticResource H}" Text="AUDIO TRACKS" Margin="0,10,0,6" />
+                                <Border Style="{StaticResource Card}">
+                                    <StackPanel>
+                                        <!-- one row per track: [x] name | source -->
+                                        <Grid Margin="2,0,0,0">
+                                            <Grid.Resources>
+                                                <Style TargetType="ComboBox" BasedOn="{StaticResource {x:Type ComboBox}}">
+                                                    <Setter Property="Margin" Value="0,3" />
+                                                    <Setter Property="ItemTemplate" Value="{StaticResource SourceLabel}" />
+                                                    <!-- section headers inside the source lists ("Audio inputs", "Outputs") are not selectable -->
+                                                    <Setter Property="ItemContainerStyle" Value="{StaticResource ChoiceItem}" />
                                                     <Style.Triggers>
-                                                        <DataTrigger Binding="{Binding Header}" Value="True">
-                                                            <Setter Property="IsEnabled" Value="False" />
-                                                            <Setter Property="Foreground" Value="{StaticResource Muted}" />
-                                                            <Setter Property="FontSize" Value="11" />
-                                                            <Setter Property="Padding" Value="8,6,8,2" />
-                                                        </DataTrigger>
+                                                        <Trigger Property="IsEnabled" Value="False">
+                                                            <Setter Property="Opacity" Value="0.45" />
+                                                        </Trigger>
                                                     </Style.Triggers>
                                                 </Style>
-                                            </Setter.Value>
-                                        </Setter>
-                                        <Style.Triggers>
-                                            <Trigger Property="IsEnabled" Value="False">
-                                                <Setter Property="Opacity" Value="0.45" />
-                                            </Trigger>
-                                        </Style.Triggers>
-                                    </Style>
-                                    <Style TargetType="CheckBox" BasedOn="{StaticResource {x:Type CheckBox}}">
-                                        <Setter Property="VerticalAlignment" Value="Center" />
-                                        <Setter Property="Margin" Value="0,0,8,0" />
-                                    </Style>
-                                </Grid.Resources>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="100" />
-                                    <ColumnDefinition Width="*" />
-                                </Grid.ColumnDefinitions>
-                                <Grid.RowDefinitions>
-                                    <RowDefinition Height="Auto" />
-                                    <RowDefinition Height="Auto" />
-                                    <RowDefinition Height="Auto" />
-                                    <RowDefinition Height="Auto" />
-                                    <RowDefinition Height="Auto" />
-                                </Grid.RowDefinitions>
+                                                <Style TargetType="CheckBox" BasedOn="{StaticResource {x:Type CheckBox}}">
+                                                    <Setter Property="VerticalAlignment" Value="Center" />
+                                                    <Setter Property="Margin" Value="0,0,8,0" />
+                                                </Style>
+                                            </Grid.Resources>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="100" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="Auto" />
+                                            </Grid.RowDefinitions>
 
-                                <CheckBox x:Name="MixCheck" Grid.Row="0" Content="Mix" IsChecked="True" IsEnabled="False" ToolTip="Track 1 is always game + mic + voice chat mixed together, so every player hears everything" />
-                                <TextBlock Grid.Row="0" Grid.Column="1" Style="{StaticResource MutedText}" VerticalAlignment="Center" Margin="9,4" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
-                                           Text="Game + mic + voice chat · always track 1, plays everywhere" />
+                                            <CheckBox x:Name="MixCheck" Grid.Row="0" Content="Mix" IsChecked="True" IsEnabled="False" ToolTip="Track 1 is always game + mic + voice chat mixed together, so every player hears everything" />
+                                            <TextBlock Grid.Row="0" Grid.Column="1" Style="{StaticResource MutedText}" VerticalAlignment="Center" Margin="9,4" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
+                                                       Text="Game + mic + voice chat · always track 1, plays everywhere" />
 
-                                <CheckBox x:Name="TrackGameCheck" Grid.Row="1" Content="Game" Checked="AudioChanged" Unchecked="AudioChanged" ToolTip="Also save the game audio as its own track (it is always part of the mix)" />
-                                <ComboBox x:Name="GameCombo" Grid.Row="1" Grid.Column="1" SelectionChanged="AudioSourceChanged" DropDownOpened="GameCombo_DropDownOpened"
-                                          ToolTip="Where game audio comes from: detect the fullscreen app, pick a running app, or pick an audio device (an input like Wave Link's Game mix, or what plays on an output)" />
+                                            <CheckBox x:Name="TrackGameCheck" Grid.Row="1" Content="Game" Checked="AudioChanged" Unchecked="AudioChanged" ToolTip="Also save the game audio as its own track (it is always part of the mix)" />
+                                            <ComboBox x:Name="GameCombo" Grid.Row="1" Grid.Column="1" SelectionChanged="AudioSourceChanged" DropDownOpened="GameCombo_DropDownOpened"
+                                                      ToolTip="Where game audio comes from: detect the fullscreen app, pick a running app, or pick an audio device (an input like Wave Link's Game mix, or what plays on an output)" />
 
-                                <CheckBox x:Name="TrackMicCheck" Grid.Row="2" Content="Mic" Checked="AudioChanged" Unchecked="AudioChanged" ToolTip="Also save the mic as its own track (it is always part of the mix)" />
-                                <ComboBox x:Name="MicCombo" Grid.Row="2" Grid.Column="1" SelectionChanged="AudioSourceChanged" DropDownOpened="MicCombo_DropDownOpened" ToolTip="Microphone to record" />
+                                            <CheckBox x:Name="TrackMicCheck" Grid.Row="2" Content="Mic" Checked="AudioChanged" Unchecked="AudioChanged" ToolTip="Also save the mic as its own track (it is always part of the mix)" />
+                                            <ComboBox x:Name="MicCombo" Grid.Row="2" Grid.Column="1" SelectionChanged="AudioSourceChanged" DropDownOpened="MicCombo_DropDownOpened" ToolTip="Microphone to record" />
 
-                                <CheckBox x:Name="TrackVoiceCheck" Grid.Row="3" Content="Voice chat" Checked="AudioChanged" Unchecked="AudioChanged" ToolTip="Also save voice chat as its own track (it is always part of the mix)" />
-                                <ComboBox x:Name="VoiceCombo" Grid.Row="3" Grid.Column="1" SelectionChanged="AudioSourceChanged" DropDownOpened="VoiceCombo_DropDownOpened"
-                                          ToolTip="Where voice chat comes from. Auto = the first of Discord, TeamSpeak, Slack, Mumble, Zoom or Skype found running; or a running app; or an audio device" />
+                                            <CheckBox x:Name="TrackVoiceCheck" Grid.Row="3" Content="Voice chat" Checked="AudioChanged" Unchecked="AudioChanged" ToolTip="Also save voice chat as its own track (it is always part of the mix)" />
+                                            <ComboBox x:Name="VoiceCombo" Grid.Row="3" Grid.Column="1" SelectionChanged="AudioSourceChanged" DropDownOpened="VoiceCombo_DropDownOpened"
+                                                      ToolTip="Where voice chat comes from. Auto = the first of Discord, TeamSpeak, Slack, Mumble, Zoom or Skype found running; or a running app; or an audio device" />
 
-                                <CheckBox x:Name="TrackDesktopCheck" Grid.Row="4" Content="Desktop" Checked="AudioChanged" Unchecked="AudioChanged" ToolTip="Extra track: everything you hear from an output device (music, browser, other apps)" />
-                                <ComboBox x:Name="AllDeviceCombo" Grid.Row="4" Grid.Column="1" SelectionChanged="AudioSourceChanged" DropDownOpened="AllDeviceCombo_DropDownOpened" ToolTip="Output device to capture for the Desktop track" />
-                            </Grid>
-                            <TextBlock x:Name="AudioStatus" Style="{StaticResource MutedText}" Margin="2,6,0,0" Text="" TextWrapping="Wrap" />
-                        </StackPanel>
-                    </Border>
-
-                    <!-- Copium -->
-                    <TextBlock Style="{StaticResource H}" Text="COPIUM" Margin="0,14,0,6" />
-                    <Border Background="{StaticResource Panel}" CornerRadius="8" Padding="10">
-                        <StackPanel>
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <PasswordBox x:Name="TokenBox" PasswordChanged="Token_Changed" ToolTip="Upload token (starts with eup_) from copium.pics → ShareX &amp; API" />
-                                <Button x:Name="TokenSaveButton" Grid.Column="1" Content="Save" Margin="8,0,0,0" Click="TokenSave_Click" />
-                            </Grid>
-                            <StackPanel Orientation="Horizontal" Margin="2,8,0,0">
-                                <TextBlock x:Name="CopiumStatus" Style="{StaticResource MutedText}" Text="Not connected" VerticalAlignment="Center" />
-                                <Button Style="{StaticResource LinkButton}" Content="Get a token" Click="CopiumSite_Click" Margin="8,0,0,0" FontSize="12" />
+                                            <CheckBox x:Name="TrackDesktopCheck" Grid.Row="4" Content="Desktop" Checked="AudioChanged" Unchecked="AudioChanged" ToolTip="Extra track: everything you hear from an output device (music, browser, other apps), or an audio input such as a Wave Link mix" />
+                                            <ComboBox x:Name="AllDeviceCombo" Grid.Row="4" Grid.Column="1" SelectionChanged="AudioSourceChanged" DropDownOpened="AllDeviceCombo_DropDownOpened" ToolTip="What the Desktop track records: whatever plays on an output device, or an audio input (a Wave Link / VoiceMeeter mix, a virtual cable)" />
+                                        </Grid>
+                                        <TextBlock x:Name="AudioStatus" Style="{StaticResource MutedText}" Margin="2,6,0,0" Text="" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                </Border>
+                                <TextBlock Style="{StaticResource Hint}" Margin="2,8,0,0"
+                                           Text="Every clip carries the mix as track 1 plus each enabled part as its own track (192 kbps AAC each), so the trim editor can drop or turn down any of them later." />
                             </StackPanel>
-                            <TextBlock Style="{StaticResource MutedText}" Margin="2,4,0,0" FontSize="11.5"
-                                       Text="Share uploads the clip and copies the link. By default the link is the raw video file (plays inline in Discord, no embed card) unless you turn on custom embeds on copium.pics." />
-                        </StackPanel>
-                    </Border>
+                        </ScrollViewer>
+                    </TabItem>
 
-                    <!-- Clips -->
-                    <Grid Margin="0,14,0,6">
-                        <TextBlock Style="{StaticResource H}" Text="RECENT CLIPS" Margin="0" />
-                    </Grid>
-                    <Border Background="{StaticResource Panel}" CornerRadius="8" Padding="4">
-                        <Grid>
-                            <TextBlock x:Name="NoClipsText" Style="{StaticResource MutedText}" Margin="8" Text="No clips yet. Press the hotkey while gaming." />
-                            <ScrollViewer MaxHeight="300" VerticalScrollBarVisibility="Auto">
-                                <ItemsControl x:Name="ClipsList">
-                                    <ItemsControl.ItemTemplate>
-                                        <DataTemplate>
-                                            <Border Padding="6" Margin="0,0,0,2" CornerRadius="6" Background="Transparent">
-                                                <Border.Style>
-                                                    <Style TargetType="Border">
-                                                        <Style.Triggers>
-                                                            <Trigger Property="IsMouseOver" Value="True">
-                                                                <Setter Property="Background" Value="{StaticResource Panel2}" />
-                                                            </Trigger>
-                                                        </Style.Triggers>
-                                                    </Style>
-                                                </Border.Style>
-                                                <Grid>
-                                                    <Grid.ColumnDefinitions>
-                                                        <ColumnDefinition Width="Auto" />
-                                                        <ColumnDefinition Width="*" />
-                                                        <ColumnDefinition Width="Auto" />
-                                                    </Grid.ColumnDefinitions>
-                                                    <Border Width="88" Height="50" CornerRadius="4" Background="{StaticResource Panel3}" Cursor="Hand" MouseLeftButtonUp="Thumb_Click">
-                                                        <Border.Clip>
-                                                            <RectangleGeometry Rect="0,0,88,50" RadiusX="4" RadiusY="4" />
-                                                        </Border.Clip>
-                                                        <Image Source="{Binding Thumbnail}" Stretch="UniformToFill" />
-                                                    </Border>
-                                                    <StackPanel Grid.Column="1" Margin="10,0,8,0" VerticalAlignment="Center">
-                                                        <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
-                                                        <TextBlock Text="{Binding Meta}" Style="{StaticResource MutedText}" />
-                                                        <TextBlock Text="{Binding Status}" Style="{StaticResource MutedText}" Foreground="{StaticResource Accent}" />
-                                                        <ProgressBar Value="{Binding Progress}" Maximum="1" Margin="0,4,0,0">
-                                                            <ProgressBar.Style>
-                                                                <Style TargetType="ProgressBar" BasedOn="{StaticResource {x:Type ProgressBar}}">
-                                                                    <Setter Property="Visibility" Value="Collapsed" />
-                                                                    <Style.Triggers>
-                                                                        <DataTrigger Binding="{Binding IsUploading}" Value="True">
-                                                                            <Setter Property="Visibility" Value="Visible" />
-                                                                        </DataTrigger>
-                                                                    </Style.Triggers>
-                                                                </Style>
-                                                            </ProgressBar.Style>
-                                                        </ProgressBar>
-                                                    </StackPanel>
-                                                    <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-                                                        <Button Content="Trim" Click="Trim_Click" Padding="10,5" Margin="0,0,6,0" />
-                                                        <Button Content="{Binding ShareLabel}" Click="Share_Click" Padding="10,5" Margin="0,0,6,0" Style="{StaticResource AccentButton}" />
-                                                        <Button Content="⋯" Click="More_Click" Padding="8,5" ToolTip="Show in folder" />
-                                                    </StackPanel>
-                                                </Grid>
-                                            </Border>
-                                        </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                </ItemsControl>
-                            </ScrollViewer>
-                        </Grid>
-                    </Border>
-                </StackPanel>
-            </ScrollViewer>
+                    <!-- ===================================================== Alerts -->
+                    <TabItem Header="Alerts">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,0,4,0">
+                            <StackPanel Margin="0,0,0,4">
+                                <TextBlock Style="{StaticResource H}" Text="TOASTS" Margin="0,10,0,6" />
+                                <Border Style="{StaticResource Card}">
+                                    <StackPanel>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Style="{StaticResource MutedText}" Text="Position" VerticalAlignment="Center" Margin="2,0,0,0" />
+                                            <ComboBox x:Name="ToastPositionCombo" Grid.Column="1" Margin="10,0,0,0" SelectionChanged="ToastChanged" ToolTip="On the captured monitor, 16 px from the edge; several toasts stack" />
+                                        </Grid>
+                                        <Grid Margin="0,10,0,0">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto" MinWidth="128" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="32" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="34" />
+                                                <RowDefinition Height="34" />
+                                                <RowDefinition Height="34" />
+                                            </Grid.RowDefinitions>
+                                            <CheckBox x:Name="ToastClipCheck" Grid.Row="0" Content="Clip saved" VerticalAlignment="Center" Checked="ToastChanged" Unchecked="ToastChanged" />
+                                            <Slider x:Name="ToastClipSlider" Grid.Row="0" Grid.Column="1" Style="{StaticResource ToastSlider}" ValueChanged="ToastChanged" />
+                                            <TextBlock x:Name="ToastClipLabel" Grid.Row="0" Grid.Column="2" Style="{StaticResource MutedText}" VerticalAlignment="Center" Text="7 s" />
+                                            <Button Grid.Row="0" Grid.Column="3" Style="{StaticResource SmallButton}" Content="Preview" Tag="clip" Click="ToastPreview_Click" VerticalAlignment="Center" />
+
+                                            <CheckBox x:Name="ToastSharedCheck" Grid.Row="1" Content="Shared (link copied)" VerticalAlignment="Center" Checked="ToastChanged" Unchecked="ToastChanged" />
+                                            <Slider x:Name="ToastSharedSlider" Grid.Row="1" Grid.Column="1" Style="{StaticResource ToastSlider}" ValueChanged="ToastChanged" />
+                                            <TextBlock x:Name="ToastSharedLabel" Grid.Row="1" Grid.Column="2" Style="{StaticResource MutedText}" VerticalAlignment="Center" Text="4 s" />
+                                            <Button Grid.Row="1" Grid.Column="3" Style="{StaticResource SmallButton}" Content="Preview" Tag="shared" Click="ToastPreview_Click" VerticalAlignment="Center" />
+
+                                            <CheckBox x:Name="ToastRecordingCheck" Grid.Row="2" Content="Recording started" VerticalAlignment="Center" Checked="ToastChanged" Unchecked="ToastChanged" />
+                                            <Slider x:Name="ToastRecordingSlider" Grid.Row="2" Grid.Column="1" Style="{StaticResource ToastSlider}" ValueChanged="ToastChanged" />
+                                            <TextBlock x:Name="ToastRecordingLabel" Grid.Row="2" Grid.Column="2" Style="{StaticResource MutedText}" VerticalAlignment="Center" Text="4 s" />
+                                            <Button Grid.Row="2" Grid.Column="3" Style="{StaticResource SmallButton}" Content="Preview" Tag="recording" Click="ToastPreview_Click" VerticalAlignment="Center" />
+                                        </Grid>
+                                        <TextBlock Style="{StaticResource Hint}" Margin="2,4,0,0" Text="Each toast has its own switch and how long it stays (1–30 s). Hovering a toast keeps it open." />
+                                    </StackPanel>
+                                </Border>
+
+                                <TextBlock Style="{StaticResource H}" Text="STATUS DOT" Margin="0,14,0,6" />
+                                <Border Style="{StaticResource Card}">
+                                    <StackPanel>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <CheckBox x:Name="DotCheck" Content="Status dot on the captured monitor" VerticalAlignment="Center" Checked="DotChanged" Unchecked="DotChanged" />
+                                            <ComboBox x:Name="DotPositionCombo" Grid.Column="1" Width="128" Margin="10,0,0,0" SelectionChanged="DotChanged" />
+                                        </Grid>
+                                        <TextBlock Style="{StaticResource Hint}" Margin="2,6,0,0" Text="A 12 px click-through dot: green = recording, amber = waiting for a game, red = error, grey = paused." />
+                                    </StackPanel>
+                                </Border>
+
+                                <TextBlock Style="{StaticResource H}" Text="UPDATES" Margin="0,14,0,6" />
+                                <Border Style="{StaticResource Card}">
+                                    <StackPanel>
+                                        <CheckBox x:Name="AutoUpdateCheck" Content="Install updates automatically (checks every 6 hours)" Checked="AutoUpdateChanged" Unchecked="AutoUpdateChanged"
+                                                  ToolTip="Checks GitHub Releases on start and every 6 hours; a newer Clink.exe is downloaded, verified and installed on the next start" />
+                                        <StackPanel Orientation="Horizontal" Margin="2,8,0,0">
+                                            <TextBlock x:Name="UpdateVersionText" Style="{StaticResource MutedText}" VerticalAlignment="Center" Text="" />
+                                            <Button x:Name="CheckUpdateButton" Style="{StaticResource LinkButton}" Content="Check now" FontSize="12" Margin="8,0,0,0" Click="CheckUpdate_Click" />
+                                            <Button x:Name="UpdateNowButton" Style="{StaticResource AccentButton}" Content="Update" Padding="10,3" Margin="8,0,0,0" Click="Update_Click" Visibility="Collapsed" ToolTip="Restart Clink to install the downloaded update" />
+                                        </StackPanel>
+                                        <TextBlock x:Name="UpdateProblemText" Style="{StaticResource Hint}" Foreground="{StaticResource Warn}" Margin="2,6,0,0" Text="" Visibility="Collapsed" />
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </TabItem>
+
+                    <!-- ===================================================== Clips (narrow layout only; the pane moves to the right column when wide) -->
+                    <TabItem x:Name="ClipsTab" Header="Clips">
+                        <ui:ClipsPane x:Name="Clips" Margin="0,8,0,0" />
+                    </TabItem>
+                </TabControl>
+
+                <Border x:Name="RightHost" Grid.Column="2" Visibility="Collapsed" />
+            </Grid>
         </DockPanel>
     </Border>
 </Window>

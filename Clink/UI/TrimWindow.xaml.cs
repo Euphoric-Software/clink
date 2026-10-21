@@ -403,20 +403,27 @@ public partial class TrimWindow : Window
         double start = Timeline.SnapToKeyframe(Timeline.SelectionStart), end = Timeline.SelectionEnd;
         bool replace = ReplaceCheck.IsChecked == true;
         string src = _entry.Path;
-        string dst = Path.Combine(Path.GetDirectoryName(src)!, Path.GetFileNameWithoutExtension(src) + " (trim).mp4");
+        var app = AppController.Instance;
+        // Trims are written to the local clips folder (docs/SPEC-v2.md §9: local first, the archive service moves them later
+        // under the normal rules). A source that was archived, or that lives elsewhere, is not a reason to write next to it:
+        // a trim written onto the share would be a plain local entry with a UNC path, checked with File.Exists on the UI thread.
+        string srcDir = Path.GetDirectoryName(src) ?? app.Settings.ClipsFolder;
+        string dir = _entry.IsArchived || !ArchiveService.IsSameFolder(srcDir, app.Settings.ClipsFolder) ? app.Settings.ClipsFolder : srcDir;
+        string stem = Path.GetFileNameWithoutExtension(src);
+        string dst = Path.Combine(dir, stem + " (trim).mp4");
         int n = 2;
-        while (File.Exists(dst)) dst = Path.Combine(Path.GetDirectoryName(src)!, Path.GetFileNameWithoutExtension(src) + $" (trim {n++}).mp4");
+        while (File.Exists(dst)) dst = Path.Combine(dir, stem + $" (trim {n++}).mp4");
         bool trimmed = false; // once true the output is complete and is never deleted, whatever happens after
         try
         {
             if (end - start < 0.1) throw new InvalidOperationException("Selection is too short");
+            Directory.CreateDirectory(dir);
             string[]? names = _entry.AudioTracks;
             TrackMix[]? mix = _rows.Count > 0 ? _rows.Select(r => new TrackMix(r.Included, r.Gain)).ToArray() : null;
             if (mix != null && !mix.Any(m => m.Include)) StatusText.Text = "Trimming (no audio)…";
             await Task.Run(() => Trimmer.Trim(src, dst, start, end, names, mix));
             trimmed = true;
             string[] keptNames = KeptTrackNames(names, mix);
-            var app = AppController.Instance;
             ClipEntry result;
             string? replaceProblem = replace ? await ReplaceOriginalAsync(src, dst) : null;
             if (replace && replaceProblem == null)
@@ -431,7 +438,7 @@ public partial class TrimWindow : Window
             }
             else
             {
-                result = app.Library.Add(dst, end - start, new FileInfo(dst).Length, _entry.Game, keptNames);
+                result = app.Library.Add(dst, end - start, new FileInfo(dst).Length, _entry.Game, keptNames, isTrim: true, sourcePath: src);
                 StatusText.Text = replaceProblem != null
                     ? $"Could not replace the original ({replaceProblem}); saved as {Path.GetFileName(dst)} instead"
                     : "Saved " + Path.GetFileName(dst);
