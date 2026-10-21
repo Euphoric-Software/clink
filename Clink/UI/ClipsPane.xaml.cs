@@ -197,7 +197,7 @@ internal sealed class ClipRow : INotifyPropertyChanged
     {
         get
         {
-            string dur = Entry.Duration > 0 ? $"{TimeSpan.FromSeconds(Entry.Duration):m\\:ss} · " : "";
+            string dur = Entry.Duration > 0 ? $"{TimeSpan.FromSeconds(Entry.Duration).ToString(Entry.Duration >= 3600 ? @"h\:mm\:ss" : @"m\:ss")} · " : "";
             // Decimal MB everywhere a size is shown: the unit of the Copium / Discord limits and of the Share pre-check.
             return $"{Entry.Created:MMM d, HH:mm} · {dur}{Capabilities.FormatBytes(Entry.Size)}";
         }
