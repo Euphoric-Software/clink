@@ -29,7 +29,7 @@ click and the link lands in your clipboard.
 * **A list of hotkeys**: each one is a key combo plus what it does (clip, pause/resume, share last clip) and, for clips,
   how much to save (e.g. F9 = the replay length, Shift+F9 = the last 30 s).
 * **Replay length slider** from 5 s to 60 min with the RAM it costs next to it, live **size estimates** (per minute and
-  per clip) and **Discord size targets** (10 / 50 / 500 MB) that pick the bitrate so a clip of that length fits.
+  per clip) and **Discord size targets** (10 / 50 / 500 MB) that lower the bitrate, only when needed, so a clip of that length fits.
 * H.264 or HEVC, and AV1 (experimental) when the GPU has an AV1 encoder; codecs the GPU lacks are listed greyed out.
 * Toasts for *clip saved*, *shared* and *recording started*, each with its own switch, duration and a preview; eight
   positions on the captured monitor. Optional always-on **status dot** in a corner (green recording, amber waiting, red error).
@@ -86,7 +86,8 @@ Copium box. It is stored encrypted for your Windows user (DPAPI). Nothing is upl
 
 * **Capture**: the monitor map, resolution / FPS / bitrate / codec, a one-line description of each codec (the ones your
   GPU cannot encode are greyed out), the **size target** (*None*, *Discord 10 MB*, *Nitro Basic 50 MB*, *Nitro 500 MB*:
-  the bitrate is then computed so a clip of the replay length fits, audio tracks included, and shown read-only), the
+  when a clip of the replay length would not fit, the encode bitrate is lowered just enough, audio tracks included;
+  it is never raised above the bitrate you chose, and the note under the controls says what it did), the
   live estimate (*≈ 190 MB per minute · ≈ 380 MB per 2:00 clip*), the recording mode and the custom-apps list
   (type an exe name or pick one of the apps running right now).
 * **Clip**: the hotkey list (click the keys box, press the combo; Esc cancels), the replay-length slider (the 30–90 s

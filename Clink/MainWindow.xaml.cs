@@ -267,19 +267,12 @@ public partial class MainWindow : Window
         _filling = true;
         try
         {
-            if (targeted)
-            {
-                BitrateCombo.ItemsSource = new[] { new Choice($"{mbps:0.#} Mbps · auto", -1) };
-                BitrateCombo.SelectedIndex = 0;
-                BitrateCombo.IsEnabled = false;
-                BitrateCombo.ToolTip = "Picked for the size target; set the target to None to choose by hand";
-            }
-            else
-            {
-                if (!ReferenceEquals(BitrateCombo.ItemsSource, _bitratePresets)) Fill(BitrateCombo, _bitratePresets, s.BitrateMbps);
-                BitrateCombo.IsEnabled = true;
-                BitrateCombo.ToolTip = null;
-            }
+            // The chosen bitrate stays editable; a size target only lowers the encode bitrate when a clip would not fit.
+            if (!ReferenceEquals(BitrateCombo.ItemsSource, _bitratePresets)) Fill(BitrateCombo, _bitratePresets, s.BitrateMbps);
+            BitrateCombo.IsEnabled = true;
+            BitrateCombo.ToolTip = targeted && mbps < s.BitrateMbps
+                ? $"Encoding at {mbps:0.#} Mbps so a {Capabilities.FormatDuration(seconds)} clip fits the size target; set the target to None to use the full {s.BitrateMbps} Mbps"
+                : null;
         }
         finally { _filling = was; }
 
