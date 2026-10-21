@@ -168,7 +168,7 @@
 
                                             <CheckBox x:Name="TrackGameCheck" Grid.Row="1" Content="Game" Checked="AudioChanged" Unchecked="AudioChanged" ToolTip="Also save the game audio as its own track (it is always part of the mix)" />
                                             <ComboBox x:Name="GameCombo" Grid.Row="1" Grid.Column="1" SelectionChanged="AudioSourceChanged" DropDownOpened="GameCombo_DropDownOpened"
-                                                      ToolTip="Where game audio comes from: detect the fullscreen app, pick a running app, or pick an audio device (an input like Wave Link's Game mix, or what plays on an output)" />
+                                                      ToolTip="Where game audio comes from: detect the fullscreen app on the captured monitor, pick a running app, or pick an audio device (an input like Wave Link's Game mix, or what plays on an output)" />
 
                                             <CheckBox x:Name="TrackMicCheck" Grid.Row="2" Content="Mic" Checked="AudioChanged" Unchecked="AudioChanged" ToolTip="Also save the mic as its own track (it is always part of the mix)" />
                                             <ComboBox x:Name="MicCombo" Grid.Row="2" Grid.Column="1" SelectionChanged="AudioSourceChanged" DropDownOpened="MicCombo_DropDownOpened" ToolTip="Microphone to record" />
@@ -306,12 +306,17 @@
                                                 <Button Grid.Column="1" Content="Browse…" Margin="6,0,0,0" Click="BrowseArchive_Click" />
                                                 <Button x:Name="ArchiveTestButton" Grid.Column="2" Content="Test" Margin="6,0,0,0" Click="ArchiveTest_Click" ToolTip="Reachable? Writable? Free space?" />
                                             </Grid>
+                                            <!-- Each box stays on one line with its unit: the rule wraps between the two parts only. -->
                                             <WrapPanel Margin="2,8,0,0">
                                                 <TextBlock Style="{StaticResource MutedText}" Text="Move clips older than" VerticalAlignment="Center" Margin="0,0,6,4" />
-                                                <TextBox x:Name="ArchiveDaysBox" Width="46" Padding="6,4" TextAlignment="Center" Margin="0,0,6,4" LostFocus="ArchiveRulesChanged" KeyDown="PathBox_KeyDown" ToolTip="0 = off" />
-                                                <TextBlock Style="{StaticResource MutedText}" Text="days, or when the local folder exceeds" VerticalAlignment="Center" Margin="0,0,6,4" />
-                                                <TextBox x:Name="ArchiveGbBox" Width="54" Padding="6,4" TextAlignment="Center" Margin="0,0,6,4" LostFocus="ArchiveRulesChanged" KeyDown="PathBox_KeyDown" ToolTip="0 = off" />
-                                                <TextBlock Style="{StaticResource MutedText}" Text="GB · whichever comes first" VerticalAlignment="Center" Margin="0,0,0,4" />
+                                                <StackPanel Orientation="Horizontal">
+                                                    <TextBox x:Name="ArchiveDaysBox" Width="46" Padding="6,4" TextAlignment="Center" Margin="0,0,6,4" LostFocus="ArchiveRulesChanged" KeyDown="PathBox_KeyDown" ToolTip="0 = off" />
+                                                    <TextBlock Style="{StaticResource MutedText}" Text="days, or when the local folder exceeds" VerticalAlignment="Center" Margin="0,0,6,4" />
+                                                </StackPanel>
+                                                <StackPanel Orientation="Horizontal">
+                                                    <TextBox x:Name="ArchiveGbBox" Width="54" Padding="6,4" TextAlignment="Center" Margin="0,0,6,4" LostFocus="ArchiveRulesChanged" KeyDown="PathBox_KeyDown" ToolTip="0 = off" />
+                                                    <TextBlock Style="{StaticResource MutedText}" Text="GB · whichever comes first" VerticalAlignment="Center" Margin="0,0,0,4" />
+                                                </StackPanel>
                                             </WrapPanel>
                                             <Grid Margin="2,6,0,0">
                                                 <Grid.ColumnDefinitions>

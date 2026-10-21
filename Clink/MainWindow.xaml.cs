@@ -501,7 +501,8 @@ public partial class MainWindow : Window
     private void FillGameCombo(string current)
     {
         current = GameProcessTracker.NormalizeName(current);   // "auto" in any case, ".exe" dropped: matches the way the engine reads it
-        var items = new List<Choice> { new("Auto (fullscreen app on the captured monitor)", "auto") };
+        // Short enough to fit the closed box at the window's width, like the Voice picker's; the tooltip explains the detection.
+        var items = new List<Choice> { new("Auto (fullscreen app)", "auto") };
         var apps = RunningApps();
         if (apps.Count > 0) items.Add(new Choice("Running apps", "", true));
         items.AddRange(apps.Select(c => new Choice(AppLabel(c), c.Name)));
@@ -626,8 +627,9 @@ public partial class MainWindow : Window
         if (eng.IsRunning)
         {
             var st = eng.GetStats();
-            string game = st.Game != null ? $" · {st.Game}" : "";
-            if (!noticeShowing) FooterText.Text = $"{st.Encoder.Replace(" Encoder MFT", "")} · buffer {st.BufferedSeconds:0}s · {st.FramesOut} frames · {st.Dropped} dropped{game}";
+            // The game first: at the default width the line is cut at its end, and the stats are the part that can go.
+            string game = st.Game != null ? $"{st.Game} · " : "";
+            if (!noticeShowing) FooterText.Text = $"{game}{st.Encoder.Replace(" Encoder MFT", "")} · buffer {st.BufferedSeconds:0}s · {st.Dropped} dropped";
             // Each entry says what the track is actually capturing ("● Game (Overwatch)", "● Game (everything except Discord)",
             // "● Mic (USB Microphone)") or why it is not ("○ Voice (waiting for app)"), so a pick is confirmed here and the
             // fallback is not mistaken for the real thing. Non-breaking spaces inside an entry: the line wraps between tracks only.
@@ -671,7 +673,9 @@ public partial class MainWindow : Window
         UpdateButton.Visibility = v != null ? Visibility.Visible : Visibility.Collapsed;
         UpdateNowButton.Content = v != null ? $"Update to v{v}" : "Update";
         UpdateNowButton.Visibility = v != null ? Visibility.Visible : Visibility.Collapsed;
-        string? problem = _app.Updater.InstallProblem ?? (_app.Updater.LastError != null ? "Last check failed: " + _app.Updater.LastError : null);
+        // LastError also holds a download / install failure after a check that worked: only a failed check is called one.
+        string? problem = _app.Updater.InstallProblem
+            ?? (_app.Updater.LastError is string err ? (_app.Updater.CheckFailed ? "Last check failed: " : "Update problem: ") + err : null);
         UpdateProblemText.Text = problem ?? "";
         UpdateProblemText.Visibility = problem != null ? Visibility.Visible : Visibility.Collapsed;
         CheckUpdateButton.IsEnabled = _app.Updater.Repo != null;

@@ -88,6 +88,7 @@ internal sealed class AppController : IDisposable
     private StatusDotWindow? _dot;
     private static Mutex? s_mutex;
     private int _saving;
+    private Task<ClipEntry?>? _saveTask;    // the save in flight (UI thread): its clip once in the library, null if it failed
     // Copium uploads in flight (UI thread); Announced: started by ShareLast, which reports a failure itself.
     private readonly Dictionary<ClipEntry, (Task<bool> Task, bool Announced)> _uploads = new(ReferenceEqualityComparer.Instance);
     private DateTime _lastClipAt = DateTime.MinValue;
@@ -609,7 +610,7 @@ internal sealed class AppController : IDisposable
                 // In a game nothing else shows it: a press by mistake would stop recording without a sign. A resume with a game
                 // running gets its "Recording started" toast once the engine is up.
                 if (!MainWindowInFront && Settings.ToastRecording.Enabled && (IsPaused || CurrentGame == null))
-                    Toasts.ShowNotice(IsPaused ? "Recording paused" : "Recording resumed", IsPaused ? $"Press {a.Keys} to resume" : GameOnly ? "Waiting for a game" : "Replay buffer restarted");
+                    Toasts.ShowNotice(IsPaused ? "Recording paused" : "Recording resumed", IsPaused ? $"Press {a.Keys} to resume" : GameOnly ? "Waiting for a game" : "Replay buffer restarted", paused: IsPaused);
                 break;
             case "share-last": case "share": ShareLast(); break;
             default: ClipNow(a.Seconds > 0 ? a.Seconds : null); break;
@@ -643,6 +644,8 @@ internal sealed class AppController : IDisposable
         if ((DateTime.UtcNow - _lastClipAt).TotalMilliseconds < 700) return;
         if (Interlocked.Exchange(ref _saving, 1) == 1) return;
         _lastClipAt = DateTime.UtcNow;
+        var saved = new TaskCompletionSource<ClipEntry?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _saveTask = saved.Task;
         if (Settings.ClickSound) ClickSound.Play(Settings.ClickVolume);
         try
         {
@@ -651,6 +654,7 @@ internal sealed class AppController : IDisposable
             var result = await Engine.SaveClipAsync(length, CurrentGame);
             // The names of the tracks the file really has, in file order (the trim editor labels and keeps tracks by them).
             var entry = Library.Add(result.Path, result.DurationSeconds, result.SizeBytes, result.Game, result.AudioTracks);
+            saved.TrySetResult(entry);
             Say($"Clip saved ({result.DurationSeconds:0}s)");
             Toasts.ShowClipSaved(entry);
             Archive.NotifyClipSaved();
@@ -666,16 +670,23 @@ internal sealed class AppController : IDisposable
             // The click has already played: without this a failed save looks like a saved clip.
             NotifyProblem("Clip not saved", ex.Message);
         }
-        finally { _saving = 0; }
+        finally { saved.TrySetResult(null); _saving = 0; }
     }
 
     /// <summary>Shares the newest clip (the "share last clip" hotkey / tray item): uploads it, or copies its link if it already has one.</summary>
     public async void ShareLast()
     {
         // "Clip, then share" (a Stream Deck multi-action, --clip then --share-last, two quick presses) means the clip being saved
-        // right now: the library only gets it once the save is done, so wait for that instead of sharing the one before it.
-        for (int i = 0; i < 100 && Volatile.Read(ref _saving) == 1; i++) await Task.Delay(100);
-        var entry = Library.Entries.FirstOrDefault(e => e.IsShared || e.IsArchived || e.Exists);
+        // right now: the library only gets it once the save is done, so wait for that save, however long it takes (a long replay
+        // on a slow disk), and share what it saved, never the clip before it.
+        ClipEntry? entry;
+        if (Volatile.Read(ref _saving) == 1 && _saveTask is { } saving)
+        {
+            entry = await saving;
+            // ClipNow has already said why the clip was not saved (footer, and a toast / balloon away from the window).
+            if (entry == null) { Log.Info("share-last: the clip being saved failed; nothing shared"); return; }
+        }
+        else entry = Library.Entries.FirstOrDefault(e => e.IsShared || e.IsArchived || e.Exists);
         bool ok = false, joined = false;
         if (entry == null) Say("No clips to share yet");
         else

@@ -61,6 +61,8 @@ internal sealed class Updater : IDisposable
     public Version? PendingVersion { get; private set; }
     /// <summary>Why the last check returned nothing or could not download what it found, or null if nothing went wrong.</summary>
     public string? LastError { get; private set; }
+    /// <summary>True when <see cref="LastError"/> is about the check itself; false when the check worked and downloading or installing what it found did not.</summary>
+    public bool CheckFailed { get; private set; }
     /// <summary>True while <see cref="DownloadAsync"/> is transferring the exe (a manual check waits for it).</summary>
     public bool IsDownloading { get; private set; }
     /// <summary>Set by <see cref="TryGetPendingUpdate"/> when a downloaded update could not be installed: a message for the user, or null.</summary>
@@ -203,7 +205,7 @@ internal sealed class Updater : IDisposable
     public async Task<UpdateInfo?> CheckAsync(CancellationToken ct)
     {
         string? repo = Repo;
-        if (repo == null) { LastError = "updates are not configured in this build"; return null; }
+        if (repo == null) { LastError = "updates are not configured in this build"; CheckFailed = true; return null; }
         try
         {
             using var req = new HttpRequestMessage(HttpMethod.Get, $"https://api.github.com/repos/{repo}/releases/latest");
@@ -236,6 +238,7 @@ internal sealed class Updater : IDisposable
         }
         finally
         {
+            CheckFailed = LastError != null;   // every way out of the try sets LastError: null on success, the reason otherwise
             _settings.LastUpdateCheck = DateTime.UtcNow;
             _settings.Save();
         }
