@@ -222,6 +222,8 @@ internal sealed unsafe class ClipPlayer : IDisposable
     /// <summary>Nominal length of one video frame in seconds (from the stream's frame rate; 1/60 if it has none).</summary>
     public double FrameDuration => _frameDuration;
     public int TrackCount => _tracks.Length;
+    /// <summary>Audio track names as stored in the file, one per track (null if the file has none or they could not be read).</summary>
+    public string[]? TrackNames { get; }
     public int VideoWidth => _w;
     public int VideoHeight => _h;
     /// <summary>Per-track linear gain (1 = unchanged); read live by the mixer, applied as a short ramp.</summary>
@@ -273,6 +275,10 @@ internal sealed unsafe class ClipPlayer : IDisposable
                 t->Release();
             }
             if (videoIdx == uint.MaxValue) throw new InvalidOperationException("No video stream in file");
+            // Track i is the file's i-th audio track (the mix first), the same numbering the trimmer's mix uses.
+            Engine.Trimmer.AudioInFileOrder(audioIdx, videoIdx);
+            string[]? names = Engine.Trimmer.ReadAudioTrackNames(path);
+            TrackNames = names != null && names.Length == audioIdx.Count ? names : null;
             _videoStream = videoIdx;
             _video->SetStreamSelection(AllStreams, false);
             _video->SetStreamSelection(videoIdx, true).Check("SetStreamSelection(video)");
