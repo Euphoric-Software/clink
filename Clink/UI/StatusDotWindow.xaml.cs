@@ -23,13 +23,17 @@ public partial class StatusDotWindow : Window
         SourceInitialized += (_, _) => MakeClickThrough();
     }
 
-    /// <summary>WS_EX_TRANSPARENT (clicks fall through), WS_EX_TOOLWINDOW (no Alt-Tab entry), WS_EX_NOACTIVATE (never takes focus from the game).</summary>
+    /// <summary>
+    /// WS_EX_TRANSPARENT (clicks fall through), WS_EX_TOOLWINDOW (no Alt-Tab entry), WS_EX_NOACTIVATE (never takes focus from the
+    /// game), and kept out of capture so the dot is not recorded into every clip of the monitor it sits on.
+    /// </summary>
     private unsafe void MakeClickThrough()
     {
         var hwnd = new HWND(new WindowInteropHelper(this).Handle);
         nint ex = PInvoke.GetWindowLongPtr(hwnd, WINDOW_LONG_PTR_INDEX.GWL_EXSTYLE);
         ex |= (nint)(uint)(WINDOW_EX_STYLE.WS_EX_TRANSPARENT | WINDOW_EX_STYLE.WS_EX_TOOLWINDOW | WINDOW_EX_STYLE.WS_EX_NOACTIVATE);
         PInvoke.SetWindowLongPtr(hwnd, WINDOW_LONG_PTR_INDEX.GWL_EXSTYLE, ex);
+        ScreenPlacement.ExcludeFromCapture(new WindowInteropHelper(this).Handle);
     }
 
     internal void Apply(RecordingState state)
@@ -43,6 +47,11 @@ public partial class StatusDotWindow : Window
         };
         Dot.Fill = TryFindResource(key) as Brush ?? Brushes.Gray;
         Dot.ToolTip = null;
+        // Called about once a second: a game going (DXGI) fullscreen, or any always-on-top window shown later, becomes topmost
+        // above the dot, so it is put back on top each time (z-order only, never activated).
+        if (IsVisible)
+            PInvoke.SetWindowPos(ScreenPlacement.HwndOf(this), HWND.HWND_TOPMOST, 0, 0, 0, 0,
+                SET_WINDOW_POS_FLAGS.SWP_NOMOVE | SET_WINDOW_POS_FLAGS.SWP_NOSIZE | SET_WINDOW_POS_FLAGS.SWP_NOACTIVATE);
     }
 
     /// <summary>Shows the dot in the chosen corner ("top-left" | "top-right" | "bottom-left" | "bottom-right") of the monitor's work area.</summary>
