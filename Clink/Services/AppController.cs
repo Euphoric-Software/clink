@@ -89,6 +89,7 @@ internal sealed class AppController : IDisposable
     private DateTime _lastClipAt = DateTime.MinValue;
     private int _startGen;
     private bool _starting;
+    private bool _stopping;                 // a StopEngine is in flight: Engine.IsRunning reads true until its teardown has finished
     private DateTime _lastStartAt = DateTime.MinValue;
     private int _startFailures;             // engine starts that failed in a row (Tick's retry backoff, one balloon per streak)
     private bool _disposed;
@@ -230,7 +231,7 @@ internal sealed class AppController : IDisposable
         if (GameOnly)
         {
             // The mode may have been switched while the engine was running with no game: give it the same grace as a game exit.
-            if (_gamePid == 0 && Engine.IsRunning && _gameStopAt == null && !IsPaused) _gameStopAt = now + GameExitGrace;
+            if (_gamePid == 0 && Engine.IsRunning && !_stopping && _gameStopAt == null && !IsPaused) _gameStopAt = now + GameExitGrace;
             if (_gameStopAt is DateTime t && now >= t)
             {
                 _gameStopAt = null;
@@ -298,10 +299,11 @@ internal sealed class AppController : IDisposable
             Log.Info($"Game detected: {g.Name} pid={g.Pid} ({g.Source})");
             if (!IsPaused)
             {
-                if (Engine.IsRunning) Toasts.ShowRecordingStarted(g.Name);     // always mode, or still in the grace period
+                if (Engine.IsRunning && !_stopping) Toasts.ShowRecordingStarted(g.Name);     // always mode, or still in the grace period
                 else
                 {
-                    // The toast follows once the engine is up: started here (game-only), or by Start()/Tick in always mode.
+                    // The toast follows once the engine is up: started here (game-only; this also overrides a grace-period stop
+                    // that is still tearing down), or by Start()/Tick in always mode.
                     _announceGame = g.Name;
                     if (GameOnly) StartEngine();
                 }
@@ -313,6 +315,13 @@ internal sealed class AppController : IDisposable
     // ------------------------------------------------------------------ updates
 
     private static bool MainWindowVisible => System.Windows.Application.Current?.MainWindow?.IsVisible == true;
+
+    /// <summary>
+    /// The user has the window in front of them: shown, not minimized, focused. Not <see cref="MainWindowVisible"/>, which a
+    /// window minimized to the taskbar, or open behind a borderless game after an alt-tab, still is.
+    /// </summary>
+    private static bool MainWindowInFront =>
+        System.Windows.Application.Current?.MainWindow is { IsVisible: true, IsActive: true, WindowState: not System.Windows.WindowState.Minimized };
 
     private void OnUpdateAvailable(UpdateInfo info)
     {
@@ -441,7 +450,8 @@ internal sealed class AppController : IDisposable
         _lastStartAt = DateTime.UtcNow;   // also when the config fails: Tick retries on its backoff, not every second
         EngineConfig cfg;
         try { cfg = BuildConfig(); }
-        catch (Exception ex) { Say("Cannot start: " + ex.Message); return; }
+        catch (Exception ex) { Say("Cannot start: " + ex.Message); if (_stopping) StopEngine(); return; }   // the new generation cancelled that stop: re-issue it
+        _stopping = false;
         _starting = true;
         Task.Run(() =>
         {
@@ -479,7 +489,7 @@ internal sealed class AppController : IDisposable
                         Say("Recording failed: " + Engine.Error);
                         // The window is usually in the tray while a game runs, so the footer alone is invisible. Once per
                         // streak: Tick keeps retrying.
-                        if (_startFailures++ == 0 && !MainWindowVisible) ShowBalloon("Clink is not recording", Engine.Error);
+                        if (_startFailures++ == 0 && !MainWindowInFront) ShowBalloon("Clink is not recording", Engine.Error);
                     }
                 }
                 if (Engine.IsRunning && _announceGame is string game) { _announceGame = null; Toasts.ShowRecordingStarted(game); }
@@ -490,19 +500,25 @@ internal sealed class AppController : IDisposable
 
     private void StopEngine()
     {
-        Interlocked.Increment(ref _startGen);   // a start that has not run yet is cancelled
+        int gen = Interlocked.Increment(ref _startGen);   // a start that has not run yet is cancelled; a later start cancels this stop
         _starting = false;
         _startFailures = 0;
+        _stopping = true;
         Task.Run(() =>
         {
+            bool stopped = false;
             _engineGate.Wait();
-            try { Engine.Stop(); }
+            try { if (gen == _startGen) { Engine.Stop(); stopped = true; } }
             catch (Exception ex) { Log.Warn("Engine stop: " + ex.Message); }
             finally { _engineGate.Release(); }
             // The recorder is idle now: give the last clips' buffers back to the OS. They are gen2 / large-object garbage that
             // an idle tray app may not collect for hours (a ~20 ms pause here costs nothing).
-            try { GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, blocking: true, compacting: true); } catch { }
-            _ui.BeginInvoke(RaiseStateChanged);
+            if (stopped) { try { GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, blocking: true, compacting: true); } catch { } }
+            _ui.BeginInvoke(() =>
+            {
+                if (gen == _startGen) _stopping = false;
+                RaiseStateChanged();
+            });
         });
     }
 
@@ -581,13 +597,20 @@ internal sealed class AppController : IDisposable
         if (!Engine.IsRunning)
         {
             bool waiting = !IsPaused && GameOnly && _gamePid == 0;
+            // A recorder that failed to start says why: "yet" would promise a start that may never come.
             string why = IsPaused ? "Recording is paused"
                 : waiting ? "Not recording: waiting for a game"
-                : Engine.Error is string error ? "Not recording: " + error
+                : Engine.Error is string err && !_starting ? "Recording failed: " + err
                 : "Not recording yet";
             Say(why);
-            // The hotkey, the tray and --clip have no UI of their own and the window is usually hidden while a game runs (see ShareLast).
-            if (!MainWindowVisible) ShowBalloon("Clip not saved", waiting ? why + ". If your game is not detected, add it under Custom apps." : why);
+            // The hotkey, the tray item and --clip have no UI of their own and the window is usually in the tray, minimized or
+            // behind the game while one runs: a footer line alone would make a missed clip look saved, so say it where the user
+            // notices unless the window is in front of them (with an error sound when the click sound is on: no click played).
+            if (!MainWindowInFront)
+            {
+                if (Settings.ClickSound) System.Media.SystemSounds.Exclamation.Play();
+                ShowBalloon("Clip not saved", waiting ? why + ". If your game is not detected, add it under Capture → Recording → Custom apps." : why);
+            }
             return;
         }
         if ((DateTime.UtcNow - _lastClipAt).TotalMilliseconds < 700) return;
@@ -614,7 +637,7 @@ internal sealed class AppController : IDisposable
             Log.Error("Save clip", ex);
             Say("Clip failed: " + ex.Message);
             // The click has already played: without this a failed save looks like a saved clip.
-            if (!MainWindowVisible) ShowBalloon("Clip not saved", ex.Message);
+            if (!MainWindowInFront) ShowBalloon("Clip not saved", ex.Message);
         }
         finally { _saving = 0; }
     }

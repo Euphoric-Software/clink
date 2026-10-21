@@ -324,7 +324,9 @@ public partial class MainWindow : Window
         _app.Settings.RecordingMode = Selected<string>(ModeCombo) ?? "game";
         _app.Settings.Save();
         RefreshStatus();
-        ScheduleRestart();   // StartEngine() stops the engine when game-only and no game runs, starts it otherwise
+        // The mode is not part of the engine config: a running engine keeps its replay buffer (with no game, game-only mode stops
+        // it after the usual 5 s grace); a stopped one is started now if the new mode wants it.
+        if (!_app.Engine.IsRunning) ScheduleRestart();
     }
 
     private void FillRunningApps()
