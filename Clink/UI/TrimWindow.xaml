@@ -5,6 +5,36 @@
         Title="Trim clip" Width="940" Height="720" MinWidth="720" MinHeight="560"
         WindowStyle="None" ResizeMode="CanResizeWithGrip" AllowsTransparency="True" Background="Transparent"
         WindowStartupLocation="CenterScreen" FontFamily="Segoe UI" PreviewKeyDown="Window_PreviewKeyDown">
+    <Window.Resources>
+        <!-- "Listen" pill: which single track the preview plays (radio, one per track row) -->
+        <Style x:Key="MonitorRadio" TargetType="RadioButton">
+            <Setter Property="Foreground" Value="{StaticResource Muted}" />
+            <Setter Property="FontSize" Value="11.5" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RadioButton">
+                        <Border x:Name="B" Background="{StaticResource Panel2}" BorderBrush="{StaticResource Border}" BorderThickness="1" CornerRadius="6" Padding="9,2">
+                            <ContentPresenter VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="B" Property="Background" Value="{StaticResource Panel3}" />
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="B" Property="Background" Value="{StaticResource Accent}" />
+                                <Setter TargetName="B" Property="BorderBrush" Value="{StaticResource Accent}" />
+                                <Setter Property="Foreground" Value="#FF0E1419" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.45" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
     <Border Background="{StaticResource Bg}" CornerRadius="10" BorderBrush="{StaticResource Border}" BorderThickness="1">
         <DockPanel>
             <Grid DockPanel.Dock="Top" Height="42" MouseLeftButtonDown="Header_MouseLeftButtonDown" Background="Transparent">
@@ -24,13 +54,15 @@
                 </Grid>
             </Border>
 
-            <!-- Audio tracks: one row per track (include, name, volume) -->
+            <!-- Audio tracks: one row per track (include, name, listen, volume) -->
             <Border DockPanel.Dock="Bottom" Padding="16,8,16,8" BorderBrush="{StaticResource Border}" BorderThickness="0,1,0,0">
                 <StackPanel>
-                    <TextBlock Text="AUDIO TRACKS" Style="{StaticResource H}" Margin="0,0,0,4" />
-                    <StackPanel x:Name="TracksPanel">
-                        <TextBlock x:Name="TracksHint" Style="{StaticResource MutedText}" Text="Opening preview…" />
-                    </StackPanel>
+                    <Grid Margin="0,0,0,4">
+                        <TextBlock Text="AUDIO TRACKS" Style="{StaticResource H}" Margin="0" VerticalAlignment="Center" />
+                        <TextBlock x:Name="TracksHint" Style="{StaticResource MutedText}" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="110,0,0,0"
+                                   TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" Text="Opening preview…" />
+                    </Grid>
+                    <StackPanel x:Name="TracksPanel" />
                 </StackPanel>
             </Border>
 

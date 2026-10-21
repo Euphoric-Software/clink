@@ -32,6 +32,8 @@ internal sealed class AppController : IDisposable
     public event Action<string>? Notice;
     public event Action<ClipEntry>? ClipSaved;
     public event Action? ShowRequested;
+    /// <summary>"Clink.exe --trim-last" (or the pipe command "trim"): open the trim editor on the newest clip.</summary>
+    public event Action? TrimLastRequested;
     /// <summary>An update became ready to install (or the pending state changed otherwise). Raised on the UI thread.</summary>
     public event Action? UpdateStateChanged;
 
@@ -62,7 +64,9 @@ internal sealed class AppController : IDisposable
     {
         s_mutex = new Mutex(true, MutexName, out bool createdNew);
         if (createdNew) return true;
-        string cmd = args.Any(a => a.Equals("--clip", StringComparison.OrdinalIgnoreCase)) ? "clip" : "show";
+        string cmd = args.Any(a => a.Equals("--clip", StringComparison.OrdinalIgnoreCase)) ? "clip"
+            : args.Any(a => a.Equals("--trim-last", StringComparison.OrdinalIgnoreCase)) ? "trim"
+            : "show";
         SendCommand(cmd);
         return false;
     }
@@ -101,6 +105,7 @@ internal sealed class AppController : IDisposable
                 {
                     case "clip": _ui.BeginInvoke(ClipNow); break;
                     case "show": _ui.BeginInvoke(() => ShowRequested?.Invoke()); break;
+                    case "trim": _ui.BeginInvoke(() => TrimLastRequested?.Invoke()); break;
                     case "pause": _ui.BeginInvoke(() => { if (!IsPaused) TogglePause(); }); break;
                     case "resume": _ui.BeginInvoke(() => { if (IsPaused) TogglePause(); }); break;
                 }

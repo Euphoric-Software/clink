@@ -49,6 +49,11 @@ public partial class MainWindow : Window
         _app.Notice += msg => Dispatcher.BeginInvoke(() => { FooterText.Text = msg; _noticeUntil = DateTime.UtcNow.AddSeconds(4); });
         _app.ClipSaved += entry => Dispatcher.BeginInvoke(() => OnClipSaved(entry));
         _app.ShowRequested += () => Dispatcher.BeginInvoke(ShowFromTray);
+        _app.TrimLastRequested += () => Dispatcher.BeginInvoke(() =>
+        {
+            var newest = _app.Library.Entries.FirstOrDefault(e => e.Exists);
+            if (newest != null) OpenTrim(newest); else _app.Say("No clips to trim yet");
+        });
         _app.Library.Changed += () => Dispatcher.BeginInvoke(RefreshClips);
         _app.UpdateStateChanged += () => Dispatcher.BeginInvoke(RefreshUpdateState);
     }

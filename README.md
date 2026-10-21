@@ -53,8 +53,11 @@ clicking the version in the footer checks by hand and opens the release page if 
    By default the copied link is the raw video file, so pasting it in Discord plays the video inline with no
    embed card. If you turn on custom embeds on copium.pics, Copium's `link` becomes the share page instead; Clink
    just uses whatever Copium says to copy.
-4. **Trim** opens a preview with start/end sliders. The start snaps to a keyframe (every second by default) so
-   the cut is exact in every player.
+4. **Trim** opens an editor: the clip plays in a preview with a timeline underneath; drag the in/out handles (or
+   press I / O at the playhead, Space to play, ←/→ to step a frame). Every audio track has its own include toggle
+   and volume, which you hear in the preview and which are baked into the saved file; the Listen pill picks the
+   track you audition. The in point snaps to a keyframe (every second by default) so the cut is exact in every
+   player, and the export copies the video without re-encoding. Save, or Save & share.
 
 Copium: make an upload token under *ShareX & API* on copium.pics (it starts with `eup_`) and paste it in the
 Copium box. It is stored encrypted for your Windows user (DPAPI). Nothing is uploaded unless you press Share.
@@ -66,7 +69,7 @@ Two ways, no plugin needed:
 * Add a **Hotkey** action that sends Clink's hotkey (F9 by default). Clink uses a low-level keyboard hook, so
   it sees injected keys even when a game has focus.
 * Or use a **System → Open** action with `Clink.exe --clip`. If Clink is already running this just tells it to
-  clip and exits.
+  clip and exits. `Clink.exe --trim-last` opens the trim editor on the newest clip the same way.
 
 Other commands: `--show`, `--minimized` (start in the tray), `--no-update` (start without installing a downloaded
 update, handy for a debug build), `--selftest [seconds]` (records headless and writes a clip, prints what it did),

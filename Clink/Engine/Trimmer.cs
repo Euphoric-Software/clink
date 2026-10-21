@@ -30,7 +30,8 @@ internal static unsafe class Trimmer
     public static void Trim(string src, string dst, double startSec, double endSec, string[]? audioNames, TrackMix[]? mix)
     {
         Mf.EnsureStarted();
-        long start = (long)(startSec * 10_000_000), end = (long)(endSec * 10_000_000);
+        // Round rather than truncate: a start snapped to a keyframe must equal that keyframe's tick exactly.
+        long start = (long)Math.Round(startSec * 10_000_000), end = (long)Math.Round(endSec * 10_000_000);
         if (end <= start) throw new ArgumentException("End must be after start");
 
         IMFSourceReader* reader;
@@ -119,7 +120,15 @@ internal static unsafe class Trimmer
                         }
                         else if (ts <= end)
                         {
-                            if (video.Count == 0) { video.AddRange(pending); pending.Clear(); if (video.Count == 0 && !key) continue; }
+                            if (video.Count == 0)
+                            {
+                                // The first frame in range is the origin when it is itself a keyframe (what keyframe snapping
+                                // produces); the GOP collected before it is only needed when it is not.
+                                if (key) pending.Clear();
+                                video.AddRange(pending);
+                                pending.Clear();
+                                if (video.Count == 0 && !key) continue;
+                            }
                             video.Add(vs);
                         }
                     }

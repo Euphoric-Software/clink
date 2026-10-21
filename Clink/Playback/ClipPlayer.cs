@@ -11,10 +11,10 @@ using Clink.Native;
 namespace Clink.Playback;
 
 /// <summary>
-/// Preview player for the trim editor: decodes the video to BGRA frames and mixes every audio track of the clip
-/// (per-track gain/mute) into one WASAPI output. Audio is the master clock; a single worker thread owns all
-/// Media Foundation readers, the UI only calls <see cref="Play"/>, <see cref="Pause"/>, <see cref="Seek"/> and
-/// <see cref="TryGetFrame"/>.
+/// Preview player for the trim editor: decodes the video to BGRA frames and mixes the audio tracks of the clip
+/// (per-track gain/mute, ramped so changes never click) into one WASAPI output. Audio is the master clock; a single
+/// worker thread owns all Media Foundation readers, the UI only calls <see cref="Play"/>, <see cref="Pause"/>,
+/// <see cref="Seek"/> and <see cref="TryGetFrame"/>.
 /// </summary>
 internal sealed unsafe class ClipPlayer : IDisposable
 {
@@ -30,6 +30,8 @@ internal sealed unsafe class ClipPlayer : IDisposable
         public double Pts;
         public byte[] Data = Array.Empty<byte>();
         public long Seq;
+        /// <summary>The frame a seek landed on: shown as soon as it is queued, whatever the clock or a newer seek says.</summary>
+        public bool SeekResult;
     }
 
     /// <summary>One audio stream: its own source reader plus a FIFO of decoded 48 kHz stereo float on the clip timeline.</summary>
@@ -41,6 +43,8 @@ internal sealed unsafe class ClipPlayer : IDisposable
         public bool SrcFloat = true;
         public int SrcChannels = 2;
         public int SrcRate = Rate;
+        /// <summary>Gain the last mixed block ended on; the next block ramps from here to the requested gain.</summary>
+        public float Current;
 
         private float[] _data = new float[Rate * 2 * 2];
         private int _start, _count;        // frames
@@ -99,13 +103,24 @@ internal sealed unsafe class ClipPlayer : IDisposable
             }
         }
 
-        public void MixInto(float[] dst, long t0, int frames, float gain)
+        /// <summary>
+        /// Adds this track's audio for the block [t0, t0+frames) into <paramref name="dst"/>, with the gain ramping linearly
+        /// from <paramref name="from"/> at the start of the block to <paramref name="to"/> at its end, so a mute or slider
+        /// move is a short fade instead of a step.
+        /// </summary>
+        public void MixInto(float[] dst, long t0, int frames, float from, float to)
         {
             if (_count == 0) return;
-            long from = Math.Max(t0, _firstFrame), to = Math.Min(t0 + frames, _firstFrame + _count);
-            if (to <= from) return;
-            int src = (int)(_start + (from - _firstFrame)) * 2, di = (int)(from - t0) * 2, len = (int)(to - from) * 2;
-            for (int i = 0; i < len; i++) dst[di + i] += gain * _data[src + i];
+            long lo = Math.Max(t0, _firstFrame), hi = Math.Min(t0 + frames, _firstFrame + _count);
+            if (hi <= lo) return;
+            int src = (int)(_start + (lo - _firstFrame)) * 2, di = (int)(lo - t0) * 2, n = (int)(hi - lo);
+            float step = (to - from) / frames;
+            float g = from + step * (int)(lo - t0);
+            for (int i = 0; i < n; i++, g += step)
+            {
+                dst[di + i * 2] += g * _data[src + i * 2];
+                dst[di + i * 2 + 1] += g * _data[src + i * 2 + 1];
+            }
         }
 
         public void Discard(long beforeFrame)
@@ -171,6 +186,7 @@ internal sealed unsafe class ClipPlayer : IDisposable
     private bool _sizeMismatch, _sizeWarned;
     private bool _videoEos;
     private double _lastVideoPts = -1;
+    private double _frameDuration = 1.0 / 60;
 
     // ---- audio
     private readonly AudioTrackState[] _tracks;
@@ -184,7 +200,7 @@ internal sealed unsafe class ClipPlayer : IDisposable
     private readonly Stopwatch _sw = new();
     private double _seekBase;
     private double _pendingSeek = double.NaN;
-    private volatile bool _seeking;   // a seek was requested and its frame is not queued yet
+    private volatile bool _seeking;   // a seek was requested and no seek has landed since
 
     // ---- commands (guarded by _gate)
     private readonly object _gate = new();
@@ -203,15 +219,20 @@ internal sealed unsafe class ClipPlayer : IDisposable
 
     /// <summary>Clip length in seconds (0 if unknown).</summary>
     public double Duration { get; }
+    /// <summary>Nominal length of one video frame in seconds (from the stream's frame rate; 1/60 if it has none).</summary>
+    public double FrameDuration => _frameDuration;
     public int TrackCount => _tracks.Length;
     public int VideoWidth => _w;
     public int VideoHeight => _h;
-    /// <summary>Per-track linear gain (1 = unchanged); read live by the mixer.</summary>
+    /// <summary>Per-track linear gain (1 = unchanged); read live by the mixer, applied as a short ramp.</summary>
     public float[] Gain { get; }
-    /// <summary>Per-track mute; read live by the mixer.</summary>
+    /// <summary>Per-track mute; read live by the mixer, applied as a short ramp.</summary>
     public bool[] Muted { get; }
     public bool IsPlaying { get { lock (_gate) return _wantPlaying; } }
+    /// <summary>Set when the worker died; the player is dead from then on.</summary>
     public string? LastError { get; private set; }
+    /// <summary>Set when there is no usable output device; the preview keeps running silently on its own clock.</summary>
+    public string? AudioError { get; private set; }
     /// <summary>Raised (on the worker thread) when playback reached the end of the clip; the player is paused then.</summary>
     public event Action? Ended;
 
@@ -244,6 +265,9 @@ internal sealed unsafe class ClipPlayer : IDisposable
                     videoIdx = i;
                     ulong size = Mf.GetU64(a, PInvoke.MF_MT_FRAME_SIZE);
                     nw = (int)(size >> 32); nh = (int)(size & 0xFFFFFFFF);
+                    ulong rate = Mf.GetU64(a, PInvoke.MF_MT_FRAME_RATE);
+                    uint num = (uint)(rate >> 32), den = (uint)(rate & 0xFFFFFFFF);
+                    if (num > 0 && den > 0 && den < num) _frameDuration = (double)den / num;
                 }
                 else if (major == PInvoke.MFMediaType_Audio) audioIdx.Add(i);
                 t->Release();
@@ -270,22 +294,23 @@ internal sealed unsafe class ClipPlayer : IDisposable
             if (_video->GetPresentationAttribute(MediaSource, &durKey, &pv).Succeeded && pv.vt == VARENUM.VT_UI8) Duration = (long)pv.uhVal / 10_000_000.0;
             PInvoke.PropVariantClear(ref pv);
 
+            // Every slot is populated before any reader is created so that ReleaseAll can walk the array after a failure
+            // part-way through (a null Reader is simply skipped).
             _tracks = new AudioTrackState[audioIdx.Count];
-            for (int i = 0; i < audioIdx.Count; i++)
+            for (int i = 0; i < _tracks.Length; i++) _tracks[i] = new AudioTrackState { Stream = audioIdx[i] };
+            Gain = new float[_tracks.Length];
+            Array.Fill(Gain, 1f);
+            Muted = new bool[_tracks.Length];
+            foreach (var ts in _tracks)
             {
-                var ts = new AudioTrackState { Stream = audioIdx[i] };
-                _tracks[i] = ts;
                 IMFSourceReader* ar;
                 PInvoke.MFCreateSourceReaderFromURL(path, null, &ar).Check("MFCreateSourceReaderFromURL(audio)");
-                ts.Reader = ar;
+                ts.Reader = ar; // owned by ReleaseAll from here on
                 ar->SetStreamSelection(AllStreams, false);
                 ar->SetStreamSelection(ts.Stream, true).Check("SetStreamSelection(audio)");
                 ConfigureAudio(ts);
             }
-            Gain = new float[_tracks.Length];
-            Array.Fill(Gain, 1f);
-            Muted = new bool[_tracks.Length];
-            Log.Info($"Preview: {Path.GetFileName(path)} {nw}x{nh} -> {_w}x{_h}, {_tracks.Length} audio track(s), {Duration:0.00}s");
+            Log.Info($"Preview: {Path.GetFileName(path)} {nw}x{nh} -> {_w}x{_h} @ {1 / _frameDuration:0.##} fps, {_tracks.Length} audio track(s), {Duration:0.00}s");
 
             _pendingSeek = 0; // show the first frame right away
             _seeking = true;
@@ -395,7 +420,8 @@ internal sealed unsafe class ClipPlayer : IDisposable
             lock (_clock)
             {
                 if (!double.IsNaN(_pendingSeek)) return _pendingSeek;
-                double t = _useAudioClock && _out != null ? _out.PlayedSeconds : _sw.Elapsed.TotalSeconds;
+                var o = _out;
+                double t = _useAudioClock && o != null ? o.PlayedSeconds : _sw.Elapsed.TotalSeconds;
                 double p = _seekBase + t;
                 return Duration > 0 ? Math.Min(p, Duration) : p;
             }
@@ -434,7 +460,10 @@ internal sealed unsafe class ClipPlayer : IDisposable
     {
         bgra = Array.Empty<byte>();
         pts = 0;
-        if (_seeking) return false; // frames decoded ahead of a pending seek would flash the wrong picture
+        // Frames decoded ahead of a seek that has not landed yet would flash the wrong picture. Once a seek has landed its
+        // own frame (SeekResult) is shown whatever the clock says, even if a newer seek is already queued behind it, so a
+        // drag keeps updating the picture instead of freezing until the mouse stops.
+        if (_seeking) return false;
         lock (_queueLock)
         {
             while (_queue.Count >= 2 && _queue[1].Pts <= position + Tol)
@@ -446,7 +475,7 @@ internal sealed unsafe class ClipPlayer : IDisposable
             if (_queue.Count > 0)
             {
                 var head = _queue[0];
-                if (head.Pts <= position + Tol && head.Seq != _shownSeq)
+                if (head.Seq != _shownSeq && (head.SeekResult || head.Pts <= position + Tol))
                 {
                     // The previously shown buffer is no longer queued (dropped above or by a seek): recycle it now.
                     byte[]? prev = _shown;
@@ -471,7 +500,12 @@ internal sealed unsafe class ClipPlayer : IDisposable
             if (_tracks.Length > 0)
             {
                 try { _out = new AudioOutput(); lock (_clock) _useAudioClock = true; }
-                catch (Exception ex) { Log.Warn("Preview audio output unavailable, playing silently: " + ex.Message); _out = null; }
+                catch (Exception ex)
+                {
+                    Log.Warn("Preview audio output unavailable, playing silently: " + ex.Message);
+                    _out = null;
+                    AudioError = "no output device, the preview is silent";
+                }
                 // The first ReadSample starts a reader's media source (a few hundred ms for all tracks); do it here
                 // rather than inside the user's first seek.
                 foreach (var t in _tracks) ReadAudio(t);
@@ -486,7 +520,9 @@ internal sealed unsafe class ClipPlayer : IDisposable
                 if (!double.IsNaN(seek))
                 {
                     DoSeek(seek);
-                    lock (_clock) { if (double.IsNaN(_pendingSeek)) _seeking = false; }
+                    // The frame for this target is queued (flagged SeekResult): let the UI show it even when the user has
+                    // already asked for another position, otherwise a drag never updates the picture.
+                    _seeking = false;
                     continue;
                 }
                 if (wantPlay != _playing)
@@ -496,15 +532,17 @@ internal sealed unsafe class ClipPlayer : IDisposable
                 }
                 if (_playing)
                 {
-                    if (_useAudioClock)
+                    var o = _out;
+                    if (_useAudioClock && o != null)
                     {
-                        // Top the device buffer up first so video decoding can never starve the audio clock,
-                        // then write one more block that blocks until there is room: that is what paces the loop.
-                        var o = _out!;
+                        // Keep a short lead queued (TargetFrames, ~80 ms): enough that video decoding can never starve the
+                        // audio clock, short enough that a mute or volume change is heard right away. The last write blocks
+                        // until a block has drained below that level, which is what paces the loop.
+                        int fill = o.TargetFrames;
                         int topUp = 0;
-                        while (o.PendingFrames + Block <= o.BufferFrames && topUp++ < 16) { MixBlock(); o.Write(_mix); }
-                        MixBlock();
-                        o.Write(_mix);
+                        while (!o.Failed && o.PendingFrames + Block <= fill && topUp++ < 16) { MixBlock(); o.Write(_mix, fill); }
+                        if (!o.Failed) { MixBlock(); o.Write(_mix, fill); }
+                        if (o.Failed) DropAudioOutput("the output device stopped responding, the preview is silent");
                     }
                     else Thread.Sleep(4);
                     FillVideo();
@@ -527,12 +565,13 @@ internal sealed unsafe class ClipPlayer : IDisposable
 
     private void StartClock()
     {
-        if (_useAudioClock && _out != null)
+        var o = _out;
+        if (_useAudioClock && o != null)
         {
-            // Prime the (empty or partially drained) buffer before starting so the engine has data on its first pass.
-            if (_out.PendingFrames + Block <= _out.BufferFrames) { MixBlock(); _out.Write(_mix); }
-            _out.Start();
-            if (!_out.IsStarted) { lock (_clock) _useAudioClock = false; }
+            // Prime the (empty or drained) buffer before starting so the engine has data on its first pass.
+            if (!o.Failed && o.PendingFrames + Block <= o.TargetFrames) { MixBlock(); o.Write(_mix, o.TargetFrames); }
+            o.Start();
+            if (!o.IsStarted) DropAudioOutput(o.Failed ? "the output device stopped responding, the preview is silent" : "the output device could not start, the preview is silent");
         }
         if (!_useAudioClock) lock (_clock) _sw.Start();
     }
@@ -541,6 +580,27 @@ internal sealed unsafe class ClipPlayer : IDisposable
     {
         _out?.Stop();
         lock (_clock) _sw.Stop();
+    }
+
+    /// <summary>
+    /// Switches to the stopwatch clock from the current position and discards the output after a device failure, so the
+    /// preview carries on silently instead of spinning on an output that never blocks and a clock that never moves.
+    /// </summary>
+    private void DropAudioOutput(string why)
+    {
+        var o = _out;
+        double pos = Position;
+        lock (_clock)
+        {
+            if (double.IsNaN(_pendingSeek)) _seekBase = pos; // otherwise the pending seek sets the base
+            _useAudioClock = false;
+            _sw.Reset();
+            if (_playing) _sw.Start();
+        }
+        _out = null;
+        try { o?.Dispose(); } catch (Exception ex) { Log.Warn("Preview audio output dispose: " + ex.Message); }
+        AudioError ??= why;
+        Log.Warn("Preview: " + why);
     }
 
     private void DoSeek(double requested)
@@ -554,11 +614,14 @@ internal sealed unsafe class ClipPlayer : IDisposable
             if (_pendingSeek == requested) _pendingSeek = double.NaN; // a newer request stays pending
         }
 
-        // Audio: restart every track at the target; the FIFOs fill lazily from the mixer.
-        foreach (var t in _tracks)
+        // Audio: restart every track at the target; the FIFOs fill lazily from the mixer. Pointless without an output.
+        if (_out != null)
         {
-            SeekReader(t.Reader, target);
-            t.Clear();
+            foreach (var t in _tracks)
+            {
+                SeekReader(t.Reader, target);
+                t.Clear();
+            }
         }
         _outFrame = FrameOf(target);
 
@@ -574,7 +637,8 @@ internal sealed unsafe class ClipPlayer : IDisposable
             if (keep > 0) _queue.RemoveRange(0, keep);
             // Settled when a later frame proves nothing undecoded lies between the candidate and the target.
             settled = keep >= 0 && (_queue.Count >= 2 || _videoEos);
-            if (!settled)
+            if (settled) _queue[0].SeekResult = true;
+            else
             {
                 if (keep >= 0) { candidate = _queue[0]; _queue.RemoveAt(0); }
                 // Decoding forward from where the reader is (~3 ms/frame) beats a re-seek (~150 ms fixed, then it
@@ -605,13 +669,13 @@ internal sealed unsafe class ClipPlayer : IDisposable
                     candidate = f;
                     continue;
                 }
-                if (candidate == null) f.Pts = target; // clip starts after the target: show its first frame now
-                else Enqueue(candidate);
+                if (candidate == null) { f.Pts = target; f.SeekResult = true; } // clip starts after the target: show its first frame now
+                else { candidate.SeekResult = true; Enqueue(candidate); }
                 Enqueue(f);
                 candidate = null;
                 break;
             }
-            if (candidate != null) Enqueue(candidate);
+            if (candidate != null) { candidate.SeekResult = true; Enqueue(candidate); }
         }
         if (_playing) StartClock();
     }
@@ -636,14 +700,16 @@ internal sealed unsafe class ClipPlayer : IDisposable
             var t = _tracks[i];
             int reads = 0;
             while (!t.Eos && t.EndFrame < until && reads++ < 512) ReadAudio(t);
-            float g = Muted[i] ? 0f : Gain[i];
-            if (g != 0f) t.MixInto(_mix, t0, Block, g);
+            float target = Muted[i] ? 0f : Gain[i];
+            float from = t.Current;
+            if (from != 0f || target != 0f) t.MixInto(_mix, t0, Block, from, target);
+            t.Current = target;
             t.Discard(until);
         }
         for (int i = 0; i < _mix.Length; i++)
         {
             float v = _mix[i];
-            _mix[i] = v > 1f ? 1f : v < -1f ? -1f : v;
+            _mix[i] = v / MathF.Max(1f, MathF.Abs(v)); // soft clip, the same curve the export uses
         }
         _outFrame = until;
     }
@@ -783,27 +849,42 @@ internal sealed unsafe class ClipPlayer : IDisposable
 
     // ------------------------------------------------------------------ teardown
 
+    /// <summary>Releases everything; each step is isolated so one failure cannot leak the rest (and the file with it).</summary>
     private void ReleaseAll()
     {
-        _out?.Dispose();
+        lock (_clock) _useAudioClock = false;
+        var o = _out;
         _out = null;
-        foreach (var t in _tracks) ComUtil.Release(ref t.Reader);
-        ComUtil.Release(ref _video);
+        try { o?.Dispose(); } catch (Exception ex) { Log.Warn("Preview audio output dispose: " + ex.Message); }
+        foreach (var t in _tracks)
+        {
+            try { ComUtil.Release(ref t.Reader); } catch (Exception ex) { Log.Warn("Preview audio reader release: " + ex.Message); }
+        }
+        try { ComUtil.Release(ref _video); } catch (Exception ex) { Log.Warn("Preview video reader release: " + ex.Message); }
         lock (_queueLock) { _queue.Clear(); _pool.Clear(); }
     }
 
-    public void Dispose()
+    /// <summary>
+    /// Stops the worker and releases the readers, and with them the clip file. Returns false when the worker did not stop
+    /// in time: the file is then still open until it does, so a caller about to replace it must not go ahead.
+    /// </summary>
+    public bool Close()
     {
-        lock (_gate)
+        bool first;
+        lock (_gate) { first = !_disposed; _disposed = true; }
+        if (first)
         {
-            if (_disposed) return;
-            _disposed = true;
+            _wake.Set();
+            var o = _out;
+            o?.Stop(); // a Write waiting for buffer room gives up once the stream is stopped
         }
-        _wake.Set();
-        if (_thread != null)
-        {
-            if (Thread.CurrentThread != _thread && !_thread.Join(5000)) Log.Warn("Preview player thread did not stop in time");
-        }
-        else ReleaseAll();
+        var th = _thread;
+        if (th == null) { if (first) ReleaseAll(); return true; }
+        if (Thread.CurrentThread == th) return false;
+        if (th.Join(5000)) return true;
+        Log.Warn("Preview player thread did not stop in time");
+        return false;
     }
+
+    public void Dispose() => Close();
 }

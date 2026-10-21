@@ -45,6 +45,8 @@ internal sealed class TimelineControl : FrameworkElement
     private const double PadX = 12, BarTop = 12, BarH = 28, HandleW = 10, HitTol = 7;
     private enum Drag { None, Start, End, Scrub }
     private Drag _drag;
+    private double _grabOffset; // px from the pointer to the grabbed handle's centre, so a grab does not move it
+    private bool _moved;
 
     public TimelineControl()
     {
@@ -161,9 +163,14 @@ internal sealed class TimelineControl : FrameworkElement
 
     private static string FormatTime(double t, double step)
     {
-        int m = (int)(t / 60);
-        double s = t - m * 60;
-        return step < 1 ? $"{m}:{s:00.0}" : $"{m}:{(int)Math.Round(s):00}";
+        // Round to the displayed unit first so 59.96 becomes 1:00 rather than 0:60.
+        if (step < 1)
+        {
+            long tenths = (long)Math.Round(t * 10, MidpointRounding.AwayFromZero);
+            return $"{tenths / 600}:{(tenths % 600) / 10.0:00.0}";
+        }
+        long secs = (long)Math.Round(t, MidpointRounding.AwayFromZero);
+        return $"{secs / 60}:{secs % 60:00}";
     }
 
     // ------------------------------------------------------------------ mouse
@@ -186,7 +193,18 @@ internal sealed class TimelineControl : FrameworkElement
         double x = e.GetPosition(this).X;
         _drag = HitTest(x);
         CaptureMouse();
-        Apply(x);
+        _moved = false;
+        if (_drag == Drag.Scrub)
+        {
+            _grabOffset = 0;
+            Apply(x); // a click on the bar seeks there
+        }
+        else
+        {
+            // A handle stays where it is until the pointer actually moves: applying the click position would snap the in
+            // point back a keyframe or nudge the out point by the hit tolerance just for grabbing it.
+            _grabOffset = XOf(_drag == Drag.Start ? SelectionStart : SelectionEnd) - x;
+        }
         e.Handled = true;
     }
 
@@ -201,7 +219,8 @@ internal sealed class TimelineControl : FrameworkElement
             return;
         }
         if (e.LeftButton != MouseButtonState.Pressed) { EndDrag(); return; }
-        Apply(x);
+        _moved = true;
+        Apply(x + _grabOffset);
         e.Handled = true;
     }
 
@@ -209,7 +228,7 @@ internal sealed class TimelineControl : FrameworkElement
     {
         base.OnMouseLeftButtonUp(e);
         if (_drag == Drag.None) return;
-        Apply(e.GetPosition(this).X);
+        if (_drag == Drag.Scrub || _moved) Apply(e.GetPosition(this).X + _grabOffset);
         EndDrag();
         e.Handled = true;
     }
