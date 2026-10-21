@@ -76,8 +76,9 @@ internal sealed unsafe class Engine : IDisposable
     private uint _voicePid; private string? _voiceName;
     private AudioTrack? _gameTrack, _voiceTrack;
     private int _ringSeconds;
-    private sealed record GameHint(uint Pid, string? Name);
-    private volatile GameHint? _gameHint;   // the app's own game detection (AppController), see SetDetectedGame
+    private sealed record GameHint(uint Pid, string Name);
+    private volatile GameHint? _gameHint;   // the app's own game detection (AppController), see SetDetectedGame; read by the audio thread
+    private uint _gameHintSeen;             // the hint pid the audio thread last looked at (a new one is adopted once)
 
     public string Status { get; private set; } = "Stopped";
     public string? Error { get; private set; }
@@ -101,7 +102,7 @@ internal sealed unsafe class Engine : IDisposable
         _stop = false;
         Error = null;
         // Per-run state: the game/voice picks may have changed (a device now, another app), and the stats count this run only.
-        _gamePid = 0; _gameName = null; _voicePid = 0; _voiceName = null;
+        _gamePid = 0; _gameName = null; _voicePid = 0; _voiceName = null; _gameHintSeen = 0;
         Interlocked.Exchange(ref _pacerDropped, 0);
         _ticks = 0;
         _firstTick = true;
@@ -126,10 +127,12 @@ internal sealed unsafe class Engine : IDisposable
     }
 
     /// <summary>
-    /// The app's own game detection (fullscreen, game library or custom app; pid 0 = none running). In "auto" the Game track
-    /// records it when no window covers the captured monitor; with the Game track on a device it still names the game.
+    /// The app's own game detection (fullscreen, game-library window or custom app; pid 0 = none running). With the game
+    /// process on "auto" the Game track records it unless a fullscreen window on the captured monitor is another app (a
+    /// windowed custom app or library game need not be the focused window); with the Game track on a device it still names
+    /// the game. Any thread.
     /// </summary>
-    public void SetDetectedGame(uint pid, string? name) => _gameHint = pid == 0 ? null : new GameHint(pid, name);
+    public void SetDetectedGame(uint pid, string? name) => _gameHint = pid != 0 && !string.IsNullOrEmpty(name) ? new GameHint(pid, name) : null;
 
     private void SetStatus(string s) { Status = s; StateChanged?.Invoke(); }
 
@@ -418,20 +421,25 @@ internal sealed unsafe class Engine : IDisposable
             else
             {
                 var fg = GameProcessTracker.Detect(m.Left, m.Top, m.Left + m.Width, m.Top + m.Height, m.Handle);
+                bool newHint = hint != null && hint.Pid != _gameHintSeen;   // taken once when the app finds a new game, again whenever there is none
+                _gameHintSeen = hint?.Pid ?? 0;
                 if (fg is { Fullscreen: true } f && f.Pid != _gamePid) { _gamePid = f.Pid; _gameName = f.Name; Log.Info($"Game detected: {f.Name} pid={f.Pid}"); }
                 else if (_gamePid != 0 && !GameProcessTracker.IsAlive(_gamePid)) { Log.Info($"Game exited: {_gameName}"); GameProcessTracker.Forget(_gamePid); _gamePid = 0; _gameName = null; }
+                // The app's detection (docs/SPEC-v2.md §5): a game library window that is not focused, or a custom app. Never the
+                // voice app or another ignored process (a custom app can be any typed name, Discord included): the Mix would sum
+                // the voice tree twice and lose the "everything except" fallback that holds the game audio.
+                else if (hint != null && hint.Pid != _gamePid && hint.Pid != _voicePid && !GameProcessTracker.IsIgnored(hint.Name)
+                         && (_gamePid == 0 || newHint) && fg is not { Fullscreen: true } && GameProcessTracker.IsAlive(hint.Pid))
+                {
+                    _gamePid = hint.Pid; _gameName = hint.Name;
+                    Log.Info($"Game from detection: {hint.Name} pid={hint.Pid}");
+                }
                 else if (_gamePid == 0 && fg is { } g && g.InLibrary)
                 {
                     // A windowed foreground app counts only when it is a game (installed in a game library): "everything (except
                     // the voice app)" beats recording whatever window happens to be focused.
                     _gamePid = g.Pid; _gameName = g.Name;
                     Log.Info($"Foreground app used as game: {g.Name} pid={g.Pid} (game library)");
-                }
-                else if (_gamePid == 0 && hint != null && GameProcessTracker.IsAlive(hint.Pid))
-                {
-                    // The app's detection (docs/SPEC-v2.md §5): a game library window that is not focused, or a custom app.
-                    _gamePid = hint.Pid; _gameName = hint.Name;
-                    Log.Info($"Game from detection: {hint.Name} pid={hint.Pid}");
                 }
             }
         }

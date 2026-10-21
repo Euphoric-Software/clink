@@ -280,7 +280,7 @@ internal sealed class AppController : IDisposable
         if (found is { } g)
         {
             _gamePid = g.Pid; CurrentGame = g.Name; CurrentGameSource = g.Source; _gameStopAt = null;
-            Engine.SetDetectedGame(g.Pid, g.Name);   // the Game audio track uses the same detection (SPEC-v2 §5)
+            Engine.SetDetectedGame(g.Pid, g.Name);   // the Game audio track follows this detection, not only the focused window (SPEC-v2 §5)
             Log.Info($"Game detected: {g.Name} pid={g.Pid} ({g.Source})");
             if (!IsPaused)
             {

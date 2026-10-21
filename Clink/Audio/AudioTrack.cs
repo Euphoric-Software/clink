@@ -73,6 +73,10 @@ internal sealed unsafe class AudioTrack : IDisposable
             stereo += skip * 2;
             frames -= (int)skip;
         }
+        // Device clock drift against QPC (tens of ppm on USB/wireless mics): slew one sample per packet once more than 10 ms off,
+        // so it never piles up into a 30 ms hole or skip. The 10 ms dead band absorbs timestamp jitter.
+        else if (gap > 100_000) Push(stereo, 1);
+        else if (gap < -100_000 && frames > 1) { stereo += 2; frames--; }
         Push(stereo, frames);
     }
 

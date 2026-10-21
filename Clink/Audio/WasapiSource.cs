@@ -21,7 +21,8 @@ internal abstract unsafe class WasapiSource : IDisposable
     protected IAudioClient* Client;
     protected IAudioCaptureClient* Capture;
     private bool _running;
-    private float[] _conv = new float[4096 * 2];
+    // Pinned: Convert hands a pointer into this buffer to the packet handler, which allocates (AAC frames) and so can trigger a GC.
+    private float[] _conv = GC.AllocateArray<float>(4096 * 2, pinned: true);
     private int _srcChannels = 2;
     private bool _srcFloat = true;
     private int _srcBits = 32;
@@ -38,6 +39,14 @@ internal abstract unsafe class WasapiSource : IDisposable
     protected abstract IAudioClient* Activate();
     protected virtual uint ExtraStreamFlags => 0;
     protected virtual bool AllowAutoConvert => true;
+    /// <summary>
+    /// Longest wait between start attempts. A failed start on an absent endpoint costs well under a millisecond, so a re-plugged
+    /// device (USB/Bluetooth headset, Wave Link restarting its virtual devices) is picked up within a few seconds.
+    /// </summary>
+    protected virtual int MaxRetrySeconds => 5;
+    /// <summary>Called from <see cref="Pump"/> while running: true when the stream no longer records what it should (the default device changed).</summary>
+    protected virtual bool IsStale() => false;
+    private bool IsLoopback => (ExtraStreamFlags & PInvoke.AUDCLNT_STREAMFLAGS_LOOPBACK) != 0;
 
     /// <summary>Starts the source if it is not running; failures are rate limited.</summary>
     public bool EnsureStarted()
@@ -52,14 +61,26 @@ internal abstract unsafe class WasapiSource : IDisposable
         }
         catch (Exception ex)
         {
-            LastError = ex.Message;
+            LastError = Explain(ex.HResult) ?? ex.Message;
             _failures++;
-            _nextRetry = DateTime.UtcNow + TimeSpan.FromSeconds(Math.Min(30, 2 * _failures));
+            _nextRetry = DateTime.UtcNow + TimeSpan.FromSeconds(Math.Min(MaxRetrySeconds, 2 * _failures));
             if (_failures <= 2) Log.Warn($"Audio source '{Name}' failed to start: {ex.Message}");
             Stop();
             return false;
         }
     }
+
+    /// <summary>What a failure means in plain words for the status line ("○ Mic (not connected or disabled)"), or null when there is no better text than the raw error.</summary>
+    private string? Explain(int hr) => (uint)hr switch
+    {
+        0x88890004 or 0x80070490 => "not connected or disabled",                   // AUDCLNT_E_DEVICE_INVALIDATED, E_NOTFOUND
+        0x8889000A => "in use by another app (exclusive mode)",                       // AUDCLNT_E_DEVICE_IN_USE
+        0x80070005 => IsLoopback ? "access denied"
+            : "blocked: allow microphone access for desktop apps in Windows privacy settings",   // E_ACCESSDENIED
+        0x88890003 => IsLoopback ? "not an output device" : "not an input device", // AUDCLNT_E_WRONG_ENDPOINT_TYPE
+        0x88890010 => "Windows Audio service not running",                            // AUDCLNT_E_SERVICE_NOT_RUNNING
+        _ => null,
+    };
 
     private void Start()
     {
@@ -133,6 +154,13 @@ internal abstract unsafe class WasapiSource : IDisposable
         if (!_running) return false;
         try
         {
+            if (IsStale())
+            {
+                // Reopen right away (EnsureStarted on the next loop pass); the track fills the few ms in between with silence.
+                Stop();
+                _nextRetry = DateTime.MinValue;
+                return false;
+            }
             while (true)
             {
                 uint packet;
@@ -153,7 +181,7 @@ internal abstract unsafe class WasapiSource : IDisposable
         }
         catch (Exception ex)
         {
-            LastError = ex.Message;
+            LastError = Explain(ex.HResult) ?? ex.Message;
             Log.Warn($"Audio source '{Name}' error: {ex.Message}");
             Stop();
             return false;
@@ -162,16 +190,16 @@ internal abstract unsafe class WasapiSource : IDisposable
 
     private void Fail(HRESULT hr)
     {
-        LastError = $"0x{(uint)hr.Value:X8}";
+        LastError = Explain(hr.Value) ?? $"0x{(uint)hr.Value:X8}";
         if (hr == HRESULT.AUDCLNT_E_DEVICE_INVALIDATED) Log.Info($"Audio source '{Name}': device invalidated, will retry");
-        else Log.Warn($"Audio source '{Name}' capture failed {LastError}");
+        else Log.Warn($"Audio source '{Name}' capture failed 0x{(uint)hr.Value:X8}");
         Stop();
         _nextRetry = DateTime.UtcNow + TimeSpan.FromSeconds(2);
     }
 
     private float* Convert(byte* data, int frames, bool silent)
     {
-        if (_conv.Length < frames * 2) _conv = new float[frames * 2 * 2];
+        if (_conv.Length < frames * 2) _conv = GC.AllocateArray<float>(frames * 2 * 2, pinned: true);
         fixed (float* dst = _conv)
         {
             if (silent) { new Span<float>(dst, frames * 2).Clear(); return dst; }
@@ -304,6 +332,8 @@ internal sealed unsafe class EndpointSource : WasapiSource
 {
     private readonly bool _loopback;
     private readonly string? _deviceId;
+    private string? _defaultId;        // with no device chosen: the endpoint "default" resolved to when the stream was opened
+    private long _nextDefaultCheck;    // Environment.TickCount64
     public override string Name { get; }
 
     public EndpointSource(bool loopback, string? deviceId, string name)
@@ -314,6 +344,7 @@ internal sealed unsafe class EndpointSource : WasapiSource
     }
 
     protected override uint ExtraStreamFlags => _loopback ? PInvoke.AUDCLNT_STREAMFLAGS_LOOPBACK : 0;
+    private EDataFlow Flow => _loopback ? EDataFlow.eRender : EDataFlow.eCapture;
 
     protected override IAudioClient* Activate()
     {
@@ -324,18 +355,54 @@ internal sealed unsafe class EndpointSource : WasapiSource
             if (_deviceId != null)
             {
                 fixed (char* id = _deviceId) en->GetDevice(new PCWSTR(id), &dev).Check("GetDevice");
-                Detail = FriendlyName(dev);   // confirms in the status line which device the user's pick resolved to
             }
             else
             {
-                en->GetDefaultAudioEndpoint(_loopback ? EDataFlow.eRender : EDataFlow.eCapture, ERole.eConsole, &dev).Check("GetDefaultAudioEndpoint");
+                en->GetDefaultAudioEndpoint(Flow, ERole.eConsole, &dev).Check("GetDefaultAudioEndpoint");
+                _defaultId = EndpointId(dev);
             }
+            Detail = FriendlyName(dev);   // confirms in the status line which device the pick (or the Windows default) resolved to
             Guid iid = IAudioClient.IID_Guid;
             void* p;
             dev->Activate(&iid, CLSCTX.CLSCTX_ALL, null, &p).Check("IMMDevice.Activate(IAudioClient)");
             return (IAudioClient*)p;
         }
         finally { ComUtil.Release(ref dev); en->Release(); }
+    }
+
+    /// <summary>
+    /// "Default" follows Windows: a stream keeps recording the endpoint it was opened on when the default moves (volume flyout,
+    /// a headset connecting), so every 2 s the current default is compared with the one in use and the source reopens on a change.
+    /// </summary>
+    protected override bool IsStale()
+    {
+        if (_deviceId != null || _defaultId == null) return false;
+        long now = Environment.TickCount64;
+        if (now < _nextDefaultCheck) return false;
+        _nextDefaultCheck = now + 2000;
+        IMMDeviceEnumerator* en = null;
+        IMMDevice* dev = null;
+        try
+        {
+            en = CreateEnumerator();
+            // No default at all right now: keep the stream; losing its device is reported by the stream itself.
+            if (en->GetDefaultAudioEndpoint(Flow, ERole.eConsole, &dev).Failed) return false;
+            string? id = EndpointId(dev);
+            if (id == null || id == _defaultId) return false;
+            Log.Info($"Audio source '{Name}': default {(_loopback ? "output" : "input")} is now {FriendlyName(dev) ?? id}, reopening");
+            return true;
+        }
+        catch { return false; }
+        finally { ComUtil.Release(ref dev); ComUtil.Release(ref en); }
+    }
+
+    private static string? EndpointId(IMMDevice* dev)
+    {
+        PWSTR id;
+        if (dev->GetId(&id).Failed) return null;
+        string s = id.ToString();
+        PInvoke.CoTaskMemFree(id.Value);
+        return s;
     }
 }
 
@@ -356,6 +423,8 @@ internal sealed unsafe class ProcessSource : WasapiSource
 
     protected override uint ExtraStreamFlags => PInvoke.AUDCLNT_STREAMFLAGS_LOOPBACK;
     protected override bool AllowAutoConvert => false;
+    // Activation can wait up to 3 s on the audio thread, and a new game/voice pid gets a new source anyway: keep the long backoff.
+    protected override int MaxRetrySeconds => 30;
 
     private sealed class Handler : IActivateAudioInterfaceCompletionHandler.Interface
     {
