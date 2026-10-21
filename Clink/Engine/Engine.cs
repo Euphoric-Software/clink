@@ -76,6 +76,8 @@ internal sealed unsafe class Engine : IDisposable
     private uint _voicePid; private string? _voiceName;
     private AudioTrack? _gameTrack, _voiceTrack;
     private int _ringSeconds;
+    private sealed record GameHint(uint Pid, string? Name);
+    private volatile GameHint? _gameHint;   // the app's own game detection (AppController), see SetDetectedGame
 
     public string Status { get; private set; } = "Stopped";
     public string? Error { get; private set; }
@@ -98,6 +100,11 @@ internal sealed unsafe class Engine : IDisposable
         _ringSeconds = cfg.BufferSeconds;
         _stop = false;
         Error = null;
+        // Per-run state: the game/voice picks may have changed (a device now, another app), and the stats count this run only.
+        _gamePid = 0; _gameName = null; _voicePid = 0; _voiceName = null;
+        Interlocked.Exchange(ref _pacerDropped, 0);
+        _ticks = 0;
+        _firstTick = true;
         _ready.Reset();
         SetStatus("Starting…");
         _videoThread = new Thread(VideoLoop) { IsBackground = true, Name = "Clink.Video", Priority = ThreadPriority.AboveNormal };
@@ -117,6 +124,12 @@ internal sealed unsafe class Engine : IDisposable
         IsRunning = false;
         SetStatus("Stopped");
     }
+
+    /// <summary>
+    /// The app's own game detection (fullscreen, game library or custom app; pid 0 = none running). In "auto" the Game track
+    /// records it when no window covers the captured monitor; with the Game track on a device it still names the game.
+    /// </summary>
+    public void SetDetectedGame(uint pid, string? name) => _gameHint = pid == 0 ? null : new GameHint(pid, name);
 
     private void SetStatus(string s) { Status = s; StateChanged?.Invoke(); }
 
@@ -184,13 +197,20 @@ internal sealed unsafe class Engine : IDisposable
                 }
                 Tick();
                 next += period;
-                if (ComUtil.QpcNow100ns() - next > period * 4) next = ComUtil.QpcNow100ns() + period; // we're behind, don't burst
+                long behind = ComUtil.QpcNow100ns() - next;
+                if (behind > period * 4)
+                {
+                    // We're behind (this thread or the GPU stalled): skip ahead instead of bursting, and count the frames the clip
+                    // misses as dropped. More than 5 s behind is a sleep/resume, not dropped frames.
+                    if (behind < 50_000_000) Interlocked.Add(ref _pacerDropped, behind / period);
+                    next = ComUtil.QpcNow100ns() + period;
+                }
                 if (++_ticks % (_cfg.Fps * 10) == 0)
                 {
                     ThrowIfDeviceLost();   // also catches a lost GPU while the encoder pool is empty and nothing reaches Convert
                     var enc = _encoder; var cap = _capture;
                     if (enc != null && cap != null)
-                        Log.Info($"stats: capture {cap.FramesReceived} (copied {cap.FramesCopied}), encoded in={enc.FramesIn} out={enc.FramesOut}, dropped pool-empty={Interlocked.Read(ref _pacerDropped)} queue-full={enc.Dropped}, buffer {BufferedSeconds:0.0}s");
+                        Log.Info($"stats: capture {cap.FramesReceived} (copied {cap.FramesCopied}), encoded in={enc.FramesIn} out={enc.FramesOut}, dropped pacer={Interlocked.Read(ref _pacerDropped)} queue-full={enc.Dropped}, ring holds {RingRangeSeconds:0.0}s");
                 }
             }
         }
@@ -282,16 +302,17 @@ internal sealed unsafe class Engine : IDisposable
         {
             // Game, mic and voice are always captured: track 1 is their mix. The flags only decide whether each is also
             // written as its own track. A game/voice "process" setting may instead name an audio device (in:/out: prefix).
+            // Each track joins _tracks as soon as it exists, so TearDown disposes a partly built set when a later one fails.
             _gameTrack = new AudioTrack("Game") { Enabled = _cfg.TrackGame };
+            _tracks.Add(_gameTrack);
             var mic = new AudioTrack("Mic") { Source = new EndpointSource(false, _cfg.MicDeviceId, "Microphone"), Enabled = _cfg.TrackMic };
+            _tracks.Add(mic);
             _voiceTrack = new AudioTrack("Voice") { Enabled = _cfg.TrackVoice };
+            _tracks.Add(_voiceTrack);
             if (TryDeviceSource(_cfg.GameProcess, "Game device", out var gameDevice)) { _gameTrack.Source = gameDevice; _gameIsDevice = true; }
             if (TryDeviceSource(_cfg.VoiceApp, "Voice device", out var voiceDevice)) { _voiceTrack.Source = voiceDevice; _voiceIsDevice = true; }
             var mix = new AudioTrack("Mix", new[] { _gameTrack, mic, _voiceTrack }) { Enabled = true };
-            _tracks.Add(mix);
-            _tracks.Add(_gameTrack);
-            _tracks.Add(mic);
-            _tracks.Add(_voiceTrack);
+            _tracks.Insert(0, mix);   // always track 1
             if (_cfg.TrackDesktop)
             {
                 // "in:<id>" = a capture device (a Wave Link mix, a virtual cable), "out:<id>" = that output's loopback; a bare id from
@@ -381,7 +402,13 @@ internal sealed unsafe class Engine : IDisposable
                 if (newVoice != _voicePid) { _voicePid = newVoice; _voiceName = v?.name; Log.Info($"Voice app: {(_voiceName ?? "none")} pid={_voicePid}"); }
             }
             // Game
-            if (_gameIsDevice) { }
+            var hint = _gameHint;
+            if (_gameIsDevice)
+            {
+                // The track records a device; the app's detection still says which game is running (stats, clip names).
+                uint pid = hint?.Pid ?? 0;
+                if (pid != _gamePid) { _gamePid = pid; _gameName = hint?.Name; }
+            }
             else if (!GameProcessTracker.IsAuto(_cfg.GameProcess))
             {
                 var chosen = GameProcessTracker.FindProcessByName(_cfg.GameProcess);
@@ -393,12 +420,18 @@ internal sealed unsafe class Engine : IDisposable
                 var fg = GameProcessTracker.Detect(m.Left, m.Top, m.Left + m.Width, m.Top + m.Height, m.Handle);
                 if (fg is { Fullscreen: true } f && f.Pid != _gamePid) { _gamePid = f.Pid; _gameName = f.Name; Log.Info($"Game detected: {f.Name} pid={f.Pid}"); }
                 else if (_gamePid != 0 && !GameProcessTracker.IsAlive(_gamePid)) { Log.Info($"Game exited: {_gameName}"); GameProcessTracker.Forget(_gamePid); _gamePid = 0; _gameName = null; }
-                else if (_gamePid == 0 && fg is { } g && (g.InLibrary || _voicePid == 0))
+                else if (_gamePid == 0 && fg is { } g && g.InLibrary)
                 {
-                    // A windowed foreground app counts only when it is a game (installed in a game library) or when there is no
-                    // voice app to exclude: "everything except Discord" beats recording whatever window happens to be focused.
+                    // A windowed foreground app counts only when it is a game (installed in a game library): "everything (except
+                    // the voice app)" beats recording whatever window happens to be focused.
                     _gamePid = g.Pid; _gameName = g.Name;
-                    Log.Info($"Foreground app used as game: {g.Name} pid={g.Pid}{(g.InLibrary ? " (game library)" : "")}");
+                    Log.Info($"Foreground app used as game: {g.Name} pid={g.Pid} (game library)");
+                }
+                else if (_gamePid == 0 && hint != null && GameProcessTracker.IsAlive(hint.Pid))
+                {
+                    // The app's detection (docs/SPEC-v2.md §5): a game library window that is not focused, or a custom app.
+                    _gamePid = hint.Pid; _gameName = hint.Name;
+                    Log.Info($"Game from detection: {hint.Name} pid={hint.Pid}");
                 }
             }
         }
@@ -408,17 +441,20 @@ internal sealed unsafe class Engine : IDisposable
         {
             if (_gameTrack != null && !_gameIsDevice)
             {
-                (uint pid, bool include)? want = _gamePid != 0 ? (_gamePid, true) : _voicePid != 0 ? (_voicePid, false) : null;
+                // No game: everything except the voice app, or with no voice app everything except Clink itself (which keeps the
+                // click sound out of the clip).
+                (uint pid, bool include) want = _gamePid != 0 ? (_gamePid, true) : (_voicePid != 0 ? _voicePid : (uint)Environment.ProcessId, false);
                 var cur = _gameTrack.Source as ProcessSource;
-                bool same = (want == null && cur == null) || (want != null && cur != null && cur.ProcessId == want.Value.pid && cur.Include == want.Value.include);
+                bool same = cur != null && cur.ProcessId == want.pid && cur.Include == want.include;
                 if (!same)
                 {
                     cur?.Dispose();
                     // The detail is what the status line appends to the track name, so the "everything except" fallback is visibly
                     // not the same thing as capturing the chosen game.
-                    _gameTrack.Source = want == null ? null : want.Value.include
-                        ? new ProcessSource(want.Value.pid, true, $"Game ({_gameName})", _gameName)
-                        : new ProcessSource(want.Value.pid, false, $"Everything except {_voiceName}", $"everything except {_voiceName}");
+                    string except = _voicePid != 0 ? $"everything except {_voiceName}" : "everything";
+                    _gameTrack.Source = want.include
+                        ? new ProcessSource(want.pid, true, $"Game ({_gameName})", _gameName)
+                        : new ProcessSource(want.pid, false, _voicePid != 0 ? $"Everything except {_voiceName}" : "Everything", except);
                 }
             }
             if (_voiceTrack != null && !_voiceIsDevice)
@@ -432,7 +468,11 @@ internal sealed unsafe class Engine : IDisposable
 
     // ------------------------------------------------------------------ clips
 
-    public double BufferedSeconds
+    /// <summary>Seconds a clip can take right now: what the ring holds, capped at the replay length (at low motion the ring holds far more).</summary>
+    public double BufferedSeconds => Math.Min(RingRangeSeconds, RingSeconds);
+
+    /// <summary>Time span the ring actually holds (for the stats log).</summary>
+    private double RingRangeSeconds
     {
         get
         {
@@ -461,9 +501,10 @@ internal sealed unsafe class Engine : IDisposable
     /// <summary>Replay length the ring really holds (BufferSeconds unless the RAM clamp or an allocation retry shortened it).</summary>
     public int RingSeconds => _ring != null ? _ringSeconds : _cfg.BufferSeconds;
 
-    public Task<ClipResult> SaveClipAsync(int? seconds = null) => Task.Run(() => SaveClip(seconds));
+    public Task<ClipResult> SaveClipAsync(int? seconds = null, string? gameHint = null) => Task.Run(() => SaveClip(seconds, gameHint));
 
-    public ClipResult SaveClip(int? seconds = null)
+    /// <param name="gameHint">The game the app detected (what the UI shows); names the clip only when the engine has no game of its own.</param>
+    public ClipResult SaveClip(int? seconds = null, string? gameHint = null)
     {
         var ring = _ring; var enc = _encoder;
         if (!IsRunning || ring == null || enc == null) throw new InvalidOperationException("Not recording");
@@ -496,7 +537,9 @@ internal sealed unsafe class Engine : IDisposable
                 t.Snapshot(origin, end))).ToList();
         }
 
-        string game = _gameName ?? "";
+        // The engine's own pick wins (live fullscreen detection or the manual Game process); the hint covers the rest (device
+        // Game track, a save before the next poll picks the hint up).
+        string game = _gameName ?? (string.IsNullOrEmpty(gameHint) ? "" : gameHint);
         Directory.CreateDirectory(_cfg.ClipsFolder);
         string baseName = string.IsNullOrEmpty(game) ? "Clip" : SanitizeName(game);
         string path = Path.Combine(_cfg.ClipsFolder, $"{baseName} {DateTime.Now:yyyy-MM-dd HH-mm-ss}.mp4");
@@ -511,7 +554,7 @@ internal sealed unsafe class Engine : IDisposable
         video.Clear();
         double duration = (end - origin) / 10_000_000.0;
         long size = new FileInfo(path).Length;
-        Log.Info($"Clip saved: {path} ({duration:0.0}s, {size / 1_048_576.0:0.0} MB, {frames} frames, {audio.Count} audio tracks, {enc.Codec}{(enc.IsAv1 ? " experimental" : "")}, mux {t0.ElapsedMilliseconds} ms)");
+        Log.Info($"Clip saved: {path} ({duration:0.0}s, {size / 1_048_576.0:0.0} MB, {frames} frames, {audioNames.Length} audio tracks, {enc.Codec}{(enc.IsAv1 ? " experimental" : "")}, mux {t0.ElapsedMilliseconds} ms)");
         return new ClipResult(path, duration, size, string.IsNullOrEmpty(game) ? null : game, audioNames);
     }
 
