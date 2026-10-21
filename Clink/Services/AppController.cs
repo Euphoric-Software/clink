@@ -547,8 +547,7 @@ internal sealed class AppController : IDisposable
         {
             int? length = seconds is int s && s > 0 ? Math.Clamp(s, 1, 3600) : null;
             var result = await Engine.SaveClipAsync(length);
-            var tracks = Engine.GetStats().Audio.Select(a => a.Name).ToArray();
-            var entry = Library.Add(result.Path, result.DurationSeconds, result.SizeBytes, result.Game, tracks);
+            var entry = Library.Add(result.Path, result.DurationSeconds, result.SizeBytes, result.Game, result.AudioTracks);
             Say($"Clip saved ({result.DurationSeconds:0}s)");
             Toasts.ShowClipSaved(entry);
             Archive.NotifyClipSaved();
