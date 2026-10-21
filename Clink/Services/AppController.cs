@@ -95,6 +95,7 @@ internal sealed class AppController : IDisposable
     private string? _announceGame;          // show the "Recording started" toast for this game once the engine is up
     private int _detecting;
     private string _trayText = "";
+    private string? _errorAnnounced;        // the engine error the balloon has already reported
 
     public AppController(Settings settings, Updater updater)
     {
@@ -218,13 +219,24 @@ internal sealed class AppController : IDisposable
             // stops without reporting an error from being restarted every tick.
             StartEngine();
         }
-        // A GPU reset (driver crash / TDR) stops the engine with DeviceLost: start it again on a fresh device whenever it should be
-        // recording (always mode, or a game is running), on the same 10 s backoff until it records again.
-        if (Engine.DeviceLost && !Engine.IsRunning && !IsPaused && !_starting && (!GameOnly || _gamePid != 0) && now - _lastStartAt > TimeSpan.FromSeconds(10))
+        if (!Engine.IsRunning && Engine.Error is string error && !IsPaused && (!GameOnly || _gamePid != 0))
         {
-            Say("The GPU was reset, restarting capture");
-            StartEngine();
+            // The recorder died (NVENC session limit, GPU reset, ...) while it should be recording: tell the user once per
+            // distinct error (the window is usually in the tray while a game runs), and retry: every 10 s after a GPU reset
+            // (driver crash / TDR, Engine.DeviceLost) until it records on a fresh device, every 30 s otherwise.
+            if (error != _errorAnnounced)
+            {
+                _errorAnnounced = error;
+                if (!MainWindowVisible) ShowBalloon("Clink stopped recording", error);
+            }
+            if (!_starting && now - _lastStartAt > TimeSpan.FromSeconds(Engine.DeviceLost ? 10 : 30))
+            {
+                if (Engine.DeviceLost) Say("The GPU was reset, restarting capture");
+                Log.Info("Recorder is stopped with an error, retrying: " + error);
+                StartEngine();
+            }
         }
+        else if (Engine.IsRunning) _errorAnnounced = null;
         RaiseStateChanged();
     }
 
@@ -261,12 +273,14 @@ internal sealed class AppController : IDisposable
             Log.Info($"Game exited: {CurrentGame}");
             GameProcessTracker.Forget(_gamePid);   // its pid may be handed to an unrelated process within seconds
             _gamePid = 0; CurrentGame = null; CurrentGameSource = null; _announceGame = null;
+            Engine.SetDetectedGame(0, null);
             if (GameOnly) _gameStopAt = DateTime.UtcNow + GameExitGrace;
             RaiseStateChanged();
         }
         if (found is { } g)
         {
             _gamePid = g.Pid; CurrentGame = g.Name; CurrentGameSource = g.Source; _gameStopAt = null;
+            Engine.SetDetectedGame(g.Pid, g.Name);   // the Game audio track uses the same detection (SPEC-v2 §5)
             Log.Info($"Game detected: {g.Name} pid={g.Pid} ({g.Source})");
             if (!IsPaused)
             {
@@ -536,7 +550,8 @@ internal sealed class AppController : IDisposable
     {
         if (!Engine.IsRunning)
         {
-            Say(IsPaused ? "Recording is paused" : GameOnly && _gamePid == 0 ? "Not recording: waiting for a game" : "Not recording yet");
+            Say(IsPaused ? "Recording is paused" : GameOnly && _gamePid == 0 ? "Not recording: waiting for a game"
+                : Engine.Error != null ? "Not recording: " + Engine.Error : "Not recording yet");
             return;
         }
         if ((DateTime.UtcNow - _lastClipAt).TotalMilliseconds < 700) return;
@@ -546,7 +561,8 @@ internal sealed class AppController : IDisposable
         try
         {
             int? length = seconds is int s && s > 0 ? Math.Clamp(s, 1, 3600) : null;
-            var result = await Engine.SaveClipAsync(length);
+            // The engine names the clip after its own game; the app's detection fills in when it has none (device Game track, custom app).
+            var result = await Engine.SaveClipAsync(length, CurrentGame);
             var entry = Library.Add(result.Path, result.DurationSeconds, result.SizeBytes, result.Game, result.AudioTracks);
             Say($"Clip saved ({result.DurationSeconds:0}s)");
             Toasts.ShowClipSaved(entry);
@@ -557,6 +573,8 @@ internal sealed class AppController : IDisposable
         {
             Log.Error("Save clip", ex);
             Say("Clip failed: " + ex.Message);
+            // The click has already played: with the window in the tray a footer notice alone would leave the user thinking it saved.
+            if (!MainWindowVisible) ShowBalloon("Clip not saved", ex.Message);
         }
         finally { _saving = 0; }
     }
