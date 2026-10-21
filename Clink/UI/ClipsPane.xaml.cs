@@ -64,6 +64,7 @@ public partial class ClipsPane : UserControl
             if (!e.IsShared && !e.IsArchived && !exists) continue;   // the library drops these on load; a late delete shows up here
             var row = RowFor(e);
             keep.Add(e);
+            if (!e.IsArchived && exists && !row.HasLocalFile && row.Thumbnail == null) row.Checked = false;   // back (Recycle Bin restore): make its thumbnail
             if (!e.IsArchived) row.HasLocalFile = exists;   // a shared clip deleted outside Clink: no Play / folder, "local file deleted"
             else if (row.Checked && !row.HasLocalFile) row.Checked = false;   // look again: the archive may be back (or the file deleted there)
             bool hasFile = e.IsArchived ? !row.DeletedFromArchive : exists;
@@ -136,7 +137,7 @@ public partial class ClipsPane : UserControl
     /// <summary>
     /// Is the file there? For an archived clip, whether its archive folder answers first: if not, the NAS / VPN is down
     /// (<see cref="FileState.Offline"/>); if it does and the file is not in it, it was deleted there (<see cref="FileState.Missing"/>,
-    /// only when the folder still answers after the file check, so a NAS dropping in between never reads as a delete). A folder that
+    /// only on an explicit "file not found" with the folder still answering after it; any other error is Offline). A folder that
     /// did not answer is remembered for <see cref="OfflineRetry"/>, so the worker waits out the SMB timeout once, not once per clip.
     /// Any thread; never call it on the UI thread for an archived path.
     /// </summary>
@@ -147,7 +148,16 @@ public partial class ClipsPane : UserControl
         string? dir = archived ? Path.GetDirectoryName(path) : null;
         if (dir == null) return FileThere(path) ? FileState.Present : FileState.Missing;
         if (useOfflineCache && _offlineDirs.TryGetValue(dir, out var since) && DateTime.UtcNow - since < OfflineRetry) return FileState.Offline;
-        FileState state = !DirThere(dir) ? FileState.Offline : FileThere(path) ? FileState.Present : DirThere(dir) ? FileState.Missing : FileState.Offline;
+        FileState state;
+        if (!DirThere(dir)) state = FileState.Offline;
+        else
+        {
+            // Not File.Exists: it says false for any error (a dropped SMB session, a timeout, access denied while the share
+            // re-authenticates), and Missing drops the entry from the index. Only the server's "no such file" is a delete.
+            try { File.GetAttributes(path); state = FileState.Present; }
+            catch (FileNotFoundException) { state = DirThere(dir) ? FileState.Missing : FileState.Offline; }
+            catch { state = FileState.Offline; }
+        }
         if (state == FileState.Offline) _offlineDirs[dir] = DateTime.UtcNow; else _offlineDirs.TryRemove(dir, out _);
         return state;
     }
