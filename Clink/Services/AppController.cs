@@ -310,6 +310,7 @@ internal sealed class AppController : IDisposable
             }
             RaiseStateChanged();
         }
+        Hotkeys.GamePid = _gamePid;   // a hotkey fires with extra modifiers held (crouch + ScrollLock) only in the game
     }
 
     // ------------------------------------------------------------------ updates
@@ -322,6 +323,18 @@ internal sealed class AppController : IDisposable
     /// </summary>
     private static bool MainWindowInFront =>
         System.Windows.Application.Current?.MainWindow is { IsVisible: true, IsActive: true, WindowState: not System.Windows.WindowState.Minimized };
+
+    /// <summary>
+    /// Why something asked for from the hotkey, the tray or the command line (no UI of their own) did not happen, shown once
+    /// where the user is looking; the caller has already put it in the footer. Nothing more while the window is in front; a
+    /// Clink toast while the detected game is in front (Windows holds tray balloons back over a game); a tray balloon otherwise.
+    /// </summary>
+    private void NotifyProblem(string title, string text)
+    {
+        if (MainWindowInFront) return;
+        if (Hotkeys.GameInFront()) Toasts.ShowNotice(title, text);
+        else ShowBalloon(title, text);
+    }
 
     private void OnUpdateAvailable(UpdateInfo info)
     {
@@ -489,7 +502,7 @@ internal sealed class AppController : IDisposable
                         Say("Recording failed: " + Engine.Error);
                         // The window is usually in the tray while a game runs, so the footer alone is invisible. Once per
                         // streak: Tick keeps retrying.
-                        if (_startFailures++ == 0 && !MainWindowInFront) ShowBalloon("Clink is not recording", Engine.Error);
+                        if (_startFailures++ == 0) NotifyProblem("Clink is not recording", Engine.Error);
                     }
                 }
                 if (Engine.IsRunning && _announceGame is string game) { _announceGame = null; Toasts.ShowRecordingStarted(game); }
@@ -583,7 +596,13 @@ internal sealed class AppController : IDisposable
     {
         switch ((a.Action ?? "clip").Trim().ToLowerInvariant())
         {
-            case "pause": TogglePause(); break;
+            case "pause":
+                TogglePause();
+                // In a game nothing else shows it: a press by mistake would stop recording without a sign. A resume with a game
+                // running gets its "Recording started" toast once the engine is up.
+                if (!MainWindowInFront && Settings.ToastRecording.Enabled && (IsPaused || CurrentGame == null))
+                    Toasts.ShowNotice(IsPaused ? "Recording paused" : "Recording resumed", IsPaused ? $"Press {a.Keys} to resume" : GameOnly ? "Waiting for a game" : "Replay buffer restarted");
+                break;
             case "share-last": case "share": ShareLast(); break;
             default: ClipNow(a.Seconds > 0 ? a.Seconds : null); break;
         }
@@ -609,7 +628,7 @@ internal sealed class AppController : IDisposable
             if (!MainWindowInFront)
             {
                 if (Settings.ClickSound) System.Media.SystemSounds.Exclamation.Play();
-                ShowBalloon("Clip not saved", waiting ? why + ". If your game is not detected, add it under Capture → Recording → Custom apps." : why);
+                NotifyProblem("Clip not saved", waiting ? why + ". If your game is not detected, add it under Capture → Recording → Custom apps." : why);
             }
             return;
         }
@@ -637,7 +656,7 @@ internal sealed class AppController : IDisposable
             Log.Error("Save clip", ex);
             Say("Clip failed: " + ex.Message);
             // The click has already played: without this a failed save looks like a saved clip.
-            if (!MainWindowInFront) ShowBalloon("Clip not saved", ex.Message);
+            NotifyProblem("Clip not saved", ex.Message);
         }
         finally { _saving = 0; }
     }

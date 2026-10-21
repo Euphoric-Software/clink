@@ -59,6 +59,10 @@ internal sealed class Toasts
         Add(new ToastWindow(this, "recording", null, null, "Recording started", game, Duration(_settings.ToastRecording), false));
     });
 
+    /// <summary>A plain title + line toast in the "Recording started" layout ("Clip not saved", "Recording paused"); the caller decides whether it is wanted.</summary>
+    public void ShowNotice(string title, string text) =>
+        Post(() => Add(new ToastWindow(this, "recording", null, null, title, text, Duration(_settings.ToastRecording), false)));
+
     /// <summary>Shows a sample toast of a kind ("clip" | "shared" | "recording") with the current position and duration, ignoring the enable switch.</summary>
     public void Preview(string kind) => Post(() =>
     {
