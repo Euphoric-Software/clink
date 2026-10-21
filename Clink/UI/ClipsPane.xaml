@@ -28,6 +28,29 @@
                 </DataTrigger>
             </Style.Triggers>
         </Style>
+        <!-- The lists are virtualized (only the rows on screen get visuals), so every clip is listed however many there are. -->
+        <Style x:Key="ClipList" TargetType="ItemsControl">
+            <Setter Property="VirtualizingPanel.IsVirtualizing" Value="True" />
+            <Setter Property="VirtualizingPanel.VirtualizationMode" Value="Recycling" />
+            <Setter Property="VirtualizingPanel.ScrollUnit" Value="Pixel" />
+            <Setter Property="ScrollViewer.CanContentScroll" Value="True" />
+            <Setter Property="ItemsPanel">
+                <Setter.Value>
+                    <ItemsPanelTemplate>
+                        <VirtualizingStackPanel />
+                    </ItemsPanelTemplate>
+                </Setter.Value>
+            </Setter>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ItemsControl">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,0,2,0" CanContentScroll="True">
+                            <ItemsPresenter />
+                        </ScrollViewer>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
         <Style x:Key="UploadBar" TargetType="ProgressBar" BasedOn="{StaticResource {x:Type ProgressBar}}">
             <Setter Property="Visibility" Value="Collapsed" />
             <Setter Property="Margin" Value="0,4,0,0" />
@@ -112,25 +135,19 @@
         <TabItem x:Name="LocalTab" Header="Local">
             <Grid Margin="0,8,0,0">
                 <TextBlock x:Name="NoLocalText" Style="{StaticResource MutedText}" Margin="8" Text="No clips yet. Press the hotkey while gaming." />
-                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,0,2,0">
-                    <ItemsControl x:Name="LocalList" ItemTemplate="{StaticResource LocalRow}" />
-                </ScrollViewer>
+                <ItemsControl x:Name="LocalList" ItemTemplate="{StaticResource LocalRow}" Style="{StaticResource ClipList}" />
             </Grid>
         </TabItem>
         <TabItem x:Name="CloudTab" Header="Cloud">
             <Grid Margin="0,8,0,0">
                 <TextBlock x:Name="NoCloudText" Style="{StaticResource MutedText}" Margin="8" Text="Nothing shared yet. Share a clip and it is listed here, even after the local file is gone." />
-                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,0,2,0">
-                    <ItemsControl x:Name="CloudList" ItemTemplate="{StaticResource CloudRow}" />
-                </ScrollViewer>
+                <ItemsControl x:Name="CloudList" ItemTemplate="{StaticResource CloudRow}" Style="{StaticResource ClipList}" />
             </Grid>
         </TabItem>
         <TabItem x:Name="TrimTab" Header="Trimmed">
             <Grid Margin="0,8,0,0">
                 <TextBlock x:Name="NoTrimText" Style="{StaticResource MutedText}" Margin="8" Text="No trimmed clips yet. Trim saves a cut copy next to the original." />
-                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,0,2,0">
-                    <ItemsControl x:Name="TrimList" ItemTemplate="{StaticResource LocalRow}" />
-                </ScrollViewer>
+                <ItemsControl x:Name="TrimList" ItemTemplate="{StaticResource LocalRow}" Style="{StaticResource ClipList}" />
             </Grid>
         </TabItem>
     </TabControl>

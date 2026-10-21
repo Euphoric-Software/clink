@@ -115,7 +115,7 @@ internal sealed class Toasts
     {
         string game = string.IsNullOrEmpty(e.Game) ? "" : e.Game + " · ";
         // Decimal MB, the unit the Copium / Discord limits and the Share pre-check use, so a size never reads as under a limit it is over.
-        return $"{game}{TimeSpan.FromSeconds(e.Duration).ToString(e.Duration >= 3600 ? @"h\:mm\:ss" : @"m\:ss")} · {Capabilities.FormatBytes(e.Size)}";
+        return $"{game}{Capabilities.FormatClipLength(e.Duration)} · {Capabilities.FormatBytes(e.Size)}";
     }
 
     private void Add(ToastWindow t)
