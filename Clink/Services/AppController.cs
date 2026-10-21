@@ -254,12 +254,14 @@ internal sealed class AppController : IDisposable
             Log.Info($"Game exited: {CurrentGame}");
             GameProcessTracker.Forget(_gamePid);   // its pid may be handed to an unrelated process within seconds
             _gamePid = 0; CurrentGame = null; CurrentGameSource = null; _announceGame = null;
+            Engine.SetDetectedGame(0, null);
             if (GameOnly) _gameStopAt = DateTime.UtcNow + GameExitGrace;
             RaiseStateChanged();
         }
         if (found is { } g)
         {
             _gamePid = g.Pid; CurrentGame = g.Name; CurrentGameSource = g.Source; _gameStopAt = null;
+            Engine.SetDetectedGame(g.Pid, g.Name);   // the Game audio track follows this detection, not only the focused window
             Log.Info($"Game detected: {g.Name} pid={g.Pid} ({g.Source})");
             if (!IsPaused)
             {
@@ -531,8 +533,7 @@ internal sealed class AppController : IDisposable
         {
             int? length = seconds is int s && s > 0 ? Math.Clamp(s, 1, 3600) : null;
             var result = await Engine.SaveClipAsync(length);
-            var tracks = Engine.GetStats().Audio.Select(a => a.Name).ToArray();
-            var entry = Library.Add(result.Path, result.DurationSeconds, result.SizeBytes, result.Game, tracks);
+            var entry = Library.Add(result.Path, result.DurationSeconds, result.SizeBytes, result.Game, result.AudioTracks ?? Array.Empty<string>());
             Say($"Clip saved ({result.DurationSeconds:0}s)");
             Toasts.ShowClipSaved(entry);
             Archive.NotifyClipSaved();

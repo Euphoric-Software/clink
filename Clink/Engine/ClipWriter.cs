@@ -3,7 +3,8 @@ using Clink.Encode;
 
 namespace Clink.Engine;
 
-internal sealed record ClipResult(string Path, double DurationSeconds, long SizeBytes, string? Game);
+/// <param name="AudioTracks">Names of the audio tracks in the file, in file order (enabled tracks that had audio; the muxer drops empty ones).</param>
+internal sealed record ClipResult(string Path, double DurationSeconds, long SizeBytes, string? Game, string[]? AudioTracks = null);
 
 /// <summary>
 /// Turns a replay-buffer snapshot into an MP4 file. Samples are streamed: each one is converted and handed to the muxer in
