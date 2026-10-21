@@ -14,6 +14,9 @@ Things that were asked for or came up while building, roughly in the order they'
 - [ ] Mouse buttons as hotkeys.
 - [x] Apply the size target's bitrate and the AV1 choice in `AppController.BuildConfig` (the engine records at the
       bitrate the Capture tab shows, and a codec the GPU lacks falls back to one it has, as the tab says).
+- [x] **No silent misses** (v0.2.4): a clip or share that does not happen says why over the game (Clink toast) or in a
+      tray balloon; a recorder that fails to start is retried with a backoff and reported once.
+- [x] **GPU reset recovery** (v0.2.4): a driver crash / TDR is detected and capture restarts on a fresh device.
 
 ## Distribution
 
@@ -23,6 +26,8 @@ Things that were asked for or came up while building, roughly in the order they'
 ## Stream Deck
 
 - [x] Works today through the Stream Deck "Hotkey" action or `Clink.exe --clip`.
+- [x] `--clip` / `--share-last` / `--trim-last` with Clink not running start it in the tray and run the command, and a
+      "clip, then share" multi-action shares the clip it just made (v0.2.4).
 - [ ] Native Stream Deck plugin: Clip / Pause / Share-last-clip actions with a live state icon.
 
 ## Audio
@@ -43,6 +48,12 @@ Things that were asked for or came up while building, roughly in the order they'
       AV1 encoder).
 - [ ] Capture a single window instead of a monitor.
 - [x] Optional on-screen "recording" indicator: the status dot (Alerts tab).
+- [x] Toasts and the status dot are excluded from capture, so they never end up in a clip (v0.2.4).
+- [x] Outputs wider than 4096 px (super-ultrawide at Native) record HEVC instead of failing in H.264 (v0.2.4).
+- [x] Portrait monitors: the 1440p / 1080p / 720p presets name the short side (v0.2.4).
+- [ ] Trim-editor preview and `--probe` frames of HEVC clips whose height is not a multiple of 16 (1080p) include the
+      encoder's 8 padding rows at the bottom: crop to `MF_MT_MINIMUM_DISPLAY_APERTURE`. The saved and trimmed files are
+      fine (players crop them); deferred from v0.2.4.
 
 ## Later, maybe
 
