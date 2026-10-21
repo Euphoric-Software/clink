@@ -90,12 +90,13 @@ internal sealed class AppController : IDisposable
     private int _startGen;
     private bool _starting;
     private DateTime _lastStartAt = DateTime.MinValue;
+    private int _startFailures;             // engine starts that failed in a row (Tick's retry backoff, one balloon per streak)
+    private bool _disposed;
     private uint _gamePid;
     private DateTime? _gameStopAt;          // game-only mode: stop the engine at this time unless a game comes back
     private string? _announceGame;          // show the "Recording started" toast for this game once the engine is up
     private int _detecting;
     private string _trayText = "";
-    private string? _errorAnnounced;        // the engine error the balloon has already reported
 
     public AppController(Settings settings, Updater updater)
     {
@@ -114,15 +115,20 @@ internal sealed class AppController : IDisposable
     /// <summary>Returns true if this process should run; otherwise the command was forwarded to the running instance.</summary>
     public static bool AcquireSingleInstance(string[] args)
     {
-        s_mutex = new Mutex(true, MutexName, out bool createdNew);
+        bool createdNew;
+        try { s_mutex = new Mutex(true, MutexName, out createdNew); }
+        catch (UnauthorizedAccessException) { createdNew = false; }   // an elevated Clink owns it: it is running all the same
         if (createdNew) return true;
-        string cmd = args.Any(a => a.Equals("--clip", StringComparison.OrdinalIgnoreCase)) ? "clip"
-            : args.Any(a => a.Equals("--trim-last", StringComparison.OrdinalIgnoreCase)) ? "trim"
-            : args.Any(a => a.Equals("--share-last", StringComparison.OrdinalIgnoreCase)) ? "share"
-            : "show";
-        SendCommand(cmd);
+        SendCommand(CommandFromArgs(args) ?? "show");
         return false;
     }
+
+    /// <summary>The pipe command a command line asks for: "clip" (--clip), "trim" (--trim-last), "share" (--share-last), or null.</summary>
+    public static string? CommandFromArgs(string[] args) =>
+        args.Any(a => a.Equals("--clip", StringComparison.OrdinalIgnoreCase)) ? "clip"
+        : args.Any(a => a.Equals("--trim-last", StringComparison.OrdinalIgnoreCase)) ? "trim"
+        : args.Any(a => a.Equals("--share-last", StringComparison.OrdinalIgnoreCase)) ? "share"
+        : null;
 
     /// <summary>Gives up the single-instance mutex so a replacement process can start (used when handing over to an update).</summary>
     public static void ReleaseSingleInstance()
@@ -154,19 +160,37 @@ internal sealed class AppController : IDisposable
                 await server.WaitForConnectionAsync(ct);
                 using var r = new StreamReader(server);
                 string? line = await r.ReadLineAsync(ct);
-                switch (line?.Trim().ToLowerInvariant())
-                {
-                    case "clip": _ui.BeginInvoke(() => ClipNow()); break;
-                    case "show": _ui.BeginInvoke(() => ShowRequested?.Invoke()); break;
-                    case "trim": _ui.BeginInvoke(() => TrimLastRequested?.Invoke()); break;
-                    case "share": _ui.BeginInvoke(ShareLast); break;
-                    case "pause": _ui.BeginInvoke(() => { if (!IsPaused) TogglePause(); }); break;
-                    case "resume": _ui.BeginInvoke(() => { if (IsPaused) TogglePause(); }); break;
-                }
+                if (line != null) _ = _ui.BeginInvoke(() => RunCommand(line));
             }
             catch (OperationCanceledException) { }
             catch (Exception ex) { Log.Warn("pipe server: " + ex.Message); await Task.Delay(500, ct).ContinueWith(_ => { }); }
         }
+    }
+
+    /// <summary>A control command from the pipe ("clip", "show", "trim", "share", "pause", "resume"). UI thread.</summary>
+    internal void RunCommand(string cmd)
+    {
+        switch (cmd.Trim().ToLowerInvariant())
+        {
+            case "clip": ClipNow(); break;
+            case "show": ShowRequested?.Invoke(); break;
+            case "trim": TrimLastRequested?.Invoke(); break;
+            case "share": ShareLast(); break;
+            case "pause": if (!IsPaused) TogglePause(); break;
+            case "resume": if (IsPaused) TogglePause(); break;
+            default: Log.Warn("pipe: unknown command " + (cmd.Length > 40 ? cmd[..40] + "…" : cmd)); break;
+        }
+    }
+
+    /// <summary>
+    /// "--clip" / "--share-last" / "--trim-last" on a start that found no Clink running: runs it once the app is up. A clip
+    /// has nothing to save yet (nothing was recording), so that one says so instead of failing silently.
+    /// </summary>
+    internal void RunStartupCommand(string cmd)
+    {
+        if (cmd != "clip") { RunCommand(cmd); return; }
+        ShowBalloon("Clink started", "It was not running, so there was nothing to save yet. "
+            + (GameOnly ? "It records while a game runs." : "It is recording now."));
     }
 
     // ------------------------------------------------------------------ lifecycle
@@ -213,30 +237,20 @@ internal sealed class AppController : IDisposable
                 if (_gamePid == 0 && Engine.IsRunning) { Log.Info("No game running, stopping the recorder"); StopEngine(); }
             }
         }
-        else if (!Engine.IsRunning && !IsPaused && !_starting && Engine.Error == null && now - _lastStartAt > TimeSpan.FromSeconds(10))
+        // A recorder that should be running but is not: the mode was just switched, a start failed (encoder sessions taken by
+        // another recorder, GPU or monitor still settling after resume / a display change) or it failed mid-run. Retry: 10 s
+        // after a start that stopped without an error, 30 s / 30 s / 1 min / 2 min while starts keep failing; after a GPU reset
+        // (driver crash / TDR, Engine.DeviceLost) a third of that, so recording resumes on a fresh device as soon as the driver
+        // is back. StartEngine raises one balloon per failure streak.
+        bool wanted = !IsPaused && (!GameOnly || _gamePid != 0);
+        int failedWait = Engine.DeviceLost ? 10 : 30;
+        var backoff = TimeSpan.FromSeconds(Engine.Error == null ? 10 : failedWait << Math.Clamp(_startFailures - 1, 0, 2));
+        if (wanted && !Engine.IsRunning && !_starting && now - _lastStartAt > backoff)
         {
-            // "Always" mode with a stopped engine (the mode was just switched): start it. The 10 s backoff keeps an engine that
-            // stops without reporting an error from being restarted every tick.
+            if (Engine.DeviceLost) Say("The GPU was reset, restarting capture");
+            if (Engine.Error != null) Log.Info("Retrying the recorder after: " + Engine.Error);
             StartEngine();
         }
-        if (!Engine.IsRunning && Engine.Error is string error && !IsPaused && (!GameOnly || _gamePid != 0))
-        {
-            // The recorder died (NVENC session limit, GPU reset, ...) while it should be recording: tell the user once per
-            // distinct error (the window is usually in the tray while a game runs), and retry: every 10 s after a GPU reset
-            // (driver crash / TDR, Engine.DeviceLost) until it records on a fresh device, every 30 s otherwise.
-            if (error != _errorAnnounced)
-            {
-                _errorAnnounced = error;
-                if (!MainWindowVisible) ShowBalloon("Clink stopped recording", error);
-            }
-            if (!_starting && now - _lastStartAt > TimeSpan.FromSeconds(Engine.DeviceLost ? 10 : 30))
-            {
-                if (Engine.DeviceLost) Say("The GPU was reset, restarting capture");
-                Log.Info("Recorder is stopped with an error, retrying: " + error);
-                StartEngine();
-            }
-        }
-        else if (Engine.IsRunning) _errorAnnounced = null;
         RaiseStateChanged();
     }
 
@@ -354,7 +368,8 @@ internal sealed class AppController : IDisposable
 
     private void OnPowerModeChanged(object? sender, PowerModeChangedEventArgs e)
     {
-        if (e.Mode == PowerModes.Resume) _ui.BeginInvoke(async () => { await Task.Delay(3000); StartEngine(); });
+        // Monitor handles can change across sleep (a monitor that did not wake up, a dock): restart on fresh ones.
+        if (e.Mode == PowerModes.Resume) _ui.BeginInvoke(async () => { await Task.Delay(3000); Monitors = Native.Monitors.Enumerate(); StartEngine(); });
     }
 
     public MonitorInfo? SelectedMonitor =>
@@ -423,11 +438,11 @@ internal sealed class AppController : IDisposable
             return;
         }
         int gen = Interlocked.Increment(ref _startGen);
+        _lastStartAt = DateTime.UtcNow;   // also when the config fails: Tick retries on its backoff, not every second
         EngineConfig cfg;
         try { cfg = BuildConfig(); }
         catch (Exception ex) { Say("Cannot start: " + ex.Message); return; }
         _starting = true;
-        _lastStartAt = DateTime.UtcNow;
         Task.Run(() =>
         {
             _engineGate.Wait();
@@ -454,8 +469,19 @@ internal sealed class AppController : IDisposable
             finally { _engineGate.Release(); }
             _ui.BeginInvoke(() =>
             {
-                if (gen == _startGen) _starting = false;
-                if (!Engine.IsRunning && Engine.Error != null) Say("Recording failed: " + Engine.Error);
+                if (gen == _startGen)
+                {
+                    // Only the newest start reports: a superseded one would show an older start's error.
+                    _starting = false;
+                    if (Engine.IsRunning) _startFailures = 0;
+                    else if (Engine.Error != null)
+                    {
+                        Say("Recording failed: " + Engine.Error);
+                        // The window is usually in the tray while a game runs, so the footer alone is invisible. Once per
+                        // streak: Tick keeps retrying.
+                        if (_startFailures++ == 0 && !MainWindowVisible) ShowBalloon("Clink is not recording", Engine.Error);
+                    }
+                }
                 if (Engine.IsRunning && _announceGame is string game) { _announceGame = null; Toasts.ShowRecordingStarted(game); }
                 RaiseStateChanged();
             });
@@ -466,12 +492,16 @@ internal sealed class AppController : IDisposable
     {
         Interlocked.Increment(ref _startGen);   // a start that has not run yet is cancelled
         _starting = false;
+        _startFailures = 0;
         Task.Run(() =>
         {
             _engineGate.Wait();
             try { Engine.Stop(); }
             catch (Exception ex) { Log.Warn("Engine stop: " + ex.Message); }
             finally { _engineGate.Release(); }
+            // The recorder is idle now: give the last clips' buffers back to the OS. They are gen2 / large-object garbage that
+            // an idle tray app may not collect for hours (a ~20 ms pause here costs nothing).
+            try { GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, blocking: true, compacting: true); } catch { }
             _ui.BeginInvoke(RaiseStateChanged);
         });
     }
@@ -550,8 +580,14 @@ internal sealed class AppController : IDisposable
     {
         if (!Engine.IsRunning)
         {
-            Say(IsPaused ? "Recording is paused" : GameOnly && _gamePid == 0 ? "Not recording: waiting for a game"
-                : Engine.Error != null ? "Not recording: " + Engine.Error : "Not recording yet");
+            bool waiting = !IsPaused && GameOnly && _gamePid == 0;
+            string why = IsPaused ? "Recording is paused"
+                : waiting ? "Not recording: waiting for a game"
+                : Engine.Error is string error ? "Not recording: " + error
+                : "Not recording yet";
+            Say(why);
+            // The hotkey, the tray and --clip have no UI of their own and the window is usually hidden while a game runs (see ShareLast).
+            if (!MainWindowVisible) ShowBalloon("Clip not saved", waiting ? why + ". If your game is not detected, add it under Custom apps." : why);
             return;
         }
         if ((DateTime.UtcNow - _lastClipAt).TotalMilliseconds < 700) return;
@@ -563,17 +599,21 @@ internal sealed class AppController : IDisposable
             int? length = seconds is int s && s > 0 ? Math.Clamp(s, 1, 3600) : null;
             // The engine names the clip after its own game; the app's detection fills in when it has none (device Game track, custom app).
             var result = await Engine.SaveClipAsync(length, CurrentGame);
+            // The names of the tracks the file really has, in file order (the trim editor labels and keeps tracks by them).
             var entry = Library.Add(result.Path, result.DurationSeconds, result.SizeBytes, result.Game, result.AudioTracks);
             Say($"Clip saved ({result.DurationSeconds:0}s)");
             Toasts.ShowClipSaved(entry);
             Archive.NotifyClipSaved();
             ClipSaved?.Invoke(entry);
+            // The save copied the clip into managed buffers that are all garbage now: a background GC lets the next save reuse
+            // that space instead of growing the process by another clip.
+            GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: false);
         }
         catch (Exception ex)
         {
             Log.Error("Save clip", ex);
             Say("Clip failed: " + ex.Message);
-            // The click has already played: with the window in the tray a footer notice alone would leave the user thinking it saved.
+            // The click has already played: without this a failed save looks like a saved clip.
             if (!MainWindowVisible) ShowBalloon("Clip not saved", ex.Message);
         }
         finally { _saving = 0; }
@@ -747,18 +787,22 @@ internal sealed class AppController : IDisposable
     {
         _ui.BeginInvoke(() =>
         {
-            Dispose();
-            System.Windows.Application.Current.Shutdown();
+            // A throw while cleaning up must not leave a process with no tray icon running on.
+            try { Dispose(); }
+            finally { System.Windows.Application.Current.Shutdown(); }
         });
     }
 
     public void Dispose()
     {
+        if (_disposed) return;   // Quit disposes, then App.OnExit does again
+        _disposed = true;
+        Log.Info("Quitting");
         _cts.Cancel();
         _timer?.Stop();
         SystemEvents.DisplaySettingsChanged -= OnDisplayChanged;
         SystemEvents.PowerModeChanged -= OnPowerModeChanged;
-        Hotkeys.Uninstall();
+        try { Hotkeys.Uninstall(); } catch { }
         try { Archive.Stop(); } catch { }
         try { Toasts.CloseAll(); } catch { }
         try { _dot?.Close(); _dot = null; } catch { }
