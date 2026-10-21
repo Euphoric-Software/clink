@@ -89,6 +89,7 @@ internal sealed class AppController : IDisposable
     private DateTime _lastClipAt = DateTime.MinValue;
     private int _startGen;
     private bool _starting;
+    private bool _stopping;                 // a StopEngine is in flight: Engine.IsRunning reads true until its teardown has finished
     private DateTime _lastStartAt = DateTime.MinValue;
     private uint _gamePid;
     private DateTime? _gameStopAt;          // game-only mode: stop the engine at this time unless a game comes back
@@ -205,7 +206,7 @@ internal sealed class AppController : IDisposable
         if (GameOnly)
         {
             // The mode may have been switched while the engine was running with no game: give it the same grace as a game exit.
-            if (_gamePid == 0 && Engine.IsRunning && _gameStopAt == null && !IsPaused) _gameStopAt = now + GameExitGrace;
+            if (_gamePid == 0 && Engine.IsRunning && !_stopping && _gameStopAt == null && !IsPaused) _gameStopAt = now + GameExitGrace;
             if (_gameStopAt is DateTime t && now >= t)
             {
                 _gameStopAt = null;
@@ -263,10 +264,11 @@ internal sealed class AppController : IDisposable
             Log.Info($"Game detected: {g.Name} pid={g.Pid} ({g.Source})");
             if (!IsPaused)
             {
-                if (Engine.IsRunning) Toasts.ShowRecordingStarted(g.Name);     // always mode, or still in the grace period
+                if (Engine.IsRunning && !_stopping) Toasts.ShowRecordingStarted(g.Name);     // always mode, or still in the grace period
                 else
                 {
-                    // The toast follows once the engine is up: started here (game-only), or by Start()/Tick in always mode.
+                    // The toast follows once the engine is up: started here (game-only; this also overrides a grace-period stop
+                    // that is still tearing down), or by Start()/Tick in always mode.
                     _announceGame = g.Name;
                     if (GameOnly) StartEngine();
                 }
@@ -402,7 +404,8 @@ internal sealed class AppController : IDisposable
         int gen = Interlocked.Increment(ref _startGen);
         EngineConfig cfg;
         try { cfg = BuildConfig(); }
-        catch (Exception ex) { Say("Cannot start: " + ex.Message); return; }
+        catch (Exception ex) { Say("Cannot start: " + ex.Message); if (_stopping) StopEngine(); return; }   // the new generation cancelled that stop: re-issue it
+        _stopping = false;
         _starting = true;
         _lastStartAt = DateTime.UtcNow;
         Task.Run(() =>
@@ -434,15 +437,20 @@ internal sealed class AppController : IDisposable
 
     private void StopEngine()
     {
-        Interlocked.Increment(ref _startGen);   // a start that has not run yet is cancelled
+        int gen = Interlocked.Increment(ref _startGen);   // a start that has not run yet is cancelled; a later start cancels this stop
         _starting = false;
+        _stopping = true;
         Task.Run(() =>
         {
             _engineGate.Wait();
-            try { Engine.Stop(); }
+            try { if (gen == _startGen) Engine.Stop(); }
             catch (Exception ex) { Log.Warn("Engine stop: " + ex.Message); }
             finally { _engineGate.Release(); }
-            _ui.BeginInvoke(RaiseStateChanged);
+            _ui.BeginInvoke(() =>
+            {
+                if (gen == _startGen) _stopping = false;
+                RaiseStateChanged();
+            });
         });
     }
 
@@ -520,7 +528,15 @@ internal sealed class AppController : IDisposable
     {
         if (!Engine.IsRunning)
         {
-            Say(IsPaused ? "Recording is paused" : GameOnly && _gamePid == 0 ? "Not recording: waiting for a game" : "Not recording yet");
+            bool waiting = !IsPaused && GameOnly && _gamePid == 0;
+            Say(IsPaused ? "Recording is paused" : waiting ? "Not recording: waiting for a game" : "Not recording yet");
+            // The hotkey, the tray item and --clip have no UI of their own and the window is usually in the tray while a game runs:
+            // a footer line alone would make a missed clip look saved, so say it where the user notices (as ShareLast does).
+            if (!MainWindowVisible)
+            {
+                if (Settings.ClickSound) System.Media.SystemSounds.Exclamation.Play();
+                ShowBalloon("Clink is not recording", waiting ? LastNotice + ". Add the game under Capture → Recording → Custom apps" : LastNotice);
+            }
             return;
         }
         if ((DateTime.UtcNow - _lastClipAt).TotalMilliseconds < 700) return;

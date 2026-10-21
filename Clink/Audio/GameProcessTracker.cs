@@ -22,19 +22,26 @@ internal static unsafe class GameProcessTracker
         "screenclippinghost", "screensketch", "consent", "ctfmon", "securityhealthsystray", "windowsterminal", "openconsole", "conhost",
         "cmd", "powershell", "pwsh", "code", "devenv", "notepad", "notepad++", "mspaint", "winword", "excel", "powerpnt", "outlook", "onenote",
         "regedit", "mmc", "control", "calculator", "calculatorapp", "photos", "microsoft.photos", "7zfm", "winrar", "acrobat", "acrord32",
+        "tabtip", "widgetboard", "microsoftstartfeedprovider", "gamebar", "powertoys",   // PowerToys.* modules: see IsIgnored
         // sync / cloud clients, streaming-desk tools, screenshot tools
-        "onedrive", "googledrivefs", "dropbox", "wavelink", "streamdeck", "camerahub", "sharex", "greenshot", "lightshot", "thunderbird",
+        "onedrive", "googledrivefs", "dropbox", "wavelink", "elgato.wavelink", "streamdeck", "camerahub", "camera hub", "sharex", "greenshot",
+        "lightshot", "thunderbird",
+        // crash reporters and helpers that ship inside game installs (a game-library path alone would make them "the game")
+        "blizzarderror", "crashmailer_64", "blizzardbrowser", "crashreportclient", "unitycrashhandler64", "unitycrashhandler32",
+        "start_protected_game", "eaanticheat.gameservicelauncher", "epiconlineservicesuihelper", "epiconlineservicesuserhelper",
+        "gameoverlayui", "gameoverlayui64",
         // browsers
         "chrome", "msedge", "firefox", "brave", "opera", "opera_gx", "vivaldi", "arc", "iexplore", "chromium", "librewolf", "waterfox", "floorp", "zen",
         // launchers / stores
         "steam", "steamwebhelper", "steamservice", "steamerrorreporter", "epicgameslauncher", "epicwebhelper", "battle.net", "battle.net launcher",
-        "riotclientservices", "riotclientux", "riotclientuxrender", "riotclientcrashhandler", "eadesktop", "eabackgroundservice", "origin",
+        "riotclientservices", "riotclientux", "riotclientuxrender", "riotclientcrashhandler", "riot client", "leagueclient", "leagueclientux",
+        "leagueclientuxrender", "vgtray", "eadesktop", "eabackgroundservice", "origin",
         "originwebhelperservice", "galaxyclient", "galaxyclient helper", "ubisoftconnect", "upc", "uplaywebcore", "xboxapp", "xboxpcapp",
         "xboxpcappft", "gamingservices", "gamelaunchhelper", "launcher", "rockstarservice", "socialclubhelper", "playnite.desktopapp",
         "playnite.fullscreenapp",
         // voice / chat
         "discord", "discordptb", "discordcanary", "teamspeak", "ts3client_win64", "slack", "mumble", "zoom", "skype", "telegram", "whatsapp",
-        "signal", "teams", "ms-teams", "claude",
+        "signal", "teams", "ms-teams", "cpthost", "claude",
         // overlays, capture, GPU tools
         "nvidia overlay", "nvcontainer", "nvidia app", "nvidia share", "nvsphelper64", "nvdisplay.container", "radeonsoftware", "amdrsserv",
         "msiafterburner", "rtss", "obs64", "obs32", "streamlabs obs", "xsplit.core", "medal",
@@ -48,6 +55,8 @@ internal static unsafe class GameProcessTracker
     {
         @"\steamapps\common\", @"\epic games\", @"\riot games\", @"\battle.net\", @"\blizzard\", @"\ubisoft game launcher\games\",
         @"\ea games\", @"\origin games\", @"\gog galaxy\games\", @"\xboxgames\", @"\rockstar games\",
+        // Battle.net installs games to "<Program Files>\<Game>\_retail_\" (Overwatch, WoW, Call of Duty) and the like
+        @"\_retail_\", @"\_classic_\", @"\_classic_era_\", @"\_ptr_\", @"\_beta_\",
     };
 
     public static readonly string[] VoiceAppNames = { "Discord", "DiscordPTB", "DiscordCanary", "TeamSpeak", "ts3client_win64", "Slack", "Mumble", "Zoom", "Skype" };
@@ -77,7 +86,8 @@ internal static unsafe class GameProcessTracker
         return windows;
     }
 
-    public static bool IsIgnored(string processName) => s_ignored.Contains(processName);
+    public static bool IsIgnored(string processName) =>
+        s_ignored.Contains(processName) || processName.StartsWith("PowerToys.", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Looks for the topmost visible window that covers the monitor (fullscreen / borderless game). Falls back to the
@@ -160,7 +170,15 @@ internal static unsafe class GameProcessTracker
         if (!PInvoke.IsWindowVisible(hwnd) || PInvoke.IsIconic(hwnd)) return false;
         if (IsCloaked(hwnd)) return false;
         if (!PInvoke.GetWindowRect(hwnd, out RECT rc)) return false;
-        return rc.left <= l && rc.top <= t && rc.right >= r && rc.bottom >= b;
+        if (rc.left > l || rc.top > t || rc.right < r || rc.bottom < b) return false;
+        // A fullscreen or borderless game is a frameless window that takes input and shows in Alt-Tab. Overlays (FancyZones'
+        // zone overlay, Shortcut Guide, the widgets feed, the pen canvas, NVIDIA / Game Bar) are tool, click-through or
+        // no-activate windows; a maximized or snapped app has a resize frame or a caption, and with an auto-hide taskbar its
+        // rect spans the monitor as well. (A frameless WS_POPUP shown maximized is still a borderless game: DirectX's templates do that.)
+        var ex = (WINDOW_EX_STYLE)(uint)PInvoke.GetWindowLongPtr(hwnd, WINDOW_LONG_PTR_INDEX.GWL_EXSTYLE);
+        if ((ex & (WINDOW_EX_STYLE.WS_EX_TOOLWINDOW | WINDOW_EX_STYLE.WS_EX_TRANSPARENT | WINDOW_EX_STYLE.WS_EX_NOACTIVATE)) != 0) return false;
+        var style = (WINDOW_STYLE)(uint)PInvoke.GetWindowLongPtr(hwnd, WINDOW_LONG_PTR_INDEX.GWL_STYLE);
+        return (style & WINDOW_STYLE.WS_THICKFRAME) == 0 && (style & WINDOW_STYLE.WS_CAPTION) != WINDOW_STYLE.WS_CAPTION;
     }
 
     private static bool IsCloaked(HWND hwnd)
@@ -210,7 +228,7 @@ internal static unsafe class GameProcessTracker
             }
             string name;
             try { using var p = Process.GetProcessById((int)pid); name = p.ProcessName; } catch { return null; }
-            bool ignored = s_ignored.Contains(name);
+            bool ignored = IsIgnored(name);
             string? path = ignored ? null : ImagePath(pid);
             var info = new ProcInfo(name, path, path != null && IsInLibrary(path), ignored, created, now);
             if (created != 0) s_procCache[pid] = info;
@@ -328,7 +346,7 @@ internal static unsafe class GameProcessTracker
                     if (p.MainWindowHandle == 0 || string.IsNullOrWhiteSpace(p.MainWindowTitle)) continue;
                     if (p.Id == Environment.ProcessId) continue;
                     string name = p.ProcessName;
-                    if (s_ignored.Contains(name) || !seen.Add(name)) continue;
+                    if (IsIgnored(name) || !seen.Add(name)) continue;
                     result.Add(new Candidate(name, p.MainWindowTitle, (uint)p.Id));
                 }
                 catch { }
