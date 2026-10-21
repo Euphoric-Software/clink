@@ -7,7 +7,7 @@ Things that were asked for or came up while building, roughly in the order they'
 - [ ] **Frame-accurate trim start** ("smart cut"): re-encode only the partial GOP before the chosen start and copy the
       rest. Today the start snaps to the previous keyframe (1 s grid by default; lower `KeyframeSeconds` for finer).
 - [ ] **Copy on save** option: automatically upload every clip and copy the link (off by default, as requested).
-- [x] **Clip length hotkeys**: the hotkey list (Clip → Hotkeys) gives every binding its own length and action.
+- [x] **Clip length hotkeys**: the hotkey list (Capture → Hotkeys) gives every binding its own length and action.
 - [ ] **Auto-follow the game's monitor** instead of a fixed monitor choice.
 - [x] **Manual game process picker** for the Game audio track, plus the custom-apps list for game detection.
 - [ ] Re-check HDR state live (if Windows HDR is toggled while Clink runs, restart capture with the right format).

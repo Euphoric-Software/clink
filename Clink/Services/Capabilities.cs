@@ -322,14 +322,16 @@ internal static unsafe class Capabilities
         return $"{seconds / 3600}:{seconds / 60 % 60:00}:{seconds % 60:00}";
     }
 
-    /// <summary>"≈ 190 MB per minute · ≈ 380 MB per 2:00 clip" (plus the 1 h figure when the length is an hour or more).</summary>
+    /// <summary>
+    /// "≈ 190 MB per minute · ≈ 380 MB per 2:00 clip". At 1 h (the slider's maximum) the clip figure is the hour figure, so it reads
+    /// "≈ 7.6 GB per hour" once instead of the same number as "per 1 h clip" and again "per hour".
+    /// </summary>
     public static string DescribeEstimate(double bitrateMbps, int audioTracks, int clipSeconds)
     {
         string perMinute = FormatBytes(EstimateBytes(bitrateMbps, audioTracks, 60));
         string perClip = FormatBytes(EstimateBytes(bitrateMbps, audioTracks, clipSeconds));
-        string s = $"≈ {perMinute} per minute · ≈ {perClip} per {FormatDuration(clipSeconds)} clip";
-        if (clipSeconds >= 3600 && clipSeconds != 3600) s += $" · ≈ {FormatBytes(EstimateBytes(bitrateMbps, audioTracks, 3600))} per hour";
-        return s;
+        string per = clipSeconds == 3600 ? "hour" : $"{FormatDuration(clipSeconds)} clip";
+        return $"≈ {perMinute} per minute · ≈ {perClip} per {per}";
     }
 
     /// <summary>"≈ 450 MB of RAM" and whether that is over half of the machine's RAM (the UI turns red and warns).</summary>
