@@ -73,11 +73,15 @@ click and the link lands in your clipboard.
 </tr>
 <tr>
 <td><a href="docs/screenshots/trim-editor.png"><img src="docs/screenshots/trim-editor.png" width="400" alt="Trim editor with preview, timeline and per-track volume"></a><br><sub>Trim editor: in / out on the timeline, per-track include and volume, Save or Save &amp; share.</sub></td>
-<td><a href="docs/screenshots/toast.png"><img src="docs/screenshots/toast.png" width="400" alt="Clip saved and Shared toasts"></a><br><sub>Toasts: <i>Clip saved</i> with Share / Trim / Folder, and <i>Shared · link copied</i>.</sub></td>
+<td><a href="docs/screenshots/trimmed-tab.png"><img src="docs/screenshots/trimmed-tab.png" width="400" alt="Clip tab beside the clips pane on its Trimmed list"></a><br><sub>Trimmed: the cuts the trim editor saved next to their originals, with Trim / Share / folder like any clip.</sub></td>
 </tr>
 <tr>
+<td><a href="docs/screenshots/toast.png"><img src="docs/screenshots/toast.png" width="400" alt="Clip saved and Shared toasts"></a><br><sub>Toasts: <i>Clip saved</i> with Share / Trim / Folder, and <i>Shared · link copied</i>.</sub></td>
+<td><a href="docs/screenshots/notices.png"><img src="docs/screenshots/notices.png" width="400" alt="Clip not saved, Recording started and Uploading to Copium notices"></a><br><sub>Notices away from the window: <i>Clip not saved</i> and why, <i>Recording started</i>, and the share hotkey's <i>Uploading to Copium…</i></sub></td>
+</tr>
+<tr>
+<td><a href="docs/screenshots/in-game.jpg"><img src="docs/screenshots/in-game.jpg" width="400" alt="A racing game on screen with the Clip saved toast in the bottom-right corner and the green status dot in the top-right corner"></a><br><sub>In game: the <i>Clip saved</i> toast and the green status dot (top right) where Clink puts them. Both are hidden from screen capture, so they never end up in your clips.</sub></td>
 <td><a href="docs/screenshots/narrow.png"><img src="docs/screenshots/narrow.png" width="240" alt="The window at its narrow size, with Clips as a fourth tab"></a><br><sub>Narrow window: the clip list becomes a fourth tab.</sub></td>
-<td></td>
 </tr>
 </table>
 
