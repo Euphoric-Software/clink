@@ -18,6 +18,7 @@
             <Setter Property="Foreground" Value="{StaticResource Accent}" />
             <Setter Property="TextTrimming" Value="CharacterEllipsis" />
             <Setter Property="TextWrapping" Value="NoWrap" />
+            <Setter Property="ToolTip" Value="{Binding Status}" />
             <Style.Triggers>
                 <DataTrigger Binding="{Binding Status}" Value="{x:Null}">
                     <Setter Property="Visibility" Value="Collapsed" />
