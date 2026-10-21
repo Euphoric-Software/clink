@@ -88,7 +88,8 @@ internal sealed class AppController : IDisposable
     private StatusDotWindow? _dot;
     private static Mutex? s_mutex;
     private int _saving;
-    private readonly Dictionary<ClipEntry, Task<bool>> _uploads = new(ReferenceEqualityComparer.Instance);   // Copium uploads in flight (UI thread)
+    // Copium uploads in flight (UI thread); Announced: started by ShareLast, which reports a failure itself.
+    private readonly Dictionary<ClipEntry, (Task<bool> Task, bool Announced)> _uploads = new(ReferenceEqualityComparer.Instance);
     private DateTime _lastClipAt = DateTime.MinValue;
     private int _startGen;
     private bool _starting;
@@ -556,20 +557,32 @@ internal sealed class AppController : IDisposable
         // right now: the library only gets it once the save is done, so wait for that instead of sharing the one before it.
         for (int i = 0; i < 100 && Volatile.Read(ref _saving) == 1; i++) await Task.Delay(100);
         var entry = Library.Entries.FirstOrDefault(e => e.IsShared || e.IsArchived || e.Exists);
-        bool ok = false;
+        bool ok = false, joined = false;
         if (entry == null) Say("No clips to share yet");
-        else ok = await ShareAsync(entry, announce: true);
-        // The hotkey, the tray item and --share-last have no UI of their own, and the window is usually in the tray while a game
-        // runs: a refusal (or a failure) that only reached the footer would be invisible. A Clink toast shows over the game; a
-        // shell balloon (which Windows holds back while a game runs fullscreen) is only the fallback for "Shared" toasts off.
-        if (!ok && !MainWindowVisible && LastNotice.Length > 0)
+        else
+        {
+            // A second press during the same upload gets the same result: the press that started it reports a failure, once.
+            joined = _uploads.TryGetValue(entry, out var running) && running.Announced;
+            ok = await ShareAsync(entry, announce: true);
+        }
+        // The hotkey, the tray item and --share-last have no UI of their own, and the window is usually in the tray, minimized or
+        // behind the game: a refusal (or a failure) that only reached the footer would be invisible. A Clink toast shows over the
+        // game; a shell balloon (which Windows holds back while a game runs fullscreen) is only the fallback for "Shared" toasts off.
+        if (!ok && !joined && !MainWindowInFront && LastNotice.Length > 0)
         {
             if (Settings.ToastShared.Enabled) Toasts.ShowProblem("Clip not uploaded", LastNotice);
             else ShowBalloon("Clip not uploaded", LastNotice);
         }
     }
 
-    /// <param name="announce">From the hotkey / tray / --share-last, which have no progress UI of their own: with the window in the tray, a toast says the upload started.</param>
+    /// <summary>
+    /// The user has the window in front of them: shown, not minimized, focused. Not <see cref="MainWindowVisible"/>, which a
+    /// window minimized to the taskbar, or open behind a borderless game after an alt-tab, still is.
+    /// </summary>
+    private static bool MainWindowInFront =>
+        System.Windows.Application.Current?.MainWindow is { IsVisible: true, IsActive: true, WindowState: not System.Windows.WindowState.Minimized };
+
+    /// <param name="announce">From the hotkey / tray / --share-last, which have no progress UI of their own: unless the window is in front, a toast says the upload started.</param>
     public async Task<bool> ShareAsync(ClipEntry entry, IProgress<double>? progress = null, bool announce = false)
     {
         ShareRefusal = null;
@@ -598,16 +611,16 @@ internal sealed class AppController : IDisposable
         if (_uploads.TryGetValue(entry, out var running))
         {
             Say("Already uploading this clip…");
-            if (announce && !MainWindowVisible) Toasts.ShowUploading(entry, "Already uploading to Copium…");
-            return await running;
+            if (announce && !MainWindowInFront) Toasts.ShowUploading(entry, "Already uploading to Copium…");
+            return await running.Task;
         }
         var done = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        _uploads[entry] = done.Task;
+        _uploads[entry] = (done.Task, announce);
         bool ok = false;
         try
         {
             Say("Uploading to Copium…");
-            if (announce && !MainWindowVisible) Toasts.ShowUploading(entry);
+            if (announce && !MainWindowInFront) Toasts.ShowUploading(entry);
             string title = (entry.Game ?? "Clip") + " " + entry.Created.ToString("yyyy-MM-dd HH:mm");
             string path = entry.Path;
             // Off the UI thread: opening an archived clip on an unreachable share blocks in the FileStream constructor for ~20 s.
