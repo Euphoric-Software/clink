@@ -259,17 +259,23 @@ internal static unsafe class Capabilities
     /// (0.5–200 Mbps, one decimal) at which a clip of <paramref name="seconds"/> with <paramref name="audioTracks"/> stays under the
     /// limit (with 5 % headroom), and a one-line note for the read-only display. When even the minimum does not fit the note says so.
     /// </summary>
+    /// <summary>
+    /// The bitrate to encode at: the chosen one, lowered (never raised) when a size target is set so that a clip of
+    /// <paramref name="seconds"/> fits the limit. The note says what happened, or is null when nothing was changed.
+    /// </summary>
     public static (double bitrateMbps, string? note) ResolveBitrate(Settings s, int audioTracks, int seconds)
     {
+        double chosen = Math.Max(MinTargetMbps, s.BitrateMbps);
         long limit = SizeTargetBytes(s.SizeTarget);
-        if (limit <= 0) return (s.BitrateMbps, null);
+        if (limit <= 0) return (chosen, null);
         seconds = Math.Max(1, seconds);
-        double mbps = BitrateMbpsFor((long)(limit * TargetHeadroom), audioTracks, seconds);
+        double cap = BitrateMbpsFor((long)(limit * TargetHeadroom), audioTracks, seconds);
         string len = FormatDuration(seconds), lim = FormatBytes(limit);
-        if (mbps < MinTargetMbps)
+        if (cap < MinTargetMbps)
             return (MinTargetMbps, $"a {len} clip does not fit in {lim} even at {MinTargetMbps:0.#} Mbps; shorten the replay length");
-        mbps = Math.Min(MaxTargetMbps, Math.Floor(mbps * 10) / 10);
-        return (mbps, $"{mbps:0.#} Mbps so a {len} clip fits {lim}");
+        cap = Math.Min(MaxTargetMbps, Math.Floor(cap * 10) / 10);
+        if (cap >= chosen) return (chosen, $"a {len} clip at {chosen:0.#} Mbps fits {lim}");
+        return (cap, $"lowered to {cap:0.#} Mbps so a {len} clip fits {lim}");
     }
 
     /// <summary>"820 kB", "9.5 MB", "190 MB", "1.2 GB" (decimal units, like the Discord limits).</summary>
@@ -308,7 +314,7 @@ internal static unsafe class Capabilities
     {
         long bytes = RingBytesFor(bitrateMbps, seconds);
         bool tooMuch = bytes > MaxRingBytes();
-        string text = $"≈ {FormatBytes(bytes)} of RAM";
+        string text = $"≈ {FormatBytes(bytes)} of RAM for {FormatDuration(seconds)} at {bitrateMbps:0.#} Mbps";
         if (tooMuch) text += $" (more than half of the {FormatBytes(PhysicalRamBytes())} installed; the buffer will be shortened)";
         return (text, tooMuch);
     }

@@ -38,9 +38,13 @@ internal sealed unsafe class RingStore : IDisposable
     // ------------------------------------------------------------------ sizing (shared with Capabilities so the UI estimate matches)
 
     /// <summary>Ring size for a replay length: bitrate × (seconds + 4 s slack) × 1.3 headroom for bitrate overshoot, at least <see cref="MinBytes"/>.</summary>
+    /// <summary>Safety margin over the nominal bitrate (CBR overshoot on keyframes) and the extra seconds kept so a clip can start on a keyframe.</summary>
+    private const double Margin = 1.1;
+    private const int ExtraSeconds = 3;
+
     public static long BytesFor(double bitrateMbps, int seconds)
     {
-        double bytes = bitrateMbps * 1_000_000 / 8.0 * (Math.Max(0, seconds) + 4) * 1.3;
+        double bytes = bitrateMbps * 1_000_000 / 8.0 * (Math.Max(0, seconds) + ExtraSeconds) * Margin;
         return Math.Max(MinBytes, (long)Math.Ceiling(bytes));
     }
 
@@ -48,7 +52,7 @@ internal sealed unsafe class RingStore : IDisposable
     public static int SecondsFor(double bitrateMbps, long bytes)
     {
         if (bitrateMbps <= 0) return 0;
-        double seconds = bytes / (bitrateMbps * 1_000_000 / 8.0 * 1.3) - 4;
+        double seconds = bytes / (bitrateMbps * 1_000_000 / 8.0 * Margin) - ExtraSeconds;
         return (int)Math.Max(0, Math.Floor(seconds));
     }
 
