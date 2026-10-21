@@ -29,15 +29,16 @@ click and the link lands in your clipboard.
 * **A list of hotkeys**: each one is a key combo plus what it does (clip, pause/resume, share last clip) and, for clips,
   how much to save (e.g. F9 = the replay length, Shift+F9 = the last 30 s).
 * **Replay length slider** from 5 s to 60 min with the RAM it costs next to it, live **size estimates** (per minute and
-  per clip) and **Discord size targets** (10 / 50 / 500 MB) that lower the bitrate, only when needed, so a clip of that length fits.
+  per clip) and **size targets** (Copium 200 MB / 10 min, the default; Discord 10 / 50 / 500 MB) that lower the bitrate, only
+  when needed, so a clip of that length fits.
 * H.264 or HEVC, and AV1 (experimental) when the GPU has an AV1 encoder; codecs the GPU lacks are listed greyed out.
 * Toasts for *clip saved*, *shared* and *recording started*, each with its own switch, duration and a preview; eight
   positions on the captured monitor. Optional always-on **status dot** in a corner (green recording, amber waiting, red error).
 * Optional **archive**: clips land in the local folder first and move to a NAS share, mapped drive or any other folder
   in the background (slowly, oldest first, after N days and/or when the local folder is over N GB).
 * Shows which monitor it is capturing; click another one on the little map to switch.
-* Resizable borderless dark UI: settings tabs (Capture · Clip · Audio · Alerts) with the clips pane beside them when the
-  window is wide, as a fifth tab when it is narrow. Lives in the tray while you play.
+* Resizable borderless dark UI: settings tabs (Capture · Clip · Alerts) with the clips pane beside them when the
+  window is wide, as a fourth tab when it is narrow. Lives in the tray while you play.
 
 ## Installing & updating
 
@@ -80,21 +81,27 @@ something newer.
    player, and the export copies the video without re-encoding. Save, or Save & share.
 
 Copium: make an upload token under *ShareX & API* on copium.pics (it starts with `eup_`) and paste it in the
-Copium box. It is stored encrypted for your Windows user (DPAPI). Nothing is uploaded unless you press Share.
+Copium box. It is stored encrypted for your Windows user (DPAPI). Nothing is uploaded unless you press Share. Without
+Copium+ an upload may be at most **200 MB and 10 minutes** long: Share says so instead of uploading a clip that is over
+either limit (trim it, or tick *I have Copium+* under *Clip → Copium* if you have it), and the *Copium (200 MB, 10 min)*
+size target, the default, keeps clips of the replay length (or of 10 minutes, when the replay length is longer) under the
+size limit. Sizes are shown in decimal MB everywhere, the unit the limits use.
 
 ### The window
 
 * **Capture**: the monitor map, resolution / FPS / bitrate / codec, a one-line description of each codec (the ones your
-  GPU cannot encode are greyed out), the **size target** (*None*, *Discord 10 MB*, *Nitro Basic 50 MB*, *Nitro 500 MB*:
-  when a clip of the replay length would not fit, the encode bitrate is lowered just enough, audio tracks included;
-  it is never raised above the bitrate you chose, and the note under the controls says what it did), the
-  live estimate (*≈ 190 MB per minute · ≈ 380 MB per 2:00 clip*), the recording mode and the custom-apps list
-  (type an exe name or pick one of the apps running right now).
+  GPU cannot encode are greyed out), the **size target** (*None*, *Discord 10 MB*, *Nitro Basic 50 MB*, *Copium 200 MB,
+  10 min* (the default), *Nitro 500 MB*: when a clip of the replay length would not fit, the encode bitrate is lowered just
+  enough, audio tracks included; it is never raised above the bitrate you chose, and the note under the controls says what
+  it did, in yellow when the replay length is over Copium's 10 minutes - the Copium target then fits a 10-minute clip, not
+  the whole replay, since a longer clip has to be trimmed before Share anyway), the live estimate (*≈ 190 MB per minute · ≈ 380 MB
+  per 2:00 clip*), the **audio tracks** (the per-track rows with their source pickers; a *Set up your audio* banner sits
+  above them until you hover over the group or change an option, then it is gone for good), the recording mode and the
+  custom-apps list (type an exe name or pick one of the apps running right now).
 * **Clip**: the hotkey list (click the keys box, press the combo; Esc cancels), the replay-length slider (the 30–90 s
   stretch is the sweet spot; the line under it says how much RAM the buffer takes, turns red above half of your RAM and
   the slider refuses lengths that could not be allocated at all), click sound / cursor / run at startup, the Copium
-  token, and **Storage**: the local clips folder and the archive (below).
-* **Audio**: the per-track rows, as before.
+  token and the *I have Copium+* switch, and **Storage**: the local clips folder and the archive (below).
 * **Alerts**: toast position and the three toast switches with their durations and a *Preview* button each, the status
   dot and its corner, and auto-update.
 * **Clips** (right pane when the window is at least 900 px wide, otherwise the last tab): **Local** lists every file
@@ -132,13 +139,13 @@ update, handy for a debug build), `--selftest [seconds]` (records headless and w
 ### Settings
 
 `%APPDATA%\Clink\settings.json` (the UI writes it; it and the clip index `clips.json` are replaced in one rename on every
-save and keep the previous version as `.bak`, which is read when the file is damaged). The Audio tracks pickers store
+save and keep the previous version as `.bak`, which is read when the file is damaged). The audio track pickers (*Capture → Audio tracks*) store
 `AllDeviceId` (the Desktop track: `out:<id>` or a bare id = that output's loopback, `in:<id>` = a capture device) /
 `MicDeviceId` (endpoint ids; `null` = the default device, and a device that is unplugged stays selected until you pick another) and
 `GameProcess` / `VoiceApp` (a process name, `.exe` optional, any case; `auto` = detect: the fullscreen app on the captured
 monitor, or the first of Discord, TeamSpeak, Slack, Mumble, Zoom, Skype found running). The v2 keys are `RecordingMode`
 (`game` | `always`), `CustomApps`, `Hotkeys` (a list of `{ Keys, Action, Seconds }`; `Seconds` 0 = the replay length),
-`SizeTarget`, `ToastPosition`, `ToastClip` / `ToastShared` / `ToastRecording` (`{ Enabled, Seconds }`; an empty `Hotkeys` list means no hotkeys, only a file without the key gets the old single `Hotkey` migrated), `StatusDot` /
+`SizeTarget` (`none` | `copium200` | `discord10` | `discord50` | `discord500`, default `copium200`), `CopiumPlus`, `AudioSetupSeen`, `ToastPosition`, `ToastClip` / `ToastShared` / `ToastRecording` (`{ Enabled, Seconds }`; an empty `Hotkeys` list means no hotkeys, only a file without the key gets the old single `Hotkey` migrated), `StatusDot` /
 `StatusDotPosition`, `ArchiveEnabled` / `ArchivePath` / `ArchiveAfterDays` / `ArchiveWhenLocalExceedsGB` and the window
 position and size. Things not in the UI:
 

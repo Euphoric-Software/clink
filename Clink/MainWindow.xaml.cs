@@ -18,9 +18,10 @@ namespace Clink;
 internal sealed record Choice(string Label, object Value, bool Header = false, bool Disabled = false) { public override string ToString() => Label; }
 
 /// <summary>
-/// The main window (docs/SPEC-v2.md §1): resizable, settings tabs (Capture · Clip · Audio · Alerts) and the clips pane, which
-/// sits in a right column when the window is ≥ 900 px wide and becomes a fifth tab when it is narrower. Every control writes
-/// its setting on change and, where the engine is affected, restarts it after a short debounce (<see cref="ScheduleRestart"/>).
+/// The main window (docs/SPEC-v2.md §1): resizable, settings tabs (Capture · Clip · Alerts; the audio tracks live on Capture,
+/// under a "set up your audio" banner that goes away for good once the group is hovered over or changed) and the clips pane,
+/// which sits in a right column when the window is ≥ 900 px wide and becomes a fourth tab when it is narrower. Every control
+/// writes its setting on change and, where the engine is affected, restarts it after a short debounce (<see cref="ScheduleRestart"/>).
 /// </summary>
 public partial class MainWindow : Window
 {
@@ -99,7 +100,7 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>Wide: settings tabs left, the clips pane in a right column. Narrow: the clips pane is the fifth tab.</summary>
+    /// <summary>Wide: settings tabs left, the clips pane in a right column. Narrow: the clips pane is the fourth tab.</summary>
     private void ApplyLayout()
     {
         bool wide = ActualWidth >= WideWidth;
@@ -147,7 +148,7 @@ public partial class MainWindow : Window
         Fill(FpsCombo, new[] { new Choice("30", 30), new Choice("60", 60), new Choice("120", 120) }, s.Fps);
         Fill(BitrateCombo, _bitratePresets, s.BitrateMbps);
         FillCodecs();
-        Fill(SizeTargetCombo, new[] { "none", "discord10", "discord50", "discord500" }.Select(t => new Choice(Capabilities.SizeTargetName(t), t)).ToArray(), s.SizeTarget);
+        Fill(SizeTargetCombo, new[] { "none", "discord10", "discord50", "copium200", "discord500" }.Select(t => new Choice(Capabilities.SizeTargetName(t), t)).ToArray(), s.SizeTarget);
         Fill(ModeCombo, new[] { new Choice("Only while a game or custom app is running", "game"), new Choice("Always (whenever Clink runs)", "always") }, s.RecordingMode);
         _customApps.Clear();
         foreach (var a in (s.CustomApps ?? new()).Select(GameProcessTracker.NormalizeName).Where(a => a.Length > 0 && !IsAuto(a)).Distinct(StringComparer.OrdinalIgnoreCase)) _customApps.Add(a);
@@ -168,9 +169,11 @@ public partial class MainWindow : Window
         FillDeviceCombo(MicCombo, true, s.MicDeviceId);
         FillVoiceCombo(s.VoiceApp);
         UpdateAudioEnabled();
+        AudioSetupBanner.Visibility = s.AudioSetupSeen ? Visibility.Collapsed : Visibility.Visible;
 
         if (!string.IsNullOrEmpty(s.CopiumToken)) { TokenBox.Password = s.CopiumToken; CopiumStatus.Text = "Token saved"; CopiumStatus.Foreground = (Brush)FindResource("Good"); }
         TokenSaveButton.IsEnabled = false;
+        CopiumPlusCheck.IsChecked = s.CopiumPlus;
 
         ClipsFolderBox.Text = s.ClipsFolder;
         ArchiveCheck.IsChecked = s.ArchiveEnabled;
@@ -271,14 +274,15 @@ public partial class MainWindow : Window
             if (!ReferenceEquals(BitrateCombo.ItemsSource, _bitratePresets)) Fill(BitrateCombo, _bitratePresets, s.BitrateMbps);
             BitrateCombo.IsEnabled = true;
             BitrateCombo.ToolTip = targeted && mbps < s.BitrateMbps
-                ? $"Encoding at {mbps:0.#} Mbps so a {Capabilities.FormatDuration(seconds)} clip fits the size target; set the target to None to use the full {s.BitrateMbps} Mbps"
+                ? $"Encoding at {mbps:0.#} Mbps so a {Capabilities.FormatDuration(Capabilities.FitSeconds(s.SizeTarget, seconds))} clip fits the size target; set the target to None to use the full {s.BitrateMbps} Mbps"
                 : null;
         }
         finally { _filling = was; }
 
         SizeNote.Text = note ?? "";
         SizeNote.Visibility = note != null ? Visibility.Visible : Visibility.Collapsed;
-        SizeNote.Foreground = (Brush)FindResource(note != null && note.Contains("does not fit") ? "Warn" : "Muted");
+        // Warn colour when no bitrate can make the clip fit, or when the Copium target's 10 min is exceeded (no bitrate fixes that either).
+        SizeNote.Foreground = (Brush)FindResource(note != null && (note.Contains("does not fit") || note.Contains(Capabilities.CopiumLengthNote)) ? "Warn" : "Muted");
         EstimateText.Text = Capabilities.DescribeEstimate(mbps, tracks, seconds);
 
         var (ramText, tooMuch) = Capabilities.DescribeRing(mbps, seconds);
@@ -688,6 +692,7 @@ public partial class MainWindow : Window
     {
         UpdateAudioEnabled();
         if (_loading) return;
+        DismissAudioSetupBanner();
         var s = _app.Settings;
         s.TrackDesktop = TrackDesktopCheck.IsChecked == true;
         s.TrackGame = TrackGameCheck.IsChecked == true;
@@ -701,6 +706,7 @@ public partial class MainWindow : Window
     private void AudioSourceChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_loading || _filling) return;
+        DismissAudioSetupBanner();
         var s = _app.Settings;
         // Only the picker that changed writes its setting, so what another picker happens to show can never clobber a saved value.
         if (sender == AllDeviceCombo) s.AllDeviceId = DeviceId(AllDeviceCombo);
@@ -715,6 +721,24 @@ public partial class MainWindow : Window
     private static string? DeviceId(ComboBox combo) => Selected<string>(combo) is { Length: > 0 } id ? id : null;   // "" = the default device
 
     private static string ProcessName(ComboBox combo) => Selected<string>(combo) is { Length: > 0 } name ? name : "auto";
+
+    // ------------------------------------------------------------------ "set up your audio" banner
+
+    private void AudioGroup_MouseEnter(object sender, MouseEventArgs e) => DismissAudioSetupBanner();
+
+    /// <summary>
+    /// Hides the banner above the audio group for good: the user has looked at the group (hovered over it) or changed an option
+    /// in it. <see cref="Settings.AudioSetupSeen"/> is saved so it never comes back; while the window is still loading only the
+    /// visibility is touched.
+    /// </summary>
+    private void DismissAudioSetupBanner()
+    {
+        if (AudioSetupBanner == null || AudioSetupBanner.Visibility == Visibility.Collapsed) return;
+        AudioSetupBanner.Visibility = Visibility.Collapsed;
+        if (_loading) return;
+        _app.Settings.AudioSetupSeen = true;
+        _app.Settings.Save();
+    }
 
     private void MiscChanged(object sender, RoutedEventArgs e)
     {
@@ -752,6 +776,13 @@ public partial class MainWindow : Window
     private void CopiumSite_Click(object sender, RoutedEventArgs e)
     {
         try { Process.Start(new ProcessStartInfo("https://copium.pics/") { UseShellExecute = true }); } catch { }
+    }
+
+    private void CopiumPlusChanged(object sender, RoutedEventArgs e)
+    {
+        if (_loading) return;
+        _app.Settings.CopiumPlus = CopiumPlusCheck.IsChecked == true;
+        _app.Settings.Save();
     }
 
     // ------------------------------------------------------------------ toasts & status dot (§7)

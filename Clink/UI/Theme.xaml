@@ -12,6 +12,8 @@
     <SolidColorBrush x:Key="AccentDim" Color="#FF2B7D96" />
     <SolidColorBrush x:Key="Good" Color="#FF5EDB8A" />
     <SolidColorBrush x:Key="Warn" Color="#FFF2C94C" />
+    <!-- Warn at 12 %: the background of a warning banner (the border stays full Warn) -->
+    <SolidColorBrush x:Key="WarnTint" Color="#FFF2C94C" Opacity="0.12" />
     <SolidColorBrush x:Key="Danger" Color="#FFF26B6B" />
 
     <Style TargetType="TextBlock">

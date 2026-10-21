@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Threading;
 using Windows.Win32;
 using Windows.Win32.Foundation;
@@ -15,8 +16,8 @@ namespace Clink.UI;
 /// <summary>
 /// The toast service (docs/SPEC-v2.md §7): "Clip saved", "Shared" and "Recording started" toasts, each with its own enable
 /// switch and duration (<see cref="Settings.ToastClip"/> etc.), at one of 8 positions on the captured monitor's work area
-/// (<see cref="Settings.ToastPosition"/>, 16 px margin). Several toasts stack, the newest nearest the chosen edge. All methods
-/// may be called from any thread.
+/// (<see cref="Settings.ToastPosition"/>, 16 px margin). Several toasts stack, the newest nearest the chosen edge; each fades in
+/// (180 ms) and fades out (260 ms) before it closes, and the rest re-stack once it has. All methods may be called from any thread.
 /// </summary>
 internal sealed class Toasts
 {
@@ -61,7 +62,7 @@ internal sealed class Toasts
     /// <summary>Shows a sample toast of a kind ("clip" | "shared" | "recording") with the current position and duration, ignoring the enable switch.</summary>
     public void Preview(string kind) => Post(() =>
     {
-        var sample = new ClipEntry { Path = "Overwatch 2026-10-20 21-04-11.mp4", Game = "Overwatch", Duration = 90, Size = 190L << 20, Created = DateTime.Now };
+        var sample = new ClipEntry { Path = "Overwatch 2026-10-20 21-04-11.mp4", Game = "Overwatch", Duration = 90, Size = 190_000_000, Created = DateTime.Now };
         switch ((kind ?? "clip").Trim().ToLowerInvariant())
         {
             case "shared":
@@ -76,7 +77,8 @@ internal sealed class Toasts
         }
     });
 
-    public void CloseAll() => Post(() => { foreach (var t in _open.ToList()) t.Close(); _open.Clear(); });
+    /// <summary>Fades every open toast out (each closes when its fade ends); nothing is re-stacked for them.</summary>
+    public void CloseAll() => Post(() => { foreach (var t in _open.ToList()) t.Dismiss(); _open.Clear(); });
 
     private void Post(Action a)
     {
@@ -88,24 +90,25 @@ internal sealed class Toasts
     private static string ClipSubtitle(ClipEntry e)
     {
         string game = string.IsNullOrEmpty(e.Game) ? "" : e.Game + " · ";
-        return $"{game}{TimeSpan.FromSeconds(e.Duration):m\\:ss} · {e.Size / 1_048_576.0:0.0} MB";
+        // Decimal MB, the unit the Copium / Discord limits and the Share pre-check use, so a size never reads as under a limit it is over.
+        return $"{game}{TimeSpan.FromSeconds(e.Duration):m\\:ss} · {Capabilities.FormatBytes(e.Size)}";
     }
 
     private void Add(ToastWindow t)
     {
         _open.Add(t);
-        t.Closed += (_, _) => { if (_open.Remove(t)) Layout(); };
-        t.Opacity = 0;
+        t.Closed += (_, _) => { if (_open.Remove(t)) Layout(); };   // the others move up only once the fade-out has finished
+        t.Opacity = 0;             // shown invisible, placed, then faded in: no flash at the wrong spot
         t.Show();
         t.UpdateLayout();
         Layout();
-        t.Opacity = 1;
+        t.FadeIn();
         t.StartTimer();
     }
 
     internal void Dismiss(ToastWindow t)
     {
-        try { t.Close(); } catch { }
+        try { t.Dismiss(); } catch { }
     }
 
     /// <summary>Positions every open toast: anchored at the chosen edge/corner of the captured monitor's work area, newest nearest the edge.</summary>
@@ -140,14 +143,21 @@ internal sealed class Toasts
     }
 }
 
-/// <summary>One toast. Created and shown by <see cref="Toasts"/>; hides itself after its duration (paused while the mouse is over it).</summary>
+/// <summary>
+/// One toast. Created and shown by <see cref="Toasts"/>; fades in, hides itself after its duration (paused while the mouse is
+/// over it), and every way out (the timer, the close button, a button action, <see cref="Toasts.CloseAll"/>) goes through
+/// <see cref="Dismiss"/>: a fade-out, then the real Close().
+/// </summary>
 public partial class ToastWindow : Window
 {
+    private static readonly TimeSpan FadeInTime = TimeSpan.FromMilliseconds(180), FadeOutTime = TimeSpan.FromMilliseconds(260);
+
     private readonly Toasts? _owner;
     private readonly DispatcherTimer _hide = new();
     private readonly TimeSpan _duration;
     private readonly bool _preview;
     private bool _busy;
+    private bool _dismissed;     // fading out; Close() follows when the fade ends
 
     internal string Kind { get; } = "clip";
     internal ClipEntry? Entry { get; }
@@ -170,9 +180,9 @@ public partial class ToastWindow : Window
         SharedButtons.Visibility = kind == "shared" ? Visibility.Visible : Visibility.Collapsed;
         if (kind == "clip") ShareButton.Content = entry?.IsShared == true ? "Copy link" : "Share to Copium";
         _hide.Interval = duration;
-        _hide.Tick += (_, _) => { if (!_busy) Close(); };
+        _hide.Tick += (_, _) => { if (!_busy) Dismiss(); };
         MouseEnter += (_, _) => _hide.Stop();
-        MouseLeave += (_, _) => { if (!_busy) _hide.Start(); };
+        MouseLeave += (_, _) => { if (!_busy && !_dismissed) _hide.Start(); };
     }
 
     /// <summary>v1 MainWindow compatibility (<c>new ToastWindow().Show(entry)</c>); the v2 UI goes through <see cref="AppController.Toasts"/>.</summary>
@@ -181,7 +191,35 @@ public partial class ToastWindow : Window
     /// <summary>v1 API: forwards to the toast service.</summary>
     internal void Show(ClipEntry entry) => AppController.Instance?.Toasts.ShowClipSaved(entry);
 
-    internal void StartTimer() { _hide.Stop(); _hide.Interval = _duration; _hide.Start(); }
+    internal void StartTimer()
+    {
+        if (_dismissed) return;
+        _hide.Stop(); _hide.Interval = _duration; _hide.Start();
+    }
+
+    /// <summary>Fades the shown, already placed window in over 180 ms. The base Opacity is 1, so the fade ends on the normal state.</summary>
+    internal void FadeIn()
+    {
+        if (_dismissed) return;
+        Opacity = 1;
+        BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, FadeInTime) { FillBehavior = FillBehavior.Stop });
+    }
+
+    /// <summary>
+    /// The one way a toast goes away: fades out over 260 ms from wherever its opacity is (a toast dismissed mid fade-in just
+    /// turns around), then closes, so <see cref="Toasts"/> re-stacks the remaining toasts on Closed as before. Calling it again
+    /// does nothing; the hide timer, hover and buttons are inert from here on.
+    /// </summary>
+    internal void Dismiss()
+    {
+        if (_dismissed) return;
+        _dismissed = true;
+        _hide.Stop();
+        IsHitTestVisible = false;
+        var fade = new DoubleAnimation(0, FadeOutTime) { FillBehavior = FillBehavior.HoldEnd };
+        fade.Completed += (_, _) => { try { Close(); } catch { } };
+        BeginAnimation(OpacityProperty, fade);
+    }
 
     protected override void OnClosed(EventArgs e)
     {
@@ -199,8 +237,9 @@ public partial class ToastWindow : Window
         var progress = new Progress<double>(p => ShareButton.Content = $"Uploading… {p:P0}");
         bool ok = await AppController.Instance.ShareAsync(Entry, progress);
         _busy = false;
-        if (ok) { Close(); return; }   // the "Shared" toast takes over
-        ShareButton.Content = "Upload failed";
+        if (ok) { Dismiss(); return; }   // the "Shared" toast takes over
+        if (_dismissed) return;          // closed while it was uploading
+        ShareButton.Content = AppController.Instance.ShareRefusal != null ? "Over Copium's free limit" : "Upload failed";
         ShareButton.IsEnabled = true;
         _hide.Interval = TimeSpan.FromSeconds(8);
         _hide.Start();
@@ -209,7 +248,7 @@ public partial class ToastWindow : Window
     private void Trim_Click(object sender, RoutedEventArgs e)
     {
         if (Entry == null || _preview) return;
-        Close();
+        Dismiss();
         var app = AppController.Instance;
         if (!app.RequestTrim(Entry))
         {
@@ -221,7 +260,7 @@ public partial class ToastWindow : Window
     private void Folder_Click(object sender, RoutedEventArgs e)
     {
         if (Entry != null && !_preview) AppController.Instance.OpenFolder(Entry.Path);
-        Close();
+        Dismiss();
     }
 
     private void Copy_Click(object sender, RoutedEventArgs e)
@@ -239,10 +278,10 @@ public partial class ToastWindow : Window
             try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); }
             catch (Exception ex) { AppController.Instance.Say("Could not open the browser: " + ex.Message); }
         }
-        Close();
+        Dismiss();
     }
 
-    private void Close_Click(object sender, RoutedEventArgs e) => Close();
+    private void Close_Click(object sender, RoutedEventArgs e) => Dismiss();
 }
 
 /// <summary>
