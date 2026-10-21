@@ -75,15 +75,15 @@ update, handy for a debug build), `--selftest [seconds]` (records headless and w
 
 ### Settings
 
-`%APPDATA%\Clink\settings.json` (the UI writes it). Things not in the UI:
+`%APPDATA%\Clink\settings.json` (the UI writes it). The Audio tracks pickers store `AllDeviceId` / `MicDeviceId` (endpoint
+ids; `null` = the default device, and a device that is unplugged stays selected until you pick another) and
+`GameProcess` / `VoiceApp` (a process name, `.exe` optional, any case; `auto` = detect: the fullscreen app on the captured
+monitor, or the first of Discord, TeamSpeak, Slack, Mumble, Zoom, Skype found running). Things not in the UI:
 
 | key | default | what |
 |-----|---------|------|
 | `KeyframeSeconds` | 1 | keyframe interval; smaller = finer trim snapping, slightly bigger files |
 | `HdrKnee` / `HdrPeak` | 0.75 / 4 | tone-mapper shoulder: everything below `knee` (relative to SDR white) is untouched, highlights roll off softly above it |
-| `AllDeviceId` | `null` | output device id for the All audio track (`null` = default output); the Audio tracks picker writes it |
-| `GameProcess` | `auto` | process name of the game for the Game track (`auto` = the fullscreen app on the captured monitor); also set by the picker |
-| `VoiceApp` | `auto` | process name of the voice app for the Voice track (`auto` = Discord, TeamSpeak, Slack, Mumble, Zoom, Skype); also set by the picker |
 | `ClickVolume` | 0.5 | 0..1 |
 | `ShowToast` | true | the "Clip saved" popup |
 | `StartMinimized` | false | |

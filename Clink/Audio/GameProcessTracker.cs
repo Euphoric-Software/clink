@@ -90,12 +90,23 @@ internal static unsafe class GameProcessTracker
         try { using var p = Process.GetProcessById((int)pid); return !p.HasExited; } catch { return false; }
     }
 
+    /// <summary>
+    /// Canonical form of a configured process name (settings / picker value): "auto" for blank or any-case "auto", otherwise
+    /// trimmed with a trailing ".exe" dropped, so the UI, the config and the engine all agree on what a hand-edited value means.
+    /// </summary>
+    public static string NormalizeName(string? name)
+    {
+        string n = (name ?? "").Trim();
+        if (n.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) n = n[..^4].TrimEnd();
+        return n.Length == 0 || n.Equals("auto", StringComparison.OrdinalIgnoreCase) ? "auto" : n;
+    }
+
+    public static bool IsAuto(string? name) => NormalizeName(name) == "auto";
+
     /// <summary>Finds the root process of the voice app (oldest process with that name) so include-tree captures all of it.</summary>
     public static (uint pid, string name)? FindVoiceApp(string? preferredName)
     {
-        IEnumerable<string> names = string.IsNullOrWhiteSpace(preferredName) || preferredName == "auto"
-            ? VoiceAppNames
-            : new[] { preferredName };
+        IEnumerable<string> names = IsAuto(preferredName) ? VoiceAppNames : new[] { NormalizeName(preferredName) };
         foreach (var n in names)
         {
             var found = FindProcessByName(n);

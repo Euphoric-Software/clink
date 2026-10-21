@@ -77,13 +77,9 @@ public partial class MainWindow : Window
         TrackMicCheck.IsChecked = s.TrackMic;
         TrackVoiceCheck.IsChecked = s.TrackVoice;
 
-        var outputs = new List<Choice> { new("Default output", "") };
-        try { outputs.AddRange(WasapiSource.ListDevices(false).Select(d => new Choice(d.Name, d.Id))); } catch { }
-        Fill(AllDeviceCombo, outputs.ToArray(), s.AllDeviceId ?? "");
+        FillDeviceCombo(AllDeviceCombo, false, s.AllDeviceId);
         FillGameCombo(s.GameProcess);
-        var mics = new List<Choice> { new("Default microphone", "") };
-        try { mics.AddRange(WasapiSource.ListDevices(true).Select(d => new Choice(d.Name, d.Id))); } catch { }
-        Fill(MicCombo, mics.ToArray(), s.MicDeviceId ?? "");
+        FillDeviceCombo(MicCombo, true, s.MicDeviceId);
         FillVoiceCombo(s.VoiceApp);
         UpdateAudioEnabled();
 
@@ -115,7 +111,27 @@ public partial class MainWindow : Window
 
     // ------------------------------------------------------------------ audio sources
 
-    private static bool IsAuto(string? name) => string.IsNullOrWhiteSpace(name) || name.Equals("auto", StringComparison.OrdinalIgnoreCase);
+    private static bool IsAuto(string? name) => GameProcessTracker.IsAuto(name);
+
+    /// <summary>
+    /// All audio / Mic: the default endpoint or any active one. A saved device that is unplugged or disabled right now stays
+    /// selected (by name when Windows still knows it) rather than silently showing "Default", so the picker tells the truth
+    /// about what the engine is configured with and the id survives until the user picks something else.
+    /// </summary>
+    private void FillDeviceCombo(ComboBox combo, bool capture, string? current)
+    {
+        var items = new List<Choice> { new(capture ? "Default microphone" : "Default output", "") };
+        List<AudioDeviceInfo> devices;
+        try { devices = WasapiSource.ListDevices(capture, includeInactive: true); } catch { devices = new(); }
+        items.AddRange(devices.Where(d => d.Problem == null).Select(d => new Choice(d.Name, d.Id)));
+        string id = current ?? "";
+        if (id.Length > 0 && !items.Any(i => Same(i.Value, id)))
+        {
+            var known = devices.FirstOrDefault(d => Same(d.Id, id));
+            items.Add(new Choice(known != null ? $"{known.Name} ({known.Problem})" : "Saved device (not connected)", id));
+        }
+        Refill(combo, items, id);
+    }
 
     private static List<GameProcessTracker.Candidate> RunningApps()
     {
@@ -132,21 +148,24 @@ public partial class MainWindow : Window
     /// <summary>Game track: auto-detect or a running app; a configured name that is not running stays selectable so it is not lost.</summary>
     private void FillGameCombo(string current)
     {
+        current = GameProcessTracker.NormalizeName(current);   // "auto" in any case, ".exe" dropped: matches the way the engine reads it
         var items = new List<Choice> { new("Auto (fullscreen app on the captured monitor)", "auto") };
         items.AddRange(RunningApps().Select(c => new Choice(AppLabel(c), c.Name)));
         if (!IsAuto(current) && !items.Any(i => Same(i.Value, current))) items.Add(new Choice($"{current} (not running)", current));
-        Refill(GameCombo, items, IsAuto(current) ? "auto" : current);
+        Refill(GameCombo, items, current);
     }
 
     /// <summary>Voice track: auto (first known voice app found), one of the known names, or any other running app.</summary>
     private void FillVoiceCombo(string current)
     {
-        var items = new List<Choice> { new("Auto (Discord, TeamSpeak, Slack, Mumble, Zoom, Skype)", "auto") };
+        current = GameProcessTracker.NormalizeName(current);
+        // Short enough to fit the closed box at the window's width; the full list is in the combo's tooltip.
+        var items = new List<Choice> { new("Auto (Discord, TeamSpeak, …)", "auto") };
         items.AddRange(GameProcessTracker.VoiceAppNames.Select(n => new Choice(n, n)));
         foreach (var c in RunningApps())
             if (!items.Any(i => Same(i.Value, c.Name))) items.Add(new Choice(AppLabel(c), c.Name));
         if (!IsAuto(current) && !items.Any(i => Same(i.Value, current))) items.Add(new Choice($"{current} (not running)", current));
-        Refill(VoiceCombo, items, IsAuto(current) ? "auto" : current);
+        Refill(VoiceCombo, items, current);
     }
 
     private void Refill(ComboBox combo, List<Choice> items, string current)
@@ -157,8 +176,13 @@ public partial class MainWindow : Window
         finally { _filling = was; }
     }
 
-    // The process lists are refreshed every time a dropdown opens; the current selection is always kept (see FillGameCombo).
+    // The device and process lists are refreshed every time a dropdown opens (headsets get plugged in, games get launched while
+    // the window sits in the tray); the current selection is always kept (see FillDeviceCombo / FillGameCombo).
+    private void AllDeviceCombo_DropDownOpened(object sender, EventArgs e) => FillDeviceCombo(AllDeviceCombo, false, Selected<string>(AllDeviceCombo) ?? _app.Settings.AllDeviceId);
+
     private void GameCombo_DropDownOpened(object sender, EventArgs e) => FillGameCombo(Selected<string>(GameCombo) ?? _app.Settings.GameProcess);
+
+    private void MicCombo_DropDownOpened(object sender, EventArgs e) => FillDeviceCombo(MicCombo, true, Selected<string>(MicCombo) ?? _app.Settings.MicDeviceId);
 
     private void VoiceCombo_DropDownOpened(object sender, EventArgs e) => FillVoiceCombo(Selected<string>(VoiceCombo) ?? _app.Settings.VoiceApp);
 
@@ -197,11 +221,19 @@ public partial class MainWindow : Window
             var st = eng.GetStats();
             string game = st.Game != null ? $" · {st.Game}" : "";
             if (!noticeShowing) FooterText.Text = $"{st.Encoder.Replace(" Encoder MFT", "")} · buffer {st.BufferedSeconds:0}s · {st.FramesOut} frames · {st.Dropped} dropped{game}";
-            // Non-breaking spaces inside each track's entry so the line wraps between tracks, never inside "Game (Overwatch)".
+            // Each entry says what the track is actually capturing ("● Game (Overwatch)", "● Game (everything except Discord)",
+            // "● Mic (USB Microphone)") or why it is not ("○ Voice (waiting for app)"), so a pick is confirmed here and the
+            // fallback is not mistaken for the real thing. Non-breaking spaces inside an entry: the line wraps between tracks only.
             AudioStatus.Text = st.Audio.Count == 0 ? "No audio tracks" :
-                string.Join("   ", st.Audio.Select(a => $"{(a.Running ? "●" : "○")} {a.Name}{(a.Running ? "" : a.Detail != null ? " (" + a.Detail + ")" : "")}".Replace(' ', ' ')));
+                string.Join("   ", st.Audio.Select(a => $"{(a.Running ? "●" : "○")} {a.Name}{(a.Detail != null ? $" ({a.Detail})" : "")}".Replace(' ', ' ')));
         }
-        else if (eng.Error != null && !noticeShowing) FooterText.Text = eng.Error;
+        else
+        {
+            if (eng.Error != null && !noticeShowing) FooterText.Text = eng.Error;
+            // Never leave the previous run's "● All audio   ● Game" line under a Paused / Error / Starting header: with the pickers
+            // right above it, that reads as "my new selection is active".
+            AudioStatus.Text = _app.IsPaused ? "Paused" : eng.Error != null ? "Not recording" : eng.Status;
+        }
     }
 
     // ------------------------------------------------------------------ updates
@@ -376,15 +408,19 @@ public partial class MainWindow : Window
     {
         if (_loading || _filling) return;
         var s = _app.Settings;
-        string all = Selected<string>(AllDeviceCombo) ?? "";
-        s.AllDeviceId = string.IsNullOrEmpty(all) ? null : all;
-        s.GameProcess = Selected<string>(GameCombo) is { Length: > 0 } game ? game : "auto";
-        string mic = Selected<string>(MicCombo) ?? "";
-        s.MicDeviceId = string.IsNullOrEmpty(mic) ? null : mic;
-        s.VoiceApp = Selected<string>(VoiceCombo) is { Length: > 0 } voice ? voice : "auto";
+        // Only the picker that changed writes its setting, so what another picker happens to show can never clobber a saved value.
+        if (sender == AllDeviceCombo) s.AllDeviceId = DeviceId(AllDeviceCombo);
+        else if (sender == GameCombo) s.GameProcess = ProcessName(GameCombo);
+        else if (sender == MicCombo) s.MicDeviceId = DeviceId(MicCombo);
+        else if (sender == VoiceCombo) s.VoiceApp = ProcessName(VoiceCombo);
+        else return;
         s.Save();
         ScheduleRestart();
     }
+
+    private static string? DeviceId(ComboBox combo) => Selected<string>(combo) is { Length: > 0 } id ? id : null;   // "" = the default device
+
+    private static string ProcessName(ComboBox combo) => Selected<string>(combo) is { Length: > 0 } name ? name : "auto";
 
     private void MiscChanged(object sender, RoutedEventArgs e)
     {

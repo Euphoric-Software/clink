@@ -138,18 +138,18 @@
                                 </Grid.RowDefinitions>
 
                                 <CheckBox x:Name="TrackAllCheck" Grid.Row="0" Content="All audio" Checked="AudioChanged" Unchecked="AudioChanged" ToolTip="Everything you hear (loopback of an output device)" />
-                                <ComboBox x:Name="AllDeviceCombo" Grid.Row="0" Grid.Column="1" SelectionChanged="AudioSourceChanged" ToolTip="Output device to capture" />
+                                <ComboBox x:Name="AllDeviceCombo" Grid.Row="0" Grid.Column="1" SelectionChanged="AudioSourceChanged" DropDownOpened="AllDeviceCombo_DropDownOpened" ToolTip="Output device to capture" />
 
                                 <CheckBox x:Name="TrackGameCheck" Grid.Row="1" Content="Game" Checked="AudioChanged" Unchecked="AudioChanged" ToolTip="Only the game's own audio (per-process capture)" />
                                 <ComboBox x:Name="GameCombo" Grid.Row="1" Grid.Column="1" SelectionChanged="AudioSourceChanged" DropDownOpened="GameCombo_DropDownOpened"
                                           ToolTip="Which process is the game: detect the fullscreen app, or pick a running app" />
 
                                 <CheckBox x:Name="TrackMicCheck" Grid.Row="2" Content="Mic" Checked="AudioChanged" Unchecked="AudioChanged" />
-                                <ComboBox x:Name="MicCombo" Grid.Row="2" Grid.Column="1" SelectionChanged="AudioSourceChanged" ToolTip="Microphone to record" />
+                                <ComboBox x:Name="MicCombo" Grid.Row="2" Grid.Column="1" SelectionChanged="AudioSourceChanged" DropDownOpened="MicCombo_DropDownOpened" ToolTip="Microphone to record" />
 
                                 <CheckBox x:Name="TrackVoiceCheck" Grid.Row="3" Content="Voice chat" Checked="AudioChanged" Unchecked="AudioChanged" ToolTip="Your voice app's audio as its own track" />
                                 <ComboBox x:Name="VoiceCombo" Grid.Row="3" Grid.Column="1" SelectionChanged="AudioSourceChanged" DropDownOpened="VoiceCombo_DropDownOpened"
-                                          ToolTip="Which process is the voice app: the first known one found, or pick a running app" />
+                                          ToolTip="Which process is the voice app. Auto = the first of Discord, TeamSpeak, Slack, Mumble, Zoom or Skype found running; or pick a running app" />
                             </Grid>
                             <TextBlock x:Name="AudioStatus" Style="{StaticResource MutedText}" Margin="2,6,0,0" Text="" TextWrapping="Wrap" />
                         </StackPanel>

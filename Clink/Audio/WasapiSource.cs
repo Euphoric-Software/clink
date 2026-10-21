@@ -9,7 +9,8 @@ using Clink.Native;
 
 namespace Clink.Audio;
 
-internal sealed record AudioDeviceInfo(string Id, string Name);
+/// <param name="Problem">null for an active endpoint; otherwise why it cannot be used right now ("not connected", "disabled").</param>
+internal sealed record AudioDeviceInfo(string Id, string Name, string? Problem = null);
 
 /// <summary>Base for WASAPI capture sources that deliver 48 kHz stereo float packets with QPC timestamps.</summary>
 internal abstract unsafe class WasapiSource : IDisposable
@@ -29,6 +30,8 @@ internal abstract unsafe class WasapiSource : IDisposable
     private DateTime _nextRetry = DateTime.MinValue;
 
     public abstract string Name { get; }
+    /// <summary>What is actually being captured, for the status line: the chosen device's name, the process; null when there is nothing to add to the track name.</summary>
+    public string? Detail { get; protected set; }
     public bool IsRunning => _running;
     public string? LastError { get; protected set; }
 
@@ -233,7 +236,12 @@ internal abstract unsafe class WasapiSource : IDisposable
         return (IMMDeviceEnumerator*)p;
     }
 
-    public static List<AudioDeviceInfo> ListDevices(bool capture)
+    /// <summary>
+    /// Render or capture endpoints. Active ones only by default; with <paramref name="includeInactive"/> also the unplugged and
+    /// disabled ones Windows still knows (so a saved device that is not connected right now can be shown by name), flagged
+    /// through <see cref="AudioDeviceInfo.Problem"/>.
+    /// </summary>
+    public static List<AudioDeviceInfo> ListDevices(bool capture, bool includeInactive = false)
     {
         var list = new List<AudioDeviceInfo>();
         IMMDeviceEnumerator* en = null;
@@ -241,7 +249,9 @@ internal abstract unsafe class WasapiSource : IDisposable
         try
         {
             en = CreateEnumerator();
-            en->EnumAudioEndpoints(capture ? EDataFlow.eCapture : EDataFlow.eRender, DEVICE_STATE.DEVICE_STATE_ACTIVE, &col).Check("EnumAudioEndpoints");
+            var states = DEVICE_STATE.DEVICE_STATE_ACTIVE;
+            if (includeInactive) states |= DEVICE_STATE.DEVICE_STATE_UNPLUGGED | DEVICE_STATE.DEVICE_STATE_DISABLED;
+            en->EnumAudioEndpoints(capture ? EDataFlow.eCapture : EDataFlow.eRender, states, &col).Check("EnumAudioEndpoints");
             uint n;
             col->GetCount(&n);
             for (uint i = 0; i < n; i++)
@@ -254,17 +264,15 @@ internal abstract unsafe class WasapiSource : IDisposable
                     dev->GetId(&id);
                     string idStr = id.ToString();
                     PInvoke.CoTaskMemFree(id.Value);
-                    string name = idStr;
-                    Windows.Win32.UI.Shell.PropertiesSystem.IPropertyStore* store;
-                    if (dev->OpenPropertyStore(STGM.STGM_READ, &store).Succeeded)
+                    var state = DEVICE_STATE.DEVICE_STATE_ACTIVE;
+                    if (includeInactive && dev->GetState(out DEVICE_STATE st).Succeeded) state = st;
+                    string? problem = state switch
                     {
-                        PROPVARIANT pv = default;
-                        PROPERTYKEY key = PInvoke.PKEY_Device_FriendlyName;
-                        if (store->GetValue(&key, &pv).Succeeded && pv.vt == VARENUM.VT_LPWSTR) name = pv.pwszVal.ToString();
-                        PInvoke.PropVariantClear(ref pv);
-                        store->Release();
-                    }
-                    list.Add(new AudioDeviceInfo(idStr, name));
+                        DEVICE_STATE.DEVICE_STATE_ACTIVE => null,
+                        DEVICE_STATE.DEVICE_STATE_DISABLED => "disabled",
+                        _ => "not connected",
+                    };
+                    list.Add(new AudioDeviceInfo(idStr, FriendlyName(dev) ?? idStr, problem));
                 }
                 finally { dev->Release(); }
             }
@@ -272,6 +280,22 @@ internal abstract unsafe class WasapiSource : IDisposable
         catch (Exception ex) { Log.Warn("ListDevices: " + ex.Message); }
         finally { ComUtil.Release(ref col); ComUtil.Release(ref en); }
         return list;
+    }
+
+    /// <summary>The endpoint's name as Sound settings shows it ("Headset Earphone (Arctis Nova Pro)"), or null if it has none.</summary>
+    protected static string? FriendlyName(IMMDevice* dev)
+    {
+        Windows.Win32.UI.Shell.PropertiesSystem.IPropertyStore* store;
+        if (dev->OpenPropertyStore(STGM.STGM_READ, &store).Failed) return null;
+        try
+        {
+            PROPVARIANT pv = default;
+            PROPERTYKEY key = PInvoke.PKEY_Device_FriendlyName;
+            string? name = store->GetValue(&key, &pv).Succeeded && pv.vt == VARENUM.VT_LPWSTR ? pv.pwszVal.ToString() : null;
+            PInvoke.PropVariantClear(ref pv);
+            return string.IsNullOrWhiteSpace(name) ? null : name;
+        }
+        finally { store->Release(); }
     }
 }
 
@@ -300,6 +324,7 @@ internal sealed unsafe class EndpointSource : WasapiSource
             if (_deviceId != null)
             {
                 fixed (char* id = _deviceId) en->GetDevice(new PCWSTR(id), &dev).Check("GetDevice");
+                Detail = FriendlyName(dev);   // confirms in the status line which device the user's pick resolved to
             }
             else
             {
@@ -321,11 +346,12 @@ internal sealed unsafe class ProcessSource : WasapiSource
     public bool Include { get; }
     public override string Name { get; }
 
-    public ProcessSource(uint pid, bool include, string name)
+    public ProcessSource(uint pid, bool include, string name, string? detail = null)
     {
         ProcessId = pid;
         Include = include;
         Name = name;
+        Detail = detail;
     }
 
     protected override uint ExtraStreamFlags => PInvoke.AUDCLNT_STREAMFLAGS_LOOPBACK;

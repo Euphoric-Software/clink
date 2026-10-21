@@ -4,6 +4,7 @@ using System.IO.Pipes;
 using System.Windows;
 using System.Windows.Threading;
 using Microsoft.Win32;
+using Clink.Audio;
 using Clink.Engine;
 using Clink.Native;
 
@@ -205,15 +206,16 @@ internal sealed class AppController : IDisposable
             OutHeight = h,
             Fps = (uint)Math.Clamp(Settings.Fps, 15, 120),
             BitrateMbps = (uint)Math.Clamp(Settings.BitrateMbps, 2, 200),
-            Hevc = Settings.Codec == "hevc",
+            // The combos match settings case-insensitively (a hand-edited settings.json still selects), so the engine must too.
+            Hevc = string.Equals(Settings.Codec, "hevc", StringComparison.OrdinalIgnoreCase),
             GopSeconds = Math.Clamp(Settings.KeyframeSeconds, 0.25f, 5f),
             BufferSeconds = Math.Clamp(Settings.BufferSeconds, 5, 1200),
             CaptureCursor = Settings.CaptureCursor,
             TrackAll = Settings.TrackAll, TrackGame = Settings.TrackGame, TrackMic = Settings.TrackMic, TrackVoice = Settings.TrackVoice,
             AllDeviceId = Settings.AllDeviceId,
             MicDeviceId = Settings.MicDeviceId,
-            GameProcess = string.IsNullOrWhiteSpace(Settings.GameProcess) ? "auto" : Settings.GameProcess,
-            VoiceApp = Settings.VoiceApp,
+            GameProcess = GameProcessTracker.NormalizeName(Settings.GameProcess),
+            VoiceApp = GameProcessTracker.NormalizeName(Settings.VoiceApp),
             HdrKnee = Settings.HdrKnee, HdrPeak = Settings.HdrPeak,
             ClipsFolder = Settings.ClipsFolder,
         };
@@ -221,7 +223,7 @@ internal sealed class AppController : IDisposable
 
     public static (uint w, uint h) OutputSize(MonitorInfo mon, string resolution)
     {
-        int targetH = resolution switch { "1440p" => 1440, "1080p" => 1080, "720p" => 720, _ => 0 };
+        int targetH = resolution.Trim().ToLowerInvariant() switch { "1440p" => 1440, "1080p" => 1080, "720p" => 720, _ => 0 };
         double w = mon.Width, h = mon.Height;
         if (targetH > 0 && targetH < h) { w = w * targetH / h; h = targetH; }
         return ((uint)Math.Round(w / 2) * 2, (uint)Math.Round(h / 2) * 2);

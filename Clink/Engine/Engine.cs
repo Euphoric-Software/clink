@@ -30,6 +30,7 @@ internal sealed class EngineConfig
     public string ClipsFolder = "";
 }
 
+/// <param name="Detail">Running: what the track captures beyond its name (device, process, fallback), or null. Not running: why.</param>
 internal sealed record AudioTrackStatus(string Name, bool Running, string? Detail);
 
 internal sealed record EngineStats(
@@ -299,8 +300,7 @@ internal sealed unsafe class Engine : IDisposable
                 if (newVoice != _voicePid) { _voicePid = newVoice; _voiceName = v?.name; Log.Info($"Voice app: {(_voiceName ?? "none")} pid={_voicePid}"); }
             }
             // Game
-            bool manual = !string.IsNullOrWhiteSpace(_cfg.GameProcess) && !_cfg.GameProcess.Equals("auto", StringComparison.OrdinalIgnoreCase);
-            if (manual)
+            if (!GameProcessTracker.IsAuto(_cfg.GameProcess))
             {
                 var chosen = GameProcessTracker.FindProcessByName(_cfg.GameProcess);
                 uint pid = chosen?.pid ?? 0;
@@ -326,15 +326,18 @@ internal sealed unsafe class Engine : IDisposable
                 if (!same)
                 {
                     cur?.Dispose();
-                    _gameTrack.Source = want == null ? null : new ProcessSource(want.Value.pid, want.Value.include,
-                        want.Value.include ? $"Game ({_gameName})" : $"Everything except {_voiceName}");
+                    // The detail is what the status line appends to the track name, so the "everything except" fallback is visibly
+                    // not the same thing as capturing the chosen game.
+                    _gameTrack.Source = want == null ? null : want.Value.include
+                        ? new ProcessSource(want.Value.pid, true, $"Game ({_gameName})", _gameName)
+                        : new ProcessSource(want.Value.pid, false, $"Everything except {_voiceName}", $"everything except {_voiceName}");
                 }
             }
             if (_voiceTrack != null)
             {
                 var cur = _voiceTrack.Source as ProcessSource;
                 if (_voicePid == 0) { if (cur != null) { cur.Dispose(); _voiceTrack.Source = null; } }
-                else if (cur == null || cur.ProcessId != _voicePid) { cur?.Dispose(); _voiceTrack.Source = new ProcessSource(_voicePid, true, $"Voice ({_voiceName})"); }
+                else if (cur == null || cur.ProcessId != _voicePid) { cur?.Dispose(); _voiceTrack.Source = new ProcessSource(_voicePid, true, $"Voice ({_voiceName})", _voiceName); }
             }
         }
     }
@@ -354,7 +357,7 @@ internal sealed unsafe class Engine : IDisposable
     {
         List<AudioTrackStatus> audio;
         lock (_audioGate)
-            audio = _tracks.Select(t => new AudioTrackStatus(t.Name, t.Source?.IsRunning == true, t.Source == null ? "waiting for app" : t.Source.IsRunning ? t.Source.Name : t.Source.LastError)).ToList();
+            audio = _tracks.Select(t => new AudioTrackStatus(t.Name, t.Source?.IsRunning == true, t.Source == null ? "waiting for app" : t.Source.IsRunning ? t.Source.Detail : t.Source.LastError)).ToList();
         return new EngineStats(_encoder?.EncoderName ?? "", _encoder?.FramesIn ?? 0, _encoder?.FramesOut ?? 0,
             (_encoder?.Dropped ?? 0) + Interlocked.Read(ref _pacerDropped), _capture?.FramesReceived ?? 0,
             BufferedSeconds, _ring?.Capacity ?? 0, audio, _gameName, _capture?.IsHdr ?? false);
