@@ -1,5 +1,6 @@
 using System.IO;
 using System.Windows;
+using System.Windows.Threading;
 using Windows.Win32;
 using Clink.Services;
 
@@ -24,13 +25,14 @@ public partial class App : System.Windows.Application
             return;
         }
 
-        Log.Init(Settings.Dir);
         AppDomain.CurrentDomain.UnhandledException += (_, a) => Log.Error("Unhandled", (a.ExceptionObject as Exception) ?? new Exception(a.ExceptionObject?.ToString()));
         DispatcherUnhandledException += (_, a) => { Log.Error("UI exception", a.Exception); a.Handled = true; };
         TaskScheduler.UnobservedTaskException += (_, a) => { Log.Error("Task exception", a.Exception); a.SetObserved(); };
 
+        // The command-line modes log to clink-cli.log: the running Clink holds clink.log open.
         if (args.Length > 0 && args[0].Equals("--selftest", StringComparison.OrdinalIgnoreCase))
         {
+            Log.Init(Settings.Dir, Log.CliFile);
             AttachParentConsole();
             int code = 1;
             var t = new Thread(() => { code = SelfTest.Run(args); }) { IsBackground = false };
@@ -42,6 +44,7 @@ public partial class App : System.Windows.Application
         }
         if (args.Length > 1 && args[0].Equals("--probe", StringComparison.OrdinalIgnoreCase))
         {
+            Log.Init(Settings.Dir, Log.CliFile);
             AttachParentConsole();
             int code = 0;
             var t = new Thread(() =>
@@ -70,6 +73,7 @@ public partial class App : System.Windows.Application
         if (args.Length > 1 && args[0].Equals("--trim", StringComparison.OrdinalIgnoreCase))
         {
             // Clink.exe --trim <in> <out> <startSec> <endSec>
+            Log.Init(Settings.Dir, Log.CliFile);
             AttachParentConsole();
             int code = 0;
             var t = new Thread(() =>
@@ -84,8 +88,26 @@ public partial class App : System.Windows.Application
             return;
         }
 
-        // Normal run: one instance; "--clip" / "--show" talk to it.
+        try { RunNormal(args); }
+        catch (Exception ex)
+        {
+            // An exception here would otherwise be swallowed by the DispatcherUnhandledException handler and leave a headless
+            // process holding the single-instance mutex: every later start would forward to it and exit.
+            if (Log.Path == null) Log.Init(Settings.Dir);
+            Log.Error("Startup failed", ex);
+            try { _controller?.Dispose(); } catch { }
+            AppController.ReleaseSingleInstance();
+            try { MessageBox.Show("Clink could not start: " + ex.Message + "\n\nDetails: " + (Log.Path ?? Settings.Dir), "Clink", MessageBoxButton.OK, MessageBoxImage.Error); } catch { }
+            Shutdown(1);
+        }
+    }
+
+    private void RunNormal(string[] args)
+    {
+        // Normal run: one instance; "--clip" / "--show" talk to it. A second instance only forwards its command and exits,
+        // without touching the log (the running instance holds it).
         if (!AppController.AcquireSingleInstance(args)) { Shutdown(0); return; }
+        Log.Init(Settings.Dir);
 
         var settings = Settings.Load();
         var updater = new Updater(settings);
@@ -117,10 +139,14 @@ public partial class App : System.Windows.Application
         var main = new MainWindow();
         MainWindow = main;
         _controller.Start();
+        // "--clip" / "--share-last" / "--trim-last" while Clink was not running: start in the tray and run the command,
+        // instead of opening the settings window over the game and dropping the command.
+        string? cmd = AppController.CommandFromArgs(args);
         bool show = args.Any(a => a.Equals("--show", StringComparison.OrdinalIgnoreCase));
-        bool minimized = !show && (settings.StartMinimized || args.Any(a => a.Equals("--minimized", StringComparison.OrdinalIgnoreCase)));
+        bool minimized = !show && (settings.StartMinimized || cmd != null || args.Any(a => a.Equals("--minimized", StringComparison.OrdinalIgnoreCase)));
         if (!minimized) main.Show();
         Log.Info($"Clink v{updater.VersionDisplay} started");
+        if (cmd != null) Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, () => _controller?.RunStartupCommand(cmd));
     }
 
     protected override void OnExit(ExitEventArgs e)
