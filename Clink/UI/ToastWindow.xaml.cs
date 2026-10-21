@@ -174,7 +174,7 @@ public partial class ToastWindow : Window
         _preview = preview;
         TitleText.Text = title;
         Subtitle.Text = subtitle;
-        Subtitle.ToolTip = CaptureFreeTip(subtitle);
+        Subtitle.ToolTip = subtitle;
         Dot.Fill = TryFindResource(kind switch { "shared" => "Accent", "recording" => "Danger", _ => "Good" }) as Brush ?? Brushes.LimeGreen;
         ClipButtons.Visibility = kind == "clip" ? Visibility.Visible : Visibility.Collapsed;
         SharedButtons.Visibility = kind == "shared" ? Visibility.Visible : Visibility.Collapsed;
@@ -186,13 +186,15 @@ public partial class ToastWindow : Window
         SourceInitialized += (_, _) => ScreenPlacement.ExcludeFromCapture(new WindowInteropHelper(this).Handle);
     }
 
-    /// <summary>A tooltip whose popup (a window of its own) is kept out of capture like the toast it belongs to.</summary>
-    private static System.Windows.Controls.ToolTip CaptureFreeTip(string text)
+    /// <summary>
+    /// A tooltip's popup is a window of its own: every tooltip on a toast's elements (a plain string or a ToolTip, wherever it
+    /// is set) is kept out of capture like the toast it belongs to. A tooltip's PlacementTarget is its owner element.
+    /// </summary>
+    static ToastWindow() => EventManager.RegisterClassHandler(typeof(System.Windows.Controls.ToolTip), System.Windows.Controls.ToolTip.OpenedEvent, new RoutedEventHandler((s, _) =>
     {
-        var tip = new System.Windows.Controls.ToolTip { Content = text };
-        tip.Opened += (_, _) => { if (PresentationSource.FromVisual(tip) is HwndSource src) ScreenPlacement.ExcludeFromCapture(src.Handle); };
-        return tip;
-    }
+        if (s is System.Windows.Controls.ToolTip { PlacementTarget: { } owner } tip && GetWindow(owner) is ToastWindow && PresentationSource.FromVisual(tip) is HwndSource src)
+            ScreenPlacement.ExcludeFromCapture(src.Handle);
+    }));
 
     /// <summary>v1 MainWindow compatibility (<c>new ToastWindow().Show(entry)</c>); the v2 UI goes through <see cref="AppController.Toasts"/>.</summary>
     public ToastWindow() : this(null!, "clip", null, null, "Clip saved", "", TimeSpan.FromSeconds(7), false) { }
@@ -245,15 +247,14 @@ public partial class ToastWindow : Window
         ShareButton.ToolTip = null;
         ShareButton.Content = "Uploading…";
         var progress = new Progress<double>(p => ShareButton.Content = $"Uploading… {p:P0}");
-        var app = AppController.Instance;
-        bool ok = await app.ShareAsync(Entry, progress);
+        bool ok = await AppController.Instance.ShareAsync(Entry, progress);
         _busy = false;
         if (ok) { Dismiss(); return; }   // the "Shared" toast takes over
         if (_dismissed) return;          // closed while it was uploading
+        var app = AppController.Instance;
         // Short labels (the card is 330 wide); the refusal's full text is the tooltip. No token: ShareAsync opened the window to set one.
-        string? refusal = app.ShareRefusal;
-        ShareButton.Content = refusal != null ? "Over free limit" : string.IsNullOrWhiteSpace(app.Settings.CopiumToken) ? "Add a Copium token" : "Upload failed";
-        ShareButton.ToolTip = refusal != null ? CaptureFreeTip(refusal) : null;
+        ShareButton.Content = app.ShareRefusal != null ? "Over free limit" : string.IsNullOrWhiteSpace(app.Settings.CopiumToken) ? "Add a Copium token" : "Upload failed";
+        ShareButton.ToolTip = app.ShareRefusal;
         ShareButton.IsEnabled = true;
         _hide.Interval = TimeSpan.FromSeconds(8);
         _hide.Start();
