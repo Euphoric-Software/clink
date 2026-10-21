@@ -59,9 +59,12 @@ internal sealed class Toasts
         Add(new ToastWindow(this, "recording", null, null, "Recording started", game, Duration(_settings.ToastRecording), false));
     });
 
-    /// <summary>A plain title + line toast in the "Recording started" layout ("Recording paused"); the caller decides whether it is wanted.</summary>
-    public void ShowNotice(string title, string text) =>
-        Post(() => Add(new ToastWindow(this, "recording", null, null, title, text, Duration(_settings.ToastRecording), false)));
+    /// <summary>
+    /// A plain title + line toast in the "Recording started" layout ("Recording paused"); the caller decides whether it is wanted.
+    /// The dot is grey when <paramref name="paused"/> (as the status dot), accent otherwise: red stays "recording" / error.
+    /// </summary>
+    public void ShowNotice(string title, string text, bool paused = false) =>
+        Post(() => Add(new ToastWindow(this, paused ? "paused" : "info", null, null, title, text, Duration(_settings.ToastRecording), false)));
 
     /// <summary>"Uploading to Copium…" for the share-last hotkey / tray / --share-last, which have no progress UI of their own. Follows the "Shared" switch.</summary>
     public void ShowUploading(ClipEntry entry, string title = "Uploading to Copium…") => Post(() =>
@@ -199,7 +202,7 @@ public partial class ToastWindow : Window
         TitleText.Text = title;
         Subtitle.Text = subtitle;
         Subtitle.ToolTip = subtitle;
-        Dot.Fill = TryFindResource(kind switch { "shared" or "info" => "Accent", "recording" => "Danger", "problem" => "Warn", _ => "Good" }) as Brush ?? Brushes.LimeGreen;
+        Dot.Fill = TryFindResource(kind switch { "shared" or "info" => "Accent", "recording" => "Danger", "problem" => "Warn", "paused" => "Muted", _ => "Good" }) as Brush ?? Brushes.LimeGreen;
         if (kind == "problem") Subtitle.TextWrapping = TextWrapping.Wrap;   // the reason is the point: all of it, not an ellipsis
         ClipButtons.Visibility = kind == "clip" ? Visibility.Visible : Visibility.Collapsed;
         SharedButtons.Visibility = kind == "shared" ? Visibility.Visible : Visibility.Collapsed;

@@ -15,7 +15,12 @@
                 <Setter.Value>
                     <ControlTemplate TargetType="RadioButton">
                         <Border x:Name="B" Background="{StaticResource Panel2}" BorderBrush="{StaticResource Border}" BorderThickness="1" CornerRadius="6" Padding="9,2">
-                            <ContentPresenter VerticalAlignment="Center" />
+                            <ContentPresenter VerticalAlignment="Center">
+                                <!-- shadows the app-wide TextBlock style (Fg, 13 px): the label takes the pill's Foreground and FontSize -->
+                                <ContentPresenter.Resources>
+                                    <Style TargetType="TextBlock" />
+                                </ContentPresenter.Resources>
+                            </ContentPresenter>
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">

@@ -39,6 +39,7 @@ public partial class TrimWindow : Window
         public CheckBox Include = null!;
         public RadioButton Listen = null!;
         public Slider Volume = null!;
+        public TextBlock Percent = null!;
         public bool Included => Include.IsChecked == true;
         public float Gain => (float)(Volume.Value / 100.0);
     }
@@ -224,7 +225,7 @@ public partial class TrimWindow : Window
             grid.Children.Add(volume);
             grid.Children.Add(percent);
             TracksPanel.Children.Add(grid);
-            _rows.Add(new TrackRow { Name = name, Include = include, Listen = listen, Volume = volume });
+            _rows.Add(new TrackRow { Name = name, Include = include, Listen = listen, Volume = volume, Percent = percent });
         }
         _rows[0].Listen.IsChecked = true; // what a player plays by default
         SyncPlayerMix();
@@ -249,7 +250,9 @@ public partial class TrimWindow : Window
     {
         if (index >= _rows.Count) return;
         var row = _rows[index];
-        row.Listen.IsEnabled = row.Included;
+        // An unticked track is not in the file: its listen pill and volume grey out like the rest of the row's controls.
+        row.Listen.IsEnabled = row.Volume.IsEnabled = row.Included;
+        row.Percent.Opacity = row.Included ? 1 : 0.45;
         if (!row.Included && _monitor == index)
         {
             // Listen follows the export: audition the first track that is still in the file.

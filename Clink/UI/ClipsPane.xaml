@@ -87,7 +87,8 @@
                     </StackPanel>
                     <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
                         <Button Content="Trim" Click="Trim_Click" Padding="10,5" Margin="0,0,6,0" />
-                        <Button Content="{Binding ShareLabel}" Click="Share_Click" Padding="10,5" Margin="0,0,6,0" Style="{StaticResource AccentButton}" />
+                        <!-- MinWidth = the "Copy link" width: Trim and the folder button stay in fixed columns down the list -->
+                        <Button Content="{Binding ShareLabel}" Click="Share_Click" Padding="10,5" Margin="0,0,6,0" MinWidth="82" Style="{StaticResource AccentButton}" />
                         <Button Style="{StaticResource GlyphButton}" Content="&#xE8B7;" Click="Folder_Click" Padding="8,5" ToolTip="Show in folder" />
                     </StackPanel>
                 </Grid>
