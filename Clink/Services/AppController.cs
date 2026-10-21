@@ -529,10 +529,13 @@ internal sealed class AppController : IDisposable
         if (!Engine.IsRunning)
         {
             bool waiting = !IsPaused && GameOnly && _gamePid == 0;
-            Say(IsPaused ? "Recording is paused" : waiting ? "Not recording: waiting for a game" : "Not recording yet");
-            // The hotkey, the tray item and --clip have no UI of their own and the window is usually in the tray while a game runs:
-            // a footer line alone would make a missed clip look saved, so say it where the user notices (as ShareLast does).
-            if (!MainWindowVisible)
+            // A recorder that failed to start says why: "yet" would promise a start that may never come.
+            Say(IsPaused ? "Recording is paused" : waiting ? "Not recording: waiting for a game"
+                : Engine.Error is string err && !_starting ? "Recording failed: " + err : "Not recording yet");
+            // The hotkey, the tray item and --clip have no UI of their own and the window is usually in the tray, minimized or
+            // behind the game while one runs: a footer line alone would make a missed clip look saved, so say it where the user
+            // notices unless the window is in front of them.
+            if (System.Windows.Application.Current?.MainWindow is not { IsVisible: true, IsActive: true, WindowState: not System.Windows.WindowState.Minimized })
             {
                 if (Settings.ClickSound) System.Media.SystemSounds.Exclamation.Play();
                 ShowBalloon("Clink is not recording", waiting ? LastNotice + ". Add the game under Capture → Recording → Custom apps" : LastNotice);
