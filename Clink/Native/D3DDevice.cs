@@ -26,6 +26,12 @@ internal sealed unsafe class D3DDevice : IDisposable
     /// <summary>Serializes immediate-context use between the capture callback, the pacer and the encoder.</summary>
     public readonly object ContextLock = new();
 
+    /// <summary>
+    /// Success (S_OK) while the device works; for good a failure code (DXGI_ERROR_DEVICE_REMOVED / _RESET / _HUNG /
+    /// _DRIVER_INTERNAL_ERROR) once the GPU was reset (driver crash, TDR), the driver was updated or the adapter went away. Thread-safe.
+    /// </summary>
+    public HRESULT RemovedReason => Device == null ? default : Device->GetDeviceRemovedReason();
+
     [DllImport("gdi32.dll")]
     private static extern int D3DKMTSetProcessSchedulingPriorityClass(nint hProcess, int priority);
 
