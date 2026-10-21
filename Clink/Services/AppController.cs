@@ -89,6 +89,7 @@ internal sealed class AppController : IDisposable
     private static Mutex? s_mutex;
     private int _saving;
     private Task<ClipEntry?>? _saveTask;    // the save in flight (UI thread): its clip once in the library, null if it failed
+    private DateTime _clipRefusedAt = DateTime.MinValue;   // a clip turned down before any save started (not recording, --clip at startup)
     // Copium uploads in flight (UI thread); Announced: started by ShareLast, which reports a failure itself.
     private readonly Dictionary<ClipEntry, (Task<bool> Task, bool Announced)> _uploads = new(ReferenceEqualityComparer.Instance);
     private DateTime _lastClipAt = DateTime.MinValue;
@@ -189,14 +190,17 @@ internal sealed class AppController : IDisposable
     }
 
     /// <summary>
-    /// "--clip" / "--share-last" / "--trim-last" on a start that found no Clink running: runs it once the app is up. A clip
-    /// has nothing to save yet (nothing was recording), so that one says so instead of failing silently.
+    /// "--clip" / "--share-last" / "--trim-last" on a start that found no Clink running: runs it once the app is up (at idle,
+    /// after startup). A clip has nothing to save yet (nothing was recording), so that one says so instead of failing silently.
+    /// Called during startup, before the pipe has delivered anything.
     /// </summary>
     internal void RunStartupCommand(string cmd)
     {
-        if (cmd != "clip") { RunCommand(cmd); return; }
-        ShowBalloon("Clink started", "It was not running, so there was nothing to save yet. "
-            + (GameOnly ? "It records while a game runs." : "It is recording now."));
+        if (cmd != "clip") { _ui.BeginInvoke(DispatcherPriority.ApplicationIdle, () => RunCommand(cmd)); return; }
+        // Marked now, not at idle: a --share-last sent right behind this --clip can reach the pipe while Clink is still starting.
+        _clipRefusedAt = DateTime.UtcNow;
+        _ui.BeginInvoke(DispatcherPriority.ApplicationIdle, () => ShowBalloon("Clink started", "It was not running, so there was nothing to save yet. "
+            + (GameOnly ? "It records while a game runs." : "It is recording now.")));
     }
 
     // ------------------------------------------------------------------ lifecycle
@@ -630,6 +634,7 @@ internal sealed class AppController : IDisposable
                 : waiting ? "Not recording: waiting for a game"
                 : Engine.Error is string err && !_starting ? "Recording failed: " + err
                 : "Not recording yet";
+            _clipRefusedAt = DateTime.UtcNow;   // a share-last right behind this press must not share the clip before it
             Say(why);
             // The hotkey, the tray item and --clip have no UI of their own and the window is usually in the tray, minimized or
             // behind the game while one runs: a footer line alone would make a missed clip look saved, so say it where the user
@@ -644,6 +649,7 @@ internal sealed class AppController : IDisposable
         if ((DateTime.UtcNow - _lastClipAt).TotalMilliseconds < 700) return;
         if (Interlocked.Exchange(ref _saving, 1) == 1) return;
         _lastClipAt = DateTime.UtcNow;
+        _clipRefusedAt = DateTime.MinValue;
         var saved = new TaskCompletionSource<ClipEntry?>(TaskCreationOptions.RunContinuationsAsynchronously);
         _saveTask = saved.Task;
         if (Settings.ClickSound) ClickSound.Play(Settings.ClickVolume);
@@ -678,13 +684,21 @@ internal sealed class AppController : IDisposable
     {
         // "Clip, then share" (a Stream Deck multi-action, --clip then --share-last, two quick presses) means the clip being saved
         // right now: the library only gets it once the save is done, so wait for that save, however long it takes (a long replay
-        // on a slow disk), and share what it saved, never the clip before it.
+        // on a slow disk), and share what it saved, never the clip before it. A clip turned down before its save started (not
+        // recording, or --clip starting Clink) shares nothing either: the two presses of a multi-action arrive well inside 3 s,
+        // and a share-last pressed on its own still shares the newest clip.
         ClipEntry? entry;
         if (Volatile.Read(ref _saving) == 1 && _saveTask is { } saving)
         {
             entry = await saving;
             // ClipNow has already said why the clip was not saved (footer, and a toast / balloon away from the window).
             if (entry == null) { Log.Info("share-last: the clip being saved failed; nothing shared"); return; }
+        }
+        else if (DateTime.UtcNow - _clipRefusedAt < TimeSpan.FromSeconds(3))
+        {
+            // Same: ClipNow / the startup balloon has said why; the footer keeps that reason.
+            Log.Info("share-last: the clip just pressed was not saved; nothing shared");
+            return;
         }
         else entry = Library.Entries.FirstOrDefault(e => e.IsShared || e.IsArchived || e.Exists);
         bool ok = false, joined = false;

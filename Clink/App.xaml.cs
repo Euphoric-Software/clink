@@ -146,7 +146,7 @@ public partial class App : System.Windows.Application
         bool minimized = !show && (settings.StartMinimized || cmd != null || args.Any(a => a.Equals("--minimized", StringComparison.OrdinalIgnoreCase)));
         if (!minimized) main.Show();
         Log.Info($"Clink v{updater.VersionDisplay} started");
-        if (cmd != null) Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, () => _controller?.RunStartupCommand(cmd));
+        if (cmd != null) _controller.RunStartupCommand(cmd);
     }
 
     protected override void OnExit(ExitEventArgs e)
