@@ -34,6 +34,7 @@ internal sealed class Updater : IDisposable
     private const int MaxDownloadAttempts = 3;              // per version, per process; a broken release should not be re-fetched every cycle
     private static readonly TimeSpan FirstCheckDelay = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan CheckInterval = TimeSpan.FromHours(6);
+    private static readonly TimeSpan LoopTick = TimeSpan.FromMinutes(1);       // how soon the background loop notices AutoUpdate being switched
     private static readonly TimeSpan ReadTimeout = TimeSpan.FromSeconds(60);   // no bytes for this long = the download is stalled
     private static readonly HttpClient s_http = new() { Timeout = TimeSpan.FromSeconds(30) };
     private static readonly Regex s_hex64 = new("(?<![0-9A-Fa-f])[0-9A-Fa-f]{64}(?![0-9A-Fa-f])", RegexOptions.Compiled);
@@ -43,6 +44,7 @@ internal sealed class Updater : IDisposable
     private readonly CancellationTokenSource _cts = new();
     private readonly SemaphoreSlim _gate = new(1, 1);        // one check/download at a time
     private readonly Dictionary<Version, int> _attempts = new();
+    private string? _lastDownloadError;
     private Task? _loop;
     private bool _loggedBadRepo;
 
@@ -56,7 +58,7 @@ internal sealed class Updater : IDisposable
     /// <summary>Path of a downloaded, verified newer exe (null until <see cref="UpdateReady"/> fired).</summary>
     public string? PendingPath { get; private set; }
     public Version? PendingVersion { get; private set; }
-    /// <summary>Why the last check returned nothing, or null if it simply found no newer release.</summary>
+    /// <summary>Why the last check returned nothing or could not download what it found, or null if nothing went wrong.</summary>
     public string? LastError { get; private set; }
     /// <summary>True while <see cref="DownloadAsync"/> is transferring the exe (a manual check waits for it).</summary>
     public bool IsDownloading { get; private set; }
@@ -154,7 +156,11 @@ internal sealed class Updater : IDisposable
 
     private static string FileFor(Version v) => Path.Combine(UpdatesDir, $"Clink-{v.ToString(3)}.exe");
 
-    /// <summary>Written by <see cref="RunApplyUpdate"/> when the swap failed. Stays until a newer download replaces the file or a manual check retries it.</summary>
+    /// <summary>
+    /// Written by <see cref="LaunchApply"/> before the hand-over (so an apply process that never finishes counts as failed) and by
+    /// <see cref="RunApplyUpdate"/> when the swap failed; deleted by a successful swap. Otherwise it stays until a newer download
+    /// replaces the file or a manual check retries it.
+    /// </summary>
     private static string FailedMarker(string exePath) => exePath + ".failed";
 
     /// <summary>Written by <see cref="RunApplyUpdate"/> after a successful swap, so the file is never installed a second time (even if the new exe reports an unexpected version).</summary>
@@ -202,7 +208,8 @@ internal sealed class Updater : IDisposable
             using var req = new HttpRequestMessage(HttpMethod.Get, $"https://api.github.com/repos/{repo}/releases/latest");
             AddHeaders(req);
             req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
-            using var resp = await s_http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+            // The whole (small) answer is buffered inside SendAsync, so HttpClient.Timeout also covers a body that stalls.
+            using var resp = await s_http.SendAsync(req, ct).ConfigureAwait(false);
             string body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
             if (!resp.IsSuccessStatusCode)
             {
@@ -219,7 +226,10 @@ internal sealed class Updater : IDisposable
         }
         catch (Exception ex)
         {
-            LastError = ex is OperationCanceledException ? "cancelled" : ex.Message;
+            // HttpClient.Timeout surfaces as a cancellation too; only a cancelled token means Clink is shutting down.
+            LastError = ex is OperationCanceledException
+                ? ct.IsCancellationRequested ? "cancelled" : $"GitHub did not answer within {s_http.Timeout.TotalSeconds:0} s"
+                : Describe(ex);
             Log.Warn("updater: check failed: " + ex.Message);
             return null;
         }
@@ -427,6 +437,9 @@ internal sealed class Updater : IDisposable
 
     private static string HowToInstallByHand => $"install it by hand from {UpdatesDir}";
 
+    /// <summary>A manual check is what clears a <c>.failed</c> marker (see <see cref="CheckAndMaybeDownloadAsync"/>).</summary>
+    private const string RetryHint = "To retry, click Check now under Alerts → Updates.";
+
     /// <summary>Why this process cannot install an update over <paramref name="targetExe"/> (it is elevated, or the folder is read-only), or null.</summary>
     public static string? InstallProblemFor(string targetExe)
     {
@@ -483,7 +496,14 @@ internal sealed class Updater : IDisposable
             string? reason = FailedReason(best);
             if (reason != null)
             {
-                InstallProblem = $"Update to v{bestVer} could not be installed: {reason}. Move Clink.exe to a folder you can write to, or {HowToInstallByHand}.";
+                // Advice from the current state: retrying only helps where this process could install at all. The reason is
+                // capped so the advice still fits in a tray balloon (250 characters); the log has it in full.
+                string? blocked = InstallProblemFor(Environment.ProcessPath ?? "");
+                string shown = reason.TrimEnd('.');
+                if (shown.Length > 150) shown = shown[..150] + "…";
+                InstallProblem = blocked != null
+                    ? $"Update to v{bestVer} could not be installed: {shown}; {blocked}, so {HowToInstallByHand}."
+                    : $"Update to v{bestVer} could not be installed: {shown}. {RetryHint}";
                 Log.Warn($"updater: skipping v{bestVer}, installing it failed earlier: {reason}");
                 return false;
             }
@@ -512,10 +532,11 @@ internal sealed class Updater : IDisposable
     public void ReportInstallFailure(Exception ex, Version version, string pendingExe)
     {
         bool appControl = ex.Message.Contains("Application Control", StringComparison.OrdinalIgnoreCase);
+        // Kept short: this text comes back at every start inside a longer message, and tray balloons stop at 250 characters.
         string why = appControl
-            ? "Windows App Control (Smart App Control) blocked the downloaded exe because Clink releases are not code-signed yet. Either turn Smart App Control off (Windows Security › App & browser control) or build Clink from source on this PC"
+            ? "Smart App Control blocked it (Clink is not code-signed yet). Turn it off in Windows Security › App & browser control, or build Clink from source"
             : Describe(ex);
-        InstallProblem = $"Update to v{version} could not start: {why}.";
+        InstallProblem = $"Update to v{version} could not start: {why.TrimEnd('.')}. {RetryHint}";
         Log.Warn("updater: " + InstallProblem);
         // Same marker the apply process writes: this file is not offered again at every start (a manual check retries it).
         try { File.WriteAllText(FailedMarker(pendingExe), $"{why}\n{DateTime.Now:yyyy-MM-dd HH:mm:ss} launch failed"); } catch { }
@@ -537,7 +558,22 @@ internal sealed class Updater : IDisposable
         psi.ArgumentList.Add(Environment.ProcessId.ToString());
         foreach (string a in restartArgs) psi.ArgumentList.Add(a);
         Log.Info($"updater: launching {newExePath} {string.Join(' ', psi.ArgumentList.Select(a => a.Contains(' ') ? '"' + a + '"' : a))}");
-        using var p = Process.Start(psi) ?? throw new InvalidOperationException("could not start the updater process");
+        // Count it as failed until the apply process says otherwise (it deletes this marker on success and rewrites it on
+        // failure): a downloaded exe that cannot run at all (missing .NET runtime, crash before --apply-update, killed by AV)
+        // must not be handed over to again at every start.
+        string marker = FailedMarker(newExePath);
+        try { File.WriteAllText(marker, $"the update process did not finish\n{DateTime.Now:yyyy-MM-dd HH:mm:ss} {targetExePath}"); } catch { }
+        try
+        {
+            using var p = Process.Start(psi) ?? throw new InvalidOperationException("could not start the updater process");
+            // It waits for this process to exit before doing anything, so leaving early always means it failed.
+            if (p.WaitForExit(2000)) throw new InvalidOperationException($"the update process exited right away (exit code {p.ExitCode})");
+        }
+        catch (Exception ex)
+        {
+            try { File.WriteAllText(marker, $"{Describe(ex)}\n{DateTime.Now:yyyy-MM-dd HH:mm:ss} launch failed"); } catch { }
+            throw;
+        }
     }
 
     /// <summary>
@@ -611,14 +647,36 @@ internal sealed class Updater : IDisposable
             try { File.WriteAllText(FailedMarker(self), $"{Describe(last)}\n{DateTime.Now:yyyy-MM-dd HH:mm:ss} {target}"); } catch { }
         }
 
+        Exception? startError = StartClink(target, restartArgs);
+        if (startError != null && installed && File.Exists(backup))
+        {
+            // The new exe will not even start from there (blocked by App Control or AV): put the previous one back instead of
+            // leaving no working Clink, and mark this download failed so the old version does not hand over to it again.
+            Log.Error("[update] the new exe did not start, restoring the previous one", startError);
+            try
+            {
+                File.Move(backup, target, overwrite: true);
+                Log.Info($"[update] restored {target} from {backup}");
+                TryDelete(InstalledMarker(self));
+                try { File.WriteAllText(FailedMarker(self), $"the new version did not start: {Describe(startError)}\n{DateTime.Now:yyyy-MM-dd HH:mm:ss} {target}"); } catch { }
+                startError = StartClink(target, restartArgs);
+            }
+            catch (Exception ex) { Log.Error($"[update] could not restore {target} from {backup}", ex); }
+        }
+        if (startError != null) Log.Error("[update] could not restart Clink", startError);
+        return 0;
+    }
+
+    private static Exception? StartClink(string exe, string[] args)
+    {
         try
         {
-            var psi = new ProcessStartInfo(target) { UseShellExecute = true, WorkingDirectory = Path.GetDirectoryName(target) ?? "" };
-            foreach (string a in restartArgs) psi.ArgumentList.Add(a);
-            Process.Start(psi);
+            var psi = new ProcessStartInfo(exe) { UseShellExecute = true, WorkingDirectory = Path.GetDirectoryName(exe) ?? "" };
+            foreach (string a in args) psi.ArgumentList.Add(a);
+            Process.Start(psi)?.Dispose();
+            return null;
         }
-        catch (Exception ex) { Log.Error("[update] could not restart Clink", ex); }
-        return 0;
+        catch (Exception ex) { return ex; }
     }
 
     /// <summary>Puts <paramref name="staged"/> in place of <paramref name="target"/>, keeping the old target as <paramref name="backup"/>. Renames only.</summary>
@@ -637,9 +695,10 @@ internal sealed class Updater : IDisposable
     // ------------------------------------------------------------------ background loop
 
     /// <summary>
-    /// Cleans up after a finished install 30 s after start, then (only with <see cref="Settings.AutoUpdate"/> on) checks GitHub
-    /// right away and every 6 hours, downloading a newer release automatically. With auto-update off Clink never contacts GitHub
-    /// on its own; the version label in the footer still checks on demand.
+    /// Cleans up after a finished install 30 s after start, then, while <see cref="Settings.AutoUpdate"/> is on, checks GitHub
+    /// right away and every 6 hours, downloading a newer release automatically. The setting is read before every pass, so
+    /// switching it takes effect within a minute; while it is off Clink never contacts GitHub on its own (the version label in
+    /// the footer and Check now still check on demand).
     /// </summary>
     public void StartBackgroundChecks()
     {
@@ -651,14 +710,21 @@ internal sealed class Updater : IDisposable
             {
                 await Task.Delay(FirstCheckDelay, ct).ConfigureAwait(false);
                 CleanupInstalled();   // after the delay: right after an update the apply process may still be exiting
-                if (!_settings.AutoUpdate) { Log.Info("updater: AutoUpdate is off, not checking GitHub (click the version in the footer to check by hand)"); return; }
+                if (!_settings.AutoUpdate) Log.Info("updater: AutoUpdate is off, not checking GitHub (click the version in the footer to check by hand)");
+                DateTime lastCheck = DateTime.MinValue;
                 while (!ct.IsCancellationRequested)
                 {
-                    await CheckAndMaybeDownloadAsync(ct, manual: false).ConfigureAwait(false);
-                    await Task.Delay(CheckInterval, ct).ConfigureAwait(false);
+                    if (_settings.AutoUpdate && DateTime.UtcNow - lastCheck >= CheckInterval)
+                    {
+                        lastCheck = DateTime.UtcNow;
+                        // One failed pass (timeout after sleep/resume, a full disk...) must not end the checks for the rest of the session.
+                        try { await CheckAndMaybeDownloadAsync(ct, manual: false).ConfigureAwait(false); }
+                        catch (Exception ex) when (!ct.IsCancellationRequested) { Log.Warn("updater: background check failed: " + ex.Message); }
+                    }
+                    await Task.Delay(LoopTick, ct).ConfigureAwait(false);
                 }
             }
-            catch (OperationCanceledException) { }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
             catch (Exception ex) { Log.Warn("updater: loop stopped: " + ex.Message); }
         }, ct);
     }
@@ -688,11 +754,13 @@ internal sealed class Updater : IDisposable
                 string? failed = FailedReason(existing);
                 if (failed != null && !manual)
                 {
+                    LastError = $"installing v{info.Version} failed earlier ({failed.TrimEnd('.')}). {RetryHint}";
                     Log.Warn($"updater: v{info.Version} is downloaded but installing it failed earlier ({failed}); click the version in the footer to retry");
                     return info;
                 }
                 if (File.Exists(InstalledMarker(existing)))
                 {
+                    LastError = $"v{info.Version} was already installed once from {existing}, yet this exe still reports v{VersionDisplay}";
                     Log.Warn($"updater: v{info.Version} was already installed from {existing} but this exe is v{VersionDisplay}; not offering it again");
                     return info;
                 }
@@ -710,16 +778,26 @@ internal sealed class Updater : IDisposable
                 TryDelete(InstalledMarker(existing));
             }
 
+            // The cap keeps the background loop from re-fetching a broken release; a manual check always tries again.
             int tries = _attempts.GetValueOrDefault(info.Version);
-            if (tries >= MaxDownloadAttempts) return info;
+            if (tries >= MaxDownloadAttempts && !manual)
+            {
+                LastError = $"downloading v{info.Version} failed {tries} times ({_lastDownloadError ?? "unknown error"}). {RetryHint}";
+                return info;
+            }
             _attempts[info.Version] = tries + 1;
             try
             {
                 string path = await DownloadAsync(info, null, ct).ConfigureAwait(false);
                 SetPending(path, info.Version, "downloaded and verified");
             }
-            catch (OperationCanceledException) { throw; }
-            catch (Exception ex) { Log.Warn($"updater: download of v{info.Version} failed ({tries + 1}/{MaxDownloadAttempts}): {ex.Message}"); }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }   // shutting down; an HttpClient timeout is a failure like any other
+            catch (Exception ex)
+            {
+                _lastDownloadError = ex is OperationCanceledException ? $"no answer within {s_http.Timeout.TotalSeconds:0} s" : Describe(ex);
+                LastError = $"downloading v{info.Version} failed: {_lastDownloadError}";
+                Log.Warn($"updater: download of v{info.Version} failed ({tries + 1}/{MaxDownloadAttempts}): {ex.Message}");
+            }
             return info;
         }
         finally { _gate.Release(); }
@@ -729,6 +807,9 @@ internal sealed class Updater : IDisposable
     {
         PendingPath = path;
         PendingVersion = version;
+        // A problem reported at startup (an earlier failed install) is out of date now; keep only what still blocks installing.
+        string? blocked = InstallProblemFor(Environment.ProcessPath ?? "");
+        InstallProblem = blocked == null ? null : $"Update to v{version} is downloaded but {blocked}; {HowToInstallByHand}.";
         Log.Info($"updater: v{version} {how}: {path}");
         try { UpdateReady?.Invoke(version); } catch (Exception ex) { Log.Warn("updater: UpdateReady handler: " + ex.Message); }
     }

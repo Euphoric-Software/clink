@@ -1,4 +1,4 @@
-# Builds Clink. Uses the user-local .NET SDK if the machine-wide one has no SDK.
+# Builds Clink. Uses the user-local .NET SDK (%USERPROFILE%\.dotnet) if there is no dotnet with an SDK on PATH.
 param(
     [ValidateSet('Debug', 'Release')] [string]$Configuration = 'Release',
     [switch]$Publish,
@@ -7,7 +7,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 $dotnet = 'dotnet'
-if (-not (& dotnet --list-sdks 2>$null)) {
+if (-not (Get-Command dotnet -ErrorAction SilentlyContinue) -or -not (& dotnet --list-sdks 2>$null)) {
     $local = Join-Path $env:USERPROFILE '.dotnet\dotnet.exe'
     if (Test-Path $local) { $dotnet = $local } else { throw "No .NET SDK found. Install .NET 10 SDK or run: https://dot.net/v1/dotnet-install.ps1 -Channel 10.0" }
 }
