@@ -21,7 +21,7 @@ internal sealed class ClipItem : INotifyPropertyChanged
         get
         {
             string dur = Entry.Duration > 0 ? $"{TimeSpan.FromSeconds(Entry.Duration):m\\:ss} · " : "";
-            return $"{Entry.Created:MMM d, HH:mm} · {dur}{Entry.Size / 1_048_576.0:0.0} MB";
+            return $"{Entry.Created:MMM d, HH:mm} · {dur}{Capabilities.FormatBytes(Entry.Size)}";
         }
     }
     public string ShareLabel => string.IsNullOrEmpty(Entry.CopiumLink) ? "Share" : "Copy link";

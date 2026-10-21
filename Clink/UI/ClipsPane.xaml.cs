@@ -129,7 +129,7 @@ public partial class ClipsPane : UserControl
         var progress = new Progress<double>(p => { row.Progress = p; row.Status = $"Uploading… {p:P0}"; });
         bool ok = await App.ShareAsync(row.Entry, progress);
         row.IsUploading = false;
-        row.Status = ok ? "Link copied to clipboard" : "Upload failed";
+        row.Status = ok ? "Link copied to clipboard" : App.ShareRefusal ?? "Upload failed";   // refused by Copium's free limits, or really failed (the footer has the detail)
         row.IsProblem = !ok;
         row.Refresh();
         if (ok)
@@ -198,7 +198,8 @@ internal sealed class ClipRow : INotifyPropertyChanged
         get
         {
             string dur = Entry.Duration > 0 ? $"{TimeSpan.FromSeconds(Entry.Duration):m\\:ss} · " : "";
-            return $"{Entry.Created:MMM d, HH:mm} · {dur}{Entry.Size / 1_048_576.0:0.0} MB";
+            // Decimal MB everywhere a size is shown: the unit of the Copium / Discord limits and of the Share pre-check.
+            return $"{Entry.Created:MMM d, HH:mm} · {dur}{Capabilities.FormatBytes(Entry.Size)}";
         }
     }
     /// <summary>Cloud tab: date, size and where the local copy is (or that it is gone).</summary>
@@ -206,7 +207,7 @@ internal sealed class ClipRow : INotifyPropertyChanged
     {
         get
         {
-            string size = Entry.Size > 0 ? $" · {Entry.Size / 1_048_576.0:0.0} MB" : "";
+            string size = Entry.Size > 0 ? $" · {Capabilities.FormatBytes(Entry.Size)}" : "";
             string where = !HasLocalFile ? " · local file deleted" : Entry.IsArchived ? " · in the archive" : "";
             return $"{Entry.Created:MMM d, yyyy HH:mm}{size}{where}";
         }

@@ -22,11 +22,21 @@ internal sealed record CodecInfo(string Id, string Name, string Description, boo
 
 /// <summary>
 /// What this machine can do (hardware encoders, RAM) and the size arithmetic the Capture tab shows: per-minute / per-clip
-/// estimates, Discord size targets, ring-buffer RAM. Codecs are probed once, lazily, through MFTEnumEx.
+/// estimates, Copium / Discord size targets, ring-buffer RAM. Codecs are probed once, lazily, through MFTEnumEx.
 /// </summary>
 internal static unsafe class Capabilities
 {
     public const string NotSupportedReason = "not supported by this GPU";
+    /// <summary>
+    /// Copium's limits per upload without Copium+: 200 MB and 10 minutes (the "copium200" size target, and what Share checks).
+    /// Decimal (200 000 000 bytes): copium.pics does not say whether its "200 MB" is decimal or binary, and the decimal reading is
+    /// the one that never uploads a file Copium would refuse. Every size the UI shows (toast, clip rows, the Share refusal) is
+    /// formatted by <see cref="FormatBytes"/> in the same decimal unit, so a clip never reads as under a limit it is over.
+    /// </summary>
+    public const long CopiumFreeBytes = 200_000_000;
+    public const int CopiumFreeSeconds = 600;
+    /// <summary>Appended to the size-target note when the replay length is over Copium's 10 min (the UI shows it in Warn colour).</summary>
+    public const string CopiumLengthNote = " - Copium free uploads are limited to 10 min: trim a full-length clip before sharing it, or shorten the replay length";
     /// <summary>Each enabled audio track is AAC at this rate.</summary>
     public const int AudioKbps = 192;
     /// <summary>Bitrate range a size target may pick (the engine runs anything ≥ 0.1 Mbps; below 0.5 the picture is unusable).</summary>
@@ -237,9 +247,10 @@ internal static unsafe class Capabilities
     /// <summary>The most the ring may take (half of physical RAM); the engine clamps to this and the UI warns above it.</summary>
     public static long MaxRingBytes() => RingStore.MaxBytes();
 
-    /// <summary>Byte limit of a size target, or 0 for "none" / unknown. Discord limits are decimal MB (10 MB = 10 000 000 bytes), the safe reading.</summary>
+    /// <summary>Byte limit of a size target, or 0 for "none" / unknown. Copium and Discord limits are decimal MB (10 MB = 10 000 000 bytes), the safe reading.</summary>
     public static long SizeTargetBytes(string? target) => (target ?? "").Trim().ToLowerInvariant() switch
     {
+        "copium200" => CopiumFreeBytes,
         "discord10" => 10_000_000,
         "discord50" => 50_000_000,
         "discord500" => 500_000_000,
@@ -248,20 +259,30 @@ internal static unsafe class Capabilities
 
     public static string SizeTargetName(string? target) => (target ?? "").Trim().ToLowerInvariant() switch
     {
+        "copium200" => "Copium (200 MB, 10 min)",
         "discord10" => "Discord (10 MB)",
         "discord50" => "Discord Nitro Basic (50 MB)",
         "discord500" => "Discord Nitro (500 MB)",
         _ => "None",
     };
 
+    /// <summary>The "copium200" target: the only one that also limits the clip length (10 min).</summary>
+    public static bool IsCopiumTarget(string? target) => string.Equals((target ?? "").Trim(), "copium200", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>
-    /// The bitrate to record with. SizeTarget "none": the manual Settings.BitrateMbps and no note. Otherwise the largest bitrate
-    /// (0.5–200 Mbps, one decimal) at which a clip of <paramref name="seconds"/> with <paramref name="audioTracks"/> stays under the
-    /// limit (with 5 % headroom), and a one-line note for the read-only display. When even the minimum does not fit the note says so.
+    /// The clip length a size target makes fit: the replay length, except that the Copium target never fits more than its
+    /// 10 min, because a longer clip cannot be uploaded at any bitrate (it has to be trimmed to 10 min first, and that trim is
+    /// what must fit the 200 MB); fitting the whole replay would only throttle every clip, the short hotkey ones included.
     /// </summary>
+    public static int FitSeconds(string? target, int seconds) => IsCopiumTarget(target) ? Math.Min(seconds, CopiumFreeSeconds) : seconds;
+
     /// <summary>
-    /// The bitrate to encode at: the chosen one, lowered (never raised) when a size target is set so that a clip of
-    /// <paramref name="seconds"/> fits the limit. The note says what happened, or is null when nothing was changed.
+    /// The bitrate to encode at: the chosen Settings.BitrateMbps (and no note) without a size target; otherwise lowered (never
+    /// raised) to the largest bitrate (0.5–200 Mbps, one decimal) at which a clip of <see cref="FitSeconds"/> (the replay
+    /// length, or 10 min for the Copium target) with <paramref name="audioTracks"/> stays under the limit with 5 % headroom,
+    /// plus a one-line note for the UI that says what happened (when even the minimum does not fit, the note says so). The
+    /// Copium target also appends <see cref="CopiumLengthNote"/> when the replay length is over its 10 min, which no bitrate
+    /// can fix: the bitrate is then what a 10 min trim needs, not one that squeezes the whole replay into 200 MB for nothing.
     /// </summary>
     public static (double bitrateMbps, string? note) ResolveBitrate(Settings s, int audioTracks, int seconds)
     {
@@ -269,13 +290,15 @@ internal static unsafe class Capabilities
         long limit = SizeTargetBytes(s.SizeTarget);
         if (limit <= 0) return (chosen, null);
         seconds = Math.Max(1, seconds);
-        double cap = BitrateMbpsFor((long)(limit * TargetHeadroom), audioTracks, seconds);
-        string len = FormatDuration(seconds), lim = FormatBytes(limit);
+        int fit = FitSeconds(s.SizeTarget, seconds);
+        double cap = BitrateMbpsFor((long)(limit * TargetHeadroom), audioTracks, fit);
+        string len = FormatDuration(fit), lim = FormatBytes(limit);
+        string tail = fit < seconds ? CopiumLengthNote : "";
         if (cap < MinTargetMbps)
-            return (MinTargetMbps, $"a {len} clip does not fit in {lim} even at {MinTargetMbps:0.#} Mbps; shorten the replay length");
+            return (MinTargetMbps, $"a {len} clip does not fit in {lim} even at {MinTargetMbps:0.#} Mbps; shorten the replay length{tail}");
         cap = Math.Min(MaxTargetMbps, Math.Floor(cap * 10) / 10);
-        if (cap >= chosen) return (chosen, $"a {len} clip at {chosen:0.#} Mbps fits {lim}");
-        return (cap, $"lowered to {cap:0.#} Mbps so a {len} clip fits {lim}");
+        if (cap >= chosen) return (chosen, $"a {len} clip at {chosen:0.#} Mbps fits {lim}{tail}");
+        return (cap, $"lowered to {cap:0.#} Mbps so a {len} clip fits {lim}{tail}");
     }
 
     /// <summary>"820 kB", "9.5 MB", "190 MB", "1.2 GB" (decimal units, like the Discord limits).</summary>

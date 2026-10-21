@@ -448,6 +448,16 @@ public partial class TrimWindow : Window
                 StatusText.Text = "Uploading…";
                 var progress = new Progress<double>(p => StatusText.Text = $"Uploading… {p:P0}");
                 bool ok = await app.ShareAsync(result, progress);
+                if (!ok && app.ShareRefusal is string refusal)
+                {
+                    // Copium's free limit refused the cut (the trim itself is saved): stay open so the selection can be tightened
+                    // and shared again, instead of flashing "Upload failed" and closing on a reason only the footer knows.
+                    string why = refusal.Length > 1 ? char.ToLowerInvariant(refusal[0]) + refusal[1..] : refusal;
+                    StatusText.Text = $"Saved {Path.GetFileName(result.Path)}, not uploaded: {why} - tighten the selection, or tick 'I have Copium+' if you do";
+                    SaveButton.IsEnabled = SaveShareButton.IsEnabled = true;
+                    if (_playerReleased && !_closed) await ReopenPreviewAsync();
+                    return;
+                }
                 StatusText.Text = ok ? "Uploaded, link copied" : "Upload failed";
             }
             await Task.Delay(replaceProblem != null ? 3000 : 1200);

@@ -32,6 +32,8 @@ internal sealed class AppController : IDisposable
     public List<MonitorInfo> Monitors { get; private set; } = new();
     public bool IsPaused { get; private set; }
     public string LastNotice { get; private set; } = "";
+    /// <summary>Why the last <see cref="ShareAsync"/> refused to upload (Copium's free limits), for the clip row and the toast to show instead of "Upload failed"; null when it was not refused.</summary>
+    public string? ShareRefusal { get; private set; }
     /// <summary>Version of a downloaded update waiting to be installed, or null.</summary>
     public Version? PendingVersion => Updater.PendingVersion;
 
@@ -549,11 +551,15 @@ internal sealed class AppController : IDisposable
     {
         var entry = Library.Entries.FirstOrDefault(e => e.IsShared || e.IsArchived || e.Exists);
         if (entry == null) { Say("No clips to share yet"); return; }
-        await ShareAsync(entry);
+        bool ok = await ShareAsync(entry);
+        // The hotkey, the tray item and --share-last have no UI of their own, and the window is usually in the tray while a game
+        // runs: a refusal (or a failure) that only reached the footer would be invisible, so raise a balloon with the same text.
+        if (!ok && !MainWindowVisible && LastNotice.Length > 0) ShowBalloon("Clip not uploaded", LastNotice);
     }
 
     public async Task<bool> ShareAsync(ClipEntry entry, IProgress<double>? progress = null)
     {
+        ShareRefusal = null;
         if (!string.IsNullOrEmpty(entry.CopiumLink))
         {
             CopyToClipboard(entry.CopiumLink);
@@ -563,6 +569,14 @@ internal sealed class AppController : IDisposable
         }
         string? token = Settings.CopiumToken;
         if (string.IsNullOrWhiteSpace(token)) { Say("Add your Copium token first"); ShowRequested?.Invoke(); return false; }
+        // Copium refuses files over 200 MB or 10 min without Copium+: say so now instead of uploading for a while and failing.
+        if (!Settings.CopiumPlus && (entry.Size > Capabilities.CopiumFreeBytes || entry.Duration > Capabilities.CopiumFreeSeconds))
+        {
+            int secs = (int)Math.Round(Math.Max(0, entry.Duration));
+            ShareRefusal = "Over Copium's free limit (200 MB / 10 min)";
+            Say($"Copium free accepts up to 200 MB / 10 min; this clip is {Capabilities.FormatBytes(entry.Size)} / {secs / 60}:{secs % 60:00} - trim it, or tick 'I have Copium+' if you do");
+            return false;
+        }
         try
         {
             Say("Uploading to Copium…");

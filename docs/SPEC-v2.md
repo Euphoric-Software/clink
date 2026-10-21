@@ -113,6 +113,19 @@ capture/encode pipeline itself.
 - Library rows get an **archived** icon (NAS/drive glyph); Trim, Share and thumbnails work from the archive path.
   If the archive is offline the row says so instead of failing.
 
+## 10. Tab layout, second pass (requested after v0.2.1)
+
+- **Capture tab**, top to bottom: *Capturing* (monitor map, resolution, FPS, bitrate, codec with description, size
+  target incl. "Copium (200 MB, 10 min)", capture cursor) · *Audio* (the track rows, with the set-up warning until
+  hovered/changed) · *Recording* (mode + custom apps) · *Replay length* (the slider) · *Hotkeys* (the list editor,
+  "Clip now", click sound).
+- Directly under the replay-length slider, **one combined readout** that changes with resolution, FPS, bitrate,
+  codec, audio tracks and length: file size per minute, file size for a clip of the chosen length (and the hour
+  figure when the length is 1 h), and the RAM the buffer takes ("≈ 126 MB per minute · ≈ 53 MB per 25 s clip ·
+  ≈ 62 MB of RAM"), plus the size-target note. Nothing about size/RAM is shown anywhere else.
+- **Clip tab**: only *Copium* (token, "I have Copium+") and *Storage* (clips folder, archive).
+- **Alerts tab**: toasts, status dot, updates, and "run at startup" next to updates.
+
 ## Settings already defined (do not rename)
 
 `Settings.cs` already carries the v2 keys: `RecordingMode`, `CustomApps`, `Hotkeys` (list of `HotkeyAction { Keys, Action, Seconds }`),

@@ -90,8 +90,12 @@ internal sealed class Settings
     /// <summary>Always-on status dot (green recording / amber waiting for a game / red error) in a corner of the captured monitor.</summary>
     public bool StatusDot { get; set; } = false;
     public string StatusDotPosition { get; set; } = "top-right";
-    /// <summary>none | discord10 | discord50 | discord500: pick the bitrate so a clip of the replay length fits the limit.</summary>
-    public string SizeTarget { get; set; } = "none";
+    /// <summary>none | copium200 | discord10 | discord50 | discord500: pick the bitrate so a clip of the replay length (at most 10 min for copium200) fits the limit. New settings start on Copium's free limit (200 MB, 10 min).</summary>
+    public string SizeTarget { get; set; } = "copium200";
+    /// <summary>The user has Copium+: Share no longer refuses clips over Copium's free limits (200 MB / 10 min per upload).</summary>
+    public bool CopiumPlus { get; set; }
+    /// <summary>The "Set up your audio" banner on the Capture tab was dismissed (the audio group was hovered over or an audio option changed); it never shows again.</summary>
+    public bool AudioSetupSeen { get; set; }
     /// <summary>Archive (NAS / share / second drive): clips move there in the background after N days and/or when the local folder exceeds N GB (whichever first).</summary>
     public bool ArchiveEnabled { get; set; }
     public string? ArchivePath { get; set; }
@@ -185,7 +189,7 @@ internal sealed class Settings
         RecordingMode ??= "game";
         ToastPosition ??= "bottom-right";
         StatusDotPosition ??= "top-right";
-        SizeTarget ??= "none";
+        SizeTarget ??= "copium200";
         if (string.IsNullOrWhiteSpace(ClipsFolder)) ClipsFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "Clink");
     }
 
