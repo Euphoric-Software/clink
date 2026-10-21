@@ -285,9 +285,11 @@ internal static unsafe class Capabilities
     /// The bitrate to encode at: the chosen Settings.BitrateMbps (and no note) without a size target; otherwise lowered (never
     /// raised) to the largest bitrate (0.5–200 Mbps, one decimal) at which a clip of <see cref="FitSeconds"/> (the replay
     /// length, or 10 min for the Copium target) with <paramref name="audioTracks"/> stays under the limit with 5 % headroom,
-    /// plus a one-line note for the UI that says what happened (when even the minimum does not fit, the note says so). The
-    /// Copium target also appends <see cref="CopiumLengthNote"/> when the replay length is 10 min or more, which no bitrate
-    /// can fix: the bitrate is then what a 10 min trim needs, not one that squeezes the whole replay into 200 MB for nothing.
+    /// plus a one-line note for the UI that says what happened (when even the minimum does not fit, the note says so). The fit
+    /// counts one keyframe interval more than that length, because a clip starts on the last keyframe at or before it and so
+    /// runs up to that much longer (a 2:00 replay saves ~2:01). The Copium target also appends <see cref="CopiumLengthNote"/>
+    /// from a replay length of 10 min up (a full clip is then over 10 min), which no bitrate can fix: the bitrate is then what a
+    /// 10 min trim needs, not one that squeezes the whole replay into 200 MB for nothing.
     /// </summary>
     public static (double bitrateMbps, string? note) ResolveBitrate(Settings s, int audioTracks, int seconds)
     {
@@ -296,7 +298,7 @@ internal static unsafe class Capabilities
         if (limit <= 0) return (chosen, null);
         seconds = Math.Max(1, seconds);
         int fit = FitSeconds(s.SizeTarget, seconds);
-        double cap = BitrateMbpsFor((long)(limit * TargetHeadroom), audioTracks, fit);
+        double cap = BitrateMbpsFor((long)(limit * TargetHeadroom), audioTracks, fit + Math.Clamp(s.KeyframeSeconds, 0.25f, 5f));   // the engine's GOP clamp
         string len = FormatDuration(fit), lim = FormatBytes(limit);
         // A full-length clip starts on the keyframe before the cut, so it runs a moment past the replay length: 10:00 is over too.
         string tail = !IsCopiumTarget(s.SizeTarget) || seconds < CopiumFreeSeconds ? ""
@@ -351,7 +353,9 @@ internal static unsafe class Capabilities
         long bytes = RingBytesFor(bitrateMbps, seconds);
         bool tooMuch = bytes > MaxRingBytes();
         string text = $"≈ {FormatBytes(bytes)} of RAM for {FormatDuration(seconds)} at {bitrateMbps:0.#} Mbps";
-        if (tooMuch) text += $" (more than half of the {FormatBytes(PhysicalRamBytes())} installed; the buffer will be shortened)";
+        // The RAM Windows can use (what the limit is half of), in binary GB as Settings › About shows it: "31.1 GB usable" on a
+        // 32 GB machine whose iGPU reserves some, not the decimal "33 GB installed".
+        if (tooMuch) text += $" (more than half of the {PhysicalRamBytes() / (double)(1L << 30):0.#} GB usable RAM; the buffer will be shortened)";
         return (text, tooMuch);
     }
 }

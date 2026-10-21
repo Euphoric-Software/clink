@@ -63,7 +63,12 @@ internal sealed class MonitorMap : Canvas
                 },
             };
             var mon = m;
-            b.MouseLeftButtonUp += (_, _) => { _selected = mon.DeviceName; Rebuild(); Selected?.Invoke(mon); };
+            b.MouseLeftButtonUp += (_, _) =>
+            {
+                // The one already captured: nothing to change, and re-selecting it would restart the engine and drop the replay.
+                if (string.Equals(mon.DeviceName, _selected, StringComparison.OrdinalIgnoreCase)) return;
+                _selected = mon.DeviceName; Rebuild(); Selected?.Invoke(mon);
+            };
             SetLeft(b, offX + (m.Left - minX) * scale + 1.5);
             SetTop(b, offY + (m.Top - minY) * scale + 1.5);
             Children.Add(b);

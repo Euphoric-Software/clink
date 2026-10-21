@@ -20,10 +20,11 @@ internal sealed record Choice(string Label, object Value, bool Header = false, b
 /// <summary>
 /// The main window (docs/SPEC-v2.md §1, §10): resizable, settings tabs and the clips pane, which sits in a right column when the
 /// window is ≥ 900 px wide and becomes a fourth tab when it is narrower. Capture holds, top to bottom, Capturing (monitor,
-/// quality, size target, cursor) · Audio tracks (under a "set up your audio" banner that goes away for good once the group is
-/// hovered over or changed) · Recording · Replay length (the slider with the one size/RAM readout under it) · Hotkeys; Clip holds
-/// Copium and Storage; Alerts holds Toasts, Status dot and Updates (with "run at startup"). Every control writes its setting on
-/// change and, where the engine is affected, restarts it after a short debounce (<see cref="ScheduleRestart"/>).
+/// quality, size target, cursor) · Audio tracks (under a "set up your audio" banner that goes away for good once the pointer
+/// has rested on the group and moved off, or an option in it changes) · Recording · Replay length (the slider with the one size/RAM readout under
+/// it) · Hotkeys; Clip holds Copium and Storage; Alerts holds Toasts, Status dot and Updates (with "run at startup"). Every
+/// control writes its setting on change and, where the engine is affected, restarts it after a short debounce
+/// (<see cref="ScheduleRestart"/>).
 /// </summary>
 public partial class MainWindow : Window
 {
@@ -31,13 +32,15 @@ public partial class MainWindow : Window
 
     private readonly AppController _app = AppController.Instance;
     private readonly ObservableCollection<string> _customApps = new();
-    private readonly DispatcherTimer _restartTimer, _saveTimer;
+    private readonly DispatcherTimer _restartTimer, _saveTimer, _bannerTimer;
     private readonly Choice[] _bitratePresets = new[] { 4, 6, 8, 12, 16, 20, 25, 30, 40, 50, 60, 80, 100 }.Select(b => new Choice($"{b} Mbps", b)).ToArray();
     private bool _loading = true;
     private bool _filling;                              // a combo is being (re)populated: its SelectionChanged is not a user choice
+    private bool _pickingRunningApp;                    // the "Add running app…" list was opened: a selection now is a pick, not a key on the closed box
     private bool _hintShown;
     private bool _checkingUpdate;
     private bool _wide, _layoutApplied;
+    private List<MonitorInfo>? _shownMonitors;          // the monitor list the map and label were built from (AppController replaces it on a display change)
     private DateTime _noticeUntil = DateTime.MinValue;   // keep a Say() notice visible this long before the stats line takes the footer back
 
     public MainWindow()
@@ -47,7 +50,10 @@ public partial class MainWindow : Window
         _restartTimer.Tick += (_, _) => { _restartTimer.Stop(); _app.StartEngine(); };
         _saveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(800) };
         _saveTimer.Tick += (_, _) => { _saveTimer.Stop(); if (!_loading) _app.Settings.Save(); };
+        _bannerTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1.5) };
+        _bannerTimer.Tick += (_, _) => { _bannerTimer.Stop(); MarkAudioSetupSeen(); };
         CustomAppsList.ItemsSource = _customApps;
+        PreviewMouseWheel += ScrollPastClosedCombo;
 
         var s = _app.Settings;
         RestoreWindowBounds(s);
@@ -61,7 +67,8 @@ public partial class MainWindow : Window
         };
 
         _app.StateChanged += RefreshStatus;
-        _app.Notice += msg => Dispatcher.BeginInvoke(() => { FooterText.Text = msg; _noticeUntil = DateTime.UtcNow.AddSeconds(4); });
+        // Long notices (a Share refusal, an update problem) stay up long enough to read; the footer's tooltip has the full text.
+        _app.Notice += msg => Dispatcher.BeginInvoke(() => { FooterText.Text = msg; _noticeUntil = DateTime.UtcNow.AddSeconds(Math.Clamp(msg.Length / 15.0, 4, 10)); });
         _app.ClipSaved += _ => Dispatcher.BeginInvoke(() => Clips.Refresh());
         _app.ShowRequested += () => Dispatcher.BeginInvoke(ShowFromTray);
         _app.TrimLastRequested += () => Dispatcher.BeginInvoke(async () =>
@@ -85,21 +92,85 @@ public partial class MainWindow : Window
 
     // ------------------------------------------------------------------ window bounds / layout
 
+    /// <summary>
+    /// A focused, closed ComboBox turns each wheel notch into the next / previous item and swallows it, so once a combo has been
+    /// used (it keeps focus after a pick) the Capture tab stops scrolling under the pointer and the setting silently changes
+    /// instead; most of them restart the engine and drop the replay. The pane scrolls instead. An open dropdown is its own
+    /// popup and scrolls its list as usual; keyboard focus stays where it is (arrow keys still step a focused combo).
+    /// </summary>
+    private void ScrollPastClosedCombo(object sender, MouseWheelEventArgs e)
+    {
+        for (var d = e.OriginalSource as DependencyObject; d != null; d = d is Visual ? VisualTreeHelper.GetParent(d) : LogicalTreeHelper.GetParent(d))
+        {
+            if (d is not ComboBox combo) continue;
+            if (combo.IsDropDownOpen) return;
+            e.Handled = true;
+            for (DependencyObject? p = combo; p != null; p = VisualTreeHelper.GetParent(p))
+                if (p is ScrollViewer sv) { sv.RaiseEvent(new MouseWheelEventArgs(e.MouseDevice, e.Timestamp, e.Delta) { RoutedEvent = MouseWheelEvent }); break; }
+            return;
+        }
+    }
+
     private void RestoreWindowBounds(Settings s)
     {
         if (s.WindowWidth is double ww && ww >= MinWidth) Width = ww;
         if (s.WindowHeight is double wh && wh >= MinHeight) Height = wh;
-        if (s.WindowX is double wx && s.WindowY is double wy && !double.IsNaN(wx) && !double.IsNaN(wy))
+        var (areas, area) = WorkAreas();   // area: the monitor under the mouse pointer, where CenterScreen opens the window
+        if (s.WindowX is double wx && s.WindowY is double wy && double.IsFinite(wx) && double.IsFinite(wy))
         {
-            // Only when some of the window would still be on a screen (a monitor may have gone away since).
-            double vl = SystemParameters.VirtualScreenLeft, vt = SystemParameters.VirtualScreenTop;
-            double vr = vl + SystemParameters.VirtualScreenWidth, vb = vt + SystemParameters.VirtualScreenHeight;
-            if (wx + 100 < vr && wx + Width > vl + 100 && wy + 40 < vb && wy >= vt - 10)
+            // Only where the header (the one place this borderless window can be dragged from) lands on a monitor's work area:
+            // the virtual-screen box has corners no monitor covers, and a monitor may have gone away since. Of the monitors it
+            // reaches, the one holding most of it counts (the AllScreens order means nothing).
+            var header = new Rect(wx, wy, Width, 44);
+            double most = 0;
+            foreach (var wa in areas)
+            {
+                var hit = Rect.Intersect(header, wa);
+                if (hit.IsEmpty || hit.Width < 120 || hit.Height < 22 || hit.Width * hit.Height <= most) continue;
+                most = hit.Width * hit.Height;
+                area = wa;
+            }
+            if (most > 0)
             {
                 WindowStartupLocation = WindowStartupLocation.Manual;
                 Left = wx; Top = wy;
             }
         }
+        // Never bigger than that work area (a 1080p laptop at 150 % has ~690 DIP of height and MinHeight is 700), so all of it
+        // can be dragged onto there.
+        if (area.Width < 1 || area.Height < 1) return;
+        MinWidth = Math.Min(MinWidth, area.Width);
+        MinHeight = Math.Min(MinHeight, area.Height);
+        Width = Math.Min(Width, area.Width);
+        Height = Math.Min(Height, area.Height);
+        if (WindowStartupLocation == WindowStartupLocation.Manual)
+        {
+            // Moved only as far as it takes to keep the header reachable on that work area: all of its height and 120 DIP of its
+            // width (also after a narrower Width). A window left reaching onto the next monitor or past the bottom stays put.
+            double grab = Math.Min(120, Width);
+            Left = Math.Max(area.Left + grab - Width, Math.Min(Left, area.Right - grab));
+            Top = Math.Max(area.Top, Math.Min(Top, area.Bottom - 44));
+        }
+    }
+
+    /// <summary>
+    /// Every monitor's work area, and the one under the mouse pointer (CenterScreen's), in the DIPs Left / Top use before the
+    /// window exists (pixels at the system DPI).
+    /// </summary>
+    private static (List<Rect> all, Rect atPointer) WorkAreas()
+    {
+        var all = new List<Rect>();
+        Rect atPointer = SystemParameters.WorkArea;
+        try
+        {
+            double scale = System.Windows.Forms.Screen.PrimaryScreen is { } primary && SystemParameters.PrimaryScreenWidth > 0
+                ? primary.Bounds.Width / SystemParameters.PrimaryScreenWidth : 1;
+            Rect Dip(System.Drawing.Rectangle r) => new(r.X / scale, r.Y / scale, r.Width / scale, r.Height / scale);
+            foreach (var sc in System.Windows.Forms.Screen.AllScreens) all.Add(Dip(sc.WorkingArea));
+            atPointer = Dip(System.Windows.Forms.Screen.FromPoint(System.Windows.Forms.Cursor.Position).WorkingArea);
+        }
+        catch (Exception ex) { Log.Warn("work areas: " + ex.Message); }
+        return (all, atPointer);
     }
 
     /// <summary>Wide: settings tabs left, the clips pane in a right column. Narrow: the clips pane is the fourth tab.</summary>
@@ -142,6 +213,7 @@ public partial class MainWindow : Window
     private void Populate()
     {
         var s = _app.Settings;
+        _shownMonitors = _app.Monitors;
         MonitorMap.SetMonitors(_app.Monitors, _app.SelectedMonitor?.DeviceName);
         MonitorMap.Selected += m => { s.MonitorDevice = m.DeviceName; s.Save(); UpdateMonitorLabel(); FillCodecs(); UpdateEstimates(); _app.ApplyStatusDot(); ScheduleRestart(); };
         UpdateMonitorLabel();
@@ -259,7 +331,7 @@ public partial class MainWindow : Window
         if (info.Supported && fallback != null && fallback.Id != info.Id)
             CodecDescription.Text = $"{info.Name} cannot encode {w}×{h}; recording uses {fallback.Name} instead. {info.Name} – {info.Description}";
         else if (info.Supported)
-            CodecDescription.Text = $"{info.Name} – {info.Description}{(info.EncoderName != null ? $"  ·  {info.EncoderName}" : "")}";
+            CodecDescription.Text = $"{info.Name} – {info.Description}{(info.EncoderName != null ? $"  ·  {info.EncoderName.Replace(" Encoder MFT", "")}" : "")}";   // "NVIDIA H.264", as in the footer
         else
             CodecDescription.Text = $"{info.Name} is {info.Reason}; recording uses {fallback?.Name ?? "H.264"} instead. {info.Name} – {info.Description}";
     }
@@ -341,12 +413,16 @@ public partial class MainWindow : Window
         finally { _filling = was; }
     }
 
-    private void RunningAppsCombo_DropDownOpened(object sender, EventArgs e) => FillRunningApps();
+    private void RunningAppsCombo_DropDownOpened(object sender, EventArgs e) { _pickingRunningApp = true; FillRunningApps(); }
+
+    // Cleared after the events of the close: Enter in the list closes it first and selects the highlighted app after that.
+    private void RunningAppsCombo_DropDownClosed(object sender, EventArgs e) => Dispatcher.BeginInvoke(() => _pickingRunningApp = false);
 
     private void RunningAppsCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_loading || _filling) return;
-        if (Selected<string>(RunningAppsCombo) is { Length: > 0 } name) AddCustomApp(name);
+        // Only a pick from the open list adds an app: arrow / letter keys on the closed box step through it without asking.
+        if (_pickingRunningApp && Selected<string>(RunningAppsCombo) is { Length: > 0 } name) AddCustomApp(name);
         Dispatcher.BeginInvoke(FillRunningApps);   // back to the placeholder once the selection event has finished
     }
 
@@ -525,6 +601,16 @@ public partial class MainWindow : Window
     private void RefreshStatus()
     {
         if (!IsLoaded) return;
+        if (_shownMonitors != null && !ReferenceEquals(_shownMonitors, _app.Monitors))
+        {
+            // A display change (monitor plugged in or out, resolution, HDR switched): AppController re-enumerated and restarted
+            // the engine; the map, the label / HDR line, the codecs (adapter) and the estimates follow. Nothing here saves or restarts.
+            _shownMonitors = _app.Monitors;
+            MonitorMap.SetMonitors(_app.Monitors, _app.SelectedMonitor?.DeviceName);
+            UpdateMonitorLabel();
+            FillCodecs();
+            UpdateEstimates();
+        }
         var eng = _app.Engine;
         var state = _app.State;
         StatusDot.Fill = (Brush)FindResource(state switch
@@ -599,6 +685,8 @@ public partial class MainWindow : Window
         if (_loading) return;
         _app.Settings.AutoUpdate = AutoUpdateCheck.IsChecked == true;
         _app.Settings.Save();
+        // The background loop reads the switch on every pass; turned on, it checks now rather than at the end of its 6 h wait.
+        if (_app.Settings.AutoUpdate) _app.Updater.Wake();
     }
 
     private async void Version_Click(object sender, MouseButtonEventArgs e) => await CheckForUpdatesAsync();
@@ -623,15 +711,23 @@ public partial class MainWindow : Window
                 if (_app.LastNotice != text) _app.Say(text); else _noticeUntil = DateTime.UtcNow.AddSeconds(4);
             }
             var info = await check;
+            string releasePage = info == null || string.IsNullOrEmpty(info.HtmlUrl) ? $"https://github.com/{up.Repo}/releases/latest" : info.HtmlUrl;
             if (info == null) _app.Say(up.LastError != null ? "Update check failed: " + up.LastError : $"You're up to date (v{up.VersionDisplay})");
             else if (_app.PendingVersion is Version pending && pending >= info.Version) _app.Say($"Update v{info.Version} is ready - click 'Update to v{pending}' to restart");
             else if (!_app.Settings.AutoUpdate)
             {
                 // Nothing is downloaded with auto-update off, so make the answer actionable: show the release.
                 _app.Say($"Clink v{info.Version} is available (auto-update is off) - opening the release page");
-                OpenUrl(string.IsNullOrEmpty(info.HtmlUrl) ? $"https://github.com/{up.Repo}/releases/latest" : info.HtmlUrl);
+                OpenUrl(releasePage);
             }
-            else _app.Say(up.LastError != null ? $"Update v{info.Version} found, but {up.LastError}" : $"Update v{info.Version} available");
+            else
+            {
+                // Auto-update is on but nothing is ready to install (the download failed, Updater.LastError says why): an
+                // "available" with nothing to click would be a dead end, so say why and show the release instead.
+                string why = up.LastError?.TrimEnd('.') ?? "it could not be downloaded";
+                _app.Say($"Update v{info.Version} found, but {why} - opening the release page");
+                OpenUrl(releasePage);
+            }
         }
         finally { _checkingUpdate = false; RefreshUpdateState(); }
     }
@@ -740,18 +836,49 @@ public partial class MainWindow : Window
 
     // ------------------------------------------------------------------ "set up your audio" banner
 
-    private void AudioGroup_MouseEnter(object sender, MouseEventArgs e) => DismissAudioSetupBanner();
+    // A hover counts once the pointer has rested on the group for a moment: WPF also raises MouseEnter when the group merely
+    // scrolls under a pointer that is not moving, which must not dismiss the banner for good on the way past.
+    private void AudioGroup_MouseEnter(object sender, MouseEventArgs e)
+    {
+        if (AudioSetupBanner.Visibility == Visibility.Collapsed) return;
+        _bannerTimer.Stop();
+        _bannerTimer.Start();
+    }
+
+    // The banner goes once the pointer is off the group: collapsing it while the pointer rests there (at the top of the pane
+    // nothing can scroll to make up for it) would move the group up under it, and the next click would hit the row below.
+    private void AudioGroup_MouseLeave(object sender, MouseEventArgs e)
+    {
+        _bannerTimer.Stop();
+        if (_app.Settings.AudioSetupSeen) DismissAudioSetupBanner();
+    }
 
     /// <summary>
-    /// Hides the banner above the audio group for good: the user has looked at the group (hovered over it) or changed an option
-    /// in it. <see cref="Settings.AudioSetupSeen"/> is saved so it never comes back; while the window is still loading only the
-    /// visibility is touched.
+    /// The pointer has rested on the audio group: the banner counts as seen (saved, so it never comes back) and goes when the
+    /// pointer leaves the group (<see cref="AudioGroup_MouseLeave"/>).
+    /// </summary>
+    private void MarkAudioSetupSeen()
+    {
+        if (_loading || AudioSetupBanner.Visibility == Visibility.Collapsed || _app.Settings.AudioSetupSeen) return;
+        _app.Settings.AudioSetupSeen = true;
+        _app.Settings.Save();
+    }
+
+    /// <summary>
+    /// Hides the banner above the audio group for good: the user has changed an option in the group, or has rested the pointer
+    /// on it and moved off. <see cref="Settings.AudioSetupSeen"/> is saved so it never comes back; while the window is still
+    /// loading only the visibility is touched. Where the pane is scrolled down it scrolls up by the banner's height so the group
+    /// (and the option just clicked) stays in place instead of jumping up.
     /// </summary>
     private void DismissAudioSetupBanner()
     {
+        _bannerTimer?.Stop();
         if (AudioSetupBanner == null || AudioSetupBanner.Visibility == Visibility.Collapsed) return;
+        double shift = AudioSetupBanner.ActualHeight + AudioSetupBanner.Margin.Top;
         AudioSetupBanner.Visibility = Visibility.Collapsed;
-        if (_loading) return;
+        for (DependencyObject? p = AudioSetupBanner; p != null; p = VisualTreeHelper.GetParent(p))
+            if (p is ScrollViewer sv) { if (sv.VerticalOffset > 0) sv.ScrollToVerticalOffset(Math.Max(0, sv.VerticalOffset - shift)); break; }
+        if (_loading || _app.Settings.AudioSetupSeen) return;
         _app.Settings.AudioSetupSeen = true;
         _app.Settings.Save();
     }
@@ -856,6 +983,14 @@ public partial class MainWindow : Window
         var s = _app.Settings;
         string path = ClipsFolderBox.Text.Trim().Trim('"');
         if (path.Length == 0 || string.Equals(path, s.ClipsFolder, StringComparison.OrdinalIgnoreCase)) { ClipsFolderBox.Text = s.ClipsFolder; return; }
+        if (!Path.IsPathFullyQualified(path))
+        {
+            // A relative path would resolve against whatever the current directory is (the exe's folder from Explorer, another
+            // one when started at sign-in), so clips would land in different places.
+            _app.Say(@"Use a full path for the clips folder, e.g. D:\Clips");
+            ClipsFolderBox.Text = s.ClipsFolder;
+            return;
+        }
         if (!string.IsNullOrWhiteSpace(s.ArchivePath) && ArchiveService.IsSameFolder(path, s.ArchivePath))
         {
             _app.Say("The clips folder cannot be the archive location");
@@ -941,7 +1076,8 @@ public partial class MainWindow : Window
         }
         if (value != null && !Path.IsPathFullyQualified(value))
         {
-            // "\nas\clips" or "nas\clips" (a lost backslash) would resolve against the current folder: C:\nas\clips, or next to the exe.
+            // "\nas\clips" or "nas\clips" (a lost backslash) would resolve against the current folder: C:\nas\clips, or next to the
+            // exe, which also differs between an Explorer start and a sign-in start (see the clips folder).
             _app.Say(ArchiveService.FullPathHint);
             RefuseArchivePath(ArchiveService.FullPathHint);
             return;
