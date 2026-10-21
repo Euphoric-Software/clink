@@ -247,7 +247,7 @@ internal sealed class AppController : IDisposable
         // another recorder, GPU or monitor still settling after resume / a display change) or it failed mid-run. Retry: 10 s
         // after a start that stopped without an error, 30 s / 30 s / 1 min / 2 min while starts keep failing; after a GPU reset
         // (driver crash / TDR, Engine.DeviceLost) a third of that, so recording resumes on a fresh device as soon as the driver
-        // is back. StartEngine raises one balloon per failure streak.
+        // is back. StartEngine raises one notice per failure streak (NotifyProblem).
         bool wanted = !IsPaused && (!GameOnly || _gamePid != 0);
         int failedWait = Engine.DeviceLost ? 10 : 30;
         var backoff = TimeSpan.FromSeconds(Engine.Error == null ? 10 : failedWait << Math.Clamp(_startFailures - 1, 0, 2));
@@ -293,14 +293,12 @@ internal sealed class AppController : IDisposable
             Log.Info($"Game exited: {CurrentGame}");
             GameProcessTracker.Forget(_gamePid);   // its pid may be handed to an unrelated process within seconds
             _gamePid = 0; CurrentGame = null; CurrentGameSource = null; _announceGame = null;
-            Engine.SetDetectedGame(0, null);
             if (GameOnly) _gameStopAt = DateTime.UtcNow + GameExitGrace;
             RaiseStateChanged();
         }
         if (found is { } g)
         {
             _gamePid = g.Pid; CurrentGame = g.Name; CurrentGameSource = g.Source; _gameStopAt = null;
-            Engine.SetDetectedGame(g.Pid, g.Name);   // the Game audio track follows this detection, not only the focused window (SPEC-v2 §5)
             Log.Info($"Game detected: {g.Name} pid={g.Pid} ({g.Source})");
             if (!IsPaused)
             {
@@ -315,7 +313,11 @@ internal sealed class AppController : IDisposable
             }
             RaiseStateChanged();
         }
-        Hotkeys.GamePid = _gamePid;   // a hotkey fires with extra modifiers held (crouch + ScrollLock) only in the game
+        // One game identity, published wherever it is used: the engine's Game audio track follows it, not only the focused
+        // window (SPEC-v2 §5), and names the clip with it when it has no game of its own; a hotkey fires with extra modifiers
+        // held (crouch + ScrollLock) only while it is in front.
+        Engine.SetDetectedGame(_gamePid, CurrentGame);
+        Hotkeys.GamePid = _gamePid;
     }
 
     // ------------------------------------------------------------------ updates
