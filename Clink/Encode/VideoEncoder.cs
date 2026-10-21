@@ -71,7 +71,15 @@ internal sealed unsafe class VideoEncoder : IDisposable
         _mft = FindHardwareEncoder(outSub, out string name);
         EncoderName = name;
         Log.Info($"Video encoder: {name} ({cfg.CodecName}{(cfg.Av1 ? ", experimental" : "")}) {cfg.Width}x{cfg.Height}@{cfg.Fps} {cfg.BitrateBps / 1_000_000.0:0.#} Mbps");
+        // A rejected type (e.g. a width the encoder cannot do) must not leak the activated MFT and the D3D device it holds: the
+        // engine retries on every settings or display change.
+        try { Configure(outSub); }
+        catch { Dispose(); throw; }
+    }
 
+    private void Configure(Guid outSub)
+    {
+        var cfg = _cfg;
         IMFAttributes* attrs;
         _mft->GetAttributes(&attrs).Check("IMFTransform.GetAttributes");
         try
@@ -128,6 +136,7 @@ internal sealed unsafe class VideoEncoder : IDisposable
             Mf.SetGuid((IMFAttributes*)inType, PInvoke.MF_MT_MAJOR_TYPE, PInvoke.MFMediaType_Video);
             Mf.SetGuid((IMFAttributes*)inType, PInvoke.MF_MT_SUBTYPE, PInvoke.MFVideoFormat_NV12);
         }
+        _inputType = inType;   // owned from here on, so a failure below releases it
         {
             var a = (IMFAttributes*)inType;
             Mf.SetSize(a, PInvoke.MF_MT_FRAME_SIZE, cfg.Width, cfg.Height);
@@ -140,7 +149,6 @@ internal sealed unsafe class VideoEncoder : IDisposable
             Mf.SetU32(a, PInvoke.MF_MT_TRANSFER_FUNCTION, (uint)MFVideoTransferFunction.MFVideoTransFunc_709);
             _mft->SetInputType(0, inType, 0).Check("SetInputType(NV12)");
         }
-        _inputType = inType;
 
         ConfigureCodecApi();
 

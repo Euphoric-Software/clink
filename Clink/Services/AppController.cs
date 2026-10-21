@@ -95,6 +95,7 @@ internal sealed class AppController : IDisposable
     private string? _announceGame;          // show the "Recording started" toast for this game once the engine is up
     private int _detecting;
     private string _trayText = "";
+    private string? _errorAnnounced;        // the engine error the balloon has already reported
 
     public AppController(Settings settings, Updater updater)
     {
@@ -218,6 +219,22 @@ internal sealed class AppController : IDisposable
             // stops without reporting an error from being restarted every tick.
             StartEngine();
         }
+        if (!Engine.IsRunning && Engine.Error is string error && !IsPaused && (!GameOnly || _gamePid != 0))
+        {
+            // The recorder died (NVENC session limit, device lost, ...) while it should be recording: tell the user once per
+            // distinct error (the window is usually in the tray while a game runs), and retry every 30 s.
+            if (error != _errorAnnounced)
+            {
+                _errorAnnounced = error;
+                if (!MainWindowVisible) ShowBalloon("Clink stopped recording", error);
+            }
+            if (!_starting && now - _lastStartAt > TimeSpan.FromSeconds(30))
+            {
+                Log.Info("Recorder is stopped with an error, retrying: " + error);
+                StartEngine();
+            }
+        }
+        else if (Engine.IsRunning) _errorAnnounced = null;
         RaiseStateChanged();
     }
 
@@ -254,12 +271,14 @@ internal sealed class AppController : IDisposable
             Log.Info($"Game exited: {CurrentGame}");
             GameProcessTracker.Forget(_gamePid);   // its pid may be handed to an unrelated process within seconds
             _gamePid = 0; CurrentGame = null; CurrentGameSource = null; _announceGame = null;
+            Engine.SetDetectedGame(0, null);
             if (GameOnly) _gameStopAt = DateTime.UtcNow + GameExitGrace;
             RaiseStateChanged();
         }
         if (found is { } g)
         {
             _gamePid = g.Pid; CurrentGame = g.Name; CurrentGameSource = g.Source; _gameStopAt = null;
+            Engine.SetDetectedGame(g.Pid, g.Name);   // the Game audio track uses the same detection (SPEC-v2 §5)
             Log.Info($"Game detected: {g.Name} pid={g.Pid} ({g.Source})");
             if (!IsPaused)
             {
@@ -520,7 +539,8 @@ internal sealed class AppController : IDisposable
     {
         if (!Engine.IsRunning)
         {
-            Say(IsPaused ? "Recording is paused" : GameOnly && _gamePid == 0 ? "Not recording: waiting for a game" : "Not recording yet");
+            Say(IsPaused ? "Recording is paused" : GameOnly && _gamePid == 0 ? "Not recording: waiting for a game"
+                : Engine.Error != null ? "Not recording: " + Engine.Error : "Not recording yet");
             return;
         }
         if ((DateTime.UtcNow - _lastClipAt).TotalMilliseconds < 700) return;
@@ -530,9 +550,9 @@ internal sealed class AppController : IDisposable
         try
         {
             int? length = seconds is int s && s > 0 ? Math.Clamp(s, 1, 3600) : null;
-            var result = await Engine.SaveClipAsync(length);
-            var tracks = Engine.GetStats().Audio.Select(a => a.Name).ToArray();
-            var entry = Library.Add(result.Path, result.DurationSeconds, result.SizeBytes, result.Game, tracks);
+            // Named after the game the header shows (fullscreen, library or custom app), also when the Game track records a device.
+            var result = await Engine.SaveClipAsync(length, CurrentGame);
+            var entry = Library.Add(result.Path, result.DurationSeconds, result.SizeBytes, result.Game, result.AudioTracks);
             Say($"Clip saved ({result.DurationSeconds:0}s)");
             Toasts.ShowClipSaved(entry);
             Archive.NotifyClipSaved();
@@ -542,6 +562,8 @@ internal sealed class AppController : IDisposable
         {
             Log.Error("Save clip", ex);
             Say("Clip failed: " + ex.Message);
+            // The click has already played: with the window in the tray a footer notice alone would leave the user thinking it saved.
+            if (!MainWindowVisible) ShowBalloon("Clip not saved", ex.Message);
         }
         finally { _saving = 0; }
     }

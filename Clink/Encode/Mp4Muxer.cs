@@ -112,7 +112,6 @@ internal sealed class Mp4Muxer : IDisposable
     public void Finish()
     {
         if (_finished) return;
-        _finished = true;
         _temp.Flush();
 
         var tracks = new List<Track> { _video };
@@ -137,11 +136,12 @@ internal sealed class Mp4Muxer : IDisposable
         moov = BuildMoov(tracks, movieTimescale, movieDurationMs, mdatPayloadStart, use64);
         if (ftyp.Length + moov.Length + mdatHeaderSize != mdatPayloadStart) throw new InvalidOperationException("moov size changed");
 
-        using (var outFs = new FileStream(_finalPath, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 20))
+        Span<byte> hdr = stackalloc byte[16];
+        try
         {
+            using var outFs = new FileStream(_finalPath, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 20);
             outFs.Write(ftyp);
             outFs.Write(moov);
-            Span<byte> hdr = stackalloc byte[16];
             if (use64)
             {
                 BinaryPrimitives.WriteUInt32BigEndian(hdr, 1);
@@ -158,6 +158,14 @@ internal sealed class Mp4Muxer : IDisposable
             _temp.Position = 0;
             _temp.CopyTo(outFs);
         }
+        catch
+        {
+            // Disk full (the final copy needs the clip's size a second time) or similar: no truncated .mp4 left behind to be
+            // listed as a clip; Dispose removes the temp file.
+            try { File.Delete(_finalPath); } catch { }
+            throw;
+        }
+        _finished = true;
         _temp.Dispose();
         try { File.Delete(_tempPath); } catch { }
     }
