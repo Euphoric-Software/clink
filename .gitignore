@@ -1,0 +1,20 @@
+# build output
+bin/
+obj/
+bin_*/
+obj_*/
+dist/
+*.user
+*.suo
+.vs/
+.idea/
+
+# local tooling / scratch
+*.log
+*.tmp
+*.mdmp
+TestResults/
+
+# WPF temp projects left behind by interrupted builds
+*_wpftmp.csproj
+

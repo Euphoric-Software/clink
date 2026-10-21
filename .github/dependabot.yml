@@ -1,0 +1,8 @@
+# Keeps the commit-pinned actions in .github/workflows current: Dependabot opens a
+# PR that moves each pin (and its version comment) to the next release.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
