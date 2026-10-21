@@ -68,7 +68,10 @@ public partial class ClipsPane : UserControl
         LocalTab.Header = _local.Count > 0 ? $"Local ({_local.Count})" : "Local";
         CloudTab.Header = _cloud.Count > 0 ? $"Cloud ({_cloud.Count})" : "Cloud";
         TrimTab.Header = _trim.Count > 0 ? $"Trimmed ({_trim.Count})" : "Trimmed";
-        LoadThumbnails(_rows.Values.Where(r => r.Thumbnail == null && !r.Checked).ToList());
+        var todo = _rows.Values.Where(r => r.Thumbnail == null && !r.Checked).ToList();
+        // Archived rows found offline (at login, say, before the NAS was up) look again once the archive answers; after the new rows.
+        if (App.Archive.IsReachable) todo.AddRange(_rows.Values.Where(r => r.Checked && r.Entry.IsArchived && !r.HasLocalFile));
+        LoadThumbnails(todo);
     }
 
     private ClipRow RowFor(ClipEntry e)
@@ -103,12 +106,32 @@ public partial class ClipsPane : UserControl
                 Dispatcher.BeginInvoke(() =>
                 {
                     row.Checked = true;
-                    row.HasLocalFile = exists;
                     if (bmp != null) row.Thumbnail = bmp;
-                    if (!exists && row.Entry.IsArchived) row.SetProblem("archive offline");   // a deleted shared clip says so in its Cloud meta line
+                    SetArchiveFound(row, exists);   // a deleted shared clip says so in its Cloud meta line
                 });
             }
         });
+    }
+
+    /// <summary>Records whether the row's file is there; archived rows say "archive offline", or stop saying it once it is back.</summary>
+    private static void SetArchiveFound(ClipRow row, bool exists)
+    {
+        row.HasLocalFile = exists;
+        if (!row.Entry.IsArchived) return;
+        if (!exists) row.SetProblem("archive offline");
+        else if (row.IsProblem && row.Status?.StartsWith("archive offline", StringComparison.Ordinal) == true) { row.Status = null; row.IsProblem = false; }
+    }
+
+    /// <summary>
+    /// Whether an archived row's file can be reached now. File.Exists on a share can stall for the SMB timeout, so it runs on a
+    /// worker; the row's state follows the answer (it may have been marked offline before the NAS was up). UI thread.
+    /// </summary>
+    private static async Task<bool> ArchivedFileReachableAsync(ClipRow row)
+    {
+        string path = row.Entry.Path;
+        bool exists = await Task.Run(() => { try { return File.Exists(path); } catch { return false; } });
+        SetArchiveFound(row, exists);
+        return exists;
     }
 
     // ------------------------------------------------------------------ actions
@@ -139,26 +162,45 @@ public partial class ClipsPane : UserControl
         }
     }
 
-    private void Trim_Click(object sender, RoutedEventArgs e)
+    private async void Trim_Click(object sender, RoutedEventArgs e)
     {
         var row = RowOf(sender);
         if (row == null) return;
-        if (!row.HasLocalFile) { row.SetProblem(row.Entry.IsArchived ? "archive offline: cannot trim right now" : "local file deleted"); return; }
+        if (row.Entry.IsArchived)
+        {
+            // Looked at again rather than trusting the first check: the archive may have come back since.
+            if (!await ArchivedFileReachableAsync(row)) { row.SetProblem("archive offline: cannot trim right now"); return; }
+        }
+        else if (!row.HasLocalFile) { row.SetProblem("local file deleted"); return; }
         TrimRequested?.Invoke(row.Entry);
     }
 
-    private void Folder_Click(object sender, RoutedEventArgs e)
-    {
-        var row = RowOf(sender);
-        if (row != null) App.OpenFolder(row.Entry.Path);
-    }
-
-    private void Thumb_Click(object sender, MouseButtonEventArgs e)
+    private async void Folder_Click(object sender, RoutedEventArgs e)
     {
         var row = RowOf(sender);
         if (row == null) return;
-        try { Process.Start(new ProcessStartInfo(row.Entry.Path) { UseShellExecute = true }); }
-        catch (Exception ex) { App.Say("Open failed: " + ex.Message); }
+        string path = row.Entry.Path;
+        if (!row.Entry.IsArchived) { App.OpenFolder(path); return; }
+        // Archived: no share round trip on the UI thread, and no falling back to the local clips folder (the clip is not there).
+        if (await ArchivedFileReachableAsync(row)) _ = Task.Run(() => App.OpenFolder(path));
+    }
+
+    private async void Thumb_Click(object sender, MouseButtonEventArgs e)
+    {
+        var row = RowOf(sender);
+        if (row == null) return;
+        string path = row.Entry.Path;
+        void Open()
+        {
+            try { Process.Start(new ProcessStartInfo(path) { UseShellExecute = true }); }
+            catch (Exception ex) { App.Say("Open failed: " + ex.Message); }
+        }
+        if (!row.Entry.IsArchived) { Open(); return; }
+        if (!await ArchivedFileReachableAsync(row)) return;
+        // ShellExecute on a share path touches the share again: on its own STA thread (shell extensions expect one), not the UI's.
+        var t = new Thread(Open) { IsBackground = true, Name = "Clink.OpenArchived" };
+        t.SetApartmentState(ApartmentState.STA);
+        t.Start();
     }
 
     private void CopyLink_Click(object sender, RoutedEventArgs e)
