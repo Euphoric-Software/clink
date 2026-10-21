@@ -5,7 +5,11 @@ using Clink.Services;
 
 namespace Clink;
 
-/// <summary>`Clink.exe --selftest [seconds]`: runs the pipeline headless, saves a clip, prints what happened.</summary>
+/// <summary>
+/// `Clink.exe --selftest [seconds] [outFolder] [--codec h264|hevc|av1] [--quiet]`: runs the pipeline headless, saves a clip,
+/// prints what happened. The clip goes to outFolder (default: the clips folder from settings); --codec overrides the codec
+/// setting; --quiet skips the click sound.
+/// </summary>
 internal static class SelfTest
 {
     private static void Say(string s) { Console.WriteLine(s); Log.Info("[selftest] " + s); }
@@ -14,7 +18,16 @@ internal static class SelfTest
     {
         int seconds = 8;
         if (args.Length > 1 && int.TryParse(args[1], out int s)) seconds = Math.Clamp(s, 2, 600);
+        bool quiet = args.Any(a => a.Equals("--quiet", StringComparison.OrdinalIgnoreCase));
+        string? codecArg = null, outDir = null;
+        for (int i = 2; i < args.Length; i++)
+        {
+            if (args[i].Equals("--codec", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length) codecArg = args[++i];
+            else if (!args[i].StartsWith("--", StringComparison.Ordinal)) outDir ??= args[i];
+        }
         var settings = Settings.Load();
+        if (codecArg != null) settings.Codec = codecArg;
+        if (outDir != null) { outDir = Path.GetFullPath(outDir); Directory.CreateDirectory(outDir); }
         Say($"Clink self-test ({seconds}s). Log: {Log.Path}");
 
         var monitors = Monitors.Enumerate();
@@ -45,7 +58,7 @@ internal static class SelfTest
             TrackDesktop = settings.TrackDesktop, TrackGame = settings.TrackGame, TrackMic = settings.TrackMic, TrackVoice = settings.TrackVoice,
             MicDeviceId = settings.MicDeviceId,
             VoiceApp = settings.VoiceApp,
-            ClipsFolder = settings.ClipsFolder,
+            ClipsFolder = outDir ?? settings.ClipsFolder,
             GopSeconds = settings.KeyframeSeconds,
         };
 
@@ -71,8 +84,7 @@ internal static class SelfTest
         {
             var clip = engine.SaveClip(seconds);
             Say($"Saved {clip.Path} ({clip.DurationSeconds:0.00}s, {clip.SizeBytes / 1_048_576.0:0.0} MB)");
-            ClickSound.Play(settings.ClickVolume);
-            Thread.Sleep(300);
+            if (!quiet) { ClickSound.Play(settings.ClickVolume); Thread.Sleep(300); }
             return 0;
         }
         catch (Exception ex)
