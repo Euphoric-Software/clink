@@ -271,6 +271,9 @@ GetWindowThreadProcessId
 GetWindowRect
 IsWindowVisible
 IsIconic
+IsZoomed
+GetClientRect
+ClientToScreen
 DwmGetWindowAttribute
 DWMWINDOWATTRIBUTE
 OpenProcess
