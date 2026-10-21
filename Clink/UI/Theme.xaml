@@ -43,9 +43,10 @@
         </Setter>
     </Style>
 
-    <!-- The ContentPresenter.Resources below hold an empty TextBlock style: it shadows the app-wide one above (Fg, 13 px) for the
-         text a ContentPresenter generates, which then takes the control's own Foreground and FontSize (accent / link / muted
-         colours, greyed combo items, 12 px small buttons). -->
+    <!-- The ContentPresenter.Resources below hold a TextBlock style with no Foreground or FontSize: it shadows the app-wide one
+         above (Fg, 13 px) for the text a ContentPresenter generates, which then takes the control's own Foreground and FontSize
+         (accent / link / muted colours, greyed combo items, 12 px small buttons). Button text still wraps, as with the app-wide
+         style: a button in a narrow column (a hotkey's "Ctrl+Alt+Shift+F12" at 470 px) grows taller instead of cutting it off. -->
     <Style TargetType="Button">
         <Setter Property="Background" Value="{StaticResource Panel2}" />
         <Setter Property="Foreground" Value="{StaticResource Fg}" />
@@ -60,7 +61,9 @@
                     <Border x:Name="B" Background="{TemplateBinding Background}" CornerRadius="6" Padding="{TemplateBinding Padding}">
                         <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center">
                             <ContentPresenter.Resources>
-                                <Style TargetType="TextBlock" />
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="TextWrapping" Value="Wrap" />
+                                </Style>
                             </ContentPresenter.Resources>
                         </ContentPresenter>
                     </Border>
@@ -86,7 +89,9 @@
                     <Border x:Name="B" Background="{TemplateBinding Background}" CornerRadius="6" Padding="{TemplateBinding Padding}">
                         <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center">
                             <ContentPresenter.Resources>
-                                <Style TargetType="TextBlock" />
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="TextWrapping" Value="Wrap" />
+                                </Style>
                             </ContentPresenter.Resources>
                         </ContentPresenter>
                     </Border>
