@@ -493,7 +493,9 @@ internal sealed unsafe class Engine : IDisposable
         double duration = (end - origin) / 10_000_000.0;
         long size = new FileInfo(path).Length;
         Log.Info($"Clip saved: {path} ({duration:0.0}s, {size / 1_048_576.0:0.0} MB, {frames} frames, {audio.Count} audio tracks, {enc.Codec}{(enc.IsAv1 ? " experimental" : "")}, mux {t0.ElapsedMilliseconds} ms)");
-        return new ClipResult(path, duration, size, string.IsNullOrEmpty(game) ? null : game);
+        // The track names in file order: the muxer leaves out a track that has no frames.
+        string[] trackNames = audio.Where(a => a.frames.Count > 0).Select(a => a.desc.Name).ToArray();
+        return new ClipResult(path, duration, size, string.IsNullOrEmpty(game) ? null : game, trackNames);
     }
 
     private static string SanitizeName(string s)

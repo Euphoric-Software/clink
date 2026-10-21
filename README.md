@@ -161,7 +161,7 @@ position and size. Things not in the UI:
 | `StartMinimized` | false | |
 | `UpdateRepo` | *(built in)* | GitHub `owner/repo` whose releases to install, overriding the repository baked into the exe. Only for your own fork: it is logged at start and shown in the version tooltip |
 
-Logs: `%APPDATA%\Clink\clink.log`.
+Logs: `%APPDATA%\Clink\clink.log` (`clink-cli.log` for `--selftest` / `--probe` / `--trim`).
 
 ## Building
 
