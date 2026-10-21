@@ -10,11 +10,13 @@ click and the link lands in your clipboard.
   display's SDR white level, so clips look like the game instead of grey and washed out.
 * GPU-only pipeline: capture → compute-shader NV12 convert → NVENC/AMF/QuickSync H.264 (or HEVC). Frames never
   touch the CPU.
-* Multi-track audio in every clip, separated by default:
-  1. **All audio** – what you hear
-  2. **Game** – only the game's own audio (Windows per-process capture; falls back to "everything except your voice app" until a game is detected)
-  3. **Mic**
-  4. **Voice chat** (optional) – Discord / TeamSpeak / Slack / Mumble as its own track
+* Multi-track audio in every clip, separated by default. The source of every track is picked in the window:
+  1. **All audio** – what you hear (the default output device, or any other one)
+  2. **Game** – only the game's own audio (Windows per-process capture). Auto-detects the fullscreen app on the captured
+     monitor, or pick a running app; falls back to "everything except your voice app" until a game is detected
+  3. **Mic** – the default microphone or any other capture device
+  4. **Voice chat** (optional) – Discord / TeamSpeak / Slack / Mumble / Zoom / Skype found automatically, or any running
+     app, as its own track
 * Trim (start/end) without re-encoding, then save or save-and-share.
 * Shows which monitor it is capturing; click another one on the little map to switch.
 * Borderless dark UI, lives in the tray while you play.
@@ -79,7 +81,9 @@ update, handy for a debug build), `--selftest [seconds]` (records headless and w
 |-----|---------|------|
 | `KeyframeSeconds` | 1 | keyframe interval; smaller = finer trim snapping, slightly bigger files |
 | `HdrKnee` / `HdrPeak` | 0.75 / 4 | tone-mapper shoulder: everything below `knee` (relative to SDR white) is untouched, highlights roll off softly above it |
-| `VoiceApp` | `auto` | process name of the voice app for the Voice track (`auto` = Discord, TeamSpeak, Slack, Mumble, Zoom, Skype) |
+| `AllDeviceId` | `null` | output device id for the All audio track (`null` = default output); the Audio tracks picker writes it |
+| `GameProcess` | `auto` | process name of the game for the Game track (`auto` = the fullscreen app on the captured monitor); also set by the picker |
+| `VoiceApp` | `auto` | process name of the voice app for the Voice track (`auto` = Discord, TeamSpeak, Slack, Mumble, Zoom, Skype); also set by the picker |
 | `ClickVolume` | 0.5 | 0..1 |
 | `ShowToast` | true | the "Clip saved" popup |
 | `StartMinimized` | false | |

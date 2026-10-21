@@ -19,6 +19,7 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<ClipItem> _clips = new();
     private readonly DispatcherTimer _restartTimer;
     private bool _loading = true;
+    private bool _filling;                              // a source combo is being (re)populated: its SelectionChanged is not a user choice
     private bool _hintShown;
     private bool _tokenDirty;
     private bool _checkingUpdate;
@@ -76,9 +77,15 @@ public partial class MainWindow : Window
         TrackMicCheck.IsChecked = s.TrackMic;
         TrackVoiceCheck.IsChecked = s.TrackVoice;
 
+        var outputs = new List<Choice> { new("Default output", "") };
+        try { outputs.AddRange(WasapiSource.ListDevices(false).Select(d => new Choice(d.Name, d.Id))); } catch { }
+        Fill(AllDeviceCombo, outputs.ToArray(), s.AllDeviceId ?? "");
+        FillGameCombo(s.GameProcess);
         var mics = new List<Choice> { new("Default microphone", "") };
         try { mics.AddRange(WasapiSource.ListDevices(true).Select(d => new Choice(d.Name, d.Id))); } catch { }
         Fill(MicCombo, mics.ToArray(), s.MicDeviceId ?? "");
+        FillVoiceCombo(s.VoiceApp);
+        UpdateAudioEnabled();
 
         if (!string.IsNullOrEmpty(s.CopiumToken)) { TokenBox.Password = s.CopiumToken; CopiumStatus.Text = "Token saved"; CopiumStatus.Foreground = (Brush)FindResource("Good"); }
         _tokenDirty = false;
@@ -98,10 +105,70 @@ public partial class MainWindow : Window
     private static void Fill(ComboBox combo, Choice[] choices, object current)
     {
         combo.ItemsSource = choices;
-        combo.SelectedItem = choices.FirstOrDefault(c => Equals(c.Value, current)) ?? choices[0];
+        combo.SelectedItem = choices.FirstOrDefault(c => Same(c.Value, current)) ?? choices[0];
     }
 
+    // string values (device ids, process names) compare case-insensitively so a hand-edited settings.json still matches
+    private static bool Same(object a, object b) => a is string sa && b is string sb ? string.Equals(sa, sb, StringComparison.OrdinalIgnoreCase) : Equals(a, b);
+
     private static T? Selected<T>(ComboBox combo) => combo.SelectedItem is Choice c && c.Value is T v ? v : default;
+
+    // ------------------------------------------------------------------ audio sources
+
+    private static bool IsAuto(string? name) => string.IsNullOrWhiteSpace(name) || name.Equals("auto", StringComparison.OrdinalIgnoreCase);
+
+    private static List<GameProcessTracker.Candidate> RunningApps()
+    {
+        try { return GameProcessTracker.ListCandidates(); } catch { return new(); }
+    }
+
+    private static string AppLabel(GameProcessTracker.Candidate c)
+    {
+        string title = c.Title.Trim();
+        if (title.Length > 48) title = title[..47] + "…";
+        return title.Length == 0 ? c.Name : $"{c.Name} — {title}";
+    }
+
+    /// <summary>Game track: auto-detect or a running app; a configured name that is not running stays selectable so it is not lost.</summary>
+    private void FillGameCombo(string current)
+    {
+        var items = new List<Choice> { new("Auto (fullscreen app on the captured monitor)", "auto") };
+        items.AddRange(RunningApps().Select(c => new Choice(AppLabel(c), c.Name)));
+        if (!IsAuto(current) && !items.Any(i => Same(i.Value, current))) items.Add(new Choice($"{current} (not running)", current));
+        Refill(GameCombo, items, IsAuto(current) ? "auto" : current);
+    }
+
+    /// <summary>Voice track: auto (first known voice app found), one of the known names, or any other running app.</summary>
+    private void FillVoiceCombo(string current)
+    {
+        var items = new List<Choice> { new("Auto (Discord, TeamSpeak, Slack, Mumble, Zoom, Skype)", "auto") };
+        items.AddRange(GameProcessTracker.VoiceAppNames.Select(n => new Choice(n, n)));
+        foreach (var c in RunningApps())
+            if (!items.Any(i => Same(i.Value, c.Name))) items.Add(new Choice(AppLabel(c), c.Name));
+        if (!IsAuto(current) && !items.Any(i => Same(i.Value, current))) items.Add(new Choice($"{current} (not running)", current));
+        Refill(VoiceCombo, items, IsAuto(current) ? "auto" : current);
+    }
+
+    private void Refill(ComboBox combo, List<Choice> items, string current)
+    {
+        bool was = _filling;
+        _filling = true;
+        try { Fill(combo, items.ToArray(), current); }
+        finally { _filling = was; }
+    }
+
+    // The process lists are refreshed every time a dropdown opens; the current selection is always kept (see FillGameCombo).
+    private void GameCombo_DropDownOpened(object sender, EventArgs e) => FillGameCombo(Selected<string>(GameCombo) ?? _app.Settings.GameProcess);
+
+    private void VoiceCombo_DropDownOpened(object sender, EventArgs e) => FillVoiceCombo(Selected<string>(VoiceCombo) ?? _app.Settings.VoiceApp);
+
+    private void UpdateAudioEnabled()
+    {
+        AllDeviceCombo.IsEnabled = TrackAllCheck.IsChecked == true;
+        GameCombo.IsEnabled = TrackGameCheck.IsChecked == true;
+        MicCombo.IsEnabled = TrackMicCheck.IsChecked == true;
+        VoiceCombo.IsEnabled = TrackVoiceCheck.IsChecked == true;
+    }
 
     private void UpdateMonitorLabel()
     {
@@ -130,8 +197,9 @@ public partial class MainWindow : Window
             var st = eng.GetStats();
             string game = st.Game != null ? $" · {st.Game}" : "";
             if (!noticeShowing) FooterText.Text = $"{st.Encoder.Replace(" Encoder MFT", "")} · buffer {st.BufferedSeconds:0}s · {st.FramesOut} frames · {st.Dropped} dropped{game}";
+            // Non-breaking spaces inside each track's entry so the line wraps between tracks, never inside "Game (Overwatch)".
             AudioStatus.Text = st.Audio.Count == 0 ? "No audio tracks" :
-                string.Join("   ", st.Audio.Select(a => $"{(a.Running ? "●" : "○")} {a.Name}{(a.Running ? "" : a.Detail != null ? " (" + a.Detail + ")" : "")}"));
+                string.Join("   ", st.Audio.Select(a => $"{(a.Running ? "●" : "○")} {a.Name}{(a.Running ? "" : a.Detail != null ? " (" + a.Detail + ")" : "")}".Replace(' ', ' ')));
         }
         else if (eng.Error != null && !noticeShowing) FooterText.Text = eng.Error;
     }
@@ -293,6 +361,7 @@ public partial class MainWindow : Window
 
     private void AudioChanged(object sender, RoutedEventArgs e)
     {
+        UpdateAudioEnabled();
         if (_loading) return;
         var s = _app.Settings;
         s.TrackAll = TrackAllCheck.IsChecked == true;
@@ -303,12 +372,17 @@ public partial class MainWindow : Window
         ScheduleRestart();
     }
 
-    private void MicChanged(object sender, SelectionChangedEventArgs e)
+    private void AudioSourceChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (_loading) return;
-        string id = Selected<string>(MicCombo) ?? "";
-        _app.Settings.MicDeviceId = string.IsNullOrEmpty(id) ? null : id;
-        _app.Settings.Save();
+        if (_loading || _filling) return;
+        var s = _app.Settings;
+        string all = Selected<string>(AllDeviceCombo) ?? "";
+        s.AllDeviceId = string.IsNullOrEmpty(all) ? null : all;
+        s.GameProcess = Selected<string>(GameCombo) is { Length: > 0 } game ? game : "auto";
+        string mic = Selected<string>(MicCombo) ?? "";
+        s.MicDeviceId = string.IsNullOrEmpty(mic) ? null : mic;
+        s.VoiceApp = Selected<string>(VoiceCombo) is { Length: > 0 } voice ? voice : "auto";
+        s.Save();
         ScheduleRestart();
     }
 

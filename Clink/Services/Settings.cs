@@ -40,6 +40,8 @@ internal sealed class Settings
     public bool TrackGame { get; set; } = true;
     public bool TrackMic { get; set; } = true;
     public bool TrackVoice { get; set; } = false;
+    public string? AllDeviceId { get; set; }                   // render endpoint id for the "All audio" loopback; null = default output
+    public string GameProcess { get; set; } = "auto";          // process name (no .exe) for the Game track, or "auto" = the fullscreen app on the captured monitor
     public string? MicDeviceId { get; set; }
     public string VoiceApp { get; set; } = "auto";
     public bool ClickSound { get; set; } = true;
