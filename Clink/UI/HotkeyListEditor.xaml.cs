@@ -101,6 +101,7 @@ public partial class HotkeyListEditor : UserControl
         var keys = new Button
         {
             Content = KeysLabel(a),
+            Padding = new Thickness(8, 6, 8, 6),   // "Press keys" stays on one line down to the column's MinWidth: the row does not jump when a capture starts
             HorizontalContentAlignment = HorizontalAlignment.Left,
             FontWeight = FontWeights.SemiBold,
             ToolTip = "Click, then press the key combo you want (Esc cancels)",
@@ -189,26 +190,52 @@ public partial class HotkeyListEditor : UserControl
         CancelCapture();
         _capturing = button;
         _capturingLabel = button.Content as string;
-        button.Content = "Press keys…";
+        button.Content = "Press keys";
         button.Focus();   // so clicking anywhere else (LostKeyboardFocus) disarms the capture
-        Hotkeys.CaptureNext((vk, ctrl, alt, shift, win) => Dispatcher.BeginInvoke(() =>
-        {
-            if (!ReferenceEquals(_capturing, button)) return;   // a newer capture replaced this one, or it was cancelled
-            _capturing = null;
-            if (vk == 0x1B) { button.Content = _capturingLabel; return; }   // Esc cancels
-            a.Keys = new HotkeyBinding { Vk = vk, Ctrl = ctrl, Alt = alt, Shift = shift, Win = win };
-            button.Content = a.Keys.ToString();
-            Raise();
-        }));
+        Arm(button, a);
     }
 
-    /// <summary>Stops waiting for keys (the previous "Press keys…" button gets its label back).</summary>
+    /// <summary>Waits for the next combo for row <paramref name="a"/>, again after one that could not be taken. Esc cancels.</summary>
+    private void Arm(Button button, HotkeyAction a) => Hotkeys.CaptureNext(
+        (vk, ctrl, alt, shift, win) => Dispatcher.BeginInvoke(() =>
+        {
+            if (!ReferenceEquals(_capturing, button)) return;   // a newer capture replaced this one, or it was cancelled
+            if (vk == 0x1B) { _capturing = null; button.Content = _capturingLabel; Hint(null); return; }   // Esc cancels
+            var keys = new HotkeyBinding { Vk = vk, Ctrl = ctrl, Alt = alt, Shift = shift, Win = win };
+            // Only the first row with a combo ever fires: a second one would look set up and do nothing. Still listening.
+            if (_actions.Any(o => !ReferenceEquals(o, a) && o.Keys is { } k && k.Vk == vk && k.Ctrl == ctrl && k.Alt == alt && k.Shift == shift && k.Win == win))
+            {
+                Hint($"{keys} is already used by another hotkey. Press other keys, or Esc.");
+                Arm(button, a);
+                return;
+            }
+            _capturing = null;
+            Hint(null);
+            a.Keys = keys;
+            button.Content = keys.ToString();
+            Raise();
+        }),
+        // A bare letter, digit or editing key would be eaten in every program from then on: not taken, still listening.
+        () => Dispatcher.BeginInvoke(() =>
+        {
+            if (ReferenceEquals(_capturing, button)) Hint("Letters, digits and editing keys need Ctrl or Alt; F-keys, ScrollLock and Pause work alone.");
+        }));
+
+    /// <summary>Shows why the last keys were not taken under the rows, or hides it (null).</summary>
+    private void Hint(string? text)
+    {
+        CaptureHint.Text = text ?? "";
+        CaptureHint.Visibility = text == null ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    /// <summary>Stops waiting for keys (the previous "Press keys" button gets its label back).</summary>
     public void CancelCapture()
     {
         if (_capturing == null) return;
         Hotkeys.CaptureNext(null);
         _capturing.Content = _capturingLabel;
         _capturing = null;
+        Hint(null);
     }
 
     // ------------------------------------------------------------------ add

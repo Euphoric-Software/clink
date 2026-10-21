@@ -8,6 +8,7 @@ namespace Clink.Services;
 /// <summary>Synthesizes the short "click" played when a clip is saved; no asset files needed.</summary>
 internal static unsafe class ClickSound
 {
+    // Pinned for good: with SND_ASYNC PlaySound keeps reading the image after the call returns, and a GC must not move it then.
     private static byte[]? s_wav;
     private static double s_volume = -1;
 
@@ -15,9 +16,11 @@ internal static unsafe class ClickSound
     {
         try
         {
+            var previous = s_wav;   // a volume change replaces it while it may still be playing: alive until the next PlaySound stopped it
             if (s_wav == null || Math.Abs(s_volume - volume) > 0.001) { s_wav = Build(volume); s_volume = volume; }
             fixed (byte* p = s_wav)
                 PInvoke.PlaySound(new PCWSTR((char*)p), HMODULE.Null, SND_FLAGS.SND_MEMORY | SND_FLAGS.SND_ASYNC | SND_FLAGS.SND_NODEFAULT);
+            GC.KeepAlive(previous);
         }
         catch (Exception ex) { Log.Warn("Click sound: " + ex.Message); }
     }
@@ -47,6 +50,8 @@ internal static unsafe class ClickSound
         w.Write("data"u8); w.Write(dataLen);
         foreach (var s in samples) w.Write(s);
         w.Flush();
-        return ms.ToArray();
+        var wav = GC.AllocateUninitializedArray<byte>((int)ms.Length, pinned: true);
+        ms.GetBuffer().AsSpan(0, wav.Length).CopyTo(wav);
+        return wav;
     }
 }

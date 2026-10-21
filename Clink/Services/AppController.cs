@@ -278,6 +278,7 @@ internal sealed class AppController : IDisposable
     // ------------------------------------------------------------------ updates
 
     private static bool MainWindowVisible => System.Windows.Application.Current?.MainWindow?.IsVisible == true;
+    private static bool MainWindowActive => System.Windows.Application.Current?.MainWindow?.IsActive == true;
 
     private void OnUpdateAvailable(UpdateInfo info)
     {
@@ -507,7 +508,13 @@ internal sealed class AppController : IDisposable
     {
         switch ((a.Action ?? "clip").Trim().ToLowerInvariant())
         {
-            case "pause": TogglePause(); break;
+            case "pause":
+                TogglePause();
+                // In a game nothing else shows it: a press by mistake would stop recording without a sign. A resume with a game
+                // running gets its "Recording started" toast once the engine is up.
+                if (!MainWindowActive && Settings.ToastRecording.Enabled && (IsPaused || CurrentGame == null))
+                    Toasts.ShowNotice(IsPaused ? "Recording paused" : "Recording resumed", IsPaused ? $"Press {a.Keys} to resume" : GameOnly ? "Waiting for a game" : "Replay buffer restarted");
+                break;
             case "share-last": case "share": ShareLast(); break;
             default: ClipNow(a.Seconds > 0 ? a.Seconds : null); break;
         }
@@ -520,7 +527,10 @@ internal sealed class AppController : IDisposable
     {
         if (!Engine.IsRunning)
         {
-            Say(IsPaused ? "Recording is paused" : GameOnly && _gamePid == 0 ? "Not recording: waiting for a game" : "Not recording yet");
+            string why = IsPaused ? "Recording is paused" : GameOnly && _gamePid == 0 ? "Not recording: waiting for a game" : "Not recording yet";
+            Say(why);
+            // The hotkey, the tray and --clip get no answer in a window nobody is looking at.
+            if (!MainWindowActive) Toasts.ShowNotice("Clip not saved", why);
             return;
         }
         if ((DateTime.UtcNow - _lastClipAt).TotalMilliseconds < 700) return;
@@ -542,6 +552,7 @@ internal sealed class AppController : IDisposable
         {
             Log.Error("Save clip", ex);
             Say("Clip failed: " + ex.Message);
+            Toasts.ShowNotice("Clip not saved", ex.Message);   // the click already played: on screen, like "Clip saved" would have been
         }
         finally { _saving = 0; }
     }

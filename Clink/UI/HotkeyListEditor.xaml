@@ -18,6 +18,8 @@
         </Grid>
         <!-- one row per binding: [keys] [action] [length] [✕], built in code -->
         <StackPanel x:Name="Rows" />
+        <!-- why the keys just pressed were not taken (another row has them, or a bare typing key); shown while the capture stays armed -->
+        <TextBlock x:Name="CaptureHint" Style="{StaticResource Hint}" Foreground="{StaticResource Warn}" Margin="2,0,0,4" Visibility="Collapsed" />
         <TextBlock x:Name="EmptyText" Style="{StaticResource Hint}" Margin="2,4,0,0" Text="No hotkeys. Add one and press the keys you want." Visibility="Collapsed" />
     </StackPanel>
 </UserControl>
