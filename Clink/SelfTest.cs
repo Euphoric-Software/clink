@@ -33,7 +33,7 @@ internal static class SelfTest
             Hevc = settings.Codec == "hevc",
             BufferSeconds = Math.Max(10, Math.Min(settings.BufferSeconds, 60)),
             CaptureCursor = true,
-            TrackAll = settings.TrackAll, TrackGame = settings.TrackGame, TrackMic = settings.TrackMic, TrackVoice = settings.TrackVoice,
+            TrackDesktop = settings.TrackDesktop, TrackGame = settings.TrackGame, TrackMic = settings.TrackMic, TrackVoice = settings.TrackVoice,
             MicDeviceId = settings.MicDeviceId,
             VoiceApp = settings.VoiceApp,
             ClipsFolder = settings.ClipsFolder,

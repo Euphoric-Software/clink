@@ -36,7 +36,7 @@ internal sealed class Settings
     public int BufferSeconds { get; set; } = 120;
     public bool CaptureCursor { get; set; } = true;
     public HotkeyBinding Hotkey { get; set; } = new();
-    public bool TrackAll { get; set; } = true;
+    public bool TrackDesktop { get; set; } = false;             // extra "Desktop" track (everything you hear); track 1 is always the game+mic+voice mix
     public bool TrackGame { get; set; } = true;
     public bool TrackMic { get; set; } = true;
     public bool TrackVoice { get; set; } = false;

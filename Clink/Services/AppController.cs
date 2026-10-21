@@ -216,7 +216,7 @@ internal sealed class AppController : IDisposable
             GopSeconds = Math.Clamp(Settings.KeyframeSeconds, 0.25f, 5f),
             BufferSeconds = Math.Clamp(Settings.BufferSeconds, 5, 1200),
             CaptureCursor = Settings.CaptureCursor,
-            TrackAll = Settings.TrackAll, TrackGame = Settings.TrackGame, TrackMic = Settings.TrackMic, TrackVoice = Settings.TrackVoice,
+            TrackDesktop = Settings.TrackDesktop, TrackGame = Settings.TrackGame, TrackMic = Settings.TrackMic, TrackVoice = Settings.TrackVoice,
             AllDeviceId = Settings.AllDeviceId,
             MicDeviceId = Settings.MicDeviceId,
             GameProcess = GameProcessTracker.NormalizeName(Settings.GameProcess),

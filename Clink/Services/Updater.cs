@@ -508,6 +508,19 @@ internal sealed class Updater : IDisposable
         catch (Exception ex) { Log.Warn("updater: pending scan failed: " + ex.Message); return false; }
     }
 
+    /// <summary>Records why starting a downloaded update failed, in words the user can act on (shown once at startup).</summary>
+    public void ReportInstallFailure(Exception ex, Version version, string pendingExe)
+    {
+        bool appControl = ex.Message.Contains("Application Control", StringComparison.OrdinalIgnoreCase);
+        string why = appControl
+            ? "Windows App Control (Smart App Control) blocked the downloaded exe because Clink releases are not code-signed yet. Either turn Smart App Control off (Windows Security › App & browser control) or build Clink from source on this PC"
+            : Describe(ex);
+        InstallProblem = $"Update to v{version} could not start: {why}.";
+        Log.Warn("updater: " + InstallProblem);
+        // Same marker the apply process writes: this file is not offered again at every start (a manual check retries it).
+        try { File.WriteAllText(FailedMarker(pendingExe), $"{why}\n{DateTime.Now:yyyy-MM-dd HH:mm:ss} launch failed"); } catch { }
+    }
+
     /// <summary>
     /// Starts the downloaded exe so it replaces <paramref name="targetExePath"/> once this process has exited and then restarts
     /// it with <paramref name="restartArgs"/> (the current command line, so a login start stays in the tray). The caller then exits.

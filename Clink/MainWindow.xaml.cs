@@ -26,7 +26,7 @@ public partial class MainWindow : Window
     private DateTime _noticeUntil = DateTime.MinValue;   // keep a Say() notice visible this long before the stats line takes the footer back
     private ToastWindow? _toast;
 
-    private sealed record Choice(string Label, object Value) { public override string ToString() => Label; }
+    private sealed record Choice(string Label, object Value, bool Header = false) { public override string ToString() => Label; }
 
     public MainWindow()
     {
@@ -77,7 +77,7 @@ public partial class MainWindow : Window
         ClickSoundCheck.IsChecked = s.ClickSound;
         CursorCheck.IsChecked = s.CaptureCursor;
         StartupCheck.IsChecked = s.RunAtStartup;
-        TrackAllCheck.IsChecked = s.TrackAll;
+        TrackDesktopCheck.IsChecked = s.TrackDesktop;
         TrackGameCheck.IsChecked = s.TrackGame;
         TrackMicCheck.IsChecked = s.TrackMic;
         TrackVoiceCheck.IsChecked = s.TrackVoice;
@@ -155,8 +155,11 @@ public partial class MainWindow : Window
     {
         current = GameProcessTracker.NormalizeName(current);   // "auto" in any case, ".exe" dropped: matches the way the engine reads it
         var items = new List<Choice> { new("Auto (fullscreen app on the captured monitor)", "auto") };
-        items.AddRange(RunningApps().Select(c => new Choice(AppLabel(c), c.Name)));
-        if (!IsAuto(current) && !items.Any(i => Same(i.Value, current))) items.Add(new Choice($"{current} (not running)", current));
+        var apps = RunningApps();
+        if (apps.Count > 0) items.Add(new Choice("Running apps", "", true));
+        items.AddRange(apps.Select(c => new Choice(AppLabel(c), c.Name)));
+        AddDeviceChoices(items, current);
+        if (!IsAuto(current) && !IsDeviceValue(current) && !items.Any(i => Same(i.Value, current))) items.Add(new Choice($"{current} (not running)", current));
         Refill(GameCombo, items, current);
     }
 
@@ -167,9 +170,11 @@ public partial class MainWindow : Window
         // Short enough to fit the closed box at the window's width; the full list is in the combo's tooltip.
         var items = new List<Choice> { new("Auto (Discord, TeamSpeak, …)", "auto") };
         items.AddRange(GameProcessTracker.VoiceAppNames.Select(n => new Choice(n, n)));
-        foreach (var c in RunningApps())
-            if (!items.Any(i => Same(i.Value, c.Name))) items.Add(new Choice(AppLabel(c), c.Name));
-        if (!IsAuto(current) && !items.Any(i => Same(i.Value, current))) items.Add(new Choice($"{current} (not running)", current));
+        var others = RunningApps().Where(c => !items.Any(i => Same(i.Value, c.Name))).ToList();
+        if (others.Count > 0) items.Add(new Choice("Other running apps", "", true));
+        items.AddRange(others.Select(c => new Choice(AppLabel(c), c.Name)));
+        AddDeviceChoices(items, current);
+        if (!IsAuto(current) && !IsDeviceValue(current) && !items.Any(i => Same(i.Value, current))) items.Add(new Choice($"{current} (not running)", current));
         Refill(VoiceCombo, items, current);
     }
 
@@ -193,10 +198,31 @@ public partial class MainWindow : Window
 
     private void UpdateAudioEnabled()
     {
-        AllDeviceCombo.IsEnabled = TrackAllCheck.IsChecked == true;
-        GameCombo.IsEnabled = TrackGameCheck.IsChecked == true;
-        MicCombo.IsEnabled = TrackMicCheck.IsChecked == true;
-        VoiceCombo.IsEnabled = TrackVoiceCheck.IsChecked == true;
+        // Game, mic and voice are always captured for the mix, so their pickers stay live; only the optional Desktop track's does not.
+        AllDeviceCombo.IsEnabled = TrackDesktopCheck.IsChecked == true;
+    }
+
+    private static bool IsDeviceValue(string? v) =>
+        v != null && (v.StartsWith("in:", StringComparison.OrdinalIgnoreCase) || v.StartsWith("out:", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>Audio devices as alternative sources for the game / voice tracks: capture endpoints (virtual inputs such as Wave Link mixes) and output loopbacks.</summary>
+    private void AddDeviceChoices(List<Choice> items, string current)
+    {
+        List<AudioDeviceInfo> inputs, outputs;
+        try { inputs = WasapiSource.ListDevices(true); } catch { inputs = new(); }
+        try { outputs = WasapiSource.ListDevices(false); } catch { outputs = new(); }
+        if (inputs.Count > 0)
+        {
+            items.Add(new Choice("Audio inputs", "", true));
+            items.AddRange(inputs.Select(d => new Choice("Input: " + d.Name, "in:" + d.Id)));
+        }
+        if (outputs.Count > 0)
+        {
+            items.Add(new Choice("Outputs (whatever plays on them)", "", true));
+            items.AddRange(outputs.Select(d => new Choice("Output: " + d.Name, "out:" + d.Id)));
+        }
+        if (IsDeviceValue(current) && !items.Any(i => Same(i.Value, current)))
+            items.Add(new Choice("Saved device (not connected)", current));
     }
 
     private void UpdateMonitorLabel()
@@ -401,7 +427,7 @@ public partial class MainWindow : Window
         UpdateAudioEnabled();
         if (_loading) return;
         var s = _app.Settings;
-        s.TrackAll = TrackAllCheck.IsChecked == true;
+        s.TrackDesktop = TrackDesktopCheck.IsChecked == true;
         s.TrackGame = TrackGameCheck.IsChecked == true;
         s.TrackMic = TrackMicCheck.IsChecked == true;
         s.TrackVoice = TrackVoiceCheck.IsChecked == true;

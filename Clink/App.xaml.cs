@@ -106,7 +106,11 @@ public partial class App : System.Windows.Application
                 Shutdown(0);
                 return;
             }
-            catch (Exception ex) { Log.Error("Could not start the update, continuing with this version", ex); }
+            catch (Exception ex)
+            {
+                Log.Error("Could not start the update, continuing with this version", ex);
+                updater.ReportInstallFailure(ex, pendingVersion, pendingExe);
+            }
         }
 
         _controller = new AppController(settings, updater);

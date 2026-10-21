@@ -10,13 +10,17 @@ click and the link lands in your clipboard.
   display's SDR white level, so clips look like the game instead of grey and washed out.
 * GPU-only pipeline: capture → compute-shader NV12 convert → NVENC/AMF/QuickSync H.264 (or HEVC). Frames never
   touch the CPU.
-* Multi-track audio in every clip, separated by default. The source of every track is picked in the window:
-  1. **All audio** – what you hear (the default output device, or any other one)
+* Multi-track audio in every clip. Track 1 is always a **mix of game + mic + voice chat**, so Discord, browsers and
+  every player that only plays the first track hear everything. The parts are also saved as their own tracks, and the
+  source of each is picked in the window:
+  1. **Mix** – game + mic + voice, always first
   2. **Game** – only the game's own audio (Windows per-process capture). Auto-detects the fullscreen app on the captured
-     monitor, or pick a running app; falls back to "everything except your voice app" until a game is detected
+     monitor, or pick a running app, or pick an audio device instead (a virtual input such as Wave Link's "Game", or the
+     loopback of any output); falls back to "everything except your voice app" until a game is detected
   3. **Mic** – the default microphone or any other capture device
-  4. **Voice chat** (optional) – Discord / TeamSpeak / Slack / Mumble / Zoom / Skype found automatically, or any running
-     app, as its own track
+  4. **Voice chat** – Discord / TeamSpeak / Slack / Mumble / Zoom / Skype found automatically, any running app, or an audio
+     device (off as a separate track by default; always part of the mix)
+  5. **Desktop** (optional) – everything you hear from an output device, as an extra track
 * Trim (start/end) without re-encoding, then save or save-and-share.
 * Shows which monitor it is capturing; click another one on the little map to switch.
 * Borderless dark UI, lives in the tray while you play.

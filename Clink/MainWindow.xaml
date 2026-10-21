@@ -115,6 +115,21 @@
                                     <Style TargetType="ComboBox" BasedOn="{StaticResource {x:Type ComboBox}}">
                                         <Setter Property="Margin" Value="0,3" />
                                         <Setter Property="ItemTemplate" Value="{StaticResource SourceLabel}" />
+                                        <!-- section headers inside the source lists ("Audio inputs", "Outputs") are not selectable -->
+                                        <Setter Property="ItemContainerStyle">
+                                            <Setter.Value>
+                                                <Style TargetType="ComboBoxItem" BasedOn="{StaticResource {x:Type ComboBoxItem}}">
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding Header}" Value="True">
+                                                            <Setter Property="IsEnabled" Value="False" />
+                                                            <Setter Property="Foreground" Value="{StaticResource Muted}" />
+                                                            <Setter Property="FontSize" Value="11" />
+                                                            <Setter Property="Padding" Value="8,6,8,2" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </Setter.Value>
+                                        </Setter>
                                         <Style.Triggers>
                                             <Trigger Property="IsEnabled" Value="False">
                                                 <Setter Property="Opacity" Value="0.45" />
@@ -135,21 +150,26 @@
                                     <RowDefinition Height="Auto" />
                                     <RowDefinition Height="Auto" />
                                     <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
                                 </Grid.RowDefinitions>
 
-                                <CheckBox x:Name="TrackAllCheck" Grid.Row="0" Content="All audio" Checked="AudioChanged" Unchecked="AudioChanged" ToolTip="Everything you hear (loopback of an output device)" />
-                                <ComboBox x:Name="AllDeviceCombo" Grid.Row="0" Grid.Column="1" SelectionChanged="AudioSourceChanged" DropDownOpened="AllDeviceCombo_DropDownOpened" ToolTip="Output device to capture" />
+                                <CheckBox x:Name="MixCheck" Grid.Row="0" Content="Mix" IsChecked="True" IsEnabled="False" ToolTip="Track 1 is always game + mic + voice chat mixed together, so every player hears everything" />
+                                <TextBlock Grid.Row="0" Grid.Column="1" Style="{StaticResource MutedText}" VerticalAlignment="Center" Margin="9,4" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
+                                           Text="Game + mic + voice chat · always track 1, plays everywhere" />
 
-                                <CheckBox x:Name="TrackGameCheck" Grid.Row="1" Content="Game" Checked="AudioChanged" Unchecked="AudioChanged" ToolTip="Only the game's own audio (per-process capture)" />
+                                <CheckBox x:Name="TrackGameCheck" Grid.Row="1" Content="Game" Checked="AudioChanged" Unchecked="AudioChanged" ToolTip="Also save the game audio as its own track (it is always part of the mix)" />
                                 <ComboBox x:Name="GameCombo" Grid.Row="1" Grid.Column="1" SelectionChanged="AudioSourceChanged" DropDownOpened="GameCombo_DropDownOpened"
-                                          ToolTip="Which process is the game: detect the fullscreen app, or pick a running app" />
+                                          ToolTip="Where game audio comes from: detect the fullscreen app, pick a running app, or pick an audio device (an input like Wave Link's Game mix, or what plays on an output)" />
 
-                                <CheckBox x:Name="TrackMicCheck" Grid.Row="2" Content="Mic" Checked="AudioChanged" Unchecked="AudioChanged" />
+                                <CheckBox x:Name="TrackMicCheck" Grid.Row="2" Content="Mic" Checked="AudioChanged" Unchecked="AudioChanged" ToolTip="Also save the mic as its own track (it is always part of the mix)" />
                                 <ComboBox x:Name="MicCombo" Grid.Row="2" Grid.Column="1" SelectionChanged="AudioSourceChanged" DropDownOpened="MicCombo_DropDownOpened" ToolTip="Microphone to record" />
 
-                                <CheckBox x:Name="TrackVoiceCheck" Grid.Row="3" Content="Voice chat" Checked="AudioChanged" Unchecked="AudioChanged" ToolTip="Your voice app's audio as its own track" />
+                                <CheckBox x:Name="TrackVoiceCheck" Grid.Row="3" Content="Voice chat" Checked="AudioChanged" Unchecked="AudioChanged" ToolTip="Also save voice chat as its own track (it is always part of the mix)" />
                                 <ComboBox x:Name="VoiceCombo" Grid.Row="3" Grid.Column="1" SelectionChanged="AudioSourceChanged" DropDownOpened="VoiceCombo_DropDownOpened"
-                                          ToolTip="Which process is the voice app. Auto = the first of Discord, TeamSpeak, Slack, Mumble, Zoom or Skype found running; or pick a running app" />
+                                          ToolTip="Where voice chat comes from. Auto = the first of Discord, TeamSpeak, Slack, Mumble, Zoom or Skype found running; or a running app; or an audio device" />
+
+                                <CheckBox x:Name="TrackDesktopCheck" Grid.Row="4" Content="Desktop" Checked="AudioChanged" Unchecked="AudioChanged" ToolTip="Extra track: everything you hear from an output device (music, browser, other apps)" />
+                                <ComboBox x:Name="AllDeviceCombo" Grid.Row="4" Grid.Column="1" SelectionChanged="AudioSourceChanged" DropDownOpened="AllDeviceCombo_DropDownOpened" ToolTip="Output device to capture for the Desktop track" />
                             </Grid>
                             <TextBlock x:Name="AudioStatus" Style="{StaticResource MutedText}" Margin="2,6,0,0" Text="" TextWrapping="Wrap" />
                         </StackPanel>

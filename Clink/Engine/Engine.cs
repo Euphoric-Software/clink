@@ -21,8 +21,10 @@ internal sealed class EngineConfig
     public float GopSeconds = 1f;
     public int BufferSeconds = 120;
     public bool CaptureCursor = true;
-    public bool TrackAll = true, TrackGame = true, TrackMic = true, TrackVoice = false;
-    public string? AllDeviceId;            // render device for the "All audio" loopback; null = default output
+    // Track 1 is always the mix of game + mic + voice. These flags say whether each part is also written as its own track.
+    public bool TrackGame = true, TrackMic = true, TrackVoice = false;
+    public bool TrackDesktop = false;      // extra track: everything you hear (loopback of an output device)
+    public string? AllDeviceId;            // render device for the desktop loopback; null = default output
     public string? MicDeviceId;
     public string GameProcess = "auto";    // process name (no .exe) for the Game track, or "auto" = detect the fullscreen app
     public string VoiceApp = "auto";
@@ -213,6 +215,7 @@ internal sealed unsafe class Engine : IDisposable
             foreach (var t in _tracks) { try { t.Dispose(); } catch { } }
             _tracks.Clear();
             _gameTrack = _voiceTrack = null;
+            _gameIsDevice = _voiceIsDevice = false;
         }
         try { _ring?.Dispose(); } catch { }
         _ring = null;
@@ -226,10 +229,19 @@ internal sealed unsafe class Engine : IDisposable
     {
         lock (_audioGate)
         {
-            if (_cfg.TrackAll) _tracks.Add(new AudioTrack("All audio") { Source = new EndpointSource(true, _cfg.AllDeviceId, "System loopback") });
-            if (_cfg.TrackGame) { _gameTrack = new AudioTrack("Game"); _tracks.Add(_gameTrack); }
-            if (_cfg.TrackMic) _tracks.Add(new AudioTrack("Mic") { Source = new EndpointSource(false, _cfg.MicDeviceId, "Microphone") });
-            if (_cfg.TrackVoice) { _voiceTrack = new AudioTrack("Voice"); _tracks.Add(_voiceTrack); }
+            // Game, mic and voice are always captured: track 1 is their mix. The flags only decide whether each is also
+            // written as its own track. A game/voice "process" setting may instead name an audio device (in:/out: prefix).
+            _gameTrack = new AudioTrack("Game") { Enabled = _cfg.TrackGame };
+            var mic = new AudioTrack("Mic") { Source = new EndpointSource(false, _cfg.MicDeviceId, "Microphone"), Enabled = _cfg.TrackMic };
+            _voiceTrack = new AudioTrack("Voice") { Enabled = _cfg.TrackVoice };
+            if (TryDeviceSource(_cfg.GameProcess, "Game device", out var gameDevice)) { _gameTrack.Source = gameDevice; _gameIsDevice = true; }
+            if (TryDeviceSource(_cfg.VoiceApp, "Voice device", out var voiceDevice)) { _voiceTrack.Source = voiceDevice; _voiceIsDevice = true; }
+            var mix = new AudioTrack("Mix", new[] { _gameTrack, mic, _voiceTrack }) { Enabled = true };
+            _tracks.Add(mix);
+            _tracks.Add(_gameTrack);
+            _tracks.Add(mic);
+            _tracks.Add(_voiceTrack);
+            if (_cfg.TrackDesktop) _tracks.Add(new AudioTrack("Desktop") { Source = new EndpointSource(true, _cfg.AllDeviceId, "System loopback") });
         }
         if (_tracks.Count == 0) return;
         _audioThread = new Thread(AudioLoop) { IsBackground = true, Name = "Clink.Audio", Priority = ThreadPriority.Highest };
@@ -262,11 +274,10 @@ internal sealed unsafe class Engine : IDisposable
                         lastPad.Restart();
                         long now = ComUtil.QpcNow100ns();
                         long keep = now - (_cfg.BufferSeconds + 6) * 10_000_000L;
-                        foreach (var t in _tracks)
-                        {
-                            t.PadSilenceTo(now - 3_000_000);
-                            t.Trim(keep);
-                        }
+                        long until = now - 3_000_000;
+                        foreach (var t in _tracks) t.PadSilenceTo(until);   // sources first, so the mix can read them
+                        foreach (var t in _tracks) t.MixUpTo(until);
+                        foreach (var t in _tracks) t.Trim(keep);
                     }
                 }
                 if (lastProc.ElapsedMilliseconds >= 1000)
@@ -285,6 +296,18 @@ internal sealed unsafe class Engine : IDisposable
     }
 
     private int _voiceScan;
+    private bool _gameIsDevice, _voiceIsDevice;
+
+    /// <summary>"in:&lt;endpoint id&gt;" = a capture device, "out:&lt;endpoint id&gt;" = loopback of an output; anything else is a process name or "auto".</summary>
+    private static bool TryDeviceSource(string? value, string name, out EndpointSource? source)
+    {
+        source = null;
+        if (string.IsNullOrWhiteSpace(value)) return false;
+        string v = value.Trim();
+        if (v.StartsWith("in:", StringComparison.OrdinalIgnoreCase) && v.Length > 3) { source = new EndpointSource(false, v[3..], name); return true; }
+        if (v.StartsWith("out:", StringComparison.OrdinalIgnoreCase) && v.Length > 4) { source = new EndpointSource(true, v[4..], name); return true; }
+        return false;
+    }
 
     private void UpdateProcessSources(bool initial)
     {
@@ -292,15 +315,17 @@ internal sealed unsafe class Engine : IDisposable
         var m = _cfg.Monitor;
         try
         {
-            // Voice app (checked every 5 s)
+            // Voice app (checked every 5 s). With the voice track on a device, auto-detection still runs so the game
+            // track's "everything except the voice app" fallback keeps working.
             if (initial || _voiceScan++ % 5 == 0 || (_voicePid != 0 && !GameProcessTracker.IsAlive(_voicePid)))
             {
-                var v = GameProcessTracker.FindVoiceApp(_cfg.VoiceApp);
+                var v = GameProcessTracker.FindVoiceApp(_voiceIsDevice ? "auto" : _cfg.VoiceApp);
                 uint newVoice = v?.pid ?? 0;
                 if (newVoice != _voicePid) { _voicePid = newVoice; _voiceName = v?.name; Log.Info($"Voice app: {(_voiceName ?? "none")} pid={_voicePid}"); }
             }
             // Game
-            if (!GameProcessTracker.IsAuto(_cfg.GameProcess))
+            if (_gameIsDevice) { }
+            else if (!GameProcessTracker.IsAuto(_cfg.GameProcess))
             {
                 var chosen = GameProcessTracker.FindProcessByName(_cfg.GameProcess);
                 uint pid = chosen?.pid ?? 0;
@@ -318,7 +343,7 @@ internal sealed unsafe class Engine : IDisposable
 
         lock (_audioGate)
         {
-            if (_gameTrack != null)
+            if (_gameTrack != null && !_gameIsDevice)
             {
                 (uint pid, bool include)? want = _gamePid != 0 ? (_gamePid, true) : _voicePid != 0 ? (_voicePid, false) : null;
                 var cur = _gameTrack.Source as ProcessSource;
@@ -333,7 +358,7 @@ internal sealed unsafe class Engine : IDisposable
                         : new ProcessSource(want.Value.pid, false, $"Everything except {_voiceName}", $"everything except {_voiceName}");
                 }
             }
-            if (_voiceTrack != null)
+            if (_voiceTrack != null && !_voiceIsDevice)
             {
                 var cur = _voiceTrack.Source as ProcessSource;
                 if (_voicePid == 0) { if (cur != null) { cur.Dispose(); _voiceTrack.Source = null; } }
@@ -357,7 +382,13 @@ internal sealed unsafe class Engine : IDisposable
     {
         List<AudioTrackStatus> audio;
         lock (_audioGate)
-            audio = _tracks.Select(t => new AudioTrackStatus(t.Name, t.Source?.IsRunning == true, t.Source == null ? "waiting for app" : t.Source.IsRunning ? t.Source.Detail : t.Source.LastError)).ToList();
+            audio = _tracks.Select(t =>
+            {
+                if (t.IsMix) return new AudioTrackStatus(t.Name, true, "game + mic + voice, always track 1");
+                string? detail = t.Source == null ? "waiting for app" : t.Source.IsRunning ? t.Source.Detail : t.Source.LastError;
+                if (!t.Enabled) detail = detail == null ? "mix only" : detail + ", mix only";
+                return new AudioTrackStatus(t.Name, t.Source?.IsRunning == true, detail);
+            }).ToList();
         return new EngineStats(_encoder?.EncoderName ?? "", _encoder?.FramesIn ?? 0, _encoder?.FramesOut ?? 0,
             (_encoder?.Dropped ?? 0) + Interlocked.Read(ref _pacerDropped), _capture?.FramesReceived ?? 0,
             BufferedSeconds, _ring?.Capacity ?? 0, audio, _gameName, _capture?.IsHdr ?? false);
