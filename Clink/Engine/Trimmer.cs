@@ -201,7 +201,8 @@ internal static unsafe class Trimmer
 
     /// <summary>
     /// Names of the audio tracks as the file itself has them (the 'hdlr' names Clink writes: Mix, Game, Mic…), in file
-    /// order; null when the file cannot be parsed. Only box headers are read, so a long clip's sample tables are skipped.
+    /// order; null when the file cannot be parsed or was not written by Clink. Only box headers are read, so a long clip's
+    /// sample tables are skipped.
     /// </summary>
     internal static string[]? ReadAudioTrackNames(string path)
     {
@@ -211,6 +212,7 @@ internal static unsafe class Trimmer
             var moov = Boxes(fs, 0, fs.Length).FirstOrDefault(b => b.type == "moov");
             if (moov.type == null) return null;
             var names = new List<string>();
+            bool clink = false;
             foreach (var trak in Boxes(fs, moov.start, moov.end).Where(b => b.type == "trak").ToList())
             {
                 var mdia = Boxes(fs, trak.start, trak.end).FirstOrDefault(b => b.type == "mdia");
@@ -221,11 +223,15 @@ internal static unsafe class Trimmer
                 fs.Position = hdlr.start;
                 fs.ReadExactly(buf);
                 // version/flags, pre_defined, handler type, 3 reserved words, then the zero-terminated UTF-8 name.
-                if (Encoding.ASCII.GetString(buf, 8, 4) != "soun") continue;
+                string type = Encoding.ASCII.GetString(buf, 8, 4);
                 int z = Array.IndexOf(buf, (byte)0, 24);
-                names.Add(Encoding.UTF8.GetString(buf, 24, (z < 0 ? buf.Length : z) - 24).Trim());
+                string name = Encoding.UTF8.GetString(buf, 24, (z < 0 ? buf.Length : z) - 24).Trim();
+                if (type == "vide") clink |= name == "Video";
+                else if (type == "soun") names.Add(name);
             }
-            return names.ToArray();
+            // Only Clink's muxer names the video trak exactly "Video". Other writers use generic names (ffmpeg/OBS:
+            // VideoHandler, SoundHandler on every track) or Pascal strings, so their files fall back to Audio 1, Audio 2…
+            return clink ? names.ToArray() : null;
         }
         catch (Exception ex)
         {
