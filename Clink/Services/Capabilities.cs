@@ -329,6 +329,10 @@ internal static unsafe class Capabilities
         return $"{seconds / 3600}:{seconds / 60 % 60:00}:{seconds % 60:00}";
     }
 
+    /// <summary>A clip's length as players show it: "0:42", "12:05", and h:mm:ss from an hour up ("1:00:03"; m:ss would read "0:03").</summary>
+    public static string FormatClipLength(double seconds) =>
+        TimeSpan.FromSeconds(Math.Max(0, seconds)).ToString(seconds >= 3600 ? @"h\:mm\:ss" : @"m\:ss");
+
     /// <summary>
     /// "≈ 190 MB per minute · ≈ 380 MB per 2:00 clip". At 1 h (the slider's maximum) the clip figure is the hour figure, so it reads
     /// "≈ 7.6 GB per hour" once instead of the same number as "per 1 h clip" and again "per hour".

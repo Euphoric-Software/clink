@@ -26,7 +26,9 @@ internal static unsafe class Thumbnails
             try
             {
                 HBITMAP hbm;
-                HRESULT hr = factory->GetImage(new SIZE(width, height), SIIGBF.SIIGBF_RESIZETOFIT | SIIGBF.SIIGBF_BIGGERSIZEOK, &hbm);
+                // RESIZETOFIT alone: with BIGGERSIZEOK a file the shell has not cached yet (every new clip and trim) comes back
+                // at the extractor's full size, 1280x720 BGRA (3.7 MB) for a 1440p clip, and the pane keeps it all session.
+                HRESULT hr = factory->GetImage(new SIZE(width, height), SIIGBF.SIIGBF_RESIZETOFIT, &hbm);
                 if (hr.Failed || hbm.IsNull) return null;
                 try
                 {
