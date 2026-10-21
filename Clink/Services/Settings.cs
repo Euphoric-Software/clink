@@ -119,20 +119,35 @@ internal sealed class Settings
     /// </summary>
     [JsonIgnore] public bool HotkeysFromFile { get; private set; }
 
+    /// <summary>settings.json exists but could not be read (a hand edit with a typo), so Clink started from the backup or the defaults: a message for the user, or null.</summary>
+    [JsonIgnore] public string? LoadProblem { get; private set; }
+
     public static string Dir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Clink");
     public static string FilePath => Path.Combine(Dir, "settings.json");
 
-    private static readonly JsonSerializerOptions s_json = new() { WriteIndented = true, PropertyNameCaseInsensitive = true };
+    // Lenient reading, because README invites hand edits: a trailing comma, a // comment or a number in quotes must not make
+    // Clink drop the whole file for the backup. Writing is unaffected (no comments, no trailing commas, numbers as numbers).
+    private static readonly JsonSerializerOptions s_json = new()
+    {
+        WriteIndented = true, PropertyNameCaseInsensitive = true,
+        AllowTrailingCommas = true, ReadCommentHandling = JsonCommentHandling.Skip, NumberHandling = JsonNumberHandling.AllowReadingFromString,
+    };
+    private static readonly JsonDocumentOptions s_doc = new() { AllowTrailingCommas = true, CommentHandling = JsonCommentHandling.Skip };
     private static readonly object s_saveGate = new();        // Save() is also called from the updater's background thread
 
     public static Settings Load()
     {
-        Settings s;
+        Settings? s = null;
+        string? unreadable = null;   // why settings.json itself did not parse, when it exists and did not
         try
         {
-            s = AtomicFile.ReadWithFallback(FilePath, Parse) ?? new Settings();
+            s = AtomicFile.ReadWithFallback(FilePath, Parse, why => unreadable = why);
         }
-        catch (Exception ex) { Log.Warn("Settings load failed: " + ex.Message); s = new Settings(); }
+        catch (Exception ex) { Log.Warn("Settings load failed: " + ex.Message); }
+        bool fromBackup = s != null && unreadable != null;
+        s ??= new Settings();
+        // Said at start (AppController.Start): a hand edit that does not parse must not just silently have no effect.
+        if (unreadable != null) s.LoadProblem = $"settings.json was not used ({unreadable}): Clink started with {(fromBackup ? "the previous settings" : "default settings")}";
         s.Normalize();
         return s;
     }
@@ -143,7 +158,7 @@ internal sealed class Settings
         var s = JsonSerializer.Deserialize<Settings>(json, s_json) ?? new Settings();
         try
         {
-            using var doc = JsonDocument.Parse(json);
+            using var doc = JsonDocument.Parse(json, s_doc);
             if (doc.RootElement.ValueKind == JsonValueKind.Object)
             {
                 s.HotkeysFromFile = HasKey(doc.RootElement, nameof(Hotkeys));
