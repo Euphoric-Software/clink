@@ -414,6 +414,7 @@ public partial class TrimWindow : Window
         int n = 2;
         while (File.Exists(dst)) dst = Path.Combine(dir, stem + $" (trim {n++}).mp4");
         bool trimmed = false; // once true the output is complete and is never deleted, whatever happens after
+        bool replaced = false; // once true the original is the trim: the timeline and tracks on screen describe a file that is gone
         try
         {
             if (end - start < 0.1) throw new InvalidOperationException("Selection is too short");
@@ -428,6 +429,7 @@ public partial class TrimWindow : Window
             string? replaceProblem = replace ? await ReplaceOriginalAsync(src, dst) : null;
             if (replace && replaceProblem == null)
             {
+                replaced = true;
                 _entry.Duration = end - start;
                 _entry.Size = new FileInfo(src).Length;
                 _entry.AudioTracks = keptNames;
@@ -448,17 +450,22 @@ public partial class TrimWindow : Window
                 StatusText.Text = "Uploading…";
                 var progress = new Progress<double>(p => StatusText.Text = $"Uploading… {p:P0}");
                 bool ok = await app.ShareAsync(result, progress);
-                if (!ok && app.ShareRefusal is string refusal)
+                if (!ok)
                 {
-                    // Copium's free limit refused the cut (the trim itself is saved): stay open so the selection can be tightened
-                    // and shared again, instead of flashing "Upload failed" and closing on a reason only the footer knows.
-                    string why = refusal.Length > 1 ? char.ToLowerInvariant(refusal[0]) + refusal[1..] : refusal;
-                    StatusText.Text = $"Saved {Path.GetFileName(result.Path)}, not uploaded: {why} - tighten the selection, or tick 'I have Copium+' if you do";
-                    SaveButton.IsEnabled = SaveShareButton.IsEnabled = true;
-                    if (_playerReleased && !_closed) await ReopenPreviewAsync();
+                    // Not uploaded, but the trim itself is saved: stay open with the reason instead of flashing "Upload failed" and
+                    // closing on a reason only the footer knows. Over Copium's free limit the selection can be tightened and saved
+                    // again; any other failure is retried from the clip list (saving here again would only trim another copy).
+                    if (app.ShareRefusal is string refusal)
+                    {
+                        string why = refusal.Length > 1 ? char.ToLowerInvariant(refusal[0]) + refusal[1..] : refusal;
+                        StatusText.Text = $"Saved {Path.GetFileName(result.Path)}, not uploaded: {why} - tighten the selection, or tick 'I have Copium+' if you do";
+                        SaveButton.IsEnabled = SaveShareButton.IsEnabled = true;
+                    }
+                    else StatusText.Text = $"Saved {Path.GetFileName(result.Path)}, not uploaded: {app.ShareError ?? "upload failed"} - share it from the clip list to try again";
+                    await ResumeEditingAsync(replaced);
                     return;
                 }
-                StatusText.Text = ok ? "Uploaded, link copied" : "Upload failed";
+                StatusText.Text = "Uploaded, link copied";
             }
             await Task.Delay(replaceProblem != null ? 3000 : 1200);
             Close();
@@ -478,9 +485,33 @@ public partial class TrimWindow : Window
                 StatusText.Text = $"Saved {Path.GetFileName(kept)}, but: {ex.Message}";
             }
             SaveButton.IsEnabled = SaveShareButton.IsEnabled = true;
-            if (_playerReleased && !_closed) await ReopenPreviewAsync();
+            await ResumeEditingAsync(replaced);
         }
         finally { _busy = false; }
+    }
+
+    /// <summary>
+    /// Gets the editor going again after a save that leaves it open. When the original was replaced, the timeline, selection,
+    /// keyframes and track volumes still describe the old file: start over on the new one with Replace unticked, or the next
+    /// save would cut the old range out of the already-trimmed clip, replace it again and apply the volumes a second time.
+    /// </summary>
+    private async Task ResumeEditingAsync(bool replaced)
+    {
+        if (_closed) return;
+        if (!replaced)
+        {
+            if (_playerReleased) await ReopenPreviewAsync();
+            return;
+        }
+        string status = StatusText.Text;
+        ReplaceCheck.IsChecked = false;
+        _duration = Math.Max(TimelineControl.MinSelection, _entry.Duration);
+        _rows.Clear();
+        TracksPanel.Children.Clear();
+        Timeline.Keyframes = null;
+        Timeline.Position = 0;
+        await OpenAsync();   // new player and track rows, timeline and selection over the new length, keyframe rescan
+        if (!_closed) StatusText.Text = status;
     }
 
     /// <summary>

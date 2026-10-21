@@ -14,9 +14,9 @@ using Clink.Services;
 namespace Clink.UI;
 
 /// <summary>
-/// The toast service (docs/SPEC-v2.md §7): "Clip saved", "Shared" and "Recording started" toasts, each with its own enable
-/// switch and duration (<see cref="Settings.ToastClip"/> etc.), at one of 8 positions on the captured monitor's work area
-/// (<see cref="Settings.ToastPosition"/>, 16 px margin). Several toasts stack, the newest nearest the chosen edge; each fades in
+/// The toast service (docs/SPEC-v2.md §7): "Clip saved", "Shared" and "Recording started" toasts (plus the share-last hotkey's
+/// "Uploading" / "Clip not uploaded" notices, under the "Shared" switch), each with its own enable switch and duration
+/// (<see cref="Settings.ToastClip"/> etc.), at one of 8 positions on the captured monitor's work area (<see cref="Settings.ToastPosition"/>, 16 px margin). Several toasts stack, the newest nearest the chosen edge; each fades in
 /// (180 ms) and fades out (260 ms) before it closes, and the rest re-stack once it has. All methods may be called from any thread.
 /// </summary>
 internal sealed class Toasts
@@ -59,9 +59,29 @@ internal sealed class Toasts
         Add(new ToastWindow(this, "recording", null, null, "Recording started", game, Duration(_settings.ToastRecording), false));
     });
 
-    /// <summary>A plain title + line toast in the "Recording started" layout ("Clip not saved", "Recording paused"); the caller decides whether it is wanted.</summary>
+    /// <summary>A plain title + line toast in the "Recording started" layout ("Recording paused"); the caller decides whether it is wanted.</summary>
     public void ShowNotice(string title, string text) =>
         Post(() => Add(new ToastWindow(this, "recording", null, null, title, text, Duration(_settings.ToastRecording), false)));
+
+    /// <summary>"Uploading to Copium…" for the share-last hotkey / tray / --share-last, which have no progress UI of their own. Follows the "Shared" switch.</summary>
+    public void ShowUploading(ClipEntry entry, string title = "Uploading to Copium…") => Post(() =>
+    {
+        if (!_settings.ToastShared.Enabled) return;
+        Add(new ToastWindow(this, "info", entry, null, title, ClipSubtitle(entry), Duration(_settings.ToastShared), false));
+    });
+
+    /// <summary>
+    /// Why something asked for from the hotkey / tray did not happen ("Clip not saved", "Clip not uploaded" and the reason): no
+    /// buttons, the text wraps, at least 8 s. Shown whatever the switches say: the caller only asks when nothing else would show it.
+    /// </summary>
+    public void ShowProblem(string title, string text) => Post(() =>
+    {
+        var seconds = Math.Max(8, Duration(_settings.ToastShared).TotalSeconds);
+        Add(new ToastWindow(this, "problem", null, null, title, text, TimeSpan.FromSeconds(seconds), false));
+    });
+
+    /// <summary>Re-stacks the open toasts after one changed its height.</summary>
+    internal void Relayout() => Post(Layout);
 
     /// <summary>Shows a sample toast of a kind ("clip" | "shared" | "recording") with the current position and duration, ignoring the enable switch.</summary>
     public void Preview(string kind) => Post(() =>
@@ -179,7 +199,8 @@ public partial class ToastWindow : Window
         TitleText.Text = title;
         Subtitle.Text = subtitle;
         Subtitle.ToolTip = subtitle;
-        Dot.Fill = TryFindResource(kind switch { "shared" => "Accent", "recording" => "Danger", _ => "Good" }) as Brush ?? Brushes.LimeGreen;
+        Dot.Fill = TryFindResource(kind switch { "shared" or "info" => "Accent", "recording" => "Danger", "problem" => "Warn", _ => "Good" }) as Brush ?? Brushes.LimeGreen;
+        if (kind == "problem") Subtitle.TextWrapping = TextWrapping.Wrap;   // the reason is the point: all of it, not an ellipsis
         ClipButtons.Visibility = kind == "clip" ? Visibility.Visible : Visibility.Collapsed;
         SharedButtons.Visibility = kind == "shared" ? Visibility.Visible : Visibility.Collapsed;
         if (kind == "clip") ShareButton.Content = entry?.IsShared == true ? "Copy link" : "Share to Copium";
@@ -256,9 +277,20 @@ public partial class ToastWindow : Window
         if (ok) { Dismiss(); return; }   // the "Shared" toast takes over
         if (_dismissed) return;          // closed while it was uploading
         var app = AppController.Instance;
-        // Short labels (the card is 330 wide); the refusal's full text is the tooltip. No token: ShareAsync opened the window to set one.
-        ShareButton.Content = app.ShareRefusal != null ? "Over free limit" : string.IsNullOrWhiteSpace(app.Settings.CopiumToken) ? "Add a Copium token" : "Upload failed";
-        ShareButton.ToolTip = app.ShareRefusal;
+        bool noToken = string.IsNullOrWhiteSpace(app.Settings.CopiumToken);
+        // Short labels (the card is 330 wide); the full refusal or failure reason is the tooltip. No token: ShareAsync opened the
+        // window to set one.
+        ShareButton.Content = app.ShareRefusal != null ? "Over free limit" : noToken ? "Add a Copium token" : "Upload failed";
+        ShareButton.ToolTip = app.ShareRefusal ?? app.ShareError;
+        if (app.ShareRefusal == null && !noToken && app.ShareError is string why)
+        {
+            // The reason belongs here, where the user is looking: the footer that also has it is usually in the tray.
+            Subtitle.Text = why;
+            Subtitle.ToolTip = why;
+            Subtitle.TextWrapping = TextWrapping.Wrap;
+            UpdateLayout();
+            _owner?.Relayout();          // it may have grown a line: keep the stack inside the work area
+        }
         ShareButton.IsEnabled = true;
         _hide.Interval = TimeSpan.FromSeconds(8);
         _hide.Start();

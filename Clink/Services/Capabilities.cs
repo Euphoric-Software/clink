@@ -35,7 +35,7 @@ internal static unsafe class Capabilities
     /// </summary>
     public const long CopiumFreeBytes = 200_000_000;
     public const int CopiumFreeSeconds = 600;
-    /// <summary>Appended to the size-target note when the replay length is over Copium's 10 min (the UI shows it in Warn colour).</summary>
+    /// <summary>Appended to the size-target note when the replay length is 10 min or more (a full 10:00 clip runs a moment over); the UI shows it in Warn colour.</summary>
     public const string CopiumLengthNote = " - Copium free uploads are limited to 10 min: trim a full-length clip before sharing it, or shorten the replay length";
     /// <summary>Each enabled audio track is AAC at this rate.</summary>
     public const int AudioKbps = 192;
@@ -286,7 +286,7 @@ internal static unsafe class Capabilities
     /// raised) to the largest bitrate (0.5–200 Mbps, one decimal) at which a clip of <see cref="FitSeconds"/> (the replay
     /// length, or 10 min for the Copium target) with <paramref name="audioTracks"/> stays under the limit with 5 % headroom,
     /// plus a one-line note for the UI that says what happened (when even the minimum does not fit, the note says so). The
-    /// Copium target also appends <see cref="CopiumLengthNote"/> when the replay length is over its 10 min, which no bitrate
+    /// Copium target also appends <see cref="CopiumLengthNote"/> when the replay length is 10 min or more, which no bitrate
     /// can fix: the bitrate is then what a 10 min trim needs, not one that squeezes the whole replay into 200 MB for nothing.
     /// </summary>
     public static (double bitrateMbps, string? note) ResolveBitrate(Settings s, int audioTracks, int seconds)
@@ -298,7 +298,9 @@ internal static unsafe class Capabilities
         int fit = FitSeconds(s.SizeTarget, seconds);
         double cap = BitrateMbpsFor((long)(limit * TargetHeadroom), audioTracks, fit);
         string len = FormatDuration(fit), lim = FormatBytes(limit);
-        string tail = fit < seconds ? CopiumLengthNote : "";
+        // A full-length clip starts on the keyframe before the cut, so it runs a moment past the replay length: 10:00 is over too.
+        string tail = !IsCopiumTarget(s.SizeTarget) || seconds < CopiumFreeSeconds ? ""
+            : seconds > CopiumFreeSeconds ? CopiumLengthNote : CopiumLengthNote + " (a 10:00 replay saves a hair over 10 min)";
         if (cap < MinTargetMbps)
             return (MinTargetMbps, $"a {len} clip does not fit in {lim} even at {MinTargetMbps:0.#} Mbps; shorten the replay length{tail}");
         cap = Math.Min(MaxTargetMbps, Math.Floor(cap * 10) / 10);
