@@ -218,6 +218,13 @@ internal sealed class AppController : IDisposable
             // stops without reporting an error from being restarted every tick.
             StartEngine();
         }
+        // A GPU reset (driver crash / TDR) stops the engine with DeviceLost: start it again on a fresh device whenever it should be
+        // recording (always mode, or a game is running), on the same 10 s backoff until it records again.
+        if (Engine.DeviceLost && !Engine.IsRunning && !IsPaused && !_starting && (!GameOnly || _gamePid != 0) && now - _lastStartAt > TimeSpan.FromSeconds(10))
+        {
+            Say("The GPU was reset, restarting capture");
+            StartEngine();
+        }
         RaiseStateChanged();
     }
 
@@ -380,7 +387,9 @@ internal sealed class AppController : IDisposable
     {
         int targetH = resolution.Trim().ToLowerInvariant() switch { "1440p" => 1440, "1080p" => 1080, "720p" => 720, _ => 0 };
         double w = mon.Width, h = mon.Height;
-        if (targetH > 0 && targetH < h) { w = w * targetH / h; h = targetH; }
+        // The preset names the short side: a portrait 1080×1920 monitor is already 1080p, and its 720p is 720×1280.
+        double shortSide = Math.Min(w, h);
+        if (targetH > 0 && targetH < shortSide) { double k = targetH / shortSide; w *= k; h *= k; }
         return ((uint)Math.Round(w / 2) * 2, (uint)Math.Round(h / 2) * 2);
     }
 

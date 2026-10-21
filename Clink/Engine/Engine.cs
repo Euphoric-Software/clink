@@ -80,6 +80,11 @@ internal sealed unsafe class Engine : IDisposable
     public string Status { get; private set; } = "Stopped";
     public string? Error { get; private set; }
     public bool IsRunning { get; private set; }
+    /// <summary>
+    /// The engine stopped because the GPU was lost (driver crash / TDR, driver update), and has not recorded since: set by the
+    /// failure, kept through failed restarts, cleared once it records again. The controller keeps restarting it while set.
+    /// </summary>
+    public bool DeviceLost { get; private set; }
     public string? GameName => _gameName;
     public event Action? StateChanged;
 
@@ -153,6 +158,7 @@ internal sealed unsafe class Engine : IDisposable
             StartAudio();
 
             IsRunning = true;
+            DeviceLost = false;
             SetStatus("Recording");
             _ready.Set();
 
@@ -181,6 +187,7 @@ internal sealed unsafe class Engine : IDisposable
                 if (ComUtil.QpcNow100ns() - next > period * 4) next = ComUtil.QpcNow100ns() + period; // we're behind, don't burst
                 if (++_ticks % (_cfg.Fps * 10) == 0)
                 {
+                    ThrowIfDeviceLost();   // also catches a lost GPU while the encoder pool is empty and nothing reaches Convert
                     var enc = _encoder; var cap = _capture;
                     if (enc != null && cap != null)
                         Log.Info($"stats: capture {cap.FramesReceived} (copied {cap.FramesCopied}), encoded in={enc.FramesIn} out={enc.FramesOut}, dropped pool-empty={Interlocked.Read(ref _pacerDropped)} queue-full={enc.Dropped}, buffer {BufferedSeconds:0.0}s");
@@ -189,8 +196,12 @@ internal sealed unsafe class Engine : IDisposable
         }
         catch (Exception ex)
         {
-            Error = ex.Message;
-            Log.Error("Engine failed", ex);
+            // A lost GPU (driver crash / TDR, driver update) fails whichever call touches it next: say that instead of the call's
+            // HRESULT, and flag it so the controller starts the engine again on a fresh device.
+            HRESULT removed = _d3d?.RemovedReason ?? default;
+            if (removed.Failed) DeviceLost = true;
+            Error = removed.Failed ? "The GPU was reset (graphics driver crash or TDR)" : ex.Message;
+            Log.Error(removed.Failed ? $"Engine stopped: GPU device removed (0x{(uint)removed.Value:X8})" : "Engine failed", ex);
             SetStatus("Error");
             _ready.Set();
         }
@@ -232,6 +243,14 @@ internal sealed unsafe class Engine : IDisposable
         tex->Release();
         if (ok) enc.Submit(sample, t);
         else sample->Release();
+        // After a GPU reset every convert fails: stop rather than show "Recording" while nothing reaches the ring.
+        if (!ok) ThrowIfDeviceLost();
+    }
+
+    private void ThrowIfDeviceLost()
+    {
+        HRESULT reason = _d3d?.RemovedReason ?? default;
+        if (reason.Failed) throw new InvalidOperationException($"GPU device removed (0x{(uint)reason.Value:X8})");
     }
 
     private void TearDown()
