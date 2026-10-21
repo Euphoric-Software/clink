@@ -53,9 +53,14 @@ internal sealed unsafe class MonitorCapture : IDisposable
         _d3d = d3d;
         _hdr = hdr;
         PixelFormat = hdr ? DirectXPixelFormat.R16G16B16A16Float : DirectXPixelFormat.B8G8R8A8UIntNormalized;
-        // Copy at most ~1.5x the encode rate: on a 360 Hz display WGC would otherwise hand us hundreds of
-        // 30 MB frames per second to copy, starving the game and the encoder of GPU time.
-        _minCopyInterval = targetFps > 0 ? (long)(TimeSpan.TicksPerSecond / (targetFps * 1.5)) : 0;
+        // WGC delivers no faster than MinUpdateInterval (about 60 fps when it is not set). At exactly one encode period the
+        // capture and pacer clocks drift past each other, and the pacer encodes a frame twice then skips one: a hitch on every
+        // camera pan. 5x the encode rate (3.3 ms for 60 fps clips) lets a 240 Hz display hand over every frame (an interval of
+        // exactly 1/240 s drops one in six to timing jitter) and a 360 Hz one most, so the pacer always samples a frame a few
+        // ms old; nothing changes at 60 Hz. The copy throttle caps the cost of copying ~30 MB FP16 frames where WGC ignores
+        // the interval; it sits a little under it so timestamp jitter never drops a frame WGC already paced.
+        long minInterval = targetFps > 0 ? TimeSpan.TicksPerSecond / (targetFps * 5) : 0;
+        _minCopyInterval = minInterval * 3 / 4;
 
         _item = CreateItemForMonitor(hmonitor);
         _size = _item.Size;
@@ -64,16 +69,16 @@ internal sealed unsafe class MonitorCapture : IDisposable
         _session = _pool.CreateCaptureSession(_item);
         TrySetBorderless(_session);
         try { _session.IsCursorCaptureEnabled = captureCursor; } catch { }
-        TrySetMinUpdateInterval(_session, targetFps);
+        TrySetMinUpdateInterval(_session, minInterval);
         _session.StartCapture();
     }
 
-    private static void TrySetMinUpdateInterval(GraphicsCaptureSession session, uint fps)
+    private static void TrySetMinUpdateInterval(GraphicsCaptureSession session, long interval)
     {
         try
         {
-            if (fps > 0 && Windows.Foundation.Metadata.ApiInformation.IsPropertyPresent("Windows.Graphics.Capture.GraphicsCaptureSession", "MinUpdateInterval"))
-                session.MinUpdateInterval = TimeSpan.FromTicks(TimeSpan.TicksPerSecond / fps);
+            if (interval > 0 && Windows.Foundation.Metadata.ApiInformation.IsPropertyPresent("Windows.Graphics.Capture.GraphicsCaptureSession", "MinUpdateInterval"))
+                session.MinUpdateInterval = TimeSpan.FromTicks(interval);
         }
         catch (Exception ex) { Log.Warn("MinUpdateInterval: " + ex.Message); }
     }
