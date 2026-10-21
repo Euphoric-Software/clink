@@ -21,7 +21,7 @@ internal sealed record Choice(string Label, object Value, bool Header = false, b
 /// The main window (docs/SPEC-v2.md §1, §10): resizable, settings tabs and the clips pane, which sits in a right column when the
 /// window is ≥ 900 px wide and becomes a fourth tab when it is narrower. Capture holds, top to bottom, Capturing (monitor,
 /// quality, size target, cursor) · Audio tracks (under a "set up your audio" banner that goes away for good once the pointer
-/// rests on the group or an option in it changes) · Recording · Replay length (the slider with the one size/RAM readout under
+/// has rested on the group and moved off, or an option in it changes) · Recording · Replay length (the slider with the one size/RAM readout under
 /// it) · Hotkeys; Clip holds Copium and Storage; Alerts holds Toasts, Status dot and Updates (with "run at startup"). Every
 /// control writes its setting on change and, where the engine is affected, restarts it after a short debounce
 /// (<see cref="ScheduleRestart"/>).
@@ -51,7 +51,7 @@ public partial class MainWindow : Window
         _saveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(800) };
         _saveTimer.Tick += (_, _) => { _saveTimer.Stop(); if (!_loading) _app.Settings.Save(); };
         _bannerTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1.5) };
-        _bannerTimer.Tick += (_, _) => { _bannerTimer.Stop(); DismissAudioSetupBanner(); };
+        _bannerTimer.Tick += (_, _) => { _bannerTimer.Stop(); MarkAudioSetupSeen(); };
         CustomAppsList.ItemsSource = _customApps;
         PreviewMouseWheel += ScrollPastClosedCombo;
 
@@ -119,19 +119,25 @@ public partial class MainWindow : Window
         if (s.WindowX is double wx && s.WindowY is double wy && double.IsFinite(wx) && double.IsFinite(wy))
         {
             // Only where the header (the one place this borderless window can be dragged from) lands on a monitor's work area:
-            // the virtual-screen box has corners no monitor covers, and a monitor may have gone away since.
+            // the virtual-screen box has corners no monitor covers, and a monitor may have gone away since. Of the monitors it
+            // reaches, the one holding most of it counts (the AllScreens order means nothing).
             var header = new Rect(wx, wy, Width, 44);
+            double most = 0;
             foreach (var wa in areas)
             {
                 var hit = Rect.Intersect(header, wa);
-                if (hit.IsEmpty || hit.Width < 120 || hit.Height < 22) continue;
+                if (hit.IsEmpty || hit.Width < 120 || hit.Height < 22 || hit.Width * hit.Height <= most) continue;
+                most = hit.Width * hit.Height;
+                area = wa;
+            }
+            if (most > 0)
+            {
                 WindowStartupLocation = WindowStartupLocation.Manual;
-                Left = wx; Top = wy; area = wa;
-                break;
+                Left = wx; Top = wy;
             }
         }
-        // Never bigger than that work area, and all of it on there (a 1080p laptop at 150 % has ~690 DIP of height and MinHeight
-        // is 700): the header with the drag area and the window buttons, and the footer, stay on screen.
+        // Never bigger than that work area (a 1080p laptop at 150 % has ~690 DIP of height and MinHeight is 700), so all of it
+        // can be dragged onto there.
         if (area.Width < 1 || area.Height < 1) return;
         MinWidth = Math.Min(MinWidth, area.Width);
         MinHeight = Math.Min(MinHeight, area.Height);
@@ -139,8 +145,11 @@ public partial class MainWindow : Window
         Height = Math.Min(Height, area.Height);
         if (WindowStartupLocation == WindowStartupLocation.Manual)
         {
-            Left = Math.Max(area.Left, Math.Min(Left, area.Right - Width));
-            Top = Math.Max(area.Top, Math.Min(Top, area.Bottom - Height));
+            // Moved only as far as it takes to keep the header reachable on that work area: all of its height and 120 DIP of its
+            // width (also after a narrower Width). A window left reaching onto the next monitor or past the bottom stays put.
+            double grab = Math.Min(120, Width);
+            Left = Math.Max(area.Left + grab - Width, Math.Min(Left, area.Right - grab));
+            Top = Math.Max(area.Top, Math.Min(Top, area.Bottom - 44));
         }
     }
 
@@ -826,13 +835,30 @@ public partial class MainWindow : Window
         _bannerTimer.Start();
     }
 
-    private void AudioGroup_MouseLeave(object sender, MouseEventArgs e) => _bannerTimer.Stop();
+    // The banner goes once the pointer is off the group: collapsing it while the pointer rests there (at the top of the pane
+    // nothing can scroll to make up for it) would move the group up under it, and the next click would hit the row below.
+    private void AudioGroup_MouseLeave(object sender, MouseEventArgs e)
+    {
+        _bannerTimer.Stop();
+        if (_app.Settings.AudioSetupSeen) DismissAudioSetupBanner();
+    }
 
     /// <summary>
-    /// Hides the banner above the audio group for good: the user has looked at the group (rested the pointer on it) or changed
-    /// an option in it. <see cref="Settings.AudioSetupSeen"/> is saved so it never comes back; while the window is still loading
-    /// only the visibility is touched. The pane scrolls up by the banner's height so the group (and the option just clicked)
-    /// stays under the pointer instead of jumping up.
+    /// The pointer has rested on the audio group: the banner counts as seen (saved, so it never comes back) and goes when the
+    /// pointer leaves the group (<see cref="AudioGroup_MouseLeave"/>).
+    /// </summary>
+    private void MarkAudioSetupSeen()
+    {
+        if (_loading || AudioSetupBanner.Visibility == Visibility.Collapsed || _app.Settings.AudioSetupSeen) return;
+        _app.Settings.AudioSetupSeen = true;
+        _app.Settings.Save();
+    }
+
+    /// <summary>
+    /// Hides the banner above the audio group for good: the user has changed an option in the group, or has rested the pointer
+    /// on it and moved off. <see cref="Settings.AudioSetupSeen"/> is saved so it never comes back; while the window is still
+    /// loading only the visibility is touched. Where the pane is scrolled down it scrolls up by the banner's height so the group
+    /// (and the option just clicked) stays in place instead of jumping up.
     /// </summary>
     private void DismissAudioSetupBanner()
     {
@@ -842,7 +868,7 @@ public partial class MainWindow : Window
         AudioSetupBanner.Visibility = Visibility.Collapsed;
         for (DependencyObject? p = AudioSetupBanner; p != null; p = VisualTreeHelper.GetParent(p))
             if (p is ScrollViewer sv) { if (sv.VerticalOffset > 0) sv.ScrollToVerticalOffset(Math.Max(0, sv.VerticalOffset - shift)); break; }
-        if (_loading) return;
+        if (_loading || _app.Settings.AudioSetupSeen) return;
         _app.Settings.AudioSetupSeen = true;
         _app.Settings.Save();
     }
