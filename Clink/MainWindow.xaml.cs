@@ -622,7 +622,7 @@ public partial class MainWindow : Window
                 _app.Say($"Clink v{info.Version} is available (auto-update is off) - opening the release page");
                 OpenUrl(string.IsNullOrEmpty(info.HtmlUrl) ? $"https://github.com/{up.Repo}/releases/latest" : info.HtmlUrl);
             }
-            else _app.Say($"Update v{info.Version} available");
+            else _app.Say(up.LastError != null ? $"Update v{info.Version} found, but {up.LastError}" : $"Update v{info.Version} available");
         }
         finally { _checkingUpdate = false; RefreshUpdateState(); }
     }

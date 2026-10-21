@@ -1,7 +1,8 @@
 # Builds Clink.exe and publishes a GitHub release when a v*.*.* tag is pushed
-# (tools/release.ps1 does that). Run it by hand from the Actions tab to release
-# whatever <Version> Clink/Clink.csproj currently says; it refuses if that
-# version is already tagged, so an existing release is never overwritten.
+# (tools/release.ps1 does that); the tag must match <Version> in Clink/Clink.csproj.
+# Run it by hand from the Actions tab (default branch only) to release whatever
+# <Version> Clink/Clink.csproj currently says; it refuses if that version is
+# already tagged, so an existing release is never overwritten.
 #
 # The in-app updater downloads the asset named exactly "Clink.exe" and checks it
 # against the first 64-hex token of "Clink.exe.sha256", so keep those names.
@@ -43,16 +44,24 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           $match = Select-String -Path Clink/Clink.csproj -Pattern '<Version>([^<]+)</Version>' | Select-Object -First 1
           if (-not $match) { throw 'No <Version> element in Clink/Clink.csproj' }
           $csprojVersion = $match.Matches[0].Groups[1].Value.Trim()
           if ($env:GITHUB_REF -like 'refs/tags/v*') {
             $version = $env:GITHUB_REF_NAME.Substring(1)
+            # tools/release.ps1 commits the <Version> bump before tagging, so a mismatch means a hand-made tag, most likely on
+            # the wrong commit. Every running Clink would install that build automatically: refuse it.
             if ($version -ne $csprojVersion) {
-              Write-Output "::warning::Tag is $env:GITHUB_REF_NAME but Clink.csproj says <Version>$csprojVersion</Version>; building as $version."
+              throw "Tag $env:GITHUB_REF_NAME does not match <Version>$csprojVersion</Version> in Clink/Clink.csproj. Release with tools/release.ps1, or delete the tag and tag the release commit."
             }
           } else {
+            # A manual run releases the branch it was started from: only the default branch may ship to every user.
+            $defaultBranch = if ($env:DEFAULT_BRANCH) { $env:DEFAULT_BRANCH } else { 'main' }
+            if ($env:GITHUB_REF -ne "refs/heads/$defaultBranch") {
+              throw "Manual releases run from $defaultBranch only (this run is on $env:GITHUB_REF)."
+            }
             $version = $csprojVersion
             # A manual run must not attach a different binary to a release that already exists.
             $eap = $ErrorActionPreference
