@@ -3,7 +3,8 @@ using Clink.Encode;
 
 namespace Clink.Engine;
 
-internal sealed record ClipResult(string Path, double DurationSeconds, long SizeBytes, string? Game);
+/// <param name="AudioTracks">Names of the audio tracks in the file, in file order (what the library and the trim editor label them with).</param>
+internal sealed record ClipResult(string Path, double DurationSeconds, long SizeBytes, string? Game, string[] AudioTracks);
 
 /// <summary>
 /// Turns a replay-buffer snapshot into an MP4 file. Samples are streamed: each one is converted and handed to the muxer in
@@ -13,14 +14,15 @@ internal sealed record ClipResult(string Path, double DurationSeconds, long Size
 internal static class ClipWriter
 {
     /// <summary>H.264 / HEVC only (kept for callers that still think in terms of a bool).</summary>
-    public static void Write(string path, IEnumerable<VideoSample> video, bool hevc, int width, int height, byte[]? sequenceHeader,
+    public static string[] Write(string path, IEnumerable<VideoSample> video, bool hevc, int width, int height, byte[]? sequenceHeader,
         List<(AudioTrackDesc desc, List<AacFrame> frames)> audio, long origin100ns, uint fps)
         => Write(path, video, hevc ? "hevc" : "h264", width, height, sequenceHeader, audio, origin100ns, fps);
 
     /// <param name="video">Video samples in order, starting on a keyframe. Each sample's <see cref="VideoSample.Data"/> is released once written.</param>
     /// <param name="codec">"h264" | "hevc" | "av1" (experimental). Video samples are Annex B access units for H.264/HEVC, temporal units for AV1.</param>
     /// <param name="sequenceHeader">Encoder-provided parameter sets (Annex B) or AV1 Sequence Header OBU; may be null when the samples carry them in-band.</param>
-    public static void Write(string path, IEnumerable<VideoSample> video, string codec, int width, int height, byte[]? sequenceHeader,
+    /// <returns>Names of the audio tracks written, in file order (a track with no frames is left out of the file).</returns>
+    public static string[] Write(string path, IEnumerable<VideoSample> video, string codec, int width, int height, byte[]? sequenceHeader,
         List<(AudioTrackDesc desc, List<AacFrame> frames)> audio, long origin100ns, uint fps)
     {
         bool av1 = codec == "av1", hevc = codec == "hevc";
@@ -30,7 +32,9 @@ internal static class ClipWriter
         else if (sequenceHeader != null) Nal.ToLengthPrefixed(sequenceHeader, hevc, ps);
 
         // Snap capture timestamps to the nominal frame grid so the file is clean constant-frame-rate
-        // (the pacer jitters by a millisecond or two); keep timestamps strictly increasing.
+        // (the pacer jitters by a millisecond or two); keep timestamps strictly increasing. A frame whose slot is already
+        // taken (the catch-up burst after the pacer woke late) keeps its real time rather than taking the next slot, so the
+        // frames after it land on their own slots again instead of all running late against the audio.
         double period = fps > 0 ? 10_000_000.0 / fps : 0;
         long prev = long.MinValue;
         Mp4Muxer? mux = null;
@@ -45,8 +49,9 @@ internal static class ClipWriter
                 long q = v.Pts;
                 if (fps > 0)
                 {
-                    q = origin100ns + (long)Math.Round((v.Pts - origin100ns) / period) * (long)Math.Round(period);
-                    if (q <= prev) q = prev + (long)Math.Round(period);
+                    long k = (long)Math.Round((v.Pts - origin100ns) / period);
+                    q = origin100ns + (long)Math.Round(k * period);
+                    if (q <= prev) q = Math.Max(prev + 1, v.Pts);
                 }
                 else if (q <= prev) q = prev + 1;
                 prev = q;
@@ -90,6 +95,7 @@ internal static class ClipWriter
                 while (ai[t] < frames.Count) { mux.WriteAudio(t, frames[ai[t]].Pts, frames[ai[t]].Data); ai[t]++; }
             }
             mux.Finish();
+            return mux.WrittenAudioTracks;
         }
         finally { mux?.Dispose(); }
     }
