@@ -33,6 +33,7 @@ internal static unsafe class Hotkeys
     private static readonly bool[] s_swallowed = new bool[256];   // keys whose key-down we ate (binding fired, or capture): their key-up is eaten too, auto-repeat does not re-fire
     private static Capture? s_capture;
     private static bool s_sessionHooked;
+    private static volatile uint s_gamePid;      // the game AppController detected (0: none), see GamePid
 
     private sealed class Capture
     {
@@ -69,6 +70,13 @@ internal static unsafe class Hotkeys
             catch (Exception ex) { Log.Warn("hotkeys: session events: " + ex.Message); }
         }
     }
+
+    /// <summary>
+    /// The detected game's process (0: none). A binding fires with extra modifiers held (ScrollLock while crouching) only while
+    /// a window of this process is in front: anywhere else Ctrl+F9, Shift+Insert or Ctrl+ScrollLock (Ctrl+Break) belong to the
+    /// program that has the focus.
+    /// </summary>
+    public static uint GamePid { get => s_gamePid; set => s_gamePid = value; }
 
     /// <summary>Forgets every half-seen key (after a desktop switch nothing we tracked can be trusted).</summary>
     public static void Reset() => Array.Clear(s_swallowed);
@@ -147,7 +155,12 @@ internal static unsafe class Hotkeys
         }
         s_hook = fresh;
         if (!old.IsNull && old != fresh && !PInvoke.UnhookWindowsHookEx(old))
+        {
+            // Windows drops the hook while the slow call is still running: that key-down was eaten, its key-up went past us.
+            // Left marked, the next press of that key would be eaten too, with no clip.
+            Reset();
             Log.Warn("hotkeys: Windows had removed the keyboard hook (a key once took too long to answer); it is back now");
+        }
     }
 
     private static void Post(bool reset)
@@ -205,7 +218,7 @@ internal static unsafe class Hotkeys
                 bool down = msg == PInvoke.WM_KEYDOWN || msg == PInvoke.WM_SYSKEYDOWN;
                 int vk = (int)ks->vkCode, raw = vk;
                 // Ctrl turns ScrollLock (scan 46) and Pause (E0 46) into VK_CANCEL. Handled as the key itself: a ScrollLock binding
-                // still fires while crouch (Ctrl) is held, and a key-up that comes after Ctrl was let go still finds its key-down.
+                // still fires in the game while crouch (Ctrl) is held, and a key-up that comes after Ctrl was let go still finds its key-down.
                 if (vk == VK_CANCEL && ks->scanCode == 0x46) vk = (ks->flags & KBDLLHOOKSTRUCT_FLAGS.LLKHF_EXTENDED) != 0 ? VK_PAUSE : VK_SCROLL;
                 if (vk > 0 && vk < 256 && !IsModifier(vk))
                 {
@@ -255,10 +268,11 @@ internal static unsafe class Hotkeys
     }
 
     /// <summary>
-    /// The binding for a key press: the exact combo first (F9 and Shift+F9 may do different things), then a binding on that key
-    /// with fewer modifiers, the most of them held winning: a plain ScrollLock still clips while crouch (Ctrl) or sprint (Shift)
-    /// is held. That fallback never takes a Win chord or a combo the system owns (Alt+F4 with F4 bound). <paramref name="raw"/>
-    /// is the key code as reported, for a binding saved as Ctrl+Break before ScrollLock / Pause were told apart.
+    /// The binding for a key press: the exact combo first (F9 and Shift+F9 may do different things), then, only while the
+    /// detected game is in front (<see cref="GamePid"/>), a binding on that key with fewer modifiers, the most of them held
+    /// winning: a plain ScrollLock still clips while crouch (Ctrl) or sprint (Shift) is held. That fallback never takes a Win
+    /// chord or a combo the system owns (Alt+F4 with F4 bound). <paramref name="raw"/> is the key code as reported, for a
+    /// binding saved as Ctrl+Break before ScrollLock / Pause were told apart.
     /// </summary>
     private static HotkeyAction? Match(int vk, int raw, bool ctrl, bool alt, bool shift, bool win)
     {
@@ -278,7 +292,19 @@ internal static unsafe class Hotkeys
             int mods = (k.Ctrl ? 1 : 0) + (k.Alt ? 1 : 0) + (k.Shift ? 1 : 0);
             if (mods > bestMods) { best = actions[i]; bestMods = mods; }
         }
-        return best;
+        // On the desktop the key goes to the program in front: Ctrl+F9 in an IDE, Shift+Insert in a terminal, Ctrl+Break.
+        return best != null && GameInFront() ? best : null;
+    }
+
+    /// <summary>A window of the detected game has the focus (two calls that never wait on another thread: safe in the hook).</summary>
+    private static bool GameInFront()
+    {
+        uint game = s_gamePid;
+        if (game == 0) return false;
+        var fg = PInvoke.GetForegroundWindow();
+        if (fg.IsNull) return false;
+        PInvoke.GetWindowThreadProcessId(fg, out uint pid);
+        return pid == game;
     }
 
     public static string KeyName(int vk)

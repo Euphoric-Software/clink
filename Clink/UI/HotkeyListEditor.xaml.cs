@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using Clink.Services;
 
 namespace Clink.UI;
@@ -109,6 +110,9 @@ public partial class HotkeyListEditor : UserControl
         };
         keys.Click += (_, _) => BeginCapture(keys, a);
         keys.LostKeyboardFocus += (_, _) => { if (ReferenceEquals(_capturing, keys)) CancelCapture(); };   // clicked elsewhere: the next key is not a hotkey
+        // A refused bare arrow reaches the window: it must not move the focus (that would disarm the capture, and the next
+        // arrow would change the row's action). Tab still leaves.
+        keys.PreviewKeyDown += (_, e) => { if (ReferenceEquals(_capturing, keys) && e.Key is Key.Left or Key.Right or Key.Up or Key.Down) e.Handled = true; };
         grid.Children.Add(keys);
 
         var oneLine = TryFindResource("OneLine") as DataTemplate;

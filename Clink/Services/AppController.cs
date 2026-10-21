@@ -273,6 +273,7 @@ internal sealed class AppController : IDisposable
             }
             RaiseStateChanged();
         }
+        Hotkeys.GamePid = _gamePid;   // a hotkey fires with extra modifiers held (crouch + ScrollLock) only in the game
     }
 
     // ------------------------------------------------------------------ updates
@@ -527,7 +528,8 @@ internal sealed class AppController : IDisposable
     {
         if (!Engine.IsRunning)
         {
-            string why = IsPaused ? "Recording is paused" : GameOnly && _gamePid == 0 ? "Not recording: waiting for a game" : "Not recording yet";
+            string why = IsPaused ? "Recording is paused" : GameOnly && _gamePid == 0 ? "Not recording: waiting for a game"
+                : Engine.Error is string err ? "Recording failed: " + err : "Not recording yet";
             Say(why);
             // The hotkey, the tray and --clip get no answer in a window nobody is looking at.
             if (!MainWindowActive) Toasts.ShowNotice("Clip not saved", why);
