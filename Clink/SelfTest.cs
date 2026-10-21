@@ -35,12 +35,15 @@ internal static class SelfTest
             Say($"  monitor {m.ShortName,-9} {m.FriendlyName,-12} {m.Width}x{m.Height} @({m.Left},{m.Top}) primary={m.IsPrimary} hdr={m.IsHdr} sdrWhite={m.SdrWhiteNits:0}nits maxLum={m.MaxLuminance:0} gpu={m.AdapterName}");
         var mon = monitors.FirstOrDefault(m => m.DeviceName == settings.MonitorDevice) ?? monitors.First(m => m.IsPrimary);
         Say($"Capturing {mon.Label}");
+        Capabilities.PreferMonitor(mon);   // probe the encoders of the GPU that drives it, which is the one the engine opens
+        uint outWidth = (uint)(mon.Width & ~1), outHeight = (uint)(mon.Height & ~1);
 
         foreach (var c in Capabilities.Codecs)
             Say($"  codec {c.Name,-5} {(c.Supported ? c.EncoderName : c.Reason)}{(c.Experimental && c.Supported ? " (experimental)" : "")}");
         Say($"  RAM {Capabilities.FormatBytes(Capabilities.PhysicalRamBytes())}, ring limit {Capabilities.FormatBytes(Capabilities.MaxRingBytes())}");
-        string codec = Capabilities.EffectiveCodec(settings.Codec);
-        if (codec != EngineConfig.NormalizeCodec(settings.Codec)) Say($"  {settings.Codec} has no hardware encoder here, using {codec}");
+        string codec = Capabilities.EffectiveCodec(settings.Codec, outWidth, outHeight);
+        if (codec != EngineConfig.NormalizeCodec(settings.Codec))
+            Say(Capabilities.IsSupported(settings.Codec) ? $"  H.264 cannot encode {outWidth}x{outHeight}, using {codec}" : $"  {settings.Codec} has no hardware encoder here, using {codec}");
         int audioTracks = 1 + (settings.TrackGame ? 1 : 0) + (settings.TrackMic ? 1 : 0) + (settings.TrackVoice ? 1 : 0) + (settings.TrackDesktop ? 1 : 0);
         var (bitrate, note) = Capabilities.ResolveBitrate(settings, audioTracks, settings.BufferSeconds);
         Say($"  bitrate {bitrate:0.#} Mbps ({codec}){(note != null ? ": " + note : "")}; {Capabilities.DescribeEstimate(bitrate, audioTracks, settings.BufferSeconds)}; {Capabilities.DescribeRing(bitrate, settings.BufferSeconds).text}");
@@ -48,8 +51,8 @@ internal static class SelfTest
         var cfg = new EngineConfig
         {
             Monitor = mon,
-            OutWidth = (uint)(mon.Width & ~1),
-            OutHeight = (uint)(mon.Height & ~1),
+            OutWidth = outWidth,
+            OutHeight = outHeight,
             Fps = (uint)settings.Fps,
             BitrateMbps = bitrate,
             Codec = codec,

@@ -94,12 +94,17 @@ internal static unsafe class Capabilities
 
     public static bool IsSupported(string? id) => Codec(id)?.Supported ?? false;
 
-    /// <summary>The codec to actually record with: the chosen one when its encoder exists, otherwise the first supported one (h264 as a last resort).</summary>
-    public static string EffectiveCodec(string? id)
+    /// <summary>
+    /// The codec to actually record with: the chosen one when its encoder exists, otherwise the first supported one (h264 as a
+    /// last resort); and HEVC instead of H.264 when the output size (0 = unknown) is beyond what H.264 encoders take
+    /// (<see cref="VideoEncoder.MaxH264Side"/>, e.g. a 5120x1440 super-ultrawide at Native or 1440p).
+    /// </summary>
+    public static string EffectiveCodec(string? id, uint width = 0, uint height = 0)
     {
         string n = EngineConfig.NormalizeCodec(id);
-        if (IsSupported(n)) return n;
-        return Codecs.FirstOrDefault(c => c.Supported)?.Id ?? "h264";
+        if (!IsSupported(n)) n = Codecs.FirstOrDefault(c => c.Supported)?.Id ?? "h264";
+        if (n == "h264" && !VideoEncoder.H264Fits(width, height) && IsSupported("hevc")) n = "hevc";
+        return n;
     }
 
     private static IReadOnlyList<CodecInfo> Probe(MonitorInfo? monitor)

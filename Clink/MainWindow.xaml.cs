@@ -248,13 +248,20 @@ public partial class MainWindow : Window
         string id = Selected<string>(CodecCombo) ?? _app.Settings.Codec;
         var info = Capabilities.Codec(id);
         if (info == null) { CodecDescription.Text = ""; return; }
-        if (info.Supported)
+        if (!Capabilities.Codecs.Any(c => c.Supported))
+        {
+            CodecDescription.Text = "No hardware video encoder found on this GPU – update the GPU driver; recording is not possible.";
+            return;
+        }
+        var mon = _app.SelectedMonitor;
+        var (w, h) = mon != null ? AppController.OutputSize(mon, _app.Settings.Resolution) : (0u, 0u);
+        var fallback = Capabilities.Codec(Capabilities.EffectiveCodec(id, w, h));
+        if (info.Supported && fallback != null && fallback.Id != info.Id)
+            CodecDescription.Text = $"{info.Name} cannot encode {w}×{h}; recording uses {fallback.Name} instead. {info.Name} – {info.Description}";
+        else if (info.Supported)
             CodecDescription.Text = $"{info.Name} – {info.Description}{(info.EncoderName != null ? $"  ·  {info.EncoderName}" : "")}";
         else
-        {
-            var fallback = Capabilities.Codec(Capabilities.EffectiveCodec(id));
             CodecDescription.Text = $"{info.Name} is {info.Reason}; recording uses {fallback?.Name ?? "H.264"} instead. {info.Name} – {info.Description}";
-        }
     }
 
     private int AudioTrackCount() => _app.AudioTrackCount;   // the mix is always track 1; the same count the engine's bitrate is resolved with
