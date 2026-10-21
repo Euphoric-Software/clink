@@ -300,4 +300,122 @@
         <Setter Property="Padding" Value="8,5" />
         <Setter Property="FontSize" Value="12" />
     </Style>
+
+    <!-- ===== v2 window pieces (docs/SPEC-v2.md §1) ===== -->
+
+    <!-- Glyph icons: Segoe Fluent Icons (Windows 11) with the MDL2 set (Windows 10) as the fallback; both share code points. -->
+    <FontFamily x:Key="IconFont">Segoe Fluent Icons, Segoe MDL2 Assets</FontFamily>
+    <Style x:Key="Glyph" TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+        <Setter Property="FontFamily" Value="{StaticResource IconFont}" />
+        <Setter Property="FontSize" Value="12" />
+        <Setter Property="Foreground" Value="{StaticResource Muted}" />
+        <Setter Property="VerticalAlignment" Value="Center" />
+        <Setter Property="TextWrapping" Value="NoWrap" />
+    </Style>
+    <Style x:Key="GlyphButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+        <Setter Property="FontFamily" Value="{StaticResource IconFont}" />
+        <Setter Property="FontSize" Value="13" />
+        <Setter Property="Padding" Value="9,6" />
+    </Style>
+    <Style x:Key="SmallButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+        <Setter Property="Padding" Value="9,4" />
+        <Setter Property="FontSize" Value="12" />
+    </Style>
+
+    <!-- A settings group -->
+    <Style x:Key="Card" TargetType="Border">
+        <Setter Property="Background" Value="{StaticResource Panel}" />
+        <Setter Property="CornerRadius" Value="8" />
+        <Setter Property="Padding" Value="10" />
+    </Style>
+    <Style x:Key="Hint" TargetType="TextBlock" BasedOn="{StaticResource MutedText}">
+        <Setter Property="FontSize" Value="11.5" />
+    </Style>
+
+    <!-- Tab strip: a pill row; the selected tab is raised. The header text inherits the tab's Foreground. -->
+    <Style TargetType="TabControl">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="Padding" Value="0" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="TabControl">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+                        <Border Background="{StaticResource Panel}" CornerRadius="8" Padding="3" HorizontalAlignment="Left" Margin="{TemplateBinding Padding}">
+                            <TabPanel IsItemsHost="True" />
+                        </Border>
+                        <ContentPresenter x:Name="PART_SelectedContentHost" Grid.Row="1" ContentSource="SelectedContent" />
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style TargetType="TabItem">
+        <Setter Property="Foreground" Value="{StaticResource Muted}" />
+        <Setter Property="FontSize" Value="12.5" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="Padding" Value="12,5" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="TabItem">
+                    <Border x:Name="B" Background="Transparent" CornerRadius="6" Padding="{TemplateBinding Padding}" Margin="1,0">
+                        <ContentPresenter ContentSource="Header" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="B" Property="Background" Value="{StaticResource Panel2}" />
+                        </Trigger>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter TargetName="B" Property="Background" Value="{StaticResource Panel3}" />
+                            <Setter Property="Foreground" Value="{StaticResource Fg}" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Combo items for Choice lists: section headers ("Running apps") are not selectable; disabled entries (a codec this GPU lacks) are greyed. -->
+    <Style x:Key="ChoiceItem" TargetType="ComboBoxItem" BasedOn="{StaticResource {x:Type ComboBoxItem}}">
+        <Style.Triggers>
+            <DataTrigger Binding="{Binding Header}" Value="True">
+                <Setter Property="IsEnabled" Value="False" />
+                <Setter Property="Foreground" Value="{StaticResource Muted}" />
+                <Setter Property="FontSize" Value="11" />
+                <Setter Property="Padding" Value="8,6,8,2" />
+            </DataTrigger>
+            <DataTrigger Binding="{Binding Disabled}" Value="True">
+                <Setter Property="IsEnabled" Value="False" />
+                <Setter Property="Foreground" Value="{StaticResource Muted}" />
+            </DataTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- A removable chip ("overwatch ✕") in the custom-apps list -->
+    <Style x:Key="Chip" TargetType="Border">
+        <Setter Property="Background" Value="{StaticResource Panel2}" />
+        <Setter Property="BorderBrush" Value="{StaticResource Border}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="11" />
+        <Setter Property="Padding" Value="9,2,4,2" />
+        <Setter Property="Margin" Value="0,0,6,6" />
+    </Style>
+
+    <!-- List rows (clips): highlight on hover -->
+    <Style x:Key="Row" TargetType="Border">
+        <Setter Property="Padding" Value="6" />
+        <Setter Property="Margin" Value="0,0,0,2" />
+        <Setter Property="CornerRadius" Value="6" />
+        <Setter Property="Background" Value="Transparent" />
+        <Style.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Background" Value="{StaticResource Panel2}" />
+            </Trigger>
+        </Style.Triggers>
+    </Style>
 </ResourceDictionary>

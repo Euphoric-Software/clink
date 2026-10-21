@@ -1,0 +1,8 @@
+<Window x:Class="Clink.UI.StatusDotWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Clink status" Width="12" Height="12"
+        WindowStyle="None" ResizeMode="NoResize" AllowsTransparency="True" Background="Transparent"
+        Topmost="True" ShowInTaskbar="False" ShowActivated="False" Focusable="False" IsHitTestVisible="False">
+    <Ellipse x:Name="Dot" Fill="{StaticResource Muted}" Stroke="#80000000" StrokeThickness="1" />
+</Window>

@@ -23,14 +23,23 @@ internal static class SelfTest
         var mon = monitors.FirstOrDefault(m => m.DeviceName == settings.MonitorDevice) ?? monitors.First(m => m.IsPrimary);
         Say($"Capturing {mon.Label}");
 
+        foreach (var c in Capabilities.Codecs)
+            Say($"  codec {c.Name,-5} {(c.Supported ? c.EncoderName : c.Reason)}{(c.Experimental && c.Supported ? " (experimental)" : "")}");
+        Say($"  RAM {Capabilities.FormatBytes(Capabilities.PhysicalRamBytes())}, ring limit {Capabilities.FormatBytes(Capabilities.MaxRingBytes())}");
+        string codec = Capabilities.EffectiveCodec(settings.Codec);
+        if (codec != EngineConfig.NormalizeCodec(settings.Codec)) Say($"  {settings.Codec} has no hardware encoder here, using {codec}");
+        int audioTracks = 1 + (settings.TrackGame ? 1 : 0) + (settings.TrackMic ? 1 : 0) + (settings.TrackVoice ? 1 : 0) + (settings.TrackDesktop ? 1 : 0);
+        var (bitrate, note) = Capabilities.ResolveBitrate(settings, audioTracks, settings.BufferSeconds);
+        Say($"  bitrate {bitrate:0.#} Mbps ({codec}){(note != null ? ": " + note : "")}; {Capabilities.DescribeEstimate(bitrate, audioTracks, settings.BufferSeconds)}; {Capabilities.DescribeRing(bitrate, settings.BufferSeconds).text}");
+
         var cfg = new EngineConfig
         {
             Monitor = mon,
             OutWidth = (uint)(mon.Width & ~1),
             OutHeight = (uint)(mon.Height & ~1),
             Fps = (uint)settings.Fps,
-            BitrateMbps = (uint)settings.BitrateMbps,
-            Hevc = settings.Codec == "hevc",
+            BitrateMbps = bitrate,
+            Codec = codec,
             BufferSeconds = Math.Max(10, Math.Min(settings.BufferSeconds, 60)),
             CaptureCursor = true,
             TrackDesktop = settings.TrackDesktop, TrackGame = settings.TrackGame, TrackMic = settings.TrackMic, TrackVoice = settings.TrackVoice,
@@ -46,6 +55,10 @@ internal static class SelfTest
         {
             Say("ENGINE FAILED: " + engine.Error);
             return 2;
+        }
+        {
+            var st = engine.GetStats();
+            Say($"  encoder {st.Encoder} ({st.Codec}), ring {Capabilities.FormatBytes(st.RingBytes)} = {st.RingSeconds}s");
         }
         for (int i = 0; i < seconds; i++)
         {

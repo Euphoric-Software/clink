@@ -1,0 +1,23 @@
+<UserControl x:Class="Clink.UI.HotkeyListEditor"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <UserControl.Resources>
+        <!-- the closed combo box must not wrap (the theme's TextBlock style wraps by default) -->
+        <DataTemplate x:Key="OneLine">
+            <TextBlock Text="{Binding}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
+        </DataTemplate>
+    </UserControl.Resources>
+    <StackPanel>
+        <Grid Margin="2,0,0,3">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <TextBlock Style="{StaticResource MutedText}" Text="Keys · action · length" VerticalAlignment="Center" />
+            <Button x:Name="AddButton" Grid.Column="1" Style="{StaticResource SmallButton}" Content="Add hotkey" Click="Add_Click" ToolTip="Another key combo, e.g. Shift+F9 for a shorter clip" />
+        </Grid>
+        <!-- one row per binding: [keys] [action] [length] [✕], built in code -->
+        <StackPanel x:Name="Rows" />
+        <TextBlock x:Name="EmptyText" Style="{StaticResource Hint}" Margin="2,4,0,0" Text="No hotkeys. Add one and press the keys you want." Visibility="Collapsed" />
+    </StackPanel>
+</UserControl>

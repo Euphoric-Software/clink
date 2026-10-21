@@ -14,8 +14,11 @@ capture/encode pipeline itself.
   - **Capture**: monitor map + label, resolution, FPS, bitrate, codec, size estimates, recording mode (see §5).
   - **Clip**: hotkeys list (see §7), replay-length slider (§6), click sound, capture cursor, run at startup,
     Copium token.
-  - **Audio**: the per-track rows with source pickers (already on branch `feature/audio-sources`).
+  - **Audio**: the per-track rows with source pickers, as they are today (Mix row first, then Game / Mic / Voice chat with
+    app-or-device pickers, then the optional Desktop track).
   - **Alerts**: toast settings and the status dot (§8).
+  - **Updates** (small group on the Clip tab or Alerts tab): auto-update on/off, current version, "check now", and the
+    last install problem if any (e.g. Smart App Control blocked the downloaded exe).
 - Clips group (right pane / Clips tab) has three sub-tabs:
   - **Local** – every local file. Each row: thumbnail, title, meta, and small **icons**: cloud icon if it has
     been shared, scissors icon if it is a trim, "local only" icon otherwise. Buttons: Trim, Share/Copy link, folder.
@@ -109,6 +112,13 @@ capture/encode pipeline itself.
   skip quietly, retry next run; never delete a local file whose copy was not verified. Logs every move.
 - Library rows get an **archived** icon (NAS/drive glyph); Trim, Share and thumbnails work from the archive path.
   If the archive is offline the row says so instead of failing.
+
+## Settings already defined (do not rename)
+
+`Settings.cs` already carries the v2 keys: `RecordingMode`, `CustomApps`, `Hotkeys` (list of `HotkeyAction { Keys, Action, Seconds }`),
+`ToastPosition`, `ToastClip` / `ToastShared` / `ToastRecording` (`ToastSetting { Enabled, Seconds }`), `StatusDot`,
+`StatusDotPosition`, `SizeTarget`, `ArchiveEnabled`, `ArchivePath`, `ArchiveAfterDays`, `ArchiveWhenLocalExceedsGB`,
+`WindowWidth` / `WindowHeight`. `ClipEntry` has `IsTrim`, `SourcePath`, `ArchivedAt`, `IsShared`, `IsArchived`.
 
 ## Non-goals for this pass
 

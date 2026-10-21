@@ -9,12 +9,21 @@ using Clink.Native;
 
 namespace Clink.Encode;
 
-internal sealed record VideoEncoderConfig(uint Width, uint Height, uint Fps, uint BitrateBps, bool Hevc, float GopSeconds);
+/// <param name="Codec">"h264" | "hevc" | "av1" (AV1 is experimental and needs a hardware AV1 encoder: RTX 40 / RX 7000 / Arc).</param>
+internal sealed record VideoEncoderConfig(uint Width, uint Height, uint Fps, uint BitrateBps, string Codec, float GopSeconds)
+{
+    public VideoEncoderConfig(uint width, uint height, uint fps, uint bitrateBps, bool hevc, float gopSeconds)
+        : this(width, height, fps, bitrateBps, hevc ? "hevc" : "h264", gopSeconds) { }
+    public bool Hevc => Codec == "hevc";
+    public bool Av1 => Codec == "av1";
+    public string CodecName => Codec switch { "hevc" => "HEVC", "av1" => "AV1", _ => "H.264" };
+}
 
 /// <summary>
-/// Hardware H.264/HEVC encoder through Media Foundation (NVENC / AMF / QuickSync MFT), fed with NV12 textures
-/// on the capture device so frames never leave the GPU. Async MFT: inputs are gated by NeedInput credits,
-/// outputs are drained on a dedicated event thread.
+/// Hardware H.264/HEVC (and experimental AV1) encoder through Media Foundation (NVENC / AMF / QuickSync MFT), fed with NV12
+/// textures on the capture device so frames never leave the GPU. Async MFT: inputs are gated by NeedInput credits,
+/// outputs are drained on a dedicated event thread. Output samples are Annex B access units for H.264/HEVC and
+/// temporal units (low-overhead OBU format, every OBU with obu_size) for AV1.
 /// </summary>
 internal sealed unsafe class VideoEncoder : IDisposable
 {
@@ -37,8 +46,19 @@ internal sealed unsafe class VideoEncoder : IDisposable
     public string EncoderName { get; private set; } = "";
     public long FramesIn, FramesOut, Dropped;
     public OutputHandler? OnOutput;
+    /// <summary>H.264/HEVC: Annex B parameter sets (MF_MT_MPEG_SEQUENCE_HEADER). AV1: the Sequence Header OBU (from the attribute or the first keyframe).</summary>
     public byte[]? SequenceHeader { get; private set; }
+    public string Codec => _cfg.Codec;
     public bool Hevc => _cfg.Hevc;
+    public bool IsAv1 => _cfg.Av1;
+    private bool _av1Warned;
+
+    public static Guid SubtypeFor(string codec) => codec switch
+    {
+        "hevc" => PInvoke.MFVideoFormat_HEVC,
+        "av1" => PInvoke.MFVideoFormat_AV1,
+        _ => PInvoke.MFVideoFormat_H264,
+    };
 
     public VideoEncoder(D3DDevice d3d, VideoEncoderConfig cfg)
     {
@@ -47,10 +67,10 @@ internal sealed unsafe class VideoEncoder : IDisposable
         _cfg = cfg;
         _frameDuration = 10_000_000L / cfg.Fps;
 
-        Guid outSub = cfg.Hevc ? PInvoke.MFVideoFormat_HEVC : PInvoke.MFVideoFormat_H264;
+        Guid outSub = SubtypeFor(cfg.Codec);
         _mft = FindHardwareEncoder(outSub, out string name);
         EncoderName = name;
-        Log.Info($"Video encoder: {name} ({(cfg.Hevc ? "HEVC" : "H.264")}) {cfg.Width}x{cfg.Height}@{cfg.Fps} {cfg.BitrateBps / 1_000_000.0:0.#} Mbps");
+        Log.Info($"Video encoder: {name} ({cfg.CodecName}{(cfg.Av1 ? ", experimental" : "")}) {cfg.Width}x{cfg.Height}@{cfg.Fps} {cfg.BitrateBps / 1_000_000.0:0.#} Mbps");
 
         IMFAttributes* attrs;
         _mft->GetAttributes(&attrs).Check("IMFTransform.GetAttributes");
@@ -77,8 +97,18 @@ internal sealed unsafe class VideoEncoder : IDisposable
             Mf.SetRatio(a, PInvoke.MF_MT_FRAME_RATE, cfg.Fps, 1);
             Mf.SetU32(a, PInvoke.MF_MT_INTERLACE_MODE, (uint)MFVideoInterlaceMode.MFVideoInterlace_Progressive);
             Mf.SetRatio(a, PInvoke.MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
-            Mf.SetU32(a, PInvoke.MF_MT_MPEG2_PROFILE, cfg.Hevc ? (uint)eAVEncH265VProfile.eAVEncH265VProfile_Main_420_8 : (uint)eAVEncH264VProfile.eAVEncH264VProfile_High);
-            _mft->SetOutputType(0, outType, 0).Check("SetOutputType");
+            Guid profileKey = PInvoke.MF_MT_MPEG2_PROFILE;
+            Mf.SetU32(a, profileKey, cfg.Av1 ? (uint)eAVEncAV1VProfile.eAVEncAV1VProfile_Main_420_8
+                : cfg.Hevc ? (uint)eAVEncH265VProfile.eAVEncH265VProfile_Main_420_8 : (uint)eAVEncH264VProfile.eAVEncH264VProfile_High);
+            HRESULT hrOut = _mft->SetOutputType(0, outType, 0);
+            if (hrOut.Failed && cfg.Av1)
+            {
+                // Experimental: an AV1 MFT that does not take the profile attribute gets the type without it (Main is its default anyway).
+                Log.Warn($"AV1 (experimental): SetOutputType with profile Main failed 0x{(uint)hrOut.Value:X8}, retrying without a profile");
+                a->DeleteItem(&profileKey);
+                hrOut = _mft->SetOutputType(0, outType, 0);
+            }
+            hrOut.Check("SetOutputType");
         }
         finally { outType->Release(); }
 
@@ -170,7 +200,9 @@ internal sealed unsafe class VideoEncoder : IDisposable
         finally { enumAttrs->Release(); }
 
         if (count == 0 || list == null)
-            throw new InvalidOperationException($"No hardware {(outSub == PInvoke.MFVideoFormat_HEVC ? "HEVC" : "H.264")} encoder found on {_d3d.AdapterName}. Update your GPU driver.");
+            throw new InvalidOperationException(_cfg.Av1
+                ? $"No hardware AV1 encoder found on {_d3d.AdapterName}. AV1 needs an RTX 40 / RX 7000 / Arc GPU; pick H.264 or HEVC."
+                : $"No hardware {_cfg.CodecName} encoder found on {_d3d.AdapterName}. Update your GPU driver.");
 
         try
         {
@@ -377,7 +409,8 @@ internal sealed unsafe class VideoEncoder : IDisposable
                 byte* p; uint max, cur;
                 buf->Lock(&p, &max, &cur).Check("Lock");
                 var span = new ReadOnlySpan<byte>(p, (int)cur);
-                if (!key) key = Nal.ContainsKeyframe(span, _cfg.Hevc);
+                if (_cfg.Av1) key = InspectAv1(span, key);
+                else if (!key) key = Nal.ContainsKeyframe(span, _cfg.Hevc);
                 OnOutput?.Invoke(pts, key, span);
                 buf->Unlock();
             }
@@ -387,6 +420,48 @@ internal sealed unsafe class VideoEncoder : IDisposable
         finally { sample->Release(); }
     }
 
+    /// <summary>
+    /// AV1 (experimental): checks that the output is a temporal unit in the low-overhead OBU format (parses every OBU header and
+    /// obu_size; a malformed unit is logged once), remembers the Sequence Header OBU of keyframes, and derives the keyframe flag from
+    /// the frame header when the MFT did not set MFSampleExtension_CleanPoint.
+    /// </summary>
+    private bool InspectAv1(ReadOnlySpan<byte> tu, bool cleanPoint)
+    {
+        var obus = new List<Av1.Obu>();
+        if (!Av1.TryParse(tu, obus, out string? err))
+        {
+            if (!_av1Warned) { _av1Warned = true; Log.Warn($"AV1 (experimental): encoder output is not a valid OBU sequence: {err}; storing it as-is"); }
+            return cleanPoint;
+        }
+        if (!_av1Warned)
+        {
+            foreach (var o in obus)
+            {
+                if (o.HasSize) continue;
+                _av1Warned = true;
+                Log.Warn("AV1 (experimental): encoder emits OBUs without obu_size (not low-overhead format); samples are rewritten with size fields");
+                break;
+            }
+        }
+        bool key = Av1.ContainsKeyframe(tu);
+        if (key || SequenceHeader == null)
+        {
+            var sh = Av1.FindSequenceHeader(tu);
+            if (sh != null && (SequenceHeader == null || !sh.AsSpan().SequenceEqual(SequenceHeader)))
+            {
+                SequenceHeader = sh;
+                try
+                {
+                    var hdr = new List<Av1.Obu>();
+                    Av1.TryParse(sh, hdr, out _);
+                    Log.Info($"AV1 (experimental): sequence header {Av1.Describe(Av1.ParseSequenceHeader(sh.AsSpan(hdr[0].PayloadOffset, hdr[0].PayloadLength)))}, {obus.Count} OBUs in first temporal unit");
+                }
+                catch (Exception ex) { Log.Warn("AV1 (experimental): sequence header parse: " + ex.Message); }
+            }
+        }
+        return key || cleanPoint;
+    }
+
     private void RefreshSequenceHeader()
     {
         IMFMediaType* t;
@@ -394,7 +469,15 @@ internal sealed unsafe class VideoEncoder : IDisposable
         try
         {
             var blob = Mf.GetBlob((IMFAttributes*)t, PInvoke.MF_MT_MPEG_SEQUENCE_HEADER);
-            if (blob is { Length: > 0 }) SequenceHeader = blob;
+            if (blob is not { Length: > 0 }) return;
+            if (_cfg.Av1)
+            {
+                // Only trust the attribute when it really is a Sequence Header OBU; otherwise the first keyframe provides it.
+                var sh = Av1.FindSequenceHeader(blob);
+                if (sh != null) SequenceHeader = sh;
+                else Log.Info($"AV1 (experimental): MF_MT_MPEG_SEQUENCE_HEADER ({blob.Length} bytes) is not a Sequence Header OBU; using the in-band one");
+            }
+            else SequenceHeader = blob;
         }
         finally { t->Release(); }
     }

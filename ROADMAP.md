@@ -7,11 +7,13 @@ Things that were asked for or came up while building, roughly in the order they'
 - [ ] **Frame-accurate trim start** ("smart cut"): re-encode only the partial GOP before the chosen start and copy the
       rest. Today the start snaps to the previous keyframe (1 s grid by default; lower `KeyframeSeconds` for finer).
 - [ ] **Copy on save** option: automatically upload every clip and copy the link (off by default, as requested).
-- [ ] **Clip length hotkeys**: e.g. F9 = last 30 s, Shift+F9 = last 2 min.
+- [x] **Clip length hotkeys**: the hotkey list (Clip → Hotkeys) gives every binding its own length and action.
 - [ ] **Auto-follow the game's monitor** instead of a fixed monitor choice.
-- [ ] **Manual game process picker** for the Game audio track when auto-detection picks the wrong app.
+- [x] **Manual game process picker** for the Game audio track, plus the custom-apps list for game detection.
 - [ ] Re-check HDR state live (if Windows HDR is toggled while Clink runs, restart capture with the right format).
 - [ ] Mouse buttons as hotkeys.
+- [x] Apply the size target's bitrate and the AV1 choice in `AppController.BuildConfig` (the engine records at the
+      bitrate the Capture tab shows, and a codec the GPU lacks falls back to one it has, as the tab says).
 
 ## Distribution
 
@@ -27,6 +29,9 @@ Things that were asked for or came up while building, roughly in the order they'
 
 - [x] All / Game / Mic / Voice-chat as separate tracks (per-process capture on Windows 10 2004+).
 - [ ] Elgato Wave Link / VoiceMeeter virtual outputs as selectable extra tracks.
+- [x] **Desktop track from a normal audio input as well**: the Desktop picker takes a capture device (a Wave Link
+      mix, a virtual cable) or any output's loopback, like the Game and Voice pickers (`in:` / `out:` ids; a bare
+      output id from an older settings file still works).
 - [ ] Per-track gain and a mono-mic option.
 - [ ] Mix-down presets for sharing (e.g. "game + mic only" when uploading).
 
@@ -34,9 +39,10 @@ Things that were asked for or came up while building, roughly in the order they'
 
 - [ ] **HDR output** (HEVC Main10 + PQ metadata) for people who want true HDR clips; SDR tone-mapped stays the default
       because Discord/Copium embeds expect SDR.
-- [ ] AV1 on GPUs that have it.
+- [x] AV1 on GPUs that have it (experimental: encode + `av01` mux are in, untested here because the RTX 3090 has no
+      AV1 encoder).
 - [ ] Capture a single window instead of a monitor.
-- [ ] Optional on-screen "recording" indicator / overlay.
+- [x] Optional on-screen "recording" indicator: the status dot (Alerts tab).
 
 ## Later, maybe
 
