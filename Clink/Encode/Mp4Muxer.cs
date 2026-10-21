@@ -75,6 +75,9 @@ internal sealed class Mp4Muxer : IDisposable
 
     public int AudioTrackCount => _audio.Count;
 
+    /// <summary>Names of the audio tracks the file holds, in file order (a track that got no frames is left out of it).</summary>
+    public string[] WrittenAudioTracks => _audio.Where(a => a.Sizes.Count > 0).Select(a => a.A!.Name).ToArray();
+
     public void WriteVideo(long pts100ns, long dts100ns, bool keyframe, ReadOnlySpan<byte> lengthPrefixed)
     {
         var t = _video;
@@ -112,7 +115,6 @@ internal sealed class Mp4Muxer : IDisposable
     public void Finish()
     {
         if (_finished) return;
-        _finished = true;
         _temp.Flush();
 
         var tracks = new List<Track> { _video };
@@ -128,36 +130,51 @@ internal sealed class Mp4Muxer : IDisposable
         }
 
         byte[] ftyp = BuildFtyp(_video.V!);
-        // moov size depends on chunk offsets which depend on moov size: compute with a placeholder first (stco vs co64
-        // decided up front), then rebuild with real offsets.
-        bool use64 = _payload + 1_000_000 > uint.MaxValue;
+        // moov size depends on chunk offsets which depend on moov size: compute with a placeholder first, then rebuild with
+        // real offsets. 32-bit offsets (stco) only when the whole file, moov included (several MB for a long clip), stays
+        // under 4 GiB; co64 otherwise.
+        byte[] moov = BuildMoov(tracks, movieTimescale, movieDurationMs, 0, false);
+        bool use64 = ftyp.Length + moov.Length + 8L + _payload > uint.MaxValue;
+        if (use64) moov = BuildMoov(tracks, movieTimescale, movieDurationMs, 0, true);
         long mdatHeaderSize = use64 ? 16 : 8;
-        byte[] moov = BuildMoov(tracks, movieTimescale, movieDurationMs, 0, use64);
         long mdatPayloadStart = ftyp.Length + moov.Length + mdatHeaderSize;
         moov = BuildMoov(tracks, movieTimescale, movieDurationMs, mdatPayloadStart, use64);
         if (ftyp.Length + moov.Length + mdatHeaderSize != mdatPayloadStart) throw new InvalidOperationException("moov size changed");
 
-        using (var outFs = new FileStream(_finalPath, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 20))
+        // Written under a temporary name and renamed once complete, so a failure (disk full, access denied, the name taken)
+        // never leaves a half-written clip under the real name.
+        string part = _finalPath + ".part";
+        try
         {
-            outFs.Write(ftyp);
-            outFs.Write(moov);
-            Span<byte> hdr = stackalloc byte[16];
-            if (use64)
+            using (var outFs = new FileStream(part, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 20))
             {
-                BinaryPrimitives.WriteUInt32BigEndian(hdr, 1);
-                Encoding.ASCII.GetBytes("mdat", hdr.Slice(4));
-                BinaryPrimitives.WriteUInt64BigEndian(hdr.Slice(8), (ulong)(_payload + 16));
-                outFs.Write(hdr);
+                outFs.Write(ftyp);
+                outFs.Write(moov);
+                Span<byte> hdr = stackalloc byte[16];
+                if (use64)
+                {
+                    BinaryPrimitives.WriteUInt32BigEndian(hdr, 1);
+                    Encoding.ASCII.GetBytes("mdat", hdr.Slice(4));
+                    BinaryPrimitives.WriteUInt64BigEndian(hdr.Slice(8), (ulong)(_payload + 16));
+                    outFs.Write(hdr);
+                }
+                else
+                {
+                    BinaryPrimitives.WriteUInt32BigEndian(hdr, (uint)(_payload + 8));
+                    Encoding.ASCII.GetBytes("mdat", hdr.Slice(4));
+                    outFs.Write(hdr.Slice(0, 8));
+                }
+                _temp.Position = 0;
+                _temp.CopyTo(outFs);
             }
-            else
-            {
-                BinaryPrimitives.WriteUInt32BigEndian(hdr, (uint)(_payload + 8));
-                Encoding.ASCII.GetBytes("mdat", hdr.Slice(4));
-                outFs.Write(hdr.Slice(0, 8));
-            }
-            _temp.Position = 0;
-            _temp.CopyTo(outFs);
+            File.Move(part, _finalPath, overwrite: false);
         }
+        catch
+        {
+            try { File.Delete(part); } catch { }
+            throw;
+        }
+        _finished = true;
         _temp.Dispose();
         try { File.Delete(_tempPath); } catch { }
     }
@@ -207,12 +224,19 @@ internal sealed class Mp4Muxer : IDisposable
         moov.Child(mvhd);
 
         uint trackId = 1;
+        bool firstAudio = true;
         foreach (var t in tracks)
-            moov.Child(BuildTrak(t, trackId++, movieTimescale, movieDurationMs, mdatPayloadStart, use64));
+        {
+            // Only the first audio track (normally Mix) is enabled; the others are disabled alternates of it, as ffmpeg writes
+            // them. Players that honour the flags (QuickTime, Safari, iOS) would otherwise play every audio track at once.
+            bool enabled = t.IsVideo || firstAudio;
+            if (!t.IsVideo) firstAudio = false;
+            moov.Child(BuildTrak(t, trackId++, enabled, movieTimescale, movieDurationMs, mdatPayloadStart, use64));
+        }
         return moov.ToArray();
     }
 
-    private Box BuildTrak(Track t, uint trackId, int movieTimescale, long movieDurationMs, long mdatPayloadStart, bool use64)
+    private Box BuildTrak(Track t, uint trackId, bool enabled, int movieTimescale, long movieDurationMs, long mdatPayloadStart, bool use64)
     {
         var trak = new Box("trak");
 
@@ -221,13 +245,13 @@ internal sealed class Mp4Muxer : IDisposable
         long mediaDuration = ToScale(trackEnd100ns - firstPts100ns, t.Timescale);
 
         // tkhd
-        var tkhd = new Box("tkhd", 0, 0x3); // enabled + in movie
+        var tkhd = new Box("tkhd", 0, enabled ? 0x3u : 0x2u); // (enabled +) in movie
         tkhd.U32(0); tkhd.U32(0);
         tkhd.U32(trackId);
         tkhd.U32(0);
         tkhd.U32((uint)Math.Max(0, (trackEnd100ns - _origin100ns) / 10_000)); // duration in movie timescale (ms)
         tkhd.U32(0); tkhd.U32(0);
-        tkhd.U16(0); tkhd.U16(0);
+        tkhd.U16(0); tkhd.U16((ushort)(t.IsVideo ? 0 : 1)); // layer, alternate_group (the audio tracks are alternatives)
         tkhd.U16((ushort)(t.IsVideo ? 0 : 0x0100)); tkhd.U16(0);
         WriteMatrix(tkhd);
         tkhd.U32(t.IsVideo ? (uint)t.V!.Width << 16 : 0);
@@ -432,7 +456,7 @@ internal sealed class Mp4Muxer : IDisposable
     public void Dispose()
     {
         try { _temp.Dispose(); } catch { }
-        if (!_finished) { try { File.Delete(_tempPath); } catch { } }
+        try { File.Delete(_tempPath); } catch { }
     }
 
     /// <summary>Big-endian box builder.</summary>
