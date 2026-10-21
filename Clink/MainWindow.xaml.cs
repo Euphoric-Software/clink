@@ -892,7 +892,12 @@ public partial class MainWindow : Window
         try
         {
             var dlg = new Microsoft.Win32.OpenFolderDialog { Title = title, Multiselect = false };
-            if (!string.IsNullOrWhiteSpace(initial)) { try { if (Directory.Exists(initial)) dlg.InitialDirectory = initial; } catch { } }
+            if (!string.IsNullOrWhiteSpace(initial))
+            {
+                // An offline share blocks Directory.Exists for the SMB timeout (~20 s): look on a worker, give up on the hint quickly.
+                var probe = Task.Run(() => { try { return Directory.Exists(initial); } catch { return false; } });
+                if (probe.Wait(300) && probe.Result) dlg.InitialDirectory = initial;
+            }
             return dlg.ShowDialog(this) == true ? dlg.FolderName : null;
         }
         catch (Exception ex) { _app.Say("Folder picker failed: " + ex.Message); return null; }
@@ -915,26 +920,52 @@ public partial class MainWindow : Window
         RefreshArchiveStatus();
     }
 
+    /// <summary>
+    /// Why the path last typed into the archive box was refused (the box went back to the saved path), until the user leaves the
+    /// box again or a path is accepted. Clicking Test moves the focus first, so the refusal happens before Test runs: Test then
+    /// keeps this reason on screen instead of testing the old saved path and reporting it as reachable.
+    /// </summary>
+    private string? _archiveRefusal;
+
     private void ArchivePathBox_LostFocus(object sender, RoutedEventArgs e)
     {
         if (_loading) return;
         var s = _app.Settings;
         string path = ArchivePathBox.Text.Trim().Trim('"');
+        if (path.Length == 2 && path[1] == ':' && char.IsAsciiLetter(path[0])) { path += "\\"; ArchivePathBox.Text = path; }   // "E:" = the drive's root
         string? value = path.Length == 0 ? null : path;
-        if (string.Equals(value, s.ArchivePath, StringComparison.OrdinalIgnoreCase)) return;
+        if (string.Equals(value, s.ArchivePath, StringComparison.OrdinalIgnoreCase))
+        {
+            if (ReferenceEquals(sender, ArchivePathBox)) _archiveRefusal = null;   // the user left the box on the saved path: nothing refused now
+            return;
+        }
+        if (value != null && !Path.IsPathFullyQualified(value))
+        {
+            // "\nas\clips" or "nas\clips" (a lost backslash) would resolve against the current folder: C:\nas\clips, or next to the exe.
+            _app.Say(ArchiveService.FullPathHint);
+            RefuseArchivePath(ArchiveService.FullPathHint);
+            return;
+        }
         if (value != null && ArchiveService.IsSameFolder(value, s.ClipsFolder))
         {
             // Moving a clip onto itself would be "copy verified, delete local": the one copy gone. Refused here and in the service.
             _app.Say("The archive location cannot be the clips folder itself");
-            ArchiveStatus.Text = "Archive location is the clips folder: pick another folder, share or drive";
-            ArchiveStatus.Foreground = (Brush)FindResource("Warn");
-            ArchivePathBox.Text = s.ArchivePath ?? "";
+            RefuseArchivePath("Archive location is the clips folder: pick another folder, share or drive");
             return;
         }
+        _archiveRefusal = null;
         s.ArchivePath = value;
         s.Save();
         _app.Archive.Reevaluate();
         RefreshArchiveStatus();
+    }
+
+    private void RefuseArchivePath(string reason)
+    {
+        _archiveRefusal = reason;
+        ArchiveStatus.Text = reason;
+        ArchiveStatus.Foreground = (Brush)FindResource("Warn");
+        ArchivePathBox.Text = _app.Settings.ArchivePath ?? "";
     }
 
     private void ArchiveRulesChanged(object sender, RoutedEventArgs e)
@@ -954,6 +985,14 @@ public partial class MainWindow : Window
     private async void ArchiveTest_Click(object sender, RoutedEventArgs e)
     {
         ArchivePathBox_LostFocus(sender, e);
+        if (_archiveRefusal is string refused)
+        {
+            // What the user typed was refused and the box shows the saved path again: say why, do not test (and approve) the old path.
+            _archiveRefusal = null;
+            ArchiveStatus.Text = refused;
+            ArchiveStatus.Foreground = (Brush)FindResource("Warn");
+            return;
+        }
         string path = ArchivePathBox.Text.Trim().Trim('"');
         ArchiveTestButton.IsEnabled = false;
         ArchiveStatus.Text = "Testing…";
@@ -971,16 +1010,35 @@ public partial class MainWindow : Window
     {
         if (!_app.Settings.ArchiveEnabled || string.IsNullOrWhiteSpace(_app.Settings.ArchivePath)) { _app.Say("Turn the archive on and set its location first"); return; }
         ArchiveNowButton.IsEnabled = false;
-        try { await _app.Archive.RunNowAsync(); }
+        try
+        {
+            await _app.Archive.RunNowAsync();
+            if (_app.Archive.LastRunEligible == 0)
+            {
+                // The run looked and nothing is due: say why, or the button seems to do nothing.
+                var s = _app.Settings;
+                var why = new List<string>();
+                if (s.ArchiveAfterDays > 0) why.Add(s.ArchiveAfterDays == 1 ? "no clip is older than 1 day" : $"no clip is older than {s.ArchiveAfterDays} days");
+                if (s.ArchiveWhenLocalExceedsGB > 0) why.Add($"the clips folder is under {s.ArchiveWhenLocalExceedsGB.ToString("0.##", CultureInfo.InvariantCulture)} GB");
+                _app.Say("Nothing to archive yet" + (why.Count > 0 ? ": " + string.Join(" and ", why) : ""));
+            }
+        }
         finally { ArchiveNowButton.IsEnabled = true; RefreshArchiveStatus(); }
     }
 
+    private bool _archiveReachable;
+
     private void RefreshArchiveStatus()
     {
+        // Archived rows checked while the archive was offline (at login, before the NAS was up) look again once it answers.
+        bool reachable = _app.Archive.IsReachable;
+        if (reachable && !_archiveReachable) Clips.ArchiveIsBack();
+        _archiveReachable = reachable;
         if (!IsLoaded) return;
         ArchiveStatus.Text = _app.Archive.Status;
         string t = ArchiveStatus.Text;
-        ArchiveStatus.Foreground = (Brush)FindResource(t.Contains("unreachable") || t.Contains("denied") || t.Contains("no rule") ? "Warn" : "Muted");
+        bool problem = t.Contains("will retry") || t.Contains("unreachable") || t.Contains("denied") || t.Contains("no rule") || t.Contains("archive location");
+        ArchiveStatus.Foreground = (Brush)FindResource(problem ? "Warn" : "Muted");
     }
 
     // ------------------------------------------------------------------ window chrome

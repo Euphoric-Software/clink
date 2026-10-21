@@ -86,6 +86,16 @@ public partial class ClipsPane : UserControl
         if (IsVisible) LoadThumbnails(_local.Concat(_cloud).Concat(_trim).Distinct().Where(r => !r.Checked).ToList());
     }
 
+    /// <summary>
+    /// The archive service reached its share again (at login the NAS may come up after Clink): forget which folders did not
+    /// answer, so the rows found "archive offline" are looked at again now instead of after <see cref="OfflineRetry"/>.
+    /// </summary>
+    public void ArchiveIsBack()
+    {
+        _offlineDirs.Clear();
+        Refresh();
+    }
+
     private ClipRow RowFor(ClipEntry e)
     {
         if (!_rows.TryGetValue(e, out var row)) { row = new ClipRow(e); _rows[e] = row; }
@@ -207,6 +217,14 @@ public partial class ClipsPane : UserControl
         else
         {
             if (row.Looking) return false;   // a second click while the first lookup is still waiting on the share
+            if (!row.HasLocalFile && !row.DeletedFromArchive)
+            {
+                // Already found offline: answer at once instead of waiting out the SMB timeout (~20 s) for the same answer. It is
+                // looked at again in the background and the row clears itself if the share is back (the click is not replayed).
+                _ = RecheckArchivedAsync(row);
+                row.SetProblem(ClipRow.ArchiveOffline);
+                return false;
+            }
             row.Looking = true;
             try
             {
@@ -234,6 +252,23 @@ public partial class ClipsPane : UserControl
             Refresh();   // leaves Local / Trimmed (a shared clip stays in Cloud, marked "local file deleted")
         }
         return false;
+    }
+
+    /// <summary>One fresh look at an offline archived row's file on a worker; the row follows the answer (and gets its thumbnail when back).</summary>
+    private async Task RecheckArchivedAsync(ClipRow row)
+    {
+        string path = row.Entry.Path;
+        row.Looking = true;
+        FileState state;
+        try { state = await Task.Run(() => Probe(path, true, useOfflineCache: false)); }
+        finally { row.Looking = false; }
+        if (Apply(row, path, true, state, fromAction: false) && state == FileState.Present && row.Thumbnail == null) { row.Checked = false; Refresh(); }
+    }
+
+    /// <summary>After a refused click on an archived row: the plain "archive offline" says what could not be done.</summary>
+    private static void SayCannot(ClipRow row, string what)
+    {
+        if (row.Status == ClipRow.ArchiveOffline) row.SetProblem($"{ClipRow.ArchiveOffline}: cannot {what} right now");
     }
 
     // ------------------------------------------------------------------ actions
@@ -282,18 +317,15 @@ public partial class ClipsPane : UserControl
     {
         var row = RowOf(sender);
         if (row == null) return;
-        if (!await EnsureFileAsync(row))
-        {
-            if (row.Status == ClipRow.ArchiveOffline) row.SetProblem(ClipRow.ArchiveOffline + ": cannot trim right now");
-            return;
-        }
+        if (!await EnsureFileAsync(row)) { SayCannot(row, "trim"); return; }
         TrimRequested?.Invoke(row.Entry);
     }
 
     private async void Folder_Click(object sender, RoutedEventArgs e)
     {
         var row = RowOf(sender);
-        if (row == null || !await EnsureFileAsync(row)) return;
+        if (row == null) return;
+        if (!await EnsureFileAsync(row)) { SayCannot(row, "open its folder"); return; }
         try { Process.Start("explorer.exe", $"/select,\"{row.Entry.Path}\""); }
         catch (Exception ex) { App.Say("Could not open folder: " + ex.Message); }
     }
@@ -301,9 +333,19 @@ public partial class ClipsPane : UserControl
     private async void Thumb_Click(object sender, MouseButtonEventArgs e)
     {
         var row = RowOf(sender);
-        if (row == null || !await EnsureFileAsync(row)) return;
-        try { Process.Start(new ProcessStartInfo(row.Entry.Path) { UseShellExecute = true }); }
-        catch (Exception ex) { App.Say("Open failed: " + ex.Message); }
+        if (row == null) return;
+        if (!await EnsureFileAsync(row)) { SayCannot(row, "play it"); return; }
+        string path = row.Entry.Path;
+        void Open()
+        {
+            try { Process.Start(new ProcessStartInfo(path) { UseShellExecute = true }); }
+            catch (Exception ex) { Dispatcher.BeginInvoke(() => App.Say("Open failed: " + ex.Message)); }
+        }
+        if (!row.Entry.IsArchived) { Open(); return; }
+        // ShellExecute on a share path touches the share again: on its own STA thread (shell extensions expect one), not the UI's.
+        var t = new Thread(Open) { IsBackground = true, Name = "Clink.OpenArchived" };
+        t.SetApartmentState(ApartmentState.STA);
+        t.Start();
     }
 
     private void CopyLink_Click(object sender, RoutedEventArgs e)
@@ -390,8 +432,14 @@ internal sealed class ClipRow : INotifyPropertyChanged
 
     public void SetProblem(string text) { IsProblem = true; Status = text; }
 
-    /// <summary>A file problem from the background check: shown unless the line already says something else (an upload, a copied link).</summary>
-    public void SetFileProblem(string text) { if (_status == null || IsFileProblem(_status)) SetProblem(text); }
+    /// <summary>
+    /// A file problem from the background check: shown unless the line already says something else (an upload, a copied link)
+    /// or says the same more precisely ("archive offline: cannot trim right now" after a click).
+    /// </summary>
+    public void SetFileProblem(string text)
+    {
+        if (_status == null || (IsFileProblem(_status) && !_status.StartsWith(text, StringComparison.Ordinal))) SetProblem(text);
+    }
 
     /// <summary>The file is there (again): drop an "archive offline" / "deleted" line, keep anything else.</summary>
     public void ClearFileProblem()
