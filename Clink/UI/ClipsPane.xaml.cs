@@ -129,7 +129,8 @@ public partial class ClipsPane : UserControl
         var progress = new Progress<double>(p => { row.Progress = p; row.Status = $"Uploading… {p:P0}"; });
         bool ok = await App.ShareAsync(row.Entry, progress);
         row.IsUploading = false;
-        row.Status = ok ? "Link copied to clipboard" : App.ShareRefusal ?? "Upload failed";   // refused by Copium's free limits, or really failed (the footer has the detail)
+        // refused by Copium's free limits, or failed and why (no token, Copium's answer, the network); the tooltip has all of it
+        row.Status = ok ? "Link copied to clipboard" : App.ShareRefusal ?? (App.ShareError is string why ? "Upload failed: " + why : "Upload failed");
         row.IsProblem = !ok;
         row.Refresh();
         if (ok)
