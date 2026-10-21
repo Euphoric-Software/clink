@@ -76,6 +76,9 @@ internal sealed unsafe class Engine : IDisposable
     private uint _voicePid; private string? _voiceName;
     private AudioTrack? _gameTrack, _voiceTrack;
     private int _ringSeconds;
+    private sealed record DetectedGame(uint Pid, string Name);
+    private volatile DetectedGame? _detected;   // the app's game detection (SetDetectedGame), read by the audio thread
+    private uint _detectedSeen;
 
     public string Status { get; private set; } = "Stopped";
     public string? Error { get; private set; }
@@ -84,6 +87,13 @@ internal sealed unsafe class Engine : IDisposable
     public event Action? StateChanged;
 
     public EngineConfig Config => _cfg;
+
+    /// <summary>
+    /// The game the app detected (fullscreen, game-library window or custom app; 0 = none). With the game process on "auto"
+    /// the Game track records it unless a fullscreen window on the captured monitor is another app: a windowed custom app or
+    /// library game need not be the focused window. Any thread.
+    /// </summary>
+    public void SetDetectedGame(uint pid, string? name) => _detected = pid != 0 && !string.IsNullOrEmpty(name) ? new DetectedGame(pid, name) : null;
 
     public void Start(EngineConfig cfg)
     {
@@ -372,8 +382,16 @@ internal sealed unsafe class Engine : IDisposable
             else
             {
                 var fg = GameProcessTracker.Detect(m.Left, m.Top, m.Left + m.Width, m.Top + m.Height, m.Handle);
+                var app = _detected;
+                bool newFromApp = app != null && app.Pid != _detectedSeen;   // taken once when the app finds a new game, again whenever there is none
+                _detectedSeen = app?.Pid ?? 0;
                 if (fg is { Fullscreen: true } f && f.Pid != _gamePid) { _gamePid = f.Pid; _gameName = f.Name; Log.Info($"Game detected: {f.Name} pid={f.Pid}"); }
                 else if (_gamePid != 0 && !GameProcessTracker.IsAlive(_gamePid)) { Log.Info($"Game exited: {_gameName}"); GameProcessTracker.Forget(_gamePid); _gamePid = 0; _gameName = null; }
+                else if (app != null && app.Pid != _gamePid && (_gamePid == 0 || newFromApp) && fg is not { Fullscreen: true } && GameProcessTracker.IsAlive(app.Pid))
+                {
+                    _gamePid = app.Pid; _gameName = app.Name;
+                    Log.Info($"Game (app detection): {app.Name} pid={app.Pid}");
+                }
                 else if (_gamePid == 0 && fg is { } g && (g.InLibrary || _voicePid == 0))
                 {
                     // A windowed foreground app counts only when it is a game (installed in a game library) or when there is no
@@ -492,8 +510,10 @@ internal sealed unsafe class Engine : IDisposable
         video.Clear();
         double duration = (end - origin) / 10_000_000.0;
         long size = new FileInfo(path).Length;
-        Log.Info($"Clip saved: {path} ({duration:0.0}s, {size / 1_048_576.0:0.0} MB, {frames} frames, {audio.Count} audio tracks, {enc.Codec}{(enc.IsAv1 ? " experimental" : "")}, mux {t0.ElapsedMilliseconds} ms)");
-        return new ClipResult(path, duration, size, string.IsNullOrEmpty(game) ? null : game);
+        // The tracks really in the file (Mp4Muxer leaves out a track with no frames), for the library and the trim editor's labels.
+        string[] written = audio.Where(a => a.frames.Count > 0).Select(a => a.desc.Name).ToArray();
+        Log.Info($"Clip saved: {path} ({duration:0.0}s, {size / 1_048_576.0:0.0} MB, {frames} frames, {written.Length} audio tracks, {enc.Codec}{(enc.IsAv1 ? " experimental" : "")}, mux {t0.ElapsedMilliseconds} ms)");
+        return new ClipResult(path, duration, size, string.IsNullOrEmpty(game) ? null : game, written);
     }
 
     private static string SanitizeName(string s)
