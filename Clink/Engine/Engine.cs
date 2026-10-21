@@ -484,7 +484,7 @@ internal sealed unsafe class Engine : IDisposable
 
     public Task<ClipResult> SaveClipAsync(int? seconds = null, string? gameHint = null) => Task.Run(() => SaveClip(seconds, gameHint));
 
-    /// <param name="gameHint">The game the app detected (what the UI shows); null = the Game track's own detection.</param>
+    /// <param name="gameHint">The game the app detected (what the UI shows); names the clip only when the engine has no game of its own.</param>
     public ClipResult SaveClip(int? seconds = null, string? gameHint = null)
     {
         var ring = _ring; var enc = _encoder;
@@ -520,7 +520,9 @@ internal sealed unsafe class Engine : IDisposable
 
         // What the file really contains: the muxer leaves out a track with no frames.
         string[] trackNames = audio.Where(a => a.frames.Count > 0).Select(a => a.desc.Name).ToArray();
-        string game = !string.IsNullOrEmpty(gameHint) ? gameHint : _gameName ?? "";
+        // The engine's own pick wins (live fullscreen detection or the manual Game process); the hint covers the rest (device
+        // Game track, a save before the next poll picks the hint up).
+        string game = _gameName ?? (string.IsNullOrEmpty(gameHint) ? "" : gameHint);
         Directory.CreateDirectory(_cfg.ClipsFolder);
         string baseName = string.IsNullOrEmpty(game) ? "Clip" : SanitizeName(game);
         string path = Path.Combine(_cfg.ClipsFolder, $"{baseName} {DateTime.Now:yyyy-MM-dd HH-mm-ss}.mp4");

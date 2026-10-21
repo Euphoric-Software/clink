@@ -550,7 +550,7 @@ internal sealed class AppController : IDisposable
         try
         {
             int? length = seconds is int s && s > 0 ? Math.Clamp(s, 1, 3600) : null;
-            // Named after the game the header shows (fullscreen, library or custom app), also when the Game track records a device.
+            // The engine names the clip after its own game; the app's detection fills in when it has none (device Game track, custom app).
             var result = await Engine.SaveClipAsync(length, CurrentGame);
             var entry = Library.Add(result.Path, result.DurationSeconds, result.SizeBytes, result.Game, result.AudioTracks);
             Say($"Clip saved ({result.DurationSeconds:0}s)");
