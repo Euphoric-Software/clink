@@ -43,6 +43,7 @@ internal sealed class Updater : IDisposable
     private readonly Settings _settings;
     private readonly CancellationTokenSource _cts = new();
     private readonly SemaphoreSlim _gate = new(1, 1);        // one check/download at a time
+    private readonly SemaphoreSlim _wake = new(0, 1);        // released by Wake(): cuts the background loop's wait short
     private readonly Dictionary<Version, int> _attempts = new();
     private string? _lastDownloadError;
     private Task? _loop;
@@ -696,9 +697,10 @@ internal sealed class Updater : IDisposable
 
     /// <summary>
     /// Cleans up after a finished install 30 s after start, then, while <see cref="Settings.AutoUpdate"/> is on, checks GitHub
-    /// right away and every 6 hours, downloading a newer release automatically. The setting is read before every pass, so
-    /// switching it takes effect within a minute; while it is off Clink never contacts GitHub on its own (the version label in
-    /// the footer and Check now still check on demand).
+    /// right away and every 6 hours, downloading a newer release automatically. The setting is read before every pass (once a
+    /// minute), so switching it off stops the checks without a restart, and <see cref="Wake"/> runs a check at once when it is
+    /// turned on. While it is off Clink never contacts GitHub on its own (the version label in the footer and Check now still
+    /// check on demand).
     /// </summary>
     public void StartBackgroundChecks()
     {
@@ -716,17 +718,25 @@ internal sealed class Updater : IDisposable
                 {
                     if (_settings.AutoUpdate && DateTime.UtcNow - lastCheck >= CheckInterval)
                     {
+                        _wake.Wait(0);   // a Wake() from before this pass is answered by it
                         lastCheck = DateTime.UtcNow;
                         // One failed pass (timeout after sleep/resume, a full disk...) must not end the checks for the rest of the session.
                         try { await CheckAndMaybeDownloadAsync(ct, manual: false).ConfigureAwait(false); }
                         catch (Exception ex) when (!ct.IsCancellationRequested) { Log.Warn("updater: background check failed: " + ex.Message); }
                     }
-                    await Task.Delay(LoopTick, ct).ConfigureAwait(false);
+                    // Wake() (auto-update just turned on) ends the wait early and makes the next pass check whenever it last did.
+                    if (await _wake.WaitAsync(LoopTick, ct).ConfigureAwait(false)) lastCheck = DateTime.MinValue;
                 }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
             catch (Exception ex) { Log.Warn("updater: loop stopped: " + ex.Message); }
         }, ct);
+    }
+
+    /// <summary>Runs the background loop's next pass now instead of at the end of its 6 h wait (auto-update was just turned on).</summary>
+    public void Wake()
+    {
+        try { if (_wake.CurrentCount == 0) _wake.Release(); } catch (SemaphoreFullException) { }
     }
 
     /// <summary>Manual check (also downloads when auto-update is on, and retries a download whose install failed). Never throws; null = nothing newer or the check failed (see <see cref="LastError"/>).</summary>

@@ -34,14 +34,25 @@ internal static class AtomicFile
     /// <summary>
     /// Parses <paramref name="path"/> with <paramref name="parse"/>; when that fails (or the file is missing) the ".bak" is tried.
     /// Returns null when neither exists; throws only when both exist and neither parses (the primary's error).
+    /// A primary that exists but does not parse (often a hand edit with a typo) is copied to ".unreadable" first: the next two
+    /// saves would otherwise rotate it out through the ".bak" and the edit would be gone. <paramref name="unreadable"/> is then
+    /// told why ("error on line 12; kept as settings.json.unreadable").
     /// </summary>
-    public static T? ReadWithFallback<T>(string path, Func<string, T?> parse) where T : class
+    public static T? ReadWithFallback<T>(string path, Func<string, T?> parse, Action<string>? unreadable = null) where T : class
     {
         Exception? primary = null;
         if (File.Exists(path))
         {
             try { return parse(File.ReadAllText(path)); }
-            catch (Exception ex) { primary = ex; Log.Warn($"{Path.GetFileName(path)}: {ex.Message}; trying the backup"); }
+            catch (Exception ex)
+            {
+                primary = ex;
+                Log.Warn($"{Path.GetFileName(path)}: {ex.Message}; trying the backup");
+                string why = ex is System.Text.Json.JsonException { LineNumber: long line } ? $"error on line {line + 1}" : ex.Message;
+                try { File.Copy(path, path + ".unreadable", overwrite: true); why += $"; kept as {Path.GetFileName(path)}.unreadable"; }
+                catch (Exception cex) { Log.Warn($"{Path.GetFileName(path)}: could not keep a copy: {cex.Message}"); }
+                unreadable?.Invoke(why);
+            }
         }
         string bak = BackupPath(path);
         if (File.Exists(bak))

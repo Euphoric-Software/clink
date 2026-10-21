@@ -44,7 +44,19 @@
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
-                    <TextBlock x:Name="FooterText" Style="{StaticResource MutedText}" Text="" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap" />
+                    <TextBlock x:Name="FooterText" Text="" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap">
+                        <TextBlock.Style>
+                            <!-- hover shows the whole line: a notice (a Share refusal, an update problem) is often longer than the footer -->
+                            <Style TargetType="TextBlock" BasedOn="{StaticResource MutedText}">
+                                <Setter Property="ToolTip" Value="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                                <Style.Triggers>
+                                    <Trigger Property="Text" Value="">
+                                        <Setter Property="ToolTip" Value="{x:Null}" />
+                                    </Trigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
                     <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="8,0,0,0">
                         <Button x:Name="UpdateButton" Style="{StaticResource LinkButton}" Content="Update" Click="Update_Click" FontSize="12" FontWeight="SemiBold"
                                 Visibility="Collapsed" Margin="0,0,4,0" ToolTip="Restart Clink to install the downloaded update" />
@@ -100,13 +112,13 @@
                                             </Grid.ColumnDefinitions>
                                             <TextBlock Style="{StaticResource MutedText}" Text="Size target" VerticalAlignment="Center" Margin="2,0,0,0" />
                                             <ComboBox x:Name="SizeTargetCombo" Grid.Column="1" Margin="10,0,0,0" SelectionChanged="SizeTargetChanged"
-                                                      ToolTip="Pick the bitrate so a clip of the replay length fits the limit (audio tracks counted); None = the bitrate above" />
+                                                      ToolTip="Lowers the bitrate when needed so a clip of the replay length fits the limit (audio tracks counted); never raises it. None = always the bitrate above" />
                                         </Grid>
                                         <CheckBox x:Name="CursorCheck" Content="Capture cursor" Margin="2,12,0,0" Checked="QualityChanged" Unchecked="QualityChanged" ToolTip="Record the mouse pointer too" />
                                     </StackPanel>
                                 </Border>
 
-                                <!-- Shown until the audio group below is hovered over or an audio option changes (Settings.AudioSetupSeen); then never again -->
+                                <!-- Shown until the pointer rests on the audio group below or an audio option changes (Settings.AudioSetupSeen); then never again -->
                                 <Border x:Name="AudioSetupBanner" Margin="0,14,0,0" Padding="10,8" CornerRadius="8" BorderThickness="1"
                                         BorderBrush="{StaticResource Warn}" Background="{StaticResource WarnTint}">
                                     <StackPanel>
@@ -117,7 +129,7 @@
                                 </Border>
 
                                 <TextBlock Style="{StaticResource H}" Text="AUDIO TRACKS" Margin="0,14,0,6" />
-                                <Border x:Name="AudioGroup" Style="{StaticResource Card}" MouseEnter="AudioGroup_MouseEnter">
+                                <Border x:Name="AudioGroup" Style="{StaticResource Card}" MouseEnter="AudioGroup_MouseEnter" MouseLeave="AudioGroup_MouseLeave">
                                     <StackPanel>
                                         <!-- one row per track: [x] name | source -->
                                         <Grid Margin="2,0,0,0">
@@ -152,7 +164,7 @@
 
                                             <CheckBox x:Name="MixCheck" Grid.Row="0" Content="Mix" IsChecked="True" IsEnabled="False" ToolTip="Track 1 is always game + mic + voice chat mixed together, so every player hears everything" />
                                             <TextBlock Grid.Row="0" Grid.Column="1" Style="{StaticResource MutedText}" VerticalAlignment="Center" Margin="9,4" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
-                                                       Text="Game + mic + voice chat · always track 1, plays everywhere" />
+                                                       Text="Game + mic + voice chat (always track 1)" />
 
                                             <CheckBox x:Name="TrackGameCheck" Grid.Row="1" Content="Game" Checked="AudioChanged" Unchecked="AudioChanged" ToolTip="Also save the game audio as its own track (it is always part of the mix)" />
                                             <ComboBox x:Name="GameCombo" Grid.Row="1" Grid.Column="1" SelectionChanged="AudioSourceChanged" DropDownOpened="GameCombo_DropDownOpened"
@@ -206,7 +218,7 @@
                                             </Grid.ColumnDefinitions>
                                             <TextBox x:Name="CustomAppBox" KeyDown="CustomAppBox_KeyDown" ToolTip="Exe name, e.g. overwatch or RocketLeague.exe · Enter adds it" />
                                             <Button Grid.Column="1" Content="Add" Margin="6,0,0,0" Click="AddApp_Click" />
-                                            <ComboBox x:Name="RunningAppsCombo" Grid.Column="2" Margin="6,0,0,0" MinWidth="150" MaxWidth="190" DropDownOpened="RunningAppsCombo_DropDownOpened" SelectionChanged="RunningAppsCombo_SelectionChanged"
+                                            <ComboBox x:Name="RunningAppsCombo" Grid.Column="2" Margin="6,0,0,0" MinWidth="150" MaxWidth="190" DropDownOpened="RunningAppsCombo_DropDownOpened" DropDownClosed="RunningAppsCombo_DropDownClosed" SelectionChanged="RunningAppsCombo_SelectionChanged"
                                                       ItemContainerStyle="{StaticResource ChoiceItem}" ItemTemplate="{StaticResource SourceLabel}" ToolTip="Pick one of the apps running right now" />
                                         </Grid>
                                     </StackPanel>

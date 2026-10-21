@@ -35,6 +35,7 @@ internal sealed class ReplayLengthSlider : FrameworkElement
     public ReplayLengthSlider()
     {
         Focusable = true;
+        FocusVisualStyle = null;   // keyboard focus is drawn by OnRender (accent ring on the thumb), not as a rectangle around the row
         Height = ControlHeight;
         Cursor = Cursors.Hand;
         ToolTip = "Drag, or use ← → (PageUp / PageDown for bigger steps)";
