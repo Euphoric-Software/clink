@@ -36,6 +36,7 @@ internal sealed class ArchiveService
     private DateTime? _lastMove;
     private bool _reachable;
     private string? _problem;
+    private int _runFailCode = -1;                  // Win32 code of the last unlisted copy failure in this run (archive thread)
 
     public ArchiveService(Settings settings, ClipLibrary library)
     {
@@ -184,6 +185,7 @@ internal sealed class ArchiveService
 
         int moved = 0, eligible = 0;
         bool cancelled = false;
+        _runFailCode = -1;
         foreach (var e in candidates)
         {
             if (Cancelled(root)) { cancelled = true; break; }
@@ -318,9 +320,12 @@ internal sealed class ArchiveService
             _problem = why;
             Log.Warn($"archive: {name}: {ex.Message} ({why}); local file kept");
             if (IsUnreachable(ex)) return Outcome.Unreachable;
-            // Full, over quota, read-only or no permission: every other clip would fail the same way after copying a while.
+            // Full, over quota, write-protected or no permission: every other clip would fail the same way after copying a while.
             int code = Win32Code(ex);
-            if (ex is UnauthorizedAccessException || code is 112 or 39 or 1295 || Array.IndexOf(s_accessCodes, code) >= 0) return Outcome.Stop;
+            if (ex is UnauthorizedAccessException || code is 112 or 39 or 1295 or 19 || Array.IndexOf(s_accessCodes, code) >= 0) return Outcome.Stop;
+            // Any other error a second time in one run is the archive's, not the clip's: end the run rather than fail (and log) every clip.
+            if (code != -1 && code == _runFailCode) return Outcome.Stop;
+            _runFailCode = code;
             return Outcome.Skipped;
         }
     }
@@ -401,7 +406,7 @@ internal sealed class ArchiveService
 
     // ------------------------------------------------------------------ helpers
 
-    private static readonly int[] s_accessCodes = { 5, 86, 1219, 1326, 1327, 1385, 1909 };               // access denied / bad password / credential conflict / logon failure / account restriction / logon type / locked out
+    private static readonly int[] s_accessCodes = { 5, 65, 86, 1219, 1326, 1327, 1385, 1909 };           // access denied / network access denied / bad password / credential conflict / logon failure / account restriction / logon type / locked out
     private static readonly int[] s_networkCodes =   // path not found / not ready / bad net path / bad net response / net name deleted / timeout / unreachable / not connected
         { 3, 21, 51, 53, 54, 55, 58, 59, 64, 67, 121, 1201, 1203, 1222, 1231, 1232, 1265, 2250, 1396, 1398 };   // 51/54/55/1201/1222: remote gone, busy, device gone, remembered drive not connected, no network
 
@@ -419,6 +424,7 @@ internal sealed class ArchiveService
         if (ex is UnauthorizedAccessException || Array.IndexOf(s_accessCodes, code) >= 0)
             return IsNetwork(root) ? "access denied: open the share in Explorer once to sign in" : "access denied";
         if (code == 112 || code == 39 || code == 1295) return "archive is full";
+        if (code == 19) return "archive is read-only";   // ERROR_WRITE_PROTECT: a degraded NAS volume, a write-locked USB drive
         if (IsUnreachable(ex)) return "archive unreachable";
         return ex.Message.TrimEnd('.');
     }

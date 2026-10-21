@@ -118,18 +118,40 @@ public partial class ClipsPane : UserControl
     {
         row.HasLocalFile = exists;
         if (!row.Entry.IsArchived) return;
-        if (!exists) row.SetProblem("archive offline");
+        if (!exists) { if (row.Status?.StartsWith("archive offline", StringComparison.Ordinal) != true) row.SetProblem("archive offline"); }   // keeps "archive offline: cannot trim right now"
         else if (row.IsProblem && row.Status?.StartsWith("archive offline", StringComparison.Ordinal) == true) { row.Status = null; row.IsProblem = false; }
     }
 
+    private const string CheckingArchive = "Checking archive…";
+
     /// <summary>
-    /// Whether an archived row's file can be reached now. File.Exists on a share can stall for the SMB timeout, so it runs on a
-    /// worker; the row's state follows the answer (it may have been marked offline before the NAS was up). UI thread.
+    /// Whether a click on an archived row can go ahead. File.Exists on a share that is off stalls for the SMB timeout (~20 s),
+    /// so a row already marked offline answers false at once and is looked at again in the background (the row clears itself if
+    /// the share is back; the click is not replayed). A row believed reachable is looked at on a worker and awaited. Null while
+    /// a click on that row is still waiting: the new click is ignored, so a slow share never opens two editors. UI thread.
     /// </summary>
-    private static async Task<bool> ArchivedFileReachableAsync(ClipRow row)
+    private static async Task<bool?> ArchivedFileReachableAsync(ClipRow row)
     {
+        if (!row.HasLocalFile)
+        {
+            if (!row.Probing) _ = ProbeArchivedAsync(row);
+            return false;
+        }
+        if (row.Probing) return null;
+        return await ProbeArchivedAsync(row);
+    }
+
+    /// <summary>One look at an archived row's file on a worker; the row's state follows the answer. One at a time per row. UI thread.</summary>
+    private static async Task<bool> ProbeArchivedAsync(ClipRow row)
+    {
+        row.Probing = true;
         string path = row.Entry.Path;
-        bool exists = await Task.Run(() => { try { return File.Exists(path); } catch { return false; } });
+        var probe = Task.Run(() => { try { return File.Exists(path); } catch { return false; } });
+        // A reachable share answers in milliseconds; only a slow one (waking up, or timing out) says it is looking.
+        if (await Task.WhenAny(probe, Task.Delay(400)) != probe && row.Status == null && !row.IsUploading) { row.IsProblem = false; row.Status = CheckingArchive; }
+        bool exists = await probe;
+        row.Probing = false;
+        if (row.Status == CheckingArchive) row.Status = null;
         SetArchiveFound(row, exists);
         return exists;
     }
@@ -169,7 +191,9 @@ public partial class ClipsPane : UserControl
         if (row.Entry.IsArchived)
         {
             // Looked at again rather than trusting the first check: the archive may have come back since.
-            if (!await ArchivedFileReachableAsync(row)) { row.SetProblem("archive offline: cannot trim right now"); return; }
+            bool? reachable = await ArchivedFileReachableAsync(row);
+            if (reachable == null) return;
+            if (reachable == false) { row.SetProblem("archive offline: cannot trim right now"); return; }
         }
         else if (!row.HasLocalFile) { row.SetProblem("local file deleted"); return; }
         TrimRequested?.Invoke(row.Entry);
@@ -182,7 +206,9 @@ public partial class ClipsPane : UserControl
         string path = row.Entry.Path;
         if (!row.Entry.IsArchived) { App.OpenFolder(path); return; }
         // Archived: no share round trip on the UI thread, and no falling back to the local clips folder (the clip is not there).
-        if (await ArchivedFileReachableAsync(row)) _ = Task.Run(() => App.OpenFolder(path));
+        bool? reachable = await ArchivedFileReachableAsync(row);
+        if (reachable == false) row.SetProblem("archive offline: cannot open its folder right now");
+        if (reachable == true) _ = Task.Run(() => App.OpenFolder(path));
     }
 
     private async void Thumb_Click(object sender, MouseButtonEventArgs e)
@@ -196,7 +222,9 @@ public partial class ClipsPane : UserControl
             catch (Exception ex) { App.Say("Open failed: " + ex.Message); }
         }
         if (!row.Entry.IsArchived) { Open(); return; }
-        if (!await ArchivedFileReachableAsync(row)) return;
+        bool? reachable = await ArchivedFileReachableAsync(row);
+        if (reachable == false) row.SetProblem("archive offline: cannot play it right now");
+        if (reachable != true) return;
         // ShellExecute on a share path touches the share again: on its own STA thread (shell extensions expect one), not the UI's.
         var t = new Thread(Open) { IsBackground = true, Name = "Clink.OpenArchived" };
         t.SetApartmentState(ApartmentState.STA);
@@ -267,6 +295,8 @@ internal sealed class ClipRow : INotifyPropertyChanged
     public bool HasLocalFile { get => _hasLocal; set { if (_hasLocal == value) return; _hasLocal = value; Raise(); Raise(nameof(CloudMeta)); } }
     /// <summary>The worker has looked at the file once.</summary>
     public bool Checked { get; set; }
+    /// <summary>A click is looking at the archived file right now (UI thread only).</summary>
+    public bool Probing { get; set; }
     public BitmapSource? Thumbnail { get => _thumb; set { _thumb = value; Raise(); } }
     public bool IsUploading { get => _uploading; set { _uploading = value; Raise(); } }
     public double Progress { get => _progress; set { _progress = value; Raise(); } }
