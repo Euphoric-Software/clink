@@ -20,7 +20,8 @@
             </Grid>
             <TextBlock x:Name="Subtitle" Grid.Row="1" Style="{StaticResource MutedText}" Margin="16,2,0,0" Text="" TextTrimming="CharacterEllipsis" />
             <StackPanel x:Name="ClipButtons" Grid.Row="2" Orientation="Horizontal" Margin="16,10,0,0">
-                <Button x:Name="ShareButton" Style="{StaticResource AccentButton}" Content="Share to Copium" Click="Share_Click" />
+                <!-- MinWidth: as wide as "Uploading… 100%", so Trim and Folder stay put while the percentage grows -->
+                <Button x:Name="ShareButton" Style="{StaticResource AccentButton}" Content="Share to Copium" MinWidth="132" Click="Share_Click" />
                 <Button Content="Trim" Margin="8,0,0,0" Click="Trim_Click" />
                 <Button Content="Folder" Margin="8,0,0,0" Click="Folder_Click" />
             </StackPanel>

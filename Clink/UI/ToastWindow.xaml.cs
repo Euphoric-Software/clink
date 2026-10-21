@@ -91,7 +91,7 @@ internal sealed class Toasts
     {
         string game = string.IsNullOrEmpty(e.Game) ? "" : e.Game + " · ";
         // Decimal MB, the unit the Copium / Discord limits and the Share pre-check use, so a size never reads as under a limit it is over.
-        return $"{game}{TimeSpan.FromSeconds(e.Duration):m\\:ss} · {Capabilities.FormatBytes(e.Size)}";
+        return $"{game}{TimeSpan.FromSeconds(e.Duration).ToString(e.Duration >= 3600 ? @"h\:mm\:ss" : @"m\:ss")} · {Capabilities.FormatBytes(e.Size)}";
     }
 
     private void Add(ToastWindow t)
@@ -174,7 +174,7 @@ public partial class ToastWindow : Window
         _preview = preview;
         TitleText.Text = title;
         Subtitle.Text = subtitle;
-        Subtitle.ToolTip = subtitle;
+        Subtitle.ToolTip = CaptureFreeTip(subtitle);
         Dot.Fill = TryFindResource(kind switch { "shared" => "Accent", "recording" => "Danger", _ => "Good" }) as Brush ?? Brushes.LimeGreen;
         ClipButtons.Visibility = kind == "clip" ? Visibility.Visible : Visibility.Collapsed;
         SharedButtons.Visibility = kind == "shared" ? Visibility.Visible : Visibility.Collapsed;
@@ -183,6 +183,15 @@ public partial class ToastWindow : Window
         _hide.Tick += (_, _) => { if (!_busy) Dismiss(); };
         MouseEnter += (_, _) => _hide.Stop();
         MouseLeave += (_, _) => { if (!_busy && !_dismissed) _hide.Start(); };
+        SourceInitialized += (_, _) => ScreenPlacement.ExcludeFromCapture(new WindowInteropHelper(this).Handle);
+    }
+
+    /// <summary>A tooltip whose popup (a window of its own) is kept out of capture like the toast it belongs to.</summary>
+    private static System.Windows.Controls.ToolTip CaptureFreeTip(string text)
+    {
+        var tip = new System.Windows.Controls.ToolTip { Content = text };
+        tip.Opened += (_, _) => { if (PresentationSource.FromVisual(tip) is HwndSource src) ScreenPlacement.ExcludeFromCapture(src.Handle); };
+        return tip;
     }
 
     /// <summary>v1 MainWindow compatibility (<c>new ToastWindow().Show(entry)</c>); the v2 UI goes through <see cref="AppController.Toasts"/>.</summary>
@@ -233,13 +242,18 @@ public partial class ToastWindow : Window
         _busy = true;
         _hide.Stop();
         ShareButton.IsEnabled = false;
+        ShareButton.ToolTip = null;
         ShareButton.Content = "Uploading…";
         var progress = new Progress<double>(p => ShareButton.Content = $"Uploading… {p:P0}");
-        bool ok = await AppController.Instance.ShareAsync(Entry, progress);
+        var app = AppController.Instance;
+        bool ok = await app.ShareAsync(Entry, progress);
         _busy = false;
         if (ok) { Dismiss(); return; }   // the "Shared" toast takes over
         if (_dismissed) return;          // closed while it was uploading
-        ShareButton.Content = AppController.Instance.ShareRefusal != null ? "Over Copium's free limit" : "Upload failed";
+        // Short labels (the card is 330 wide); the refusal's full text is the tooltip. No token: ShareAsync opened the window to set one.
+        string? refusal = app.ShareRefusal;
+        ShareButton.Content = refusal != null ? "Over free limit" : string.IsNullOrWhiteSpace(app.Settings.CopiumToken) ? "Add a Copium token" : "Upload failed";
+        ShareButton.ToolTip = refusal != null ? CaptureFreeTip(refusal) : null;
         ShareButton.IsEnabled = true;
         _hide.Interval = TimeSpan.FromSeconds(8);
         _hide.Start();
@@ -316,6 +330,20 @@ internal static unsafe class ScreenPlacement
     }
 
     public static HWND HwndOf(Window w) => new(new WindowInteropHelper(w).Handle);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern int SetWindowDisplayAffinity(nint hwnd, uint affinity);
+    private const uint WDA_EXCLUDEFROMCAPTURE = 0x11;
+
+    /// <summary>
+    /// Keeps a window out of every screen capture, Windows Graphics Capture included (WDA_EXCLUDEFROMCAPTURE, Windows 10 2004+):
+    /// toasts and the status dot sit on the captured monitor and would otherwise be recorded into the clips. Older builds refuse
+    /// it and the window simply stays capturable; WDA_MONITOR is deliberately not a fallback, it would put a black box in the clip.
+    /// </summary>
+    public static void ExcludeFromCapture(nint hwnd)
+    {
+        if (hwnd != 0) SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
+    }
 
     /// <summary>Current size in physical pixels.</summary>
     public static (int w, int h) SizeOf(Window w)
