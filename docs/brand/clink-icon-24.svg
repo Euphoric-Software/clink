@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" role="img" aria-label="Clink">
+  <title>Clink</title>
+  <!-- Clink app icon, pixel-hinted for 24 px: ring outer 8 / inner 5.5, dot r 2. Same structure as clink-icon.svg. -->
+  <path fill="#111111" d="M7.54 0H16.46C21.12 0 24 2.88 24 7.54V16.46C24 21.12 21.12 24 16.46 24H7.54C2.88 24 0 21.12 0 16.46V7.54C0 2.88 2.88 0 7.54 0Z"/>
+  <path fill="#36CAFA" d="M19.03 8.18A8 8 0 1 0 19.03 15.82A1.25 1.25 0 0 0 18.53 14.12A1.25 1.25 0 0 0 16.83 14.62A5.5 5.5 0 1 1 16.83 9.38A1.25 1.25 0 0 0 18.53 9.88A1.25 1.25 0 0 0 19.03 8.18Z"/>
+  <circle fill="#FCFCFC" cx="12" cy="12" r="2"/>
+</svg>
