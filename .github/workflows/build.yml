@@ -1,6 +1,7 @@
-# Compiles Clink on every push to main and on pull requests. Releases are built
-# separately by release.yml. Actions are pinned to commit SHAs (version in the
-# comment); Dependabot (.github/dependabot.yml) proposes bumps.
+# Compiles Clink and runs its unit tests (Clink.exe --unittest) on every push to
+# main and on pull requests. Releases are built separately by release.yml.
+# Actions are pinned to commit SHAs (version in the comment); Dependabot
+# (.github/dependabot.yml) proposes bumps.
 name: Build
 
 on:
@@ -41,3 +42,16 @@ jobs:
       - name: Build
         shell: pwsh
         run: dotnet build Clink/Clink.csproj -c Release
+
+      # Clink.exe is a GUI-subsystem exe: Start-Process -Wait -PassThru -NoNewWindow
+      # is what shows its output and gives its exit code. CLINK_TESTS_NO_SKIP is left
+      # unset on purpose: the audio mix render tests skip (they do not fail) on a
+      # runner that has no AAC encoder.
+      - name: Unit tests
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          $exe = Get-ChildItem -Path Clink/bin/Release -Filter Clink.exe -Recurse | Select-Object -First 1
+          if (-not $exe) { throw 'Clink.exe was not found under Clink/bin/Release' }
+          $run = Start-Process -FilePath $exe.FullName -ArgumentList '--unittest' -Wait -PassThru -NoNewWindow
+          if ($run.ExitCode -ne 0) { throw "Unit tests failed (exit code $($run.ExitCode))" }
