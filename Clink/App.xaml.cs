@@ -68,7 +68,14 @@ public partial class App : System.Windows.Application
                     string report = Engine.MediaProbe.Report(args[1]);
                     Console.WriteLine(report);
                     Log.Info("[probe]\n" + report);
-                    if (args.Length > 2)
+                    if (args.Skip(2).Any(a => a.Equals("--levels", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        // Clink.exe --probe <file> --levels: how loud each audio track really is (RMS / peak of the decoded audio)
+                        string levels = Engine.MediaProbe.Levels(args[1]);
+                        Console.WriteLine(levels);
+                        Log.Info("[probe]\n" + levels);
+                    }
+                    if (args.Length > 2 && !args[2].StartsWith("--", StringComparison.Ordinal))
                     {
                         long at = args.Length > 3 && double.TryParse(args[3], out double sec) ? (long)(sec * 10_000_000) : 0;
                         var frame = Engine.MediaProbe.DecodeFrame(args[1], at);
@@ -86,13 +93,13 @@ public partial class App : System.Windows.Application
         }
         if (args.Length > 1 && args[0].Equals("--trim", StringComparison.OrdinalIgnoreCase))
         {
-            // Clink.exe --trim <in> <out> <startSec> <endSec>
+            // Clink.exe --trim <in> <out> <startSec> <endSec> [--gain Name=volume]... [--drop Name]...  (see Engine/TrimCli.cs)
             Log.Init(Settings.Dir, Log.CliFile);
             AttachParentConsole();
             int code = 0;
             var t = new Thread(() =>
             {
-                try { Engine.Trimmer.Trim(args[1], args[2], double.Parse(args[3]), double.Parse(args[4]), null); Console.WriteLine("ok"); }
+                try { Engine.TrimCli.Run(args); Console.WriteLine("ok"); }
                 catch (Exception ex) { Log.Error("[trim] failed", ex); Console.WriteLine(ex); code = 5; }
             });
             t.SetApartmentState(ApartmentState.MTA);

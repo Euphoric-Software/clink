@@ -39,6 +39,11 @@ internal sealed unsafe class ClipPlayer : IDisposable
     {
         public IMFSourceReader* Reader;
         public uint Stream;
+        /// <summary>
+        /// Where the stream's first sample sits on the clip timeline, 100 ns (its edit list: negative when the file starts the track
+        /// before the clip origin, positive after). The stream's own timestamps start at 0 whatever the file says.
+        /// </summary>
+        public long Offset;
         public bool Eos;
         public bool SrcFloat = true;
         public int SrcChannels = 2;
@@ -277,7 +282,8 @@ internal sealed unsafe class ClipPlayer : IDisposable
             if (videoIdx == uint.MaxValue) throw new InvalidOperationException("No video stream in file");
             // Track i is the file's i-th audio track (the mix first), the same numbering the trimmer's mix uses.
             Engine.Trimmer.AudioInFileOrder(audioIdx, videoIdx);
-            string[]? names = Engine.Trimmer.ReadAudioTrackNames(path);
+            var info = Engine.Trimmer.ReadAudioTracks(path);
+            string[]? names = info?.Select(t => t.Name).ToArray();
             TrackNames = names != null && names.Length == audioIdx.Count ? names : null;
             _videoStream = videoIdx;
             _video->SetStreamSelection(AllStreams, false);
@@ -303,7 +309,7 @@ internal sealed unsafe class ClipPlayer : IDisposable
             // Every slot is populated before any reader is created so that ReleaseAll can walk the array after a failure
             // part-way through (a null Reader is simply skipped).
             _tracks = new AudioTrackState[audioIdx.Count];
-            for (int i = 0; i < _tracks.Length; i++) _tracks[i] = new AudioTrackState { Stream = audioIdx[i] };
+            for (int i = 0; i < _tracks.Length; i++) _tracks[i] = new AudioTrackState { Stream = audioIdx[i], Offset = TrackNames != null ? info![i].StartOffset : 0 };
             Gain = new float[_tracks.Length];
             Array.Fill(Gain, 1f);
             Muted = new bool[_tracks.Length];
@@ -625,7 +631,7 @@ internal sealed unsafe class ClipPlayer : IDisposable
         {
             foreach (var t in _tracks)
             {
-                SeekReader(t.Reader, target);
+                SeekReader(t.Reader, Math.Max(0, target - t.Offset / 10_000_000.0));   // the track's own time of that moment
                 t.Clear();
             }
         }
@@ -731,7 +737,7 @@ internal sealed unsafe class ClipPlayer : IDisposable
         {
             byte[] raw = Mf.ReadSampleBytes(sample);
             if (raw.Length == 0) return;
-            t.Append(t.Convert(raw), FrameOf(ts));
+            t.Append(t.Convert(raw), FrameOf(ts + t.Offset));
         }
         finally { sample->Release(); }
     }

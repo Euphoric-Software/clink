@@ -85,6 +85,7 @@ public partial class MainWindow : Window
         _app.UpdateStateChanged += () => Dispatcher.BeginInvoke(RefreshUpdateState);
         _app.Archive.Changed += () => Dispatcher.BeginInvoke(RefreshArchiveStatus);
         Clips.TrimRequested += OpenTrim;
+        Clips.PlayRequested += entry => OpenClip(entry, trim: false);
         HotkeyEditor.Changed += HotkeysChanged;
         ReplaySlider.ValueChanged += v => { if (!_loading) UpdateEstimates(v); };
         ReplaySlider.ValueCommitted += ReplayLengthCommitted;
@@ -744,9 +745,17 @@ public partial class MainWindow : Window
 
     // ------------------------------------------------------------------ clips
 
-    internal void OpenTrim(ClipEntry entry)
+    /// <summary>Opens the clip in the trim editor (the Trim button, the toast, --trim-last).</summary>
+    internal void OpenTrim(ClipEntry entry) => OpenClip(entry, trim: true);
+
+    /// <summary>
+    /// Opens a clip in the player (a click on its row; <paramref name="trim"/> false) or in the trim editor. A clip that is already
+    /// open comes forward in the mode asked for instead of a second window opening on it.
+    /// </summary>
+    internal void OpenClip(ClipEntry entry, bool trim)
     {
-        var w = new TrimWindow(entry) { Owner = IsVisible ? this : null };
+        if (TrimWindow.Find(entry) is { } open) { open.Reveal(trim); return; }
+        var w = new TrimWindow(entry, trim) { Owner = IsVisible ? this : null };
         w.Show();
     }
 
