@@ -1067,6 +1067,16 @@ public partial class MainWindow : Window
     /// </summary>
     private string? _archiveRefusal;
 
+    /// <summary>How many typed archive paths have been refused so far (<see cref="RefuseArchivePath"/>): Archive now… compares it before and after its own click.</summary>
+    private int _archiveRefusals;
+
+    /// <summary>
+    /// <see cref="_archiveRefusal"/> was made while the focus moved onto Archive now…. A mouse press (and an automation client,
+    /// which focuses the button first) moves the focus out of the path box onto the button just before its click arrives, and that
+    /// is what refuses a path typed there. A refusal from an earlier Tab, or a click elsewhere, is not that click's.
+    /// </summary>
+    private bool _archiveRefusalForArchiveNow;
+
     private void ArchivePathBox_LostFocus(object sender, RoutedEventArgs e)
     {
         if (_loading) return;
@@ -1104,6 +1114,8 @@ public partial class MainWindow : Window
     private void RefuseArchivePath(string reason)
     {
         _archiveRefusal = reason;
+        _archiveRefusals++;
+        _archiveRefusalForArchiveNow = ReferenceEquals(Keyboard.FocusedElement, ArchiveNowButton);   // the focus is already on the element it moved to
         ArchiveStatus.Text = reason;
         ArchiveStatus.Foreground = (Brush)FindResource("Warn");
         ArchivePathBox.Text = _app.Settings.ArchivePath ?? "";
@@ -1153,12 +1165,18 @@ public partial class MainWindow : Window
     /// </summary>
     private void ArchiveNow_Click(object sender, RoutedEventArgs e)
     {
-        // A path typed into the box is taken (or refused) before the dialog opens, as Test does: the dialog must not move
-        // clips to the old saved path while the box showed another.
+        // A path typed into the box is taken (or refused) before the dialog opens, as Test does: the dialog must not move clips
+        // to the old saved path while the box showed another. Only a refusal that this click caused counts; one from earlier
+        // (the user tabbed away from a bad path, read the message, and now clicks) must not eat the click. A mouse press, or an
+        // automation client, has already moved the focus onto the button (and refused the path) by the time the click arrives;
+        // a key press on the focused button has not moved anything, so the call below is what takes or refuses the path.
+        int before = _archiveRefusals;
         ArchivePathBox_LostFocus(sender, e);
-        if (_archiveRefusal is string refused)
+        bool causedByThisClick = _archiveRefusals != before || _archiveRefusalForArchiveNow;
+        if (causedByThisClick && _archiveRefusal is string refused)
         {
             _archiveRefusal = null;
+            _archiveRefusalForArchiveNow = false;
             ArchiveStatus.Text = refused;
             ArchiveStatus.SetResourceReference(TextBlock.ForegroundProperty, "Warn");
             return;
