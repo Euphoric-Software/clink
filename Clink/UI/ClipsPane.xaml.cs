@@ -46,6 +46,9 @@ public partial class ClipsPane : UserControl
     /// <summary>The user wants to trim this clip: the window opens the editor.</summary>
     internal event Action<ClipEntry>? TrimRequested;
 
+    /// <summary>The user clicked a clip (its row or its thumbnail): the window opens the player.</summary>
+    internal event Action<ClipEntry>? PlayRequested;
+
     private static AppController App => AppController.Instance;
 
     /// <summary>Re-reads the library. Rows for entries already shown keep their thumbnail and upload state.</summary>
@@ -330,11 +333,43 @@ public partial class ClipsPane : UserControl
         catch (Exception ex) { App.Say("Could not open folder: " + ex.Message); }
     }
 
-    private async void Thumb_Click(object sender, MouseButtonEventArgs e)
+    private ClipRow? _pressed;   // the row the left button went down on: a click that began elsewhere must not play this one
+
+    private void Row_Down(object sender, MouseButtonEventArgs e) => _pressed = RowOf(sender);
+
+    /// <summary>True when the button that came up now went down on this row too (and forgets it).</summary>
+    private bool ClickedOn(ClipRow row)
+    {
+        var pressed = _pressed;
+        _pressed = null;
+        return ReferenceEquals(pressed, row);
+    }
+
+    /// <summary>A click on the row plays the clip, unless it was on one of the row's own buttons (Trim, Share, the folder, the link).</summary>
+    private async void Row_Click(object sender, MouseButtonEventArgs e)
     {
         var row = RowOf(sender);
-        if (row == null) return;
+        if (row == null || e.Handled || !ClickedOn(row)) return;
+        for (var d = e.OriginalSource as DependencyObject; d != null && !ReferenceEquals(d, sender); d = d is System.Windows.Media.Visual ? System.Windows.Media.VisualTreeHelper.GetParent(d) : LogicalTreeHelper.GetParent(d))
+            if (d is System.Windows.Controls.Primitives.ButtonBase) return;
+        if (!row.HasLocalFile && !row.Entry.IsArchived) return;   // a shared clip whose file is gone has nothing to play
+        e.Handled = true;
+        await PlayAsync(row);
+    }
+
+    private async void Thumb_Click(object sender, MouseButtonEventArgs e)
+    {
+        e.Handled = true;   // the row around the thumbnail would play the clip a second time
+        var row = RowOf(sender);
+        if (row == null || !ClickedOn(row)) return;
+        await PlayAsync(row);
+    }
+
+    /// <summary>Plays a clip: the window opens its player; with nobody listening the system's own player does.</summary>
+    private async Task PlayAsync(ClipRow row)
+    {
         if (!await EnsureFileAsync(row)) { SayCannot(row, "play it"); return; }
+        if (PlayRequested is { } play) { play(row.Entry); return; }
         string path = row.Entry.Path;
         void Open()
         {

@@ -63,7 +63,8 @@
 
         <!-- Local / Trimmed row: thumbnail · title + icons · meta · Trim / Share / folder -->
         <DataTemplate x:Key="LocalRow">
-            <Border Style="{StaticResource Row}">
+            <Border Style="{StaticResource Row}" Cursor="Hand" PreviewMouseLeftButtonDown="Row_Down" MouseLeftButtonUp="Row_Click">
+                <!-- a click anywhere on the row that is not on one of its buttons plays the clip -->
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto" />
@@ -97,7 +98,22 @@
 
         <!-- Cloud row: title · date · the link (click = copy) · Open page · folder when the local file still exists -->
         <DataTemplate x:Key="CloudRow">
-            <Border Style="{StaticResource Row}">
+            <Border PreviewMouseLeftButtonDown="Row_Down" MouseLeftButtonUp="Row_Click">
+                <Border.Style>
+                    <!-- a click on the row plays the local file; no hand over a shared clip whose file is gone (an archived one still answers: "archive offline") -->
+                    <Style TargetType="Border" BasedOn="{StaticResource Row}">
+                        <Setter Property="Cursor" Value="Hand" />
+                        <Style.Triggers>
+                            <MultiDataTrigger>
+                                <MultiDataTrigger.Conditions>
+                                    <Condition Binding="{Binding HasLocalFile}" Value="False" />
+                                    <Condition Binding="{Binding IsArchived}" Value="False" />
+                                </MultiDataTrigger.Conditions>
+                                <Setter Property="Cursor" Value="Arrow" />
+                            </MultiDataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Border.Style>
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto" />
