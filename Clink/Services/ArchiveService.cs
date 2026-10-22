@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 using Windows.Win32;
 using Windows.Win32.Foundation;
 using Windows.Win32.Storage.FileSystem;
@@ -33,6 +35,9 @@ internal readonly record struct ArchivePreview(int DueCount, long DueBytes, int 
 /// The "Archive now…" dialog moves clips by hand with <see cref="RunManualAsync"/>: whatever the rules say (all local clips) or
 /// what they pick (due), with or without the automatic switch, at full speed unless a game is running. It runs on the same thread,
 /// one run at a time, and the automatic pass gives way to it.
+/// A local clip is deleted only when a different, complete copy exists: the archive location is checked for being another name
+/// for the clips folder (<see cref="AliasProblem"/>), and the delete itself goes through <see cref="DeleteGuard"/>, which cannot
+/// delete a file that is also the archive copy.
 /// </summary>
 internal sealed class ArchiveService
 {
@@ -63,6 +68,7 @@ internal sealed class ArchiveService
     private DateTime? _lastMove;
     private bool _reachable;
     private string? _problem;
+    private string? _aliasOkKey;                    // "archive|clips folder" that passed the alias probe: the automatic pass does not write probes every 5 minutes
     private int _runFailCode = -1;                  // Win32 code of the last unlisted copy failure in this run (archive thread)
 
     public ArchiveService(Settings settings, ClipLibrary library)
@@ -113,13 +119,14 @@ internal sealed class ArchiveService
     /// automatic pass in progress gives way at its next chunk). <paramref name="scope"/>: <see cref="ArchiveScope.Due"/> = what
     /// the automatic rules pick now, <see cref="ArchiveScope.All"/> = every clip in the clips folder. It needs a valid, reachable
     /// archive location that is not the clips folder, and nothing else: not the automatic switch, not a rule. Clips saved under
-    /// 30 s ago and clips that are open are left (and counted). <paramref name="throttle"/> keeps the gentle copy speed of the
-    /// automatic pass (a game is running); without it the copy runs at full speed. <paramref name="progress"/> is called on the
+    /// 30 s ago and clips that are open are left (and counted). <paramref name="throttle"/> says whether the copy keeps the gentle
+    /// speed of the automatic pass (a game is running) or goes at full speed; it is asked again for every chunk, on the archive
+    /// thread, so a game that starts or stops during a long run is followed. <paramref name="progress"/> is called on the
     /// archive thread for every percent of a clip. Cancelling (<paramref name="ct"/>, the location changed, Clink exiting) ends
     /// the run at the next chunk, deletes the partial copy and leaves the local clip; a clip already moved stays moved. The task
     /// always completes with a result, never throws.
     /// </summary>
-    public Task<ArchiveRunResult> RunManualAsync(ArchiveScope scope, bool throttle, IProgress<ArchiveProgress>? progress, CancellationToken ct)
+    public Task<ArchiveRunResult> RunManualAsync(ArchiveScope scope, Func<bool> throttle, IProgress<ArchiveProgress>? progress, CancellationToken ct)
     {
         var req = new ManualRequest(scope, throttle, progress, ct);
         if (_thread == null) Start();
@@ -127,6 +134,10 @@ internal sealed class ArchiveService
         _wake.Set();
         return req.Done.Task;
     }
+
+    /// <summary><see cref="RunManualAsync(ArchiveScope, Func{bool}, IProgress{ArchiveProgress}?, CancellationToken)"/> with a pace that is decided once.</summary>
+    public Task<ArchiveRunResult> RunManualAsync(ArchiveScope scope, bool throttle, IProgress<ArchiveProgress>? progress, CancellationToken ct) =>
+        RunManualAsync(scope, () => throttle, progress, ct);
 
     /// <summary>What <see cref="RunManualAsync"/> would move right now, for each scope. Reads the clips folder: call it on a worker.</summary>
     public ArchivePreview Preview()
@@ -157,6 +168,7 @@ internal sealed class ArchiveService
     {
         var s = _settings;
         string? root = s.ArchivePath?.Trim();
+        _aliasOkKey = null;   // a new location (or folder): the automatic pass looks at it again before it moves anything
         if (!s.ArchiveEnabled || string.IsNullOrEmpty(root)) { _problem = null; _reachable = false; SetStatus(IdleStatus()); return; }
         if (s.ArchiveAfterDays <= 0 && s.ArchiveWhenLocalExceedsGB <= 0) { _problem = null; _reachable = false; SetStatus(NoRuleStatus); return; }
         if (!Path.IsPathFullyQualified(root)) { _problem = NotFullPathProblem; _reachable = false; SetStatus(IdleStatus()); return; }
@@ -181,10 +193,7 @@ internal sealed class ArchiveService
             if (wait > TimeSpan.Zero) { _wake.WaitOne(wait > Period ? Period : wait); continue; }
             if (_stop) break;
             lock (_gate) _due = DateTime.UtcNow + Period;
-            IsBusy = true;
-            try { Run(); }
-            catch (Exception ex) { Log.Warn("archive: " + ex.Message); SetStatus(Describe(ex, _settings.ArchivePath) + ", will retry"); }
-            finally { IsBusy = false; }
+            AutomaticPass();
         }
         // Stopping: nobody is left to run a manual request that is still waiting.
         lock (_gate)
@@ -193,6 +202,30 @@ internal sealed class ArchiveService
             _manualQueued = 0;
         }
     }
+
+    /// <summary>One automatic pass (the loop's, and <see cref="RunAutomaticOnce"/>'s): never throws.</summary>
+    private void AutomaticPass()
+    {
+        IsBusy = true;
+        try { Run(); }
+        catch (Exception ex) { Log.Warn("archive: " + ex.Message); SetStatus(Describe(ex, _settings.ArchivePath) + ", will retry"); }
+        finally { IsBusy = false; }
+    }
+
+    // Test aids (Clink/Tests/ArchiveTests.cs): the loop's timing is minutes, a test cannot wait for it.
+
+    /// <summary>Runs one automatic pass on the calling thread, as the loop would. Only while the service thread is not running.</summary>
+    internal void RunAutomaticOnce() => AutomaticPass();
+
+    /// <summary>Starts the service thread if needed and has it begin an automatic pass at once.</summary>
+    internal void ScheduleAutomaticNow()
+    {
+        if (_thread == null) Start();
+        Schedule(DateTime.UtcNow);
+    }
+
+    /// <summary>When the loop next looks at whether an automatic pass is due (UTC).</summary>
+    internal DateTime NextAutomaticPassUtc { get { lock (_gate) return _due; } }
 
     // ------------------------------------------------------------------ one run
 
@@ -230,9 +263,13 @@ internal sealed class ArchiveService
 
         string local = s.ClipsFolder;
         long localBytes = FolderBytes(local);
-        var candidates = SelectCandidates(_library.Entries, local, ArchiveScope.Due, s.ArchiveAfterDays, s.ArchiveWhenLocalExceedsGB, localBytes, DateTime.Now, FileLength);
+        // Every clip, oldest first, asked one at a time whether it is due under the rules as they are now and the folder as it
+        // is now: the folder only shrinks when a clip really moves, so a clip that is open (or fails) leaves the size rule
+        // unsatisfied and the next clip takes its place. Only the due clips are looked at on disk.
+        var candidates = SelectCandidates(_library.Entries, local, ArchiveScope.All, 0, 0, localBytes, DateTime.Now, _ => 0);
 
         int moved = 0;
+        bool aliasChecked = false;
         _runFailCode = -1;
         foreach (var e in candidates)
         {
@@ -243,6 +280,18 @@ internal sealed class ArchiveService
             try { fi = new FileInfo(e.Path); if (!fi.Exists) continue; } catch { continue; }
             if (DateTime.UtcNow - fi.LastWriteTimeUtc < MinAge) continue;
 
+            if (!aliasChecked)
+            {
+                // Something is about to move: be sure the archive is not another name for the clips folder (checked once per location).
+                aliasChecked = true;
+                if (CheckAlias(root, local) is string alias)
+                {
+                    _problem = alias;
+                    Log.Warn("archive: " + alias + ", nothing is moved");
+                    SetStatus(IdleStatus());
+                    return;
+                }
+            }
             var outcome = MoveOne(e, fi, root, null);
             if (outcome == Outcome.Unreachable) { _reachable = false; break; }
             if (outcome is Outcome.Stop or Outcome.Cancelled) break;
@@ -260,8 +309,10 @@ internal sealed class ArchiveService
     /// <see cref="ArchiveScope.All"/> takes every one of them. <see cref="ArchiveScope.Due"/> takes what the automatic rules pick:
     /// a clip older than <paramref name="afterDays"/> days, or any clip while the folder (<paramref name="localBytes"/>, taken as
     /// the clips of the folder add up) is over <paramref name="overGb"/> GB; each pick counts as gone from the folder for the
-    /// next one, so the walk stops once the folder is under the limit. 0 turns a rule off. Pure: the automatic pass and the
-    /// "Archive now…" dialog both ask it, and the tests do.
+    /// next one, so the walk stops once the folder is under the limit. 0 turns a rule off. Pure: the "Archive now…" dialog (its
+    /// counts and a manual Due run) asks it, and so do the tests. The automatic pass asks for <see cref="ArchiveScope.All"/> and
+    /// applies <see cref="IsDue"/> itself, clip by clip, because there a clip that does not move (it is open) must not count as
+    /// gone.
     /// </summary>
     internal static List<ClipEntry> SelectCandidates(IReadOnlyList<ClipEntry> entries, string localFolder, ArchiveScope scope, int afterDays,
         double overGb, long localBytes, DateTime now, Func<ClipEntry, long> sizeOf)
@@ -304,13 +355,13 @@ internal sealed class ArchiveService
     /// <summary>One "Archive now…" request on its way through the archive thread, with the counts of the run so far.</summary>
     private sealed class ManualRequest
     {
-        public ManualRequest(ArchiveScope scope, bool throttle, IProgress<ArchiveProgress>? progress, CancellationToken ct)
+        public ManualRequest(ArchiveScope scope, Func<bool> throttle, IProgress<ArchiveProgress>? progress, CancellationToken ct)
         {
             Scope = scope; Throttle = throttle; Progress = progress; Ct = ct;
         }
 
         public ArchiveScope Scope { get; }
-        public bool Throttle { get; }
+        public Func<bool> Throttle { get; }
         public IProgress<ArchiveProgress>? Progress { get; }
         public CancellationToken Ct { get; }
         public TaskCompletionSource<ArchiveRunResult> Done { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -322,6 +373,13 @@ internal sealed class ArchiveService
         public bool Cancelled;
 
         public ArchiveRunResult Result(string? problem) => new(Eligible, Moved, InUse, TooNew, Failed, BytesMoved, problem, Cancelled);
+
+        /// <summary>The gentle pace right now (a game is running)? The caller's answer, asked per chunk; the gentle pace when it cannot say.</summary>
+        public bool Throttled()
+        {
+            try { return Throttle(); }
+            catch (Exception ex) { Log.Warn("archive: throttle: " + ex.Message); return true; }
+        }
     }
 
     private void RunManualRequest(ManualRequest req)
@@ -352,6 +410,8 @@ internal sealed class ArchiveService
         else if (!Path.IsPathFullyQualified(root)) refusal = _problem = NotFullPathProblem;
         else if (IsSameFolder(root, s.ClipsFolder)) refusal = _problem = SameFolderProblem;
         else if (Reach(root) is string unreachable) refusal = _problem = unreachable;
+        else if (AliasProblem(root, s.ClipsFolder) is string alias) refusal = _problem = alias;   // another name for the clips folder: "moving" onto itself deletes the clip
+        else _aliasOkKey = AliasKey(root, s.ClipsFolder);
         if (refusal != null)
         {
             _reachable = false;
@@ -365,7 +425,7 @@ internal sealed class ArchiveService
         long localBytes = FolderBytes(local);
         var picks = SelectCandidates(_library.Entries, local, req.Scope, s.ArchiveAfterDays, s.ArchiveWhenLocalExceedsGB, localBytes, DateTime.Now, FileLength);
         req.Count = picks.Count;
-        Log.Info($"archive: manual run ({req.Scope}, {(req.Throttle ? "throttled" : "full speed")}): {picks.Count} clip(s) picked, to {root}");
+        Log.Info($"archive: manual run ({req.Scope}, {(req.Throttled() ? "throttled" : "full speed")} to begin with): {picks.Count} clip(s) picked, to {root}");
 
         _runFailCode = -1;
         for (int i = 0; i < picks.Count; i++)
@@ -381,6 +441,7 @@ internal sealed class ArchiveService
             var outcome = MoveOne(e, fi, root, req);
             if (outcome == Outcome.Moved) { req.Moved++; req.BytesMoved += fi.Length; }
             else if (outcome == Outcome.InUse) req.InUse++;
+            else if (outcome == Outcome.Gone) req.Eligible--;   // deleted while the run was looking at it: nothing to move after all
             else if (outcome == Outcome.Cancelled) { req.Cancelled = true; break; }
             else
             {
@@ -409,8 +470,10 @@ internal sealed class ArchiveService
     /// <summary>
     /// How one clip went. Stop = the archive cannot take any clip right now (full, read-only, no permission): end the run, it is
     /// still reachable. InUse = something has the file open (or changed it meanwhile): left as it is, a later run moves it.
+    /// Skipped = this clip failed for a reason that waiting does not fix (<c>_problem</c> says which). Gone = the clip was
+    /// deleted while the run was looking at it.
     /// </summary>
-    private enum Outcome { Moved, InUse, Skipped, Unreachable, Stop, Cancelled }
+    private enum Outcome { Moved, InUse, Skipped, Unreachable, Stop, Cancelled, Gone }
 
     private Outcome MoveOne(ClipEntry entry, FileInfo fi, string root, ManualRequest? manual)
     {
@@ -419,10 +482,31 @@ internal sealed class ArchiveService
         long length = fi.Length;
         DateTime lastWrite = fi.LastWriteTimeUtc;
 
-        // Open? (uploading / trimming / playing) Then not now.
+        // A symbolic link in the clips folder: its content would be copied, but the delete (through a handle on what the link
+        // points to) would take the file behind the link, not the link. Clink does not write links; leave them to their owner.
+        if ((fi.Attributes & FileAttributes.ReparsePoint) != 0 && IsLink(fi))
+        {
+            _problem = "the clip is a link to another file, not a file";
+            Log.Warn($"archive: {name}: {_problem}, kept");
+            return Outcome.Skipped;
+        }
+
+        // Open? (uploading / trimming / playing) Then not now. A clip that may not be read at all is another matter: waiting does not fix that.
         try { using var probe = new FileStream(src, FileMode.Open, FileAccess.Read, FileShare.None); }
-        catch (IOException) { Log.Info($"archive: {name} is in use, later"); return Outcome.InUse; }
-        catch (UnauthorizedAccessException) { Log.Info($"archive: {name} is in use, later"); return Outcome.InUse; }
+        catch (UnauthorizedAccessException)
+        {
+            _problem = "cannot read the local clip: access denied";
+            Log.Warn($"archive: {name}: access denied to the local file, kept");
+            return Outcome.Skipped;
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException) { return Outcome.Gone; }
+        catch (IOException ex) when (IsSharingViolation(ex)) { Log.Info($"archive: {name} is in use, later"); return Outcome.InUse; }
+        catch (IOException ex)
+        {
+            _problem = "cannot read the local clip: " + ex.Message.TrimEnd('.');
+            Log.Warn($"archive: {name}: {ex.Message}, kept");
+            return Outcome.Skipped;
+        }
 
         string dest = Path.Combine(root, name);
         var sw = Stopwatch.StartNew();
@@ -459,11 +543,18 @@ internal sealed class ArchiveService
                     Copy(src, tmp, name, length, root, manual);
                     long copied = new FileInfo(tmp).Length;
                     var after = new FileInfo(src);
-                    if (copied != length || after.Length != length || after.LastWriteTimeUtc != lastWrite)
+                    var check = CheckCopy(copied, length, after.Length, after.LastWriteTimeUtc, lastWrite);
+                    if (check != CopyCheck.Good)
                     {
-                        Log.Warn($"archive: {name} changed while copying or the copy is short ({copied} of {length} bytes), local file kept");
                         TryDelete(tmp);
-                        return Outcome.InUse;   // something is writing to it: a later run moves it
+                        if (check == CopyCheck.SourceChanged)
+                        {
+                            Log.Warn($"archive: {name} changed while copying, local file kept");
+                            return Outcome.InUse;   // something is writing to it: a later run moves it
+                        }
+                        _problem = $"the copy came out short ({copied} of {length} bytes)";   // the clip did not change: the archive (or the read) cut it short, which is not a matter of waiting
+                        Log.Warn($"archive: {name}: {_problem}, local file kept");
+                        return Outcome.Skipped;
                     }
                     File.Move(tmp, dest, true);
                 }
@@ -476,34 +567,27 @@ internal sealed class ArchiveService
             }
             else Report(manual, name, 100);   // the copy from an earlier run is already there
 
-            // Verified copy exists: now (and only now) the local file goes. The copy took a while (throttled), so the file is
-            // checked once more under an exclusive-ish handle right before the delete: the trim editor may have opened it or
-            // renamed its cut over it meanwhile, and that version is not what the archive holds.
-            try
-            {
-                using var hold = new FileStream(src, FileMode.Open, FileAccess.Read, FileShare.Delete, 1);
-                if (hold.Length != length || File.GetLastWriteTimeUtc(src) != lastWrite)
-                {
-                    Log.Warn($"archive: {name} changed after it was copied, local file kept");
-                    if (!haveCopy) TryDelete(dest);   // the stale copy we just made
-                    return Outcome.InUse;
-                }
-                File.Delete(src);   // marked for deletion now, gone when the handle closes; a rename over it fails until then
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                Log.Warn($"archive: copied {name} but the local file is in use or could not be deleted yet ({ex.Message}); next run finishes the move");
-                return Outcome.InUse;
-            }
+            // Verified copy exists: now (and only now) the local file goes, and only when the copy is a different file that is
+            // there in full. The guard holds the archive copy open and the local file open with DELETE access (the same file under
+            // two names cannot be opened both ways: that clip is skipped, never destroyed), checks the local file through its own
+            // handle, and deletes through that handle, not by name: a trim that renamed its cut over the clip meanwhile keeps it.
+            using var guard = DeleteGuard.Open(src, dest, length, lastWrite, out GuardResult refusal, out string? refusalText);
+            if (guard == null) return Declined(refusal, refusalText, src, dest, haveCopy);
 
-            // The library may have been reloaded during the copy (clips folder changed): update the entry it holds now, not the
-            // snapshot, or the save below would keep the deleted local path and the clip would drop out of the library.
-            var live = _library.Find(entry.Path) ?? _library.Find(src) ?? entry;
-            live.Path = dest;
-            live.ArchivedAt = DateTime.Now;
-            foreach (var other in _library.Entries)
-                if (other != live && string.Equals(other.SourcePath, src, StringComparison.OrdinalIgnoreCase)) other.SourcePath = dest;
-            _library.Update(live);
+            // The library entry is updated under the library's lock together with the delete: a reload cannot run in between
+            // and drop the entry of a clip whose local file is already gone.
+            GuardResult deleteResult = GuardResult.Ready;
+            string? deleteText = null;
+            var move = _library.MoveToArchive(entry, src, dest, () => guard.Delete(out deleteResult, out deleteText));
+            if (move != ArchiveMove.Moved)
+            {
+                guard.Dispose();   // the archive copy is open until now (and a copy that is open cannot be deleted)
+                if (move == ArchiveMove.NotDeleted) return Declined(deleteResult, deleteText, src, dest, haveCopy);
+                _problem = "the clip left the library while it was being moved";
+                Log.Warn($"archive: {name}: no longer in the library, local file kept");
+                if (!haveCopy) TryDeleteCopy(src, dest);
+                return Outcome.Skipped;
+            }
             _lastMove = DateTime.Now;
             Log.Info($"archive: moved {src} -> {dest} ({length / 1_048_576.0:0.0} MB in {sw.Elapsed.TotalSeconds:0.0} s)");
             return Outcome.Moved;
@@ -526,14 +610,261 @@ internal sealed class ArchiveService
     }
 
     /// <summary>
-    /// Chunked copy with a sleep between chunks (none in a manual run that is not throttled); a progress line goes to
-    /// <see cref="Status"/> every 5 %, and a manual run's progress sink hears every percent.
+    /// The delete did not happen: what that means for this clip. The verified copy stays unless it is certainly junk (the clip
+    /// changed after it was copied, so the copy is a stale version and the clip itself is still here).
+    /// </summary>
+    private Outcome Declined(GuardResult why, string? text, string src, string dest, bool haveCopy)
+    {
+        string name = Path.GetFileName(src);
+        switch (why)
+        {
+            case GuardResult.InUse:
+                Log.Info($"archive: {name} is in use, later");   // the copy stays: the next run adopts it and only has the delete to do
+                return Outcome.InUse;
+            case GuardResult.Changed:
+                Log.Warn($"archive: {name} changed after it was copied, local file kept");
+                if (!haveCopy) TryDeleteCopy(src, dest);
+                return Outcome.InUse;
+            case GuardResult.Gone:
+                Log.Warn($"archive: {name} is no longer there; its copy {dest} is kept");   // the only copy now: never cleaned up
+                return Outcome.Gone;
+            case GuardResult.CopyDiffers:
+                _problem = text;
+                Log.Warn($"archive: {name}: {text}, local file kept");
+                if (!haveCopy) TryDeleteCopy(src, dest);
+                return Outcome.Skipped;
+            default:   // the archive copy is missing or unreadable, the clip is its own archive copy, access denied, an error
+                _problem = text ?? "cannot delete the local clip";
+                Log.Warn($"archive: {name}: {_problem}, local file kept");
+                return Outcome.Skipped;
+        }
+    }
+
+    /// <summary>Deletes a stale copy we made, and never anything that is or may be the clip itself (same path, same file, or not comparable).</summary>
+    private static void TryDeleteCopy(string src, string dest)
+    {
+        try
+        {
+            if (string.Equals(Path.GetFullPath(src), Path.GetFullPath(dest), StringComparison.OrdinalIgnoreCase)) return;
+            if (SameFile(src, dest) != false) return;
+        }
+        catch { return; }
+        TryDelete(dest);
+    }
+
+    private static bool IsSharingViolation(Exception ex) => Win32Code(ex) is 32 or 33;   // ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION
+
+    /// <summary>A symbolic link or junction (other reparse points, such as a OneDrive placeholder, are ordinary files here).</summary>
+    internal static bool IsLink(FileInfo fi)
+    {
+        try { return fi.LinkTarget != null; }
+        catch { return false; }
+    }
+
+    /// <summary>What a finished copy turned out to be.</summary>
+    internal enum CopyCheck { Good, SourceChanged, Short }
+
+    /// <summary>
+    /// The copy as written (<paramref name="copied"/> bytes) against the clip that was meant (<paramref name="length"/>, last written
+    /// <paramref name="lastWriteUtc"/>) and the clip as it is now: a clip that changed while it was copied is a try-again-later
+    /// (something is writing to it); a copy that is short while the clip did not change is a failure of the copy.
+    /// </summary>
+    internal static CopyCheck CheckCopy(long copied, long length, long sourceLengthNow, DateTime sourceWrittenNowUtc, DateTime lastWriteUtc) =>
+        sourceLengthNow != length || sourceWrittenNowUtc != lastWriteUtc ? CopyCheck.SourceChanged
+        : copied != length ? CopyCheck.Short
+        : CopyCheck.Good;
+
+    // ------------------------------------------------------------------ never delete a clip that has no distinct copy
+
+    /// <summary>Why <see cref="DeleteGuard.Open"/> handed over no guard, or <see cref="DeleteGuard.Delete"/> did not delete.</summary>
+    internal enum GuardResult
+    {
+        /// <summary>No problem.</summary>
+        Ready,
+        /// <summary>Something has the clip open (or the two names are one file: they cannot both be open the way the guard needs).</summary>
+        InUse,
+        /// <summary>The clip is not the file that was copied (another length or last write time).</summary>
+        Changed,
+        /// <summary>The clip is no longer there.</summary>
+        Gone,
+        /// <summary>There is no archive copy.</summary>
+        CopyMissing,
+        /// <summary>The archive copy is not as long as the clip.</summary>
+        CopyDiffers,
+        /// <summary>The archive copy is the clip's own file (the file index of the two is the same).</summary>
+        SameFile,
+        /// <summary>No permission to delete the clip (read-only, access denied).</summary>
+        Denied,
+        /// <summary>Anything else.</summary>
+        Failed,
+    }
+
+    /// <summary>
+    /// The last check before a local clip is deleted, and the delete itself, built so that a clip can only be deleted while a
+    /// different, complete copy of it exists:
+    /// <list type="bullet">
+    /// <item>The archive copy is opened first, for reading, sharing read only (no write, no delete), and stays open.</item>
+    /// <item>Then the local clip is opened with DELETE access, sharing read and delete. When the two paths are one file (a
+    /// second name for the clips folder that neither the spelling, nor the file index, nor the probe could tell: a junction, a
+    /// second share of the same disk, Samba hashing the volume serial per share) the second open fails with a sharing violation,
+    /// so the clip is skipped and never deleted.</item>
+    /// <item>The clip is checked through its own handle (length, last write, not the archive copy's file) and deleted through that
+    /// handle (delete disposition), never by name: a trim ("Replace original") that renamed a new cut over the clip in the
+    /// meantime cannot lose the cut to a delete by path.</item>
+    /// </list>
+    /// The delete takes effect when the guard is disposed. Dispose it after the library entry has been updated.
+    /// </summary>
+    internal sealed class DeleteGuard : IDisposable
+    {
+        private const uint GenericRead = 0x80000000, DeleteAccess = 0x00010000, ShareRead = 1, ShareDelete = 4, OpenExisting = 3;
+        private const int FileDispositionInfo = 4;
+        private static readonly nint InvalidHandle = -1;
+
+        [DllImport("kernel32.dll", EntryPoint = "CreateFileW", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern nint CreateFile(string name, uint access, uint share, nint security, uint disposition, uint flags, nint template);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern int SetFileInformationByHandle(nint file, int informationClass, ref byte information, uint size);   // FILE_DISPOSITION_INFO is one BOOLEAN
+
+        private readonly FileStream _copy;           // the archive copy: read access, sharing read only
+        private readonly SafeFileHandle _clip;       // the local clip: read + DELETE access, sharing read and delete
+
+        private DeleteGuard(FileStream copy, SafeFileHandle clip) { _copy = copy; _clip = clip; }
+
+        /// <summary>
+        /// Opens both files and checks them; null (with <paramref name="result"/> and, where it helps, a <paramref name="problem"/> in
+        /// the words the dialog shows) when the clip must not be deleted now.
+        /// </summary>
+        public static DeleteGuard? Open(string clip, string copy, long length, DateTime lastWriteUtc, out GuardResult result, out string? problem)
+        {
+            problem = null;
+            FileStream? c = null;
+            SafeFileHandle? h = null;
+            try
+            {
+                try { c = new FileStream(copy, FileMode.Open, FileAccess.Read, FileShare.Read, 1); }
+                catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException) { result = GuardResult.CopyMissing; problem = "the archived copy is missing"; return null; }
+                catch (UnauthorizedAccessException) { result = GuardResult.Failed; problem = "cannot read the archived copy: access denied"; return null; }
+                catch (IOException ex) when (IsSharingViolation(ex)) { result = GuardResult.InUse; return null; }
+                catch (IOException ex) { result = GuardResult.Failed; problem = "cannot read the archived copy: " + ex.Message.TrimEnd('.'); return null; }
+                if (c.Length != length)
+                {
+                    result = GuardResult.CopyDiffers;
+                    problem = $"the archived copy is {c.Length} bytes, the clip {length}";
+                    return null;
+                }
+
+                nint raw = CreateFile(Extended(clip), GenericRead | DeleteAccess, ShareRead | ShareDelete, 0, OpenExisting, 0, 0);
+                if (raw == InvalidHandle) { (result, problem) = FromError(Marshal.GetLastWin32Error()); return null; }
+                h = new SafeFileHandle(raw, ownsHandle: true);
+
+                if (!Info(h, out BY_HANDLE_FILE_INFORMATION mine)) { result = GuardResult.Failed; problem = "cannot look at the local clip"; return null; }
+                long now = ((long)mine.nFileSizeHigh << 32) | mine.nFileSizeLow;
+                DateTime written = DateTime.FromFileTimeUtc(((long)(uint)mine.ftLastWriteTime.dwHighDateTime << 32) | (uint)mine.ftLastWriteTime.dwLowDateTime);   // (the two halves are ints: no sign extension)
+                if (now != length || written != lastWriteUtc) { result = GuardResult.Changed; return null; }
+                if (Info(c.SafeFileHandle, out BY_HANDLE_FILE_INFORMATION theirs) && SameIdentity(mine, theirs))
+                {
+                    result = GuardResult.SameFile;
+                    problem = SameFolderProblem;
+                    return null;
+                }
+
+                var guard = new DeleteGuard(c, h);
+                c = null; h = null;   // the guard owns them now
+                result = GuardResult.Ready;
+                return guard;
+            }
+            finally { h?.Dispose(); c?.Dispose(); }
+        }
+
+        /// <summary>Marks the local clip for deletion through the handle that was checked. It goes when the guard is disposed.</summary>
+        public bool Delete(out GuardResult result, out string? problem)
+        {
+            byte on = 1;
+            if (SetFileInformationByHandle(_clip.DangerousGetHandle(), FileDispositionInfo, ref on, 1) != 0) { result = GuardResult.Ready; problem = null; return true; }
+            (result, problem) = FromError(Marshal.GetLastWin32Error());
+            return false;
+        }
+
+        public void Dispose() { _clip.Dispose(); _copy.Dispose(); }
+
+        /// <summary>What a failed open or delete of the local clip means.</summary>
+        private static (GuardResult, string?) FromError(int error) => error switch
+        {
+            32 or 33 or 1224 => (GuardResult.InUse, null),   // sharing violation, lock violation, the file is mapped into a process
+            2 or 3 => (GuardResult.Gone, null),
+            5 => (GuardResult.Denied, "cannot delete the local clip: access denied (is it read-only?)"),
+            _ => (GuardResult.Failed, "cannot delete the local clip: " + new System.ComponentModel.Win32Exception(error).Message.TrimEnd('.')),
+        };
+
+        private static unsafe bool Info(SafeFileHandle handle, out BY_HANDLE_FILE_INFORMATION info)
+        {
+            BY_HANDLE_FILE_INFORMATION i;
+            bool ok = PInvoke.GetFileInformationByHandle(new HANDLE(handle.DangerousGetHandle()), &i);
+            info = i;
+            return ok;
+        }
+
+        private static bool SameIdentity(BY_HANDLE_FILE_INFORMATION a, BY_HANDLE_FILE_INFORMATION b) =>
+            a.dwVolumeSerialNumber == b.dwVolumeSerialNumber && a.nFileIndexHigh == b.nFileIndexHigh && a.nFileIndexLow == b.nFileIndexLow;
+
+        /// <summary>The raw CreateFile does not lengthen a long path the way System.IO does.</summary>
+        private static string Extended(string path)
+        {
+            string full = Path.GetFullPath(path);
+            if (full.Length < 240 || full.StartsWith(@"\\?\", StringComparison.Ordinal)) return full;
+            return full.StartsWith(@"\\", StringComparison.Ordinal) ? @"\\?\UNC\" + full[2..] : @"\\?\" + full;
+        }
+    }
+
+    // ------------------------------------------------------------------ is the archive another name for the clips folder?
+
+    private const string AliasProblemText = "archive location is the clips folder under another name";
+
+    private static string AliasKey(string archive, string clips) => archive + "|" + clips;
+
+    /// <summary><see cref="AliasProblem"/>, once per location for the automatic pass (it would otherwise write probes every 5 minutes, and a NAS that sleeps would not).</summary>
+    private string? CheckAlias(string root, string clips)
+    {
+        string key = AliasKey(root, clips);
+        if (string.Equals(_aliasOkKey, key, StringComparison.OrdinalIgnoreCase)) return null;
+        string? problem = AliasProblem(root, clips);
+        if (problem == null) _aliasOkKey = key;
+        return problem;
+    }
+
+    /// <summary>
+    /// Null when <paramref name="archive"/> and <paramref name="clips"/> are two different folders, else the problem. Two names for
+    /// one folder (a junction, a second share of the same disk, the <c>\\?\</c> spelling) cannot always be told apart by name or by
+    /// file index (Samba hashes the volume serial per share), and "moving" a clip onto itself deletes it. So this asks the file
+    /// system: a small file written into one folder must not show up in the other, in either direction. A folder that cannot be
+    /// written to says nothing here (a copy would fail there too).
+    /// </summary>
+    internal static string? AliasProblem(string archive, string clips)
+    {
+        string name = $".clink-alias-{Guid.NewGuid():N}.tmp";
+        string inArchive = Path.Combine(archive, name), inClips = Path.Combine(clips, name);
+        foreach (var (written, lookedFor) in new[] { (inArchive, inClips), (inClips, inArchive) })
+        {
+            try
+            {
+                File.WriteAllBytes(written, new byte[16]);
+                if (File.Exists(lookedFor)) return AliasProblemText;
+            }
+            catch (Exception ex) { Log.Info("archive: alias probe: " + ex.Message); }
+            finally { TryDelete(written); }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Chunked copy with a sleep between chunks (none while the caller says the pace need not be gentle, which it is asked for
+    /// every chunk); a progress line goes to <see cref="Status"/> every 5 %, and a manual run's progress sink hears every percent.
     /// </summary>
     private void Copy(string src, string dst, string name, long length, string root, ManualRequest? manual)
     {
         using var inp = new FileStream(src, FileMode.Open, FileAccess.Read, FileShare.Read, 1, FileOptions.SequentialScan);
         using var outp = new FileStream(dst, FileMode.Create, FileAccess.Write, FileShare.None, 1, FileOptions.SequentialScan);
-        bool sleep = manual?.Throttle ?? true;
         long done = 0;
         int lastStep = -1, lastPercent = 0, n;
         SetStatus($"Copying {name}…");
@@ -550,7 +881,7 @@ internal sealed class ArchiveService
                 int percent = (int)Math.Min(100, done * 100 / Math.Max(1, length));
                 if (percent != lastPercent) { lastPercent = percent; Report(manual, name, percent); }
             }
-            if (sleep) Thread.Sleep(ChunkSleepMs);
+            if (manual?.Throttled() ?? true) Thread.Sleep(ChunkSleepMs);   // asked per chunk: a game that starts (or ends) mid-run is followed
         }
         outp.Flush(true);
     }
@@ -581,6 +912,8 @@ internal sealed class ArchiveService
             File.Delete(probe);
         }
         catch (Exception ex) { return (false, "Reachable, but not writable: " + Capitalize(Describe(ex, p)), 0L); }
+        // Another name for the clips folder (a junction, a second share of the same disk) passes the spelling check above; a file written into it shows up in the clips folder.
+        if (AliasProblem(p, _settings.ClipsFolder) is string alias) return (false, Capitalize(alias) + ": pick another folder, share or drive", 0L);
         long free = FreeBytes(p);
         string kind = IsUnc(p) ? "Share" : "Folder";
         return (true, free >= 0 ? $"{kind} reachable · writable · {FormatBytes(free)} free" : $"{kind} reachable · writable", Math.Max(0, free));
@@ -606,7 +939,7 @@ internal sealed class ArchiveService
         int archived = _library.Entries.Count(e => e.IsArchived);
         var parts = new List<string> { archived == 1 ? "1 clip archived" : $"{archived} clips archived" };
         if (_lastMove is DateTime t) parts.Add($"last move {t:HH:mm}");
-        if (_problem is SameFolderProblem or NotFullPathProblem) parts.Add(_problem);   // a setting to fix, not something a retry changes
+        if (_problem is SameFolderProblem or NotFullPathProblem or AliasProblemText) parts.Add(_problem);   // a setting to fix, not something a retry changes
         else if (_problem != null) parts.Add(_problem + ", will retry");
         else if (_reachable) parts.Add(IsUnc(s.ArchivePath) ? "NAS reachable" : "archive reachable");
         return string.Join(" · ", parts);
