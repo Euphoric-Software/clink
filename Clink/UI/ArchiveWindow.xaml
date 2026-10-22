@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Archive clips" Width="500" SizeToContent="Height"
         WindowStyle="None" ResizeMode="NoResize" AllowsTransparency="True" Background="Transparent"
-        WindowStartupLocation="CenterOwner" ShowInTaskbar="False" FontFamily="Segoe UI" TextOptions.TextFormattingMode="Display"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False" FontFamily="{StaticResource UiFont}" TextOptions.TextFormattingMode="Display"
         PreviewKeyDown="Window_PreviewKeyDown">
     <!-- Every colour here is a DynamicResource, so the window follows the theme when it changes. -->
     <Window.Resources>
@@ -51,7 +51,7 @@
         <DockPanel>
             <!-- header / drag area -->
             <Grid DockPanel.Dock="Top" Height="44" MouseLeftButtonDown="Header_MouseLeftButtonDown" Background="Transparent">
-                <TextBlock Text="Archive clips" FontWeight="SemiBold" FontSize="14" Margin="16,0,0,0" VerticalAlignment="Center" />
+                <TextBlock Style="{StaticResource Display}" Text="Archive clips" Margin="16,0,0,0" VerticalAlignment="Center" />
                 <Button Style="{StaticResource IconButton}" Content="✕" HorizontalAlignment="Right" Margin="0,0,8,0" Click="Close_Click" ToolTip="Close (a move in progress is cancelled)" />
             </Grid>
 

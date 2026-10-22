@@ -37,31 +37,30 @@ internal sealed class MonitorMap : Canvas
         int maxX = _monitors.Max(m => m.Left + m.Width), maxY = _monitors.Max(m => m.Top + m.Height);
         double scale = Math.Min((ActualWidth - 8) / (maxX - minX), (Height - 8) / (maxY - minY));
         double offX = (ActualWidth - (maxX - minX) * scale) / 2, offY = (Height - (maxY - minY) * scale) / 2;
-        var fg = (Brush)FindResource("Fg");
-        var muted = (Brush)FindResource("Muted");
-        var accent = (Brush)FindResource("Accent");
-        var panel = (Brush)FindResource("Panel3");
         foreach (var m in _monitors)
         {
             bool sel = string.Equals(m.DeviceName, _selected, StringComparison.OrdinalIgnoreCase);
+            var label = new TextBlock
+            {
+                Text = m.ShortName.Replace("DISPLAY", ""),
+                FontSize = 11,
+                FontWeight = sel ? FontWeights.Bold : FontWeights.Normal,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
             var b = new Border
             {
                 Width = Math.Max(10, m.Width * scale - 3),
                 Height = Math.Max(8, m.Height * scale - 3),
-                Background = sel ? accent : panel,
                 CornerRadius = new CornerRadius(3),
                 Cursor = Cursors.Hand,
                 ToolTip = m.Label,
-                Child = new TextBlock
-                {
-                    Text = m.ShortName.Replace("DISPLAY", ""),
-                    Foreground = sel ? Brushes.Black : muted,
-                    FontSize = 11,
-                    FontWeight = sel ? FontWeights.Bold : FontWeights.Normal,
-                    HorizontalAlignment = HorizontalAlignment.Center,
-                    VerticalAlignment = VerticalAlignment.Center,
-                },
+                Child = label,
             };
+            // Resource references, not the brushes of the moment: the rectangles follow a theme change at any time, also while the
+            // Capture tab is not the one showing (its content is unloaded then, so a Loaded-scoped ThemeChanged handler would miss it).
+            b.SetResourceReference(Border.BackgroundProperty, sel ? "Accent" : "Panel3");
+            label.SetResourceReference(TextBlock.ForegroundProperty, sel ? "OnAccent" : "Muted");   // OnAccent: the label on the captured monitor's accent fill
             var mon = m;
             b.MouseLeftButtonUp += (_, _) =>
             {

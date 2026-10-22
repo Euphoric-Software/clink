@@ -22,12 +22,12 @@
             <Setter Property="Margin" Value="10,0,8,0" />
         </Style>
     </Window.Resources>
-    <Border Background="{StaticResource Bg}" CornerRadius="10" BorderBrush="{StaticResource Border}" BorderThickness="1">
+    <Border Background="{DynamicResource Bg}" CornerRadius="10" BorderBrush="{DynamicResource Border}" BorderThickness="1">
         <DockPanel>
             <!-- header / drag area -->
             <Grid DockPanel.Dock="Top" Height="44" MouseLeftButtonDown="Header_MouseLeftButtonDown" Background="Transparent">
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="16,0,80,0">
-                    <Ellipse x:Name="StatusDot" Width="9" Height="9" Fill="{StaticResource Muted}" VerticalAlignment="Center" />
+                    <Ellipse x:Name="StatusDot" Width="9" Height="9" Fill="{DynamicResource Muted}" VerticalAlignment="Center" />
                     <TextBlock Text="Clink" FontWeight="Bold" FontSize="15" Margin="9,0,0,0" VerticalAlignment="Center" />
                     <TextBlock x:Name="StatusText" Style="{StaticResource MutedText}" Margin="10,1,0,0" VerticalAlignment="Center" Text="Starting…" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
                 </StackPanel>
@@ -38,7 +38,7 @@
             </Grid>
 
             <!-- footer -->
-            <Border DockPanel.Dock="Bottom" Padding="16,8,20,8" BorderBrush="{StaticResource Border}" BorderThickness="0,1,0,0">
+            <Border DockPanel.Dock="Bottom" Padding="16,8,20,8" BorderBrush="{DynamicResource Border}" BorderThickness="0,1,0,0">
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
@@ -130,9 +130,9 @@
 
                                 <!-- Shown until the pointer rests on the audio group below or an audio option changes (Settings.AudioSetupSeen); then never again -->
                                 <Border x:Name="AudioSetupBanner" Margin="0,14,0,0" Padding="10,8" CornerRadius="8" BorderThickness="1"
-                                        BorderBrush="{StaticResource Warn}" Background="{StaticResource WarnTint}">
+                                        BorderBrush="{DynamicResource Warn}" Background="{DynamicResource WarnTint}">
                                     <StackPanel>
-                                        <TextBlock Text="Set up your audio" FontWeight="Bold" Foreground="{StaticResource Warn}" />
+                                        <TextBlock Text="Set up your audio" FontWeight="Bold" Foreground="{DynamicResource Warn}" />
                                         <TextBlock Margin="0,3,0,0" FontSize="12"
                                                    Text="Check which app is the game, which mic you talk into and where voice chat comes from. Hover or change any option below to dismiss this." />
                                     </StackPanel>
@@ -432,6 +432,25 @@
                                         <TextBlock x:Name="SettingsDirText" Style="{StaticResource MutedText}" Margin="2,0,0,0" Text="" />
                                         <Button x:Name="SettingsFolderButton" Style="{StaticResource LinkButton}" Content="Open folder" FontSize="12" HorizontalAlignment="Left" Margin="0,4,0,0"
                                                 Click="SettingsFolder_Click" ToolTip="Open the folder that holds settings.json, the clip index and the log in Explorer" />
+                                        <!-- Clink was started from inside a packaged app (the Claude desktop app): Windows keeps a private copy of AppData for it (AppDataRedirect) -->
+                                        <Border x:Name="RedirectBanner" Margin="0,10,0,0" Padding="10,8" CornerRadius="8" BorderThickness="1" Visibility="Collapsed"
+                                                BorderBrush="{DynamicResource Warn}" Background="{DynamicResource WarnTint}">
+                                            <TextBlock x:Name="RedirectText" FontSize="12" Text="" />
+                                        </Border>
+                                        <!-- Another copy of Clink saved settings of its own (SettingsImport.Pending): take them over, or turn that copy down for good -->
+                                        <Border x:Name="ImportBanner" Margin="0,10,0,0" Padding="10,8" CornerRadius="8" BorderThickness="1" Visibility="Collapsed"
+                                                BorderBrush="{DynamicResource Warn}" Background="{DynamicResource WarnTint}">
+                                            <StackPanel>
+                                                <TextBlock x:Name="ImportText" FontSize="12" Text="" />
+                                                <TextBlock Style="{StaticResource Hint}" Margin="0,4,0,0" Text="Using them restarts Clink; your current settings are kept as settings.pre-import.json." />
+                                                <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                                    <Button x:Name="ImportUseButton" Style="{StaticResource AccentButton}" Content="Use those settings" Padding="10,4" Click="ImportUse_Click"
+                                                            ToolTip="Take over the settings that copy saved and restart Clink" />
+                                                    <Button x:Name="ImportDismissButton" Content="Dismiss" Padding="10,4" Margin="8,0,0,0" Click="ImportDismiss_Click"
+                                                            ToolTip="Keep these settings and stop asking about that copy" />
+                                                </StackPanel>
+                                            </StackPanel>
+                                        </Border>
                                     </StackPanel>
                                 </Border>
                             </StackPanel>

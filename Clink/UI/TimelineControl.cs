@@ -63,6 +63,9 @@ internal sealed class TimelineControl : FrameworkElement
         Focusable = false;
         ClipToBounds = true;
         SizeChanged += (_, _) => InvalidateVisual();
+        // Everything is drawn in OnRender with the brushes of the moment: a theme change draws it again (and so does every load).
+        Loaded += (_, _) => { ThemeManager.ThemeChanged -= InvalidateVisual; ThemeManager.ThemeChanged += InvalidateVisual; InvalidateVisual(); };
+        Unloaded += (_, _) => ThemeManager.ThemeChanged -= InvalidateVisual;
     }
 
     private static void OnSelectionChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) => ((TimelineControl)d).SelectionChanged?.Invoke();
@@ -75,6 +78,7 @@ internal sealed class TimelineControl : FrameworkElement
 
     // ------------------------------------------------------------------ rendering
 
+    // The fallbacks are the Dark / Cyan palette (UI/Palette.xaml), for a control that is drawn where the application's resources are not.
     private Brush B(string key, Color fallback) => TryFindResource(key) as Brush ?? new SolidColorBrush(fallback);
 
     protected override void OnRender(DrawingContext dc)
@@ -85,14 +89,15 @@ internal sealed class TimelineControl : FrameworkElement
         // Transparent hit-test background so clicks anywhere in the control register.
         dc.DrawRectangle(Brushes.Transparent, null, new Rect(0, 0, w, h));
 
-        Brush panel2 = B("Panel2", Color.FromRgb(0x27, 0x2B, 0x33));
-        Brush panel3 = B("Panel3", Color.FromRgb(0x32, 0x37, 0x40));
-        Brush border = B("Border", Color.FromRgb(0x2E, 0x33, 0x3B));
-        Brush fg = B("Fg", Color.FromRgb(0xE8, 0xEA, 0xED));
-        Brush muted = B("Muted", Color.FromRgb(0x8B, 0x91, 0x9C));
-        Brush accent = B("Accent", Color.FromRgb(0x4C, 0xC9, 0xF0));
-        Brush accentDim = B("AccentDim", Color.FromRgb(0x2B, 0x7D, 0x96));
-        Brush bg = B("Bg", Color.FromRgb(0x15, 0x17, 0x1B));
+        Brush panel2 = B("Panel2", Color.FromRgb(0x23, 0x2A, 0x37));
+        Brush panel3 = B("Panel3", Color.FromRgb(0x2E, 0x36, 0x45));
+        Brush border = B("Border", Color.FromRgb(0x2A, 0x32, 0x40));
+        Brush fg = B("Fg", Color.FromRgb(0xEA, 0xF2, 0xFF));
+        Brush muted = B("Muted", Color.FromRgb(0x8A, 0x94, 0xA6));
+        Brush accent = B("Accent", Color.FromRgb(0x22, 0xD3, 0xEE));
+        Brush accentDim = B("AccentDim", Color.FromRgb(0x1B, 0x6F, 0x84));
+        Brush accent2 = B("Accent2", Color.FromRgb(0x3B, 0x82, 0xF6));
+        Brush bg = B("Bg", Color.FromRgb(0x0A, 0x0E, 0x14));
 
         double dur = Duration;
         double tw = TrackWidth;
@@ -105,8 +110,8 @@ internal sealed class TimelineControl : FrameworkElement
             double xs = XOf(SelectionStart), xe = XOf(SelectionEnd);
             if (xe < xs) (xs, xe) = (xe, xs);
             if (!select) { xs = PadX + 1; xe = XOf(Position); }   // a seek bar: what has been played so far
-            // Dimmed outside, highlighted inside.
-            dc.DrawRoundedRectangle(accentDim, null, new Rect(xs, BarTop + 1, Math.Max(0, xe - xs), BarH - 2), 3, 3);
+            // Dimmed outside, highlighted inside (the range to keep, in AccentDim); a seek bar fills the part played in Accent2.
+            dc.DrawRoundedRectangle(select ? accentDim : accent2, null, new Rect(xs, BarTop + 1, Math.Max(0, xe - xs), BarH - 2), 3, 3);
 
             // Keyframe ticks along the bottom edge of the bar.
             var keys = select ? Keyframes : null;
@@ -128,7 +133,7 @@ internal sealed class TimelineControl : FrameworkElement
             double step = PickStep(pxPerSec);
             var labelPen = new Pen(panel3, 1);
             double labelY = BarTop + BarH + 4;
-            var typeface = new Typeface(new FontFamily("Segoe UI"), FontStyles.Normal, FontWeights.Normal, FontStretches.Normal);
+            var typeface = new Typeface(TryFindResource("UiFont") as FontFamily ?? new FontFamily("Segoe UI"), FontStyles.Normal, FontWeights.Normal, FontStretches.Normal);
             double dip = VisualTreeHelper.GetDpi(this).PixelsPerDip;
             for (double t = 0; t <= dur + 1e-6; t += step)
             {
