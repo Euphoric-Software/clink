@@ -174,6 +174,43 @@ internal static unsafe class MediaProbe
         return sb.ToString();
     }
 
+    /// <summary>
+    /// The loudness of each audio track, in file order with its name: RMS and peak of the decoded audio in dBFS, on the clip's
+    /// timeline (the edit lists applied). For checking by ear-less means that a volume really went into a track.
+    /// </summary>
+    public static string Levels(string path)
+    {
+        var streams = Trimmer.AudioStreamsOf(path);
+        var info = Trimmer.ReadAudioTracks(path);
+        if (info != null && info.Length != streams.Count) info = null;
+        var sb = new StringBuilder();
+        sb.AppendLine($"{Path.GetFileName(path)}: audio levels (dBFS of the decoded audio, RMS / peak)");
+        var block = new float[2 * Trimmer.PcmTrackReader.Block];
+        for (int n = 0; n < streams.Count; n++)
+        {
+            string name = info != null ? info[n].Name : $"Audio {n + 1}";
+            using var reader = new Trimmer.PcmTrackReader(path, streams[n], info != null ? info[n].StartOffset : 0, 0, long.MaxValue / 4);
+            double sum = 0, peak = 0;
+            long frames = 0;
+            int got;
+            while ((got = reader.ReadBlock(block)) > 0)
+            {
+                for (int i = 0; i < got * 2; i++)
+                {
+                    double v = block[i];
+                    sum += v * v;
+                    peak = Math.Max(peak, Math.Abs(v));
+                }
+                frames += got;
+            }
+            double rms = frames > 0 ? Math.Sqrt(sum / (frames * 2)) : 0;
+            sb.AppendLine($"  track {n + 1} {name,-9} {Db(rms),9} / {Db(peak),-9}  {frames / (double)Trimmer.PcmTrackReader.Rate:0.00} s");
+        }
+        return sb.ToString();
+    }
+
+    private static string Db(double linear) => linear < 1e-6 ? "silent" : $"{20 * Math.Log10(linear):0.0} dB";
+
     private static string SubtypeName(Guid g)
     {
         if (g == PInvoke.MFVideoFormat_H264) return "H264";
