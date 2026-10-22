@@ -98,7 +98,7 @@ try {
     # --- next steps ----------------------------------------------------------
     Write-Host ''
     Write-Host "Done. Repository: $url"
-    Write-Host "  Build workflow:   $url/actions/workflows/build.yml   (compiles every push to main)"
+    Write-Host "  Build workflow:   $url/actions/workflows/build.yml   (compiles and unit-tests every push to main)"
     Write-Host "  Release workflow: $url/actions/workflows/release.yml (runs when a vX.Y.Z tag is pushed)"
     Write-Host ''
     Write-Host 'Next steps:'

@@ -23,6 +23,7 @@ public partial class ArchiveWindow : Window
     private ArchivePreview? _preview;
     private bool _running, _cancelling, _closed;
     private int _countGen;                          // a count that was asked for again replaces the one still on its way
+    private bool _refused;                          // the destination test refused the location: Archive stays off until a later test passes
 
     internal ArchiveWindow(AppController app)
     {
@@ -55,10 +56,13 @@ public partial class ArchiveWindow : Window
         if (!_closed) ShowDestination(answer.message, answer.ok);
     }
 
+    /// <summary>Shows the test's answer. A refusal (the clips folder under another name, unreachable, not writable) turns Archive off, so a press does not repeat it; a later answer that passes turns it on again.</summary>
     private void ShowDestination(string message, bool ok)
     {
         DestinationInfo.Text = message;
         DestinationInfo.SetResourceReference(TextBlock.ForegroundProperty, ok ? "Good" : "Warn");
+        _refused = !ok;
+        if (_preview != null) UpdateControls();   // until the first count is in, that count's own UpdateControls takes this up
     }
 
     /// <summary>Counts what each choice would move (on a worker: it reads the clips folder) and puts the numbers in the labels.</summary>
@@ -89,7 +93,7 @@ public partial class ArchiveWindow : Window
         DueRadio.IsEnabled = HasRule && !_running;
         AllRadio.IsEnabled = !_running;
         int count = _preview is { } p ? (AllRadio.IsChecked == true ? p.AllCount : DueRadio.IsChecked == true ? p.DueCount : 0) : 0;
-        ArchiveButton.IsEnabled = !_running && count > 0 && _destination.Length > 0;
+        ArchiveButton.IsEnabled = !_running && count > 0 && _destination.Length > 0 && !_refused;
         ArchiveButton.Visibility = _running ? Visibility.Collapsed : Visibility.Visible;
         CancelButton.Visibility = _running ? Visibility.Visible : Visibility.Collapsed;
         CancelButton.IsEnabled = _running && !_cancelling;

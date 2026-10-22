@@ -235,7 +235,7 @@ internal static class AlignmentTests
             var raw = MixPlan.Export(MixPlan.Roles(FourTracks, 4), new[] { true, true, true, true }, GameOff);
             Check.NotNull(raw[0].Sum, "the unchecked plan subtracts the game");
             var ex = Check.Throws<InvalidOperationException>(() => Trimmer.Trim(old, refused, 1, 5, FourTracks, raw));
-            Check.Contains(ex.Message, "Trimmed by an older Clink");
+            Check.Contains(ex.Message, "Recorded or trimmed by an older Clink");
             Check.False(File.Exists(refused), "nothing was written");
         });
     }
