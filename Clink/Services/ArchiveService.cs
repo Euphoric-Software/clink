@@ -6,6 +6,23 @@ using Windows.Win32.Storage.FileSystem;
 
 namespace Clink.Services;
 
+/// <summary>What a manual archive run moves: the clips the automatic rules would move now, or every clip still in the clips folder.</summary>
+internal enum ArchiveScope { Due, All }
+
+/// <summary>
+/// How a manual run went (<see cref="ArchiveService.RunManualAsync"/>). <paramref name="Eligible"/>: clips picked whose file was
+/// there; the others are what became of them: moved, in use (open, changed while copying, or not deletable yet: a later run
+/// finishes them), too new (saved under 30 s ago), failed. A run that stopped early (full or unreachable archive) says why in
+/// <paramref name="Problem"/> (a short phrase such as "archive is full"); one refused before it began has only that.
+/// </summary>
+internal sealed record ArchiveRunResult(int Eligible, int Moved, int InUse, int TooNew, int Failed, long BytesMoved, string? Problem, bool Cancelled);
+
+/// <summary>Where a manual run is: clip <paramref name="Index"/> of <paramref name="Count"/> (1-based), its file name and how much of it is copied.</summary>
+internal readonly record struct ArchiveProgress(int Index, int Count, string File, int Percent);
+
+/// <summary>What <see cref="ArchiveService.RunManualAsync"/> would move right now: clips and bytes, for each scope.</summary>
+internal readonly record struct ArchivePreview(int DueCount, long DueBytes, int AllCount, long AllBytes);
+
 /// <summary>
 /// Moves clips from the local clips folder to the archive location (NAS share, mapped drive, second drive) in the background:
 /// docs/SPEC-v2.md §9. Runs 1 min after a clip is saved and every 5 min; picks eligible clips oldest-first (older than
@@ -13,6 +30,9 @@ namespace Clink.Services;
 /// copies on a lowest-priority thread in small chunks with sleeps in between, verifies the length, deletes the local file and
 /// points the <see cref="ClipEntry"/> at the archive. Never touches a file that is open, never deletes a local file whose copy
 /// was not verified, and quietly retries later when the archive is unreachable.
+/// The "Archive now…" dialog moves clips by hand with <see cref="RunManualAsync"/>: whatever the rules say (all local clips) or
+/// what they pick (due), with or without the automatic switch, at full speed unless a game is running. It runs on the same thread,
+/// one run at a time, and the automatic pass gives way to it.
 /// </summary>
 internal sealed class ArchiveService
 {
@@ -20,18 +40,25 @@ internal sealed class ArchiveService
     private const int ChunkSleepMs = 8;           // ~60 MB/s at most, so a NAS copy never competes with the game
     private static readonly TimeSpan Period = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan AfterClip = TimeSpan.FromMinutes(1);
+    private static readonly TimeSpan AfterManual = TimeSpan.FromMinutes(1);   // the automatic pass may have given way to a manual run
     private static readonly TimeSpan FirstRun = TimeSpan.FromSeconds(45);
     private static readonly TimeSpan MinAge = TimeSpan.FromSeconds(30); // a file written seconds ago may still be in use by the muxer / uploader
+
+    // Status lines (the Storage card shows them; "no rule" and "archive location" turn the line amber there).
+    private const string ManualOnlyStatus = "Automatic moves off · Archive now… moves clips by hand";   // the switch is off, a location is set
+    private const string NoLocationStatus = "Automatic moves are on, but no archive location is set";
+    private const string NoRuleStatus = "Automatic moves are on, but no rule is set (days / GB)";
 
     private readonly Settings _settings;
     private readonly ClipLibrary _library;
     private readonly object _gate = new();
     private readonly AutoResetEvent _wake = new(false);
     private readonly byte[] _buffer = new byte[ChunkBytes];
+    private readonly Queue<ManualRequest> _manual = new();      // manual runs waiting for the archive thread (under _gate)
     private Thread? _thread;
     private volatile bool _stop;
+    private volatile int _manualQueued;             // _manual.Count, readable without the lock: the automatic pass gives way while it is above 0
     private DateTime _due = DateTime.MaxValue;      // UTC
-    private TaskCompletionSource? _runNow;
     private string _status = "Archive off";
     private DateTime? _lastMove;
     private bool _reachable;
@@ -55,9 +82,6 @@ internal sealed class ArchiveService
 
     /// <summary>The last run reached the archive location (false until a run has looked, and while it is offline).</summary>
     public bool IsReachable => _reachable;
-
-    /// <summary>Clips the last finished run found due under the rules (moved or not); -1 when it stopped before looking (off, unreachable, cancelled).</summary>
-    public int LastRunEligible { get; private set; } = -1;
 
     /// <summary>What the UI says (and the service reports) when the archive location is not a full path.</summary>
     public const string FullPathHint = @"Use a full path such as D:\Clips or \\nas\clips";
@@ -84,18 +108,39 @@ internal sealed class ArchiveService
     /// <summary>A clip was just saved: run in a minute (sooner if a run is already due).</summary>
     public void NotifyClipSaved() => Schedule(DateTime.UtcNow + AfterClip);
 
-    /// <summary>Runs now (the "Archive now" button); completes when the run has finished.</summary>
-    public Task RunNowAsync()
+    /// <summary>
+    /// Moves clips by hand (the "Archive now…" dialog): queued on the archive thread, which runs it as soon as it is free (an
+    /// automatic pass in progress gives way at its next chunk). <paramref name="scope"/>: <see cref="ArchiveScope.Due"/> = what
+    /// the automatic rules pick now, <see cref="ArchiveScope.All"/> = every clip in the clips folder. It needs a valid, reachable
+    /// archive location that is not the clips folder, and nothing else: not the automatic switch, not a rule. Clips saved under
+    /// 30 s ago and clips that are open are left (and counted). <paramref name="throttle"/> keeps the gentle copy speed of the
+    /// automatic pass (a game is running); without it the copy runs at full speed. <paramref name="progress"/> is called on the
+    /// archive thread for every percent of a clip. Cancelling (<paramref name="ct"/>, the location changed, Clink exiting) ends
+    /// the run at the next chunk, deletes the partial copy and leaves the local clip; a clip already moved stays moved. The task
+    /// always completes with a result, never throws.
+    /// </summary>
+    public Task<ArchiveRunResult> RunManualAsync(ArchiveScope scope, bool throttle, IProgress<ArchiveProgress>? progress, CancellationToken ct)
     {
+        var req = new ManualRequest(scope, throttle, progress, ct);
         if (_thread == null) Start();
-        TaskCompletionSource tcs;
-        lock (_gate)
-        {
-            _runNow ??= new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            tcs = _runNow;
-        }
-        Schedule(DateTime.UtcNow);
-        return tcs.Task;
+        lock (_gate) { _manual.Enqueue(req); _manualQueued = _manual.Count; }
+        _wake.Set();
+        return req.Done.Task;
+    }
+
+    /// <summary>What <see cref="RunManualAsync"/> would move right now, for each scope. Reads the clips folder: call it on a worker.</summary>
+    public ArchivePreview Preview()
+    {
+        var s = _settings;
+        string local = s.ClipsFolder;
+        var entries = _library.Entries;
+        var sizes = new Dictionary<ClipEntry, long>();
+        long Size(ClipEntry e) { if (!sizes.TryGetValue(e, out long v)) sizes[e] = v = FileLength(e); return v; }
+        long localBytes = FolderBytes(local);
+        DateTime now = DateTime.Now;
+        var due = SelectCandidates(entries, local, ArchiveScope.Due, s.ArchiveAfterDays, s.ArchiveWhenLocalExceedsGB, localBytes, now, Size);
+        var all = SelectCandidates(entries, local, ArchiveScope.All, s.ArchiveAfterDays, s.ArchiveWhenLocalExceedsGB, localBytes, now, Size);
+        return new ArchivePreview(due.Count, due.Sum(Size), all.Count, all.Sum(Size));
     }
 
     private void Schedule(DateTime dueUtc)
@@ -112,8 +157,8 @@ internal sealed class ArchiveService
     {
         var s = _settings;
         string? root = s.ArchivePath?.Trim();
-        if (!s.ArchiveEnabled || string.IsNullOrEmpty(root)) { _problem = null; _reachable = false; SetStatus("Archive off"); return; }
-        if (s.ArchiveAfterDays <= 0 && s.ArchiveWhenLocalExceedsGB <= 0) { _problem = null; _reachable = false; SetStatus("Archive on, but no rule set (days / GB)"); return; }
+        if (!s.ArchiveEnabled || string.IsNullOrEmpty(root)) { _problem = null; _reachable = false; SetStatus(IdleStatus()); return; }
+        if (s.ArchiveAfterDays <= 0 && s.ArchiveWhenLocalExceedsGB <= 0) { _problem = null; _reachable = false; SetStatus(NoRuleStatus); return; }
         if (!Path.IsPathFullyQualified(root)) { _problem = NotFullPathProblem; _reachable = false; SetStatus(IdleStatus()); return; }
         if (IsSameFolder(root, s.ClipsFolder)) { _problem = SameFolderProblem; _reachable = false; SetStatus(IdleStatus()); return; }
         _problem = null; _reachable = false;   // a new location: nothing is known about it until the run looks
@@ -125,20 +170,28 @@ internal sealed class ArchiveService
     {
         while (!_stop)
         {
+            // A manual run goes first: the automatic pass is not waited for (it gave way to it) and runs again soon after.
+            ManualRequest? manual = null;
+            lock (_gate) if (_manual.Count > 0) { manual = _manual.Dequeue(); _manualQueued = _manual.Count; }
+            if (manual != null) { RunManualRequest(manual); continue; }
+
             DateTime due;
             lock (_gate) due = _due;
             TimeSpan wait = due - DateTime.UtcNow;
             if (wait > TimeSpan.Zero) { _wake.WaitOne(wait > Period ? Period : wait); continue; }
             if (_stop) break;
-            TaskCompletionSource? tcs;
-            lock (_gate) { tcs = _runNow; _runNow = null; _due = DateTime.UtcNow + Period; }
+            lock (_gate) _due = DateTime.UtcNow + Period;
             IsBusy = true;
             try { Run(); }
             catch (Exception ex) { Log.Warn("archive: " + ex.Message); SetStatus(Describe(ex, _settings.ArchivePath) + ", will retry"); }
             finally { IsBusy = false; }
-            tcs?.TrySetResult();
         }
-        lock (_gate) { _runNow?.TrySetResult(); _runNow = null; }
+        // Stopping: nobody is left to run a manual request that is still waiting.
+        lock (_gate)
+        {
+            while (_manual.Count > 0) _manual.Dequeue().Done.TrySetResult(new ArchiveRunResult(0, 0, 0, 0, 0, 0, null, true));
+            _manualQueued = 0;
+        }
     }
 
     // ------------------------------------------------------------------ one run
@@ -146,10 +199,9 @@ internal sealed class ArchiveService
     private void Run()
     {
         var s = _settings;
-        LastRunEligible = -1;
         string? root = s.ArchivePath?.Trim();
-        if (!s.ArchiveEnabled || string.IsNullOrEmpty(root)) { _problem = null; SetStatus("Archive off"); return; }
-        if (s.ArchiveAfterDays <= 0 && s.ArchiveWhenLocalExceedsGB <= 0) { _problem = null; _reachable = false; SetStatus("Archive on, but no rule set (days / GB)"); return; }
+        if (!s.ArchiveEnabled || string.IsNullOrEmpty(root)) { _problem = null; SetStatus(IdleStatus()); return; }
+        if (s.ArchiveAfterDays <= 0 && s.ArchiveWhenLocalExceedsGB <= 0) { _problem = null; _reachable = false; SetStatus(NoRuleStatus); return; }
         if (!Path.IsPathFullyQualified(root))
         {
             // "\nas\clips" / "nas\clips" (a lost backslash) would resolve against the current folder: the UI refuses it, settings.json may not.
@@ -178,47 +230,189 @@ internal sealed class ArchiveService
 
         string local = s.ClipsFolder;
         long localBytes = FolderBytes(local);
-        var candidates = _library.Entries
-            .Where(e => !e.IsArchived && !string.IsNullOrEmpty(e.Path) && IsUnder(e.Path, local))
-            .OrderBy(e => e.Created)
-            .ToList();
+        var candidates = SelectCandidates(_library.Entries, local, ArchiveScope.Due, s.ArchiveAfterDays, s.ArchiveWhenLocalExceedsGB, localBytes, DateTime.Now, FileLength);
 
-        int moved = 0, eligible = 0;
-        bool cancelled = false;
+        int moved = 0;
         _runFailCode = -1;
         foreach (var e in candidates)
         {
-            if (Cancelled(root)) { cancelled = true; break; }
+            if (Cancelled(root, null)) break;
             // The rules are read per clip: a change made during a long run applies to the clips it has not moved yet.
-            long limitBytes = s.ArchiveWhenLocalExceedsGB > 0 ? (long)(s.ArchiveWhenLocalExceedsGB * (1L << 30)) : 0;
-            DateTime cutoff = s.ArchiveAfterDays > 0 ? DateTime.Now.AddDays(-Math.Min(s.ArchiveAfterDays, 36500)) : DateTime.MinValue;   // AddDays throws past year 1
-            bool byAge = s.ArchiveAfterDays > 0 && e.Created < cutoff;
-            bool bySize = limitBytes > 0 && localBytes > limitBytes;
-            if (!byAge && !bySize) continue;
+            if (!IsDue(e, s.ArchiveAfterDays, s.ArchiveWhenLocalExceedsGB, localBytes, DateTime.Now)) continue;
             FileInfo fi;
             try { fi = new FileInfo(e.Path); if (!fi.Exists) continue; } catch { continue; }
-            eligible++;
             if (DateTime.UtcNow - fi.LastWriteTimeUtc < MinAge) continue;
 
-            var outcome = MoveOne(e, fi, root);
+            var outcome = MoveOne(e, fi, root, null);
             if (outcome == Outcome.Unreachable) { _reachable = false; break; }
-            if (outcome == Outcome.Stop) break;
+            if (outcome is Outcome.Stop or Outcome.Cancelled) break;
             if (outcome == Outcome.Moved) { moved++; localBytes -= fi.Length; }
         }
-        if (Cancelled(root)) cancelled = true;
-        LastRunEligible = cancelled ? -1 : eligible;
         if (moved > 0) Log.Info($"archive: run finished, {moved} clip(s) moved to {root}");
         SetStatus(IdleStatus());
     }
 
-    /// <summary>The run must end now: Clink is exiting, or the archive was turned off or pointed elsewhere since the run began.</summary>
-    private bool Cancelled(string root) =>
-        _stop || !_settings.ArchiveEnabled || !string.Equals(_settings.ArchivePath?.Trim(), root, StringComparison.OrdinalIgnoreCase);
+    // ------------------------------------------------------------------ which clips
 
-    /// <summary>Stop = the archive cannot take any clip right now (full, read-only, no permission): end the run, it is still reachable.</summary>
-    private enum Outcome { Moved, Skipped, Unreachable, Stop }
+    /// <summary>
+    /// The clips a run moves, oldest first: the ones in the local clips folder that are not archived yet (a clip in another folder
+    /// or already in the archive is never picked) and whose file is there (<paramref name="sizeOf"/> says -1 when it is not).
+    /// <see cref="ArchiveScope.All"/> takes every one of them. <see cref="ArchiveScope.Due"/> takes what the automatic rules pick:
+    /// a clip older than <paramref name="afterDays"/> days, or any clip while the folder (<paramref name="localBytes"/>, taken as
+    /// the clips of the folder add up) is over <paramref name="overGb"/> GB; each pick counts as gone from the folder for the
+    /// next one, so the walk stops once the folder is under the limit. 0 turns a rule off. Pure: the automatic pass and the
+    /// "Archive now…" dialog both ask it, and the tests do.
+    /// </summary>
+    internal static List<ClipEntry> SelectCandidates(IReadOnlyList<ClipEntry> entries, string localFolder, ArchiveScope scope, int afterDays,
+        double overGb, long localBytes, DateTime now, Func<ClipEntry, long> sizeOf)
+    {
+        var picks = new List<ClipEntry>();
+        foreach (var e in entries
+            .Where(e => !e.IsArchived && !string.IsNullOrEmpty(e.Path) && IsUnder(e.Path, localFolder))
+            .OrderBy(e => e.Created))
+        {
+            long size = sizeOf(e);
+            if (size < 0) continue;   // the file is gone
+            if (scope == ArchiveScope.Due)
+            {
+                if (!IsDue(e, afterDays, overGb, localBytes, now)) continue;
+                localBytes -= size;
+            }
+            picks.Add(e);
+        }
+        return picks;
+    }
 
-    private Outcome MoveOne(ClipEntry entry, FileInfo fi, string root)
+    /// <summary>The automatic rules for one clip: older than <paramref name="afterDays"/> days, or the folder (<paramref name="localBytes"/>) is over <paramref name="overGb"/> GB.</summary>
+    private static bool IsDue(ClipEntry e, int afterDays, double overGb, long localBytes, DateTime now)
+    {
+        long limitBytes = overGb > 0 ? (long)Math.Min(overGb * (1L << 30), long.MaxValue / 2) : 0;
+        bool byAge = afterDays > 0 && e.Created < now.AddDays(-Math.Min(afterDays, 36500));   // AddDays throws past year 1
+        bool bySize = limitBytes > 0 && localBytes > limitBytes;
+        return byAge || bySize;
+    }
+
+    /// <summary>The size of a clip's file, or -1 when it is not there.</summary>
+    private static long FileLength(ClipEntry e)
+    {
+        try { var fi = new FileInfo(e.Path); return fi.Exists ? fi.Length : -1; }
+        catch { return -1; }
+    }
+
+    // ------------------------------------------------------------------ a manual run
+
+    /// <summary>One "Archive now…" request on its way through the archive thread, with the counts of the run so far.</summary>
+    private sealed class ManualRequest
+    {
+        public ManualRequest(ArchiveScope scope, bool throttle, IProgress<ArchiveProgress>? progress, CancellationToken ct)
+        {
+            Scope = scope; Throttle = throttle; Progress = progress; Ct = ct;
+        }
+
+        public ArchiveScope Scope { get; }
+        public bool Throttle { get; }
+        public IProgress<ArchiveProgress>? Progress { get; }
+        public CancellationToken Ct { get; }
+        public TaskCompletionSource<ArchiveRunResult> Done { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        // Archive thread only.
+        public int Index, Count;                      // the clip being moved (1-based), of how many picked
+        public int Eligible, Moved, InUse, TooNew, Failed;
+        public long BytesMoved;
+        public bool Cancelled;
+
+        public ArchiveRunResult Result(string? problem) => new(Eligible, Moved, InUse, TooNew, Failed, BytesMoved, problem, Cancelled);
+    }
+
+    private void RunManualRequest(ManualRequest req)
+    {
+        IsBusy = true;
+        ArchiveRunResult result;
+        try { result = RunManual(req); }
+        catch (Exception ex)
+        {
+            Log.Warn("archive: manual run: " + ex.Message);
+            result = req.Result(Describe(ex, _settings.ArchivePath));
+            SetStatus(IdleStatus());
+        }
+        finally { IsBusy = false; }
+        req.Done.TrySetResult(result);
+        Schedule(DateTime.UtcNow + AfterManual);
+    }
+
+    private ArchiveRunResult RunManual(ManualRequest req)
+    {
+        var s = _settings;
+        string root = s.ArchivePath?.Trim() ?? "";
+        if (_stop || req.Ct.IsCancellationRequested) { req.Cancelled = true; return req.Result(null); }
+
+        // Refused before it begins: the location is not one a clip can safely be moved to.
+        string? refusal = null;
+        if (root.Length == 0) refusal = "no archive location is set";
+        else if (!Path.IsPathFullyQualified(root)) refusal = _problem = NotFullPathProblem;
+        else if (IsSameFolder(root, s.ClipsFolder)) refusal = _problem = SameFolderProblem;
+        else if (Reach(root) is string unreachable) refusal = _problem = unreachable;
+        if (refusal != null)
+        {
+            _reachable = false;
+            Log.Info("archive: manual run refused: " + refusal);
+            SetStatus(IdleStatus());
+            return req.Result(refusal);
+        }
+        _reachable = true; _problem = null;
+
+        string local = s.ClipsFolder;
+        long localBytes = FolderBytes(local);
+        var picks = SelectCandidates(_library.Entries, local, req.Scope, s.ArchiveAfterDays, s.ArchiveWhenLocalExceedsGB, localBytes, DateTime.Now, FileLength);
+        req.Count = picks.Count;
+        Log.Info($"archive: manual run ({req.Scope}, {(req.Throttle ? "throttled" : "full speed")}): {picks.Count} clip(s) picked, to {root}");
+
+        _runFailCode = -1;
+        for (int i = 0; i < picks.Count; i++)
+        {
+            if (Cancelled(root, req)) { req.Cancelled = true; break; }
+            var e = picks[i];
+            FileInfo fi;
+            try { fi = new FileInfo(e.Path); if (!fi.Exists) continue; } catch { continue; }
+            req.Eligible++;
+            if (DateTime.UtcNow - fi.LastWriteTimeUtc < MinAge) { req.TooNew++; continue; }
+
+            req.Index = i + 1;
+            var outcome = MoveOne(e, fi, root, req);
+            if (outcome == Outcome.Moved) { req.Moved++; req.BytesMoved += fi.Length; }
+            else if (outcome == Outcome.InUse) req.InUse++;
+            else if (outcome == Outcome.Cancelled) { req.Cancelled = true; break; }
+            else
+            {
+                req.Failed++;   // Skipped, Stop and Unreachable all left _problem saying why
+                if (outcome == Outcome.Unreachable) { _reachable = false; break; }
+                if (outcome == Outcome.Stop) break;
+            }
+        }
+        Log.Info($"archive: manual run finished: {req.Moved} moved ({req.BytesMoved / 1_048_576.0:0.0} MB), {req.InUse} in use, {req.TooNew} too new, {req.Failed} failed{(req.Cancelled ? ", cancelled" : "")}");
+        SetStatus(IdleStatus());
+        return req.Result(req.Failed > 0 ? _problem : null);
+    }
+
+    /// <summary>
+    /// The run must end now: Clink is exiting, or the archive was pointed elsewhere since the run began. Besides that the automatic
+    /// pass ends when the switch is turned off or a manual run is waiting for the thread; a manual run (<paramref name="manual"/>)
+    /// when its token is cancelled, and it needs neither the switch nor a rule.
+    /// </summary>
+    private bool Cancelled(string root, ManualRequest? manual)
+    {
+        if (_stop || !string.Equals(_settings.ArchivePath?.Trim(), root, StringComparison.OrdinalIgnoreCase)) return true;
+        if (manual != null) return manual.Ct.IsCancellationRequested;
+        return !_settings.ArchiveEnabled || _manualQueued > 0;
+    }
+
+    /// <summary>
+    /// How one clip went. Stop = the archive cannot take any clip right now (full, read-only, no permission): end the run, it is
+    /// still reachable. InUse = something has the file open (or changed it meanwhile): left as it is, a later run moves it.
+    /// </summary>
+    private enum Outcome { Moved, InUse, Skipped, Unreachable, Stop, Cancelled }
+
+    private Outcome MoveOne(ClipEntry entry, FileInfo fi, string root, ManualRequest? manual)
     {
         string src = fi.FullName;
         string name = fi.Name;
@@ -227,8 +421,8 @@ internal sealed class ArchiveService
 
         // Open? (uploading / trimming / playing) Then not now.
         try { using var probe = new FileStream(src, FileMode.Open, FileAccess.Read, FileShare.None); }
-        catch (IOException) { Log.Info($"archive: {name} is in use, later"); return Outcome.Skipped; }
-        catch (UnauthorizedAccessException) { Log.Info($"archive: {name} is in use, later"); return Outcome.Skipped; }
+        catch (IOException) { Log.Info($"archive: {name} is in use, later"); return Outcome.InUse; }
+        catch (UnauthorizedAccessException) { Log.Info($"archive: {name} is in use, later"); return Outcome.InUse; }
 
         string dest = Path.Combine(root, name);
         var sw = Stopwatch.StartNew();
@@ -262,14 +456,14 @@ internal sealed class ArchiveService
                 string tmp = dest + ".clinkpart";
                 try
                 {
-                    Copy(src, tmp, name, length, root);
+                    Copy(src, tmp, name, length, root, manual);
                     long copied = new FileInfo(tmp).Length;
                     var after = new FileInfo(src);
                     if (copied != length || after.Length != length || after.LastWriteTimeUtc != lastWrite)
                     {
                         Log.Warn($"archive: {name} changed while copying or the copy is short ({copied} of {length} bytes), local file kept");
                         TryDelete(tmp);
-                        return Outcome.Skipped;
+                        return Outcome.InUse;   // something is writing to it: a later run moves it
                     }
                     File.Move(tmp, dest, true);
                 }
@@ -280,6 +474,7 @@ internal sealed class ArchiveService
                 }
                 try { File.SetCreationTimeUtc(dest, fi.CreationTimeUtc); File.SetLastWriteTimeUtc(dest, lastWrite); } catch { }
             }
+            else Report(manual, name, 100);   // the copy from an earlier run is already there
 
             // Verified copy exists: now (and only now) the local file goes. The copy took a while (throttled), so the file is
             // checked once more under an exclusive-ish handle right before the delete: the trim editor may have opened it or
@@ -291,14 +486,14 @@ internal sealed class ArchiveService
                 {
                     Log.Warn($"archive: {name} changed after it was copied, local file kept");
                     if (!haveCopy) TryDelete(dest);   // the stale copy we just made
-                    return Outcome.Skipped;
+                    return Outcome.InUse;
                 }
                 File.Delete(src);   // marked for deletion now, gone when the handle closes; a rename over it fails until then
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 Log.Warn($"archive: copied {name} but the local file is in use or could not be deleted yet ({ex.Message}); next run finishes the move");
-                return Outcome.Skipped;
+                return Outcome.InUse;
             }
 
             // The library may have been reloaded during the copy (clips folder changed): update the entry it holds now, not the
@@ -313,7 +508,7 @@ internal sealed class ArchiveService
             Log.Info($"archive: moved {src} -> {dest} ({length / 1_048_576.0:0.0} MB in {sw.Elapsed.TotalSeconds:0.0} s)");
             return Outcome.Moved;
         }
-        catch (OperationCanceledException) { return Outcome.Skipped; }
+        catch (OperationCanceledException) { return Outcome.Cancelled; }
         catch (Exception ex)
         {
             string why = Describe(ex, root);
@@ -330,24 +525,42 @@ internal sealed class ArchiveService
         }
     }
 
-    /// <summary>Chunked copy with a sleep between chunks; a progress line goes to <see cref="Status"/> every 5 %.</summary>
-    private void Copy(string src, string dst, string name, long length, string root)
+    /// <summary>
+    /// Chunked copy with a sleep between chunks (none in a manual run that is not throttled); a progress line goes to
+    /// <see cref="Status"/> every 5 %, and a manual run's progress sink hears every percent.
+    /// </summary>
+    private void Copy(string src, string dst, string name, long length, string root, ManualRequest? manual)
     {
         using var inp = new FileStream(src, FileMode.Open, FileAccess.Read, FileShare.Read, 1, FileOptions.SequentialScan);
         using var outp = new FileStream(dst, FileMode.Create, FileAccess.Write, FileShare.None, 1, FileOptions.SequentialScan);
+        bool sleep = manual?.Throttle ?? true;
         long done = 0;
-        int lastStep = -1, n;
+        int lastStep = -1, lastPercent = 0, n;
         SetStatus($"Copying {name}…");
+        Report(manual, name, 0);
         while ((n = inp.Read(_buffer, 0, _buffer.Length)) > 0)
         {
-            if (Cancelled(root)) throw new OperationCanceledException();   // the catch in MoveOne deletes the .clinkpart
+            if (Cancelled(root, manual)) throw new OperationCanceledException();   // the catch in MoveOne deletes the .clinkpart
             outp.Write(_buffer, 0, n);
             done += n;
             int step = (int)(done * 20 / Math.Max(1, length));
             if (step != lastStep) { lastStep = step; SetStatus($"Copying {name} ({step * 5} %)"); }
-            Thread.Sleep(ChunkSleepMs);
+            if (manual?.Progress != null)
+            {
+                int percent = (int)Math.Min(100, done * 100 / Math.Max(1, length));
+                if (percent != lastPercent) { lastPercent = percent; Report(manual, name, percent); }
+            }
+            if (sleep) Thread.Sleep(ChunkSleepMs);
         }
         outp.Flush(true);
+    }
+
+    /// <summary>Tells a manual run's progress sink where it is (the sink is the dialog's; whatever it does must not stop the run).</summary>
+    private static void Report(ManualRequest? manual, string name, int percent)
+    {
+        if (manual?.Progress == null) return;
+        try { manual.Progress.Report(new ArchiveProgress(manual.Index, manual.Count, name, percent)); }
+        catch (Exception ex) { Log.Warn("archive: progress sink: " + ex.Message); }
     }
 
     // ------------------------------------------------------------------ test / status
@@ -388,7 +601,8 @@ internal sealed class ArchiveService
     private string IdleStatus()
     {
         var s = _settings;
-        if (!s.ArchiveEnabled || string.IsNullOrWhiteSpace(s.ArchivePath)) return "Archive off";
+        if (string.IsNullOrWhiteSpace(s.ArchivePath)) return s.ArchiveEnabled ? NoLocationStatus : "Archive off";
+        if (!s.ArchiveEnabled) return ManualOnlyStatus;   // a location is set: Archive now… works, the background moves do not run
         int archived = _library.Entries.Count(e => e.IsArchived);
         var parts = new List<string> { archived == 1 ? "1 clip archived" : $"{archived} clips archived" };
         if (_lastMove is DateTime t) parts.Add($"last move {t:HH:mm}");

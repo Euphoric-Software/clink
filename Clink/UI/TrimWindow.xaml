@@ -39,23 +39,61 @@
                 </Setter.Value>
             </Setter>
         </Style>
+        <!-- "Trim" switch next to Play: off = the player, on = the trim editor (outlined in the accent while on) -->
+        <Style x:Key="TrimSwitch" TargetType="ToggleButton">
+            <Setter Property="Foreground" Value="{DynamicResource Fg}" />
+            <Setter Property="Background" Value="{DynamicResource Panel2}" />
+            <Setter Property="FontSize" Value="12.5" />
+            <Setter Property="Padding" Value="12,6" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FocusVisualStyle" Value="{StaticResource FocusRing}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleButton">
+                        <Border x:Name="B" Background="{TemplateBinding Background}" BorderBrush="{DynamicResource Panel2}" BorderThickness="1" CornerRadius="6" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center">
+                                <!-- shadows the app-wide TextBlock style (Fg, 13 px): the label takes the toggle's Foreground and FontSize -->
+                                <ContentPresenter.Resources>
+                                    <Style TargetType="TextBlock" />
+                                </ContentPresenter.Resources>
+                            </ContentPresenter>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="B" Property="Background" Value="{DynamicResource Panel3}" />
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="B" Property="Background" Value="{DynamicResource Panel3}" />
+                                <Setter TargetName="B" Property="BorderBrush" Value="{DynamicResource Accent}" />
+                                <Setter Property="Foreground" Value="{DynamicResource Accent}" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.45" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </Window.Resources>
     <Border Background="{StaticResource Bg}" CornerRadius="10" BorderBrush="{StaticResource Border}" BorderThickness="1">
         <DockPanel>
             <Grid DockPanel.Dock="Top" Height="42" MouseLeftButtonDown="Header_MouseLeftButtonDown" Background="Transparent">
-                <TextBlock x:Name="TitleText" Text="Trim" FontWeight="SemiBold" FontSize="14" Margin="16,0,0,0" VerticalAlignment="Center" />
+                <TextBlock x:Name="TitleText" Text="Trim" FontWeight="SemiBold" FontSize="14" Margin="16,0,200,0" VerticalAlignment="Center" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
+                <Button x:Name="OpenExternalButton" Style="{StaticResource LinkButton}" Content="Open in default player" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,44,0"
+                        FontSize="12" Click="OpenExternal_Click" ToolTip="Open the file in your default video player" />
                 <Button Style="{StaticResource IconButton}" Content="✕" HorizontalAlignment="Right" Margin="0,0,8,0" Click="Close_Click" />
             </Grid>
 
-            <!-- Bottom row: replace / save / share / status -->
-            <Border DockPanel.Dock="Bottom" Padding="16,10,16,14" BorderBrush="{StaticResource Border}" BorderThickness="0,1,0,0">
+            <!-- Bottom row: replace / save / share / status (the buttons are for trimming; the status line is the player's too) -->
+            <Border x:Name="BottomBar" DockPanel.Dock="Bottom" Padding="16,10,16,14" BorderBrush="{StaticResource Border}" BorderThickness="0,1,0,0">
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
-                    <TextBlock x:Name="StatusText" Style="{StaticResource MutedText}" Foreground="{StaticResource Accent}" VerticalAlignment="Center" Margin="0,0,14,0" TextWrapping="Wrap" Text="" />
-                    <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
+                    <TextBlock x:Name="StatusText" Style="{StaticResource MutedText}" Foreground="{StaticResource Accent}" VerticalAlignment="Center" Margin="0,0,14,0" TextWrapping="Wrap" Text="" MinHeight="17" />
+                    <StackPanel x:Name="SaveButtons" Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
                         <CheckBox x:Name="ReplaceCheck" Content="Replace original" VerticalAlignment="Center" Margin="0,0,14,0" />
                         <Button x:Name="SaveButton" Content="Save trimmed" Click="Save_Click" Margin="0,0,8,0" />
                         <Button x:Name="SaveShareButton" Style="{StaticResource AccentButton}" Content="Save &amp; share" Click="SaveShare_Click" />
@@ -72,10 +110,12 @@
                                    TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" Text="Opening preview…" />
                     </Grid>
                     <StackPanel x:Name="TracksPanel" />
+                    <!-- shown when a source (Voice, say) is only inside All audio: its volume cannot be changed there -->
+                    <TextBlock x:Name="MixNote" Style="{StaticResource Hint}" Margin="0,4,0,0" Visibility="Collapsed" />
                 </StackPanel>
             </Border>
 
-            <!-- Timeline with in/out handles and the playhead -->
+            <!-- Timeline: a seek bar in the player; with in/out handles and keyframes while trimming -->
             <ui:TimelineControl x:Name="Timeline" DockPanel.Dock="Bottom" Margin="6,0,6,2" />
 
             <!-- Transport row -->
@@ -85,13 +125,16 @@
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
                 <Button x:Name="PlayButton" Content="▶" Width="40" Click="Play_Click" Margin="0,0,10,0" ToolTip="Play / pause (Space)" />
-                <TextBlock x:Name="PosText" Grid.Column="1" FontFamily="Consolas" FontSize="13" VerticalAlignment="Center" Margin="0,0,14,0" Text="0:00.0 / 0:00.0" TextWrapping="NoWrap" />
-                <Button Grid.Column="2" Content="[ Set in" Click="SetIn_Click" Padding="8,4" Margin="0,0,6,0" ToolTip="Set the start to the playhead (I)" />
-                <Button Grid.Column="3" Content="Set out ]" Click="SetOut_Click" Padding="8,4" Margin="0,0,12,0" ToolTip="Set the end to the playhead (O)" />
-                <TextBlock Grid.Column="4" Style="{StaticResource MutedText}" VerticalAlignment="Center" HorizontalAlignment="Right" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
+                <ToggleButton x:Name="TrimToggle" Grid.Column="1" Style="{StaticResource TrimSwitch}" Content="✂ Trim" Checked="TrimToggle_Changed" Unchecked="TrimToggle_Changed" Margin="0,0,14,0"
+                              ToolTip="Cut this clip: set in and out points, choose what audio to keep, save a trimmed copy" />
+                <TextBlock x:Name="PosText" Grid.Column="2" FontFamily="Consolas" FontSize="13" VerticalAlignment="Center" Margin="0,0,14,0" Text="0:00.0 / 0:00.0" TextWrapping="NoWrap" />
+                <Button x:Name="SetInButton" Grid.Column="3" Content="[ Set in" Click="SetIn_Click" Padding="8,4" Margin="0,0,6,0" ToolTip="Set the start to the playhead (I)" />
+                <Button x:Name="SetOutButton" Grid.Column="4" Content="Set out ]" Click="SetOut_Click" Padding="8,4" Margin="0,0,12,0" ToolTip="Set the end to the playhead (O)" />
+                <TextBlock x:Name="HintText" Grid.Column="5" Style="{StaticResource MutedText}" VerticalAlignment="Center" HorizontalAlignment="Right" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
                            Text="Start snaps to keyframes · Space play · I/O set in/out · ←/→ frame step" />
             </Grid>
 

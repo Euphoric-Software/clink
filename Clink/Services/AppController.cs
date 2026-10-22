@@ -14,6 +14,9 @@ namespace Clink.Services;
 /// <summary>What Clink is doing right now, for the window, the tray and the status dot.</summary>
 internal enum RecordingState { Starting, Recording, WaitingForGame, Paused, Error }
 
+/// <summary>How a Share ended (<see cref="AppController.LastShareOutcome"/>): a link copied or uploaded; the share window opened because there is no Copium token (nothing failed); turned down for Copium's limits; or failed.</summary>
+internal enum ShareOutcome { None, LinkCopied, Uploaded, FileShareOpened, Refused, Failed }
+
 /// <summary>Owns the engine, settings, clip library, hotkeys, game detection, toasts, status dot, archive, tray icon and the single-instance pipe.</summary>
 internal sealed class AppController : IDisposable
 {
@@ -27,8 +30,20 @@ internal sealed class AppController : IDisposable
     public static bool IsDev => InstanceSuffix.Length > 0;
     /// <summary><c>--dev-hotkeys</c>: a dev instance binds its hotkeys too (its hook then swallows those combos system-wide while it runs).</summary>
     public static bool DevHotkeys { get; set; }
+    /// <summary>Hidden <c>--dev-accept-import</c> (test aid): a dev instance imports the other copy's settings the moment one is offered, as if the tray item had been clicked and confirmed.</summary>
+    public static bool DevAcceptImport { get; set; }
+    /// <summary><c>--dev-token</c>: a dev instance keeps the Copium token its settings hold (otherwise it has none).</summary>
+    public static bool DevToken { get; set; }
+    /// <summary><c>--dev-record</c>: a dev instance records. Without it, it starts paused: recording next to the user's game is not what a test run is for.</summary>
+    public static bool DevRecord { get; set; }
+    /// <summary>A dev instance that was not asked to record (<c>--dev-record</c>) starts paused.</summary>
+    internal static bool StartsPaused => IsDev && !DevRecord;
     public static string PipeName => "Clink.Control" + InstanceSuffix;
-    private static string MutexName => "Clink.SingleInstance.6F1B" + InstanceSuffix;
+    internal static string MutexName => "Clink.SingleInstance.6F1B" + InstanceSuffix;
+
+    /// <summary>The switches that make a restarted process this same dev instance (see <see cref="DevOptions.Switches"/>); none for a normal run.</summary>
+    internal static List<string> DevSwitches() =>
+        IsDev ? DevOptions.Switches(Settings.Dir, DevHotkeys, DevRecord, DevToken, SettingsImport.PackagesRoot) : new List<string>();
     private static readonly TimeSpan GameExitGrace = TimeSpan.FromSeconds(5);   // keep recording this long after the game's process is gone
 
     public static AppController Instance { get; private set; } = null!;
@@ -46,6 +61,13 @@ internal sealed class AppController : IDisposable
     public string? ShareRefusal { get; private set; }
     /// <summary>Why the last <see cref="ShareAsync"/> failed (no token, Copium's answer, the network), for the clip row, the toast and the trim editor to show; null when it did not fail.</summary>
     public string? ShareError { get; private set; }
+    /// <summary>
+    /// How the last <see cref="ShareAsync"/> ended, set on every path of it. The callers tell "the share window opened" (no Copium
+    /// token: the user has the file to drag, nothing failed, so no error line) from a failure by it; read it right after the call returns.
+    /// </summary>
+    public ShareOutcome LastShareOutcome { get; private set; }
+    /// <summary>A Copium upload token is saved: Share uploads. Without one it opens the share window (the file to drag) instead.</summary>
+    public bool HasCopiumToken => !string.IsNullOrWhiteSpace(Settings.CopiumToken);
     /// <summary>Version of a downloaded update waiting to be installed, or null.</summary>
     public Version? PendingVersion => Updater.PendingVersion;
 
@@ -93,7 +115,7 @@ internal sealed class AppController : IDisposable
     private readonly CancellationTokenSource _cts = new();
     private readonly SemaphoreSlim _engineGate = new(1, 1);   // Engine.Start / Stop are not thread-safe against each other
     private System.Windows.Forms.NotifyIcon? _tray;
-    private System.Windows.Forms.ToolStripMenuItem? _statusItem, _clipItem, _pauseItem, _updateItem;
+    private System.Windows.Forms.ToolStripMenuItem? _statusItem, _clipItem, _pauseItem, _updateItem, _importItem;
     private DispatcherTimer? _timer;
     private StatusDotWindow? _dot;
     private static Mutex? s_mutex;
@@ -115,6 +137,7 @@ internal sealed class AppController : IDisposable
     private int _detecting;
     private string _trayText = "";
     private string? _hotkeyNotice;          // said once at start when the main hotkey was claimed for Alt+C or left unset (MigrateHotkeys)
+    private bool _importOffered, _importAccepted;   // another copy's settings were offered in a balloon (once per start); --dev-accept-import has acted
 
     public AppController(Settings settings, Updater updater)
     {
@@ -218,6 +241,9 @@ internal sealed class AppController : IDisposable
 
     public void Start()
     {
+        // A --dev instance does not record unless asked to (--dev-record): it would capture, encode and put toasts over the game the
+        // person running the test is playing. Paused is a state the tray, the window and the hotkeys already know how to leave.
+        if (StartsPaused) { IsPaused = true; Log.Info("dev: paused, nothing is recorded (--dev-record records)"); }
         Monitors = Native.Monitors.Enumerate();
         Library.Load(Settings.ClipsFolder);
         MigrateHotkeys();
@@ -240,11 +266,27 @@ internal sealed class AppController : IDisposable
         if (!IsDev) Updater.StartBackgroundChecks();   // a --dev instance never contacts GitHub
         // A downloaded update was skipped at startup (install failed earlier, read-only folder, elevated): tell the user, once per start.
         if (Updater.InstallProblem is string problem) { Say(problem); ShowBalloon("Clink update not installed", problem); }
-        if (Settings.LoadProblem is string unread) { Say(unread); ShowBalloon("Clink settings not loaded", unread); }   // a hand edit of settings.json that does not parse
+        // A hand edit of settings.json that does not parse, or has values that do not make sense (those keep their defaults).
+        if (Settings.LoadProblem is string unread) { Say(unread); ShowBalloon(Settings.FileWasSkipped ? "Clink settings not loaded" : "Clink settings partly read", unread); }
         // The footer line of MigrateHotkeys is easy to miss when Clink starts in the tray; this is a hotkey it just claimed or left unset.
         if (_hotkeyNotice is string hotkeyNotice) ShowBalloon("Clink hotkey", hotkeyNotice);
+        // Where the settings live. A Clink started from inside a packaged app (the Claude desktop app) sees that app's private copy of
+        // AppData, so says so; a real one took another copy's settings over on a first start (App.RunNormal), or looks for a copy
+        // worth offering (the tray item, below).
+        if (AppDataRedirect.Notice is string redirected) Say(redirected);
+        if (Settings.ImportedFrom is { } taken) Say($"Imported the settings Clink saved while started from inside {taken.FriendlyName} ({taken.SavedLocalText})");
+        SettingsImport.PendingChanged += OnImportPending;
+        if (CanOfferImport) _ = SettingsImport.Scan(Settings);
         RaiseStateChanged();
     }
+
+    /// <summary>
+    /// Another copy's settings are looked for by a real Clink with settings of its own (a fresh one has already taken the newest copy
+    /// over) that is not itself inside a packaged app; a <c>--dev</c> instance looks only where <c>--packages-root</c> says, so a
+    /// test never offers (or accepts) the settings of the person whose machine it runs on.
+    /// </summary>
+    private bool CanOfferImport =>
+        AppDataRedirect.Package == null && Settings.LoadedFromFile && Settings.ImportedFrom == null && (!IsDev || SettingsImport.PackagesRoot != null);
 
     /// <summary>Once a second on the UI thread: game detection, the game-only start/stop rules, and a StateChanged for the stats line.</summary>
     private void Tick()
@@ -383,6 +425,7 @@ internal sealed class AppController : IDisposable
     /// <summary>Installs the downloaded update now: hands over to the new exe and quits.</summary>
     public void UpdateNow()
     {
+        if (IsDev) { Say(Updater.DevModeNote); return; }   // the updates folder is the real Clink's, and the new process would not be this dev instance
         string? pending = Updater.PendingPath;
         if (pending == null || !File.Exists(pending)) { Say("No update downloaded yet"); return; }
         string? problem = Updater.InstallProblemFor(Environment.ProcessPath ?? "");
@@ -390,8 +433,10 @@ internal sealed class AppController : IDisposable
         try
         {
             Log.Info($"update: installing v{Updater.PendingVersion} from {pending}");
-            // Come back the way we are now: visible if the window is open, otherwise in the tray.
-            Updater.LaunchApply(pending, Environment.ProcessPath!, new[] { MainWindowVisible ? "--show" : "--minimized" });
+            // Come back the way we are now: visible if the window is open, otherwise in the tray (and as the same --dev instance, if it is one).
+            var comeBackAs = new List<string> { MainWindowVisible ? "--show" : "--minimized" };
+            comeBackAs.AddRange(DevSwitches());
+            Updater.LaunchApply(pending, Environment.ProcessPath!, comeBackAs);
         }
         catch (Exception ex)
         {
@@ -400,6 +445,120 @@ internal sealed class AppController : IDisposable
             return;
         }
         Quit();
+    }
+
+    // ------------------------------------------------------------------ settings saved by another copy of Clink
+
+    /// <summary>
+    /// <see cref="SettingsImport"/> found (or lost) a copy of the settings, saved inside a packaged app's private AppData, that differs
+    /// from these: the tray menu gets (or loses) "Import settings saved … (Claude copy)…", and the first time per start one balloon
+    /// says so. UI thread.
+    /// </summary>
+    private void OnImportPending()
+    {
+        if (!_ui.CheckAccess()) { _ui.BeginInvoke(OnImportPending); return; }
+        var copy = SettingsImport.Pending;
+        if (_importItem != null)
+        {
+            _importItem.Visible = copy != null;
+            if (copy != null) _importItem.Text = $"Import settings saved {copy.SavedLocalText} ({copy.FriendlyName} copy)…";
+        }
+        if (copy == null) return;
+        if (!_importOffered)
+        {
+            _importOffered = true;
+            ShowBalloon("Clink", "Settings from another copy of Clink found: right-click the tray icon to import");
+        }
+        if (IsDev && DevAcceptImport && !_importAccepted)
+        {
+            _importAccepted = true;
+            Log.Info("import: --dev-accept-import, importing now");
+            ImportForeignSettings(copy);
+        }
+    }
+
+    /// <summary>The tray item: says what the other copy would change and asks. Yes imports and restarts, No turns that copy down for good, Cancel leaves it for later.</summary>
+    private void AskToImport()
+    {
+        var copy = SettingsImport.Pending;
+        if (copy == null) return;
+        string what = copy.Differences.Count > 0 ? string.Join(", ", copy.Differences) : "a few settings";
+        string text = $"Clink also has settings saved {copy.SavedLocalText} by a copy of Clink that was started from inside {copy.FriendlyName}.\n\n"
+            + $"They differ from yours in: {what}.\n\n"
+            + "Import them? Your current settings are kept as settings.pre-import.json, and Clink restarts.\n\n"
+            + "Yes: import and restart.\nNo: keep mine and stop asking about this copy.\nCancel: decide later.";
+        var owner = System.Windows.Application.Current?.MainWindow is { IsVisible: true } w ? w : null;
+        var answer = owner != null
+            ? MessageBox.Show(owner, text, "Clink", MessageBoxButton.YesNoCancel, MessageBoxImage.Question)
+            : MessageBox.Show(text, "Clink", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+        if (answer == MessageBoxResult.Yes) ImportForeignSettings(copy);
+        else if (answer == MessageBoxResult.No) SettingsImport.Decline(Settings, copy);
+    }
+
+    /// <summary>
+    /// Takes over the settings (and the clip links) another copy of Clink saved in a packaged app's private AppData and restarts
+    /// Clink to use them. Saves are frozen first, so no save that is still pending (the window's timer, the updater) can put the
+    /// old settings back; what is replaced is kept as settings.pre-import.json. If the import fails nothing is changed and Clink
+    /// carries on. UI thread (any other is marshalled).
+    /// </summary>
+    public void ImportForeignSettings(ForeignSettings copy)
+    {
+        if (!_ui.CheckAccess()) { _ui.BeginInvoke(() => ImportForeignSettings(copy)); return; }
+        Settings.FreezeSaves();
+        try
+        {
+            Archive.Stop();   // it updates the clip index as it moves clips: nothing may write that file while it is merged
+            SettingsImport.Import(copy);
+        }
+        catch (Exception ex)
+        {
+            Settings.ThawSaves();
+            try { Archive.Start(); } catch { }
+            Log.Error("import: failed", ex);
+            Say("Could not import those settings: " + ex.Message);
+            return;
+        }
+        Say($"Imported the settings saved {copy.SavedLocalText}: restarting Clink");
+        RestartClink();
+    }
+
+    /// <summary>
+    /// Starts Clink again (<c>--show</c> and the same options, so a <c>--dev</c> instance comes back as that instance) and quits this
+    /// one. The single-instance mutex is given up first so the new process can take it. If the new one cannot be started this one
+    /// takes the mutex back and carries on (with saves still frozen when an import has happened: restart by hand).
+    /// </summary>
+    internal void RestartClink()
+    {
+        try
+        {
+            ReleaseSingleInstance();
+            var psi = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = false };
+            foreach (string a in RestartArguments(Environment.GetCommandLineArgs().Skip(1))) psi.ArgumentList.Add(a);
+            Process.Start(psi)?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            Log.Error("restart: could not start Clink again", ex);
+            try { s_mutex = new Mutex(true, MutexName, out _); } catch { }
+            Say("Clink could not restart itself (" + ex.Message + "): quit and start it again to use the imported settings");
+            return;
+        }
+        Quit();
+    }
+
+    /// <summary>
+    /// The command line of the restarted Clink: this one's, without what only makes sense once (a command, --minimized, --no-update),
+    /// with <c>--show</c>; and, for a <c>--dev</c> instance, its dev switches written out the same way every time (<see cref="DevSwitches"/>,
+    /// whichever form it was started with, without the one-start <c>--dev-accept-import</c>). A restart that lost <c>--dev</c> would be a
+    /// normal start: it takes the real Clink's mutex, or forwards a command to it.
+    /// </summary>
+    internal static List<string> RestartArguments(IEnumerable<string> args)
+    {
+        var once = new[] { "--clip", "--trim-last", "--share-last", "--minimized", "--no-update" };
+        var kept = DevOptions.WithoutSwitches(args).Where(a => !once.Contains(a, StringComparer.OrdinalIgnoreCase)).ToList();
+        if (!kept.Contains("--show", StringComparer.OrdinalIgnoreCase)) kept.Add("--show");
+        kept.AddRange(DevSwitches());
+        return kept;
     }
 
     private void OnDisplayChanged(object? sender, EventArgs e)
@@ -706,7 +865,11 @@ internal sealed class AppController : IDisposable
         finally { saved.TrySetResult(null); _saving = 0; }
     }
 
-    /// <summary>Shares the newest clip (the "share last clip" hotkey / tray item): uploads it, or copies its link if it already has one.</summary>
+    /// <summary>
+    /// Shares the newest clip (the "share last clip" hotkey / tray item): uploads it, or copies its link if it already has one. With
+    /// no Copium token it opens the share window for the file (see <see cref="ShareAsync"/>), except over the detected game, where it
+    /// only says to open Clink.
+    /// </summary>
     public async void ShareLast()
     {
         // "Clip, then share" (a Stream Deck multi-action, --clip then --share-last, two quick presses) means the clip being saved
@@ -728,42 +891,95 @@ internal sealed class AppController : IDisposable
             return;
         }
         else entry = Library.Entries.FirstOrDefault(e => e.IsShared || e.IsArchived || e.Exists);
-        bool ok = false, joined = false;
+        bool ok = false, joined = false, windowOpened = false;
         if (entry == null) Say("No clips to share yet");
         else
         {
             // A second press during the same upload gets the same result: the press that started it reports a failure, once.
             joined = _uploads.TryGetValue(entry, out var running) && running.Announced;
             ok = await ShareAsync(entry, announce: true);
+            windowOpened = LastShareOutcome == ShareOutcome.FileShareOpened;   // no Copium token: the share window is the answer, not a problem
         }
         // The hotkey, the tray item and --share-last have no UI of their own, and the window is usually in the tray, minimized or
         // behind the game: a refusal (or a failure) that only reached the footer would be invisible (NotifyProblem: a toast over
         // the game, a tray balloon otherwise).
-        if (!ok && !joined && LastNotice.Length > 0) NotifyProblem("Clip not uploaded", LastNotice);
+        if (!ok && !joined && !windowOpened && LastNotice.Length > 0) NotifyProblem("Clip not uploaded", LastNotice);
     }
 
-    /// <param name="announce">From the hotkey / tray / --share-last, which have no progress UI of their own: unless the window is in front, a toast says the upload started.</param>
+    /// <summary>
+    /// Why a clip may not go to Copium with this account, or null when it fits: "Over Copium's free limit (200 MB / 10 min)"
+    /// without Copium+, "Over Copium Plus's limit (2 GB / 60 min)" with it (<see cref="Capabilities.CopiumLimits"/>). Copium would
+    /// refuse it after a long upload; Share says so up front. A clip exactly at a limit passes. Pure.
+    /// </summary>
+    internal static string? ShareRefusalFor(long size, double duration, bool plus)
+    {
+        var (maxBytes, maxSeconds, label) = Capabilities.CopiumLimits(plus);
+        return size > maxBytes || duration > maxSeconds ? "Over " + label : null;
+    }
+
+    /// <summary>The footer line for a clip <see cref="ShareRefusalFor"/> turned down: what the account takes, how big the clip is, what to do about it.</summary>
+    internal static string ShareRefusalNotice(long size, double duration, bool plus)
+    {
+        var (maxBytes, maxSeconds, _) = Capabilities.CopiumLimits(plus);
+        // Rounded up: a full 10:00 replay saves a moment over 10 min (it starts on a keyframe) and must not read "10:00".
+        int secs = (int)Math.Ceiling(Math.Max(0, duration));
+        string length = duration > 0 ? $" / {secs / 60}:{secs % 60:00}" : "";   // folder-scanned clips have no duration
+        string limits = $"{Capabilities.FormatBytes(maxBytes)} / {maxSeconds / 60} min";
+        string clip = $"this clip is {Capabilities.FormatBytes(size)}{length}";
+        return plus
+            ? $"Copium Plus accepts up to {limits}; {clip} - trim it first"
+            : $"Copium free accepts up to {limits}; {clip} - trim it, or tick 'I have Copium+' if you do";
+    }
+
+    /// <summary>
+    /// Shares a clip: copies its link when it has one, otherwise uploads it to Copium. With no Copium token there is nothing to
+    /// upload to, so the share window opens with the file to drag into Discord, a browser or a folder instead
+    /// (<see cref="LastShareOutcome"/> is then <see cref="ShareOutcome.FileShareOpened"/>, and the result is false without a
+    /// <see cref="ShareError"/>). Returns true only when a link was copied or the clip was uploaded.
+    /// </summary>
+    /// <param name="announce">From the hotkey / tray / --share-last, which have no progress UI of their own: unless the window is in front, a toast says the upload started; and no window opens over a game.</param>
     public async Task<bool> ShareAsync(ClipEntry entry, IProgress<double>? progress = null, bool announce = false)
     {
         ShareRefusal = null;
         ShareError = null;
+        LastShareOutcome = ShareOutcome.None;
         if (!string.IsNullOrEmpty(entry.CopiumLink))
         {
             CopyToClipboard(entry.CopiumLink);
             Say("Link copied");
             Toasts.ShowShared(entry, entry.CopiumLink);
+            LastShareOutcome = ShareOutcome.LinkCopied;
             return true;
         }
         string? token = Settings.CopiumToken;
-        if (string.IsNullOrWhiteSpace(token)) { ShareError = "Add your Copium token first (Clip tab)"; Say(ShareError); ShowRequested?.Invoke(); return false; }
-        // Copium refuses files over 200 MB or 10 min without Copium+: say so now instead of uploading for a while and failing.
-        if (!Settings.CopiumPlus && (entry.Size > Capabilities.CopiumFreeBytes || entry.Duration > Capabilities.CopiumFreeSeconds))
+        if (string.IsNullOrWhiteSpace(token))
         {
-            // Rounded up: a full 10:00 replay saves a moment over 10 min (it starts on a keyframe) and must not read "10:00".
-            int secs = (int)Math.Ceiling(Math.Max(0, entry.Duration));
-            string length = entry.Duration > 0 ? $" / {secs / 60}:{secs % 60:00}" : "";   // folder-scanned clips have no duration
-            ShareRefusal = "Over Copium's free limit (200 MB / 10 min)";
-            Say($"Copium free accepts up to 200 MB / 10 min; this clip is {Capabilities.FormatBytes(entry.Size)}{length} - trim it, or tick 'I have Copium+' if you do");
+            // Nothing to upload to: hand over the file instead. The hotkey path over the game opens no window (it would land on the
+            // picture, and in the replay): it says where to go, and the caller shows the line over the game.
+            if (announce && Hotkeys.GameInFront())
+            {
+                ShareError = "No Copium token: open Clink to share the file";
+                Say(ShareError);
+                LastShareOutcome = ShareOutcome.Failed;
+                return false;
+            }
+            if (!OpenShareWindow(entry))
+            {
+                ShareError = "Could not open the share window";
+                Say(ShareError);
+                LastShareOutcome = ShareOutcome.Failed;
+                return false;
+            }
+            Say("Drag the clip where you want to share it");
+            LastShareOutcome = ShareOutcome.FileShareOpened;
+            return false;
+        }
+        // Copium refuses clips over the account's limits (200 MB / 10 min free, 2 GB / 60 min with Copium+): say so now instead of uploading for a while and failing.
+        if (ShareRefusalFor(entry.Size, entry.Duration, Settings.CopiumPlus) is string refusal)
+        {
+            ShareRefusal = refusal;
+            Say(ShareRefusalNotice(entry.Size, entry.Duration, Settings.CopiumPlus));
+            LastShareOutcome = ShareOutcome.Refused;
             return false;
         }
         // One upload per clip: the hotkey, the tray, the toast and the clip list can all ask for the same clip while it is going
@@ -772,7 +988,9 @@ internal sealed class AppController : IDisposable
         {
             Say("Already uploading this clip…");
             if (announce && !MainWindowInFront) Toasts.ShowUploading(entry, "Already uploading to Copium…");
-            return await running.Task;
+            bool joinedOk = await running.Task;
+            LastShareOutcome = joinedOk ? ShareOutcome.Uploaded : ShareOutcome.Failed;
+            return joinedOk;
         }
         var done = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         _uploads[entry] = (done.Task, announce);
@@ -805,9 +1023,47 @@ internal sealed class AppController : IDisposable
         finally
         {
             _uploads.Remove(entry);
+            LastShareOutcome = ok ? ShareOutcome.Uploaded : ShareOutcome.Failed;   // before the waiting asks continue, which read it
             done.SetResult(ok);
         }
         return ok;
+    }
+
+    private readonly List<ShareWindow> _shareWindows = new();   // the open share windows (UI thread), one per clip
+
+    /// <summary>
+    /// Opens the share window for a clip: its file to drag into Discord, a browser upload box or a folder, Copy file, Open folder.
+    /// An open window for the same clip is brought forward instead of a second one. It has no owner (unlike the trim editor): the
+    /// user minimizes or hides the main window to get at the drop target, and an owned window would go with it. It floats on top
+    /// by itself and opens centred on the monitor under the pointer. UI thread; from another it runs there. False when the window
+    /// could not be opened (logged).
+    /// </summary>
+    public bool OpenShareWindow(ClipEntry entry)
+    {
+        if (!_ui.CheckAccess()) return _ui.Invoke(() => OpenShareWindow(entry));
+        try
+        {
+            var open = _shareWindows.FirstOrDefault(w => string.Equals(w.Entry.Path, entry.Path, StringComparison.OrdinalIgnoreCase));
+            if (open != null) { open.BringForward(); return true; }
+            var window = new ShareWindow(entry);
+            _shareWindows.Add(window);
+            window.Closed += (_, _) => _shareWindows.Remove(window);
+            try { window.Show(); }
+            catch { _shareWindows.Remove(window); throw; }
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.Error("share window", ex);
+            return false;
+        }
+    }
+
+    /// <summary>The share window's "Set up Copium…": brings the main window forward and says where the token goes.</summary>
+    public void ShowCopiumSetup()
+    {
+        Say("Add your token under Clips → Copium");
+        ShowRequested?.Invoke();
     }
 
     /// <summary>Asks the window to open the trim editor on a clip. False when no window has subscribed to <see cref="TrimRequested"/>.</summary>
@@ -883,11 +1139,13 @@ internal sealed class AppController : IDisposable
             menu.Items.Add(_clipItem);
             menu.Items.Add("Share last clip", null, (_, _) => _ui.BeginInvoke(ShareLast));
             menu.Items.Add("Show Clink", null, (_, _) => ShowRequested?.Invoke());
-            _pauseItem = new System.Windows.Forms.ToolStripMenuItem("Pause recording", null, (_, _) => TogglePause());
+            _pauseItem = new System.Windows.Forms.ToolStripMenuItem(IsPaused ? "Resume recording" : "Pause recording", null, (_, _) => TogglePause());
             menu.Items.Add(_pauseItem);
             menu.Items.Add("Open clips folder", null, (_, _) => OpenFolder());
             _updateItem = new System.Windows.Forms.ToolStripMenuItem("Update Clink", null, (_, _) => UpdateNow()) { Visible = false };
             menu.Items.Add(_updateItem);
+            _importItem = new System.Windows.Forms.ToolStripMenuItem("Import settings…", null, (_, _) => _ui.BeginInvoke(AskToImport)) { Visible = false };
+            menu.Items.Add(_importItem);
             menu.Items.Add(new System.Windows.Forms.ToolStripSeparator());
             menu.Items.Add("Quit", null, (_, _) => Quit());
             _tray = new System.Windows.Forms.NotifyIcon
@@ -942,6 +1200,7 @@ internal sealed class AppController : IDisposable
         Log.Info("Quitting");
         _cts.Cancel();
         _timer?.Stop();
+        SettingsImport.PendingChanged -= OnImportPending;
         SystemEvents.DisplaySettingsChanged -= OnDisplayChanged;
         SystemEvents.PowerModeChanged -= OnPowerModeChanged;
         try { Hotkeys.Uninstall(); } catch { }

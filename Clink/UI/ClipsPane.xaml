@@ -63,7 +63,8 @@
 
         <!-- Local / Trimmed row: thumbnail · title + icons · meta · Trim / Share / folder -->
         <DataTemplate x:Key="LocalRow">
-            <Border Style="{StaticResource Row}">
+            <Border Style="{StaticResource Row}" Cursor="Hand" PreviewMouseLeftButtonDown="Row_Down" MouseLeftButtonUp="Row_Click">
+                <!-- a click anywhere on the row that is not on one of its buttons plays the clip -->
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto" />
@@ -97,7 +98,22 @@
 
         <!-- Cloud row: title · date · the link (click = copy) · Open page · folder when the local file still exists -->
         <DataTemplate x:Key="CloudRow">
-            <Border Style="{StaticResource Row}">
+            <Border PreviewMouseLeftButtonDown="Row_Down" MouseLeftButtonUp="Row_Click">
+                <Border.Style>
+                    <!-- a click on the row plays the local file; no hand over a shared clip whose file is gone (an archived one still answers: "archive offline") -->
+                    <Style TargetType="Border" BasedOn="{StaticResource Row}">
+                        <Setter Property="Cursor" Value="Hand" />
+                        <Style.Triggers>
+                            <MultiDataTrigger>
+                                <MultiDataTrigger.Conditions>
+                                    <Condition Binding="{Binding HasLocalFile}" Value="False" />
+                                    <Condition Binding="{Binding IsArchived}" Value="False" />
+                                </MultiDataTrigger.Conditions>
+                                <Setter Property="Cursor" Value="Arrow" />
+                            </MultiDataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Border.Style>
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto" />
@@ -139,10 +155,10 @@
                 <ItemsControl x:Name="LocalList" ItemTemplate="{StaticResource LocalRow}" Style="{StaticResource ClipList}" />
             </Grid>
         </TabItem>
-        <TabItem x:Name="CloudTab" Header="Cloud">
+        <TabItem x:Name="SharedTab" Header="Shared">
             <Grid Margin="0,8,0,0">
-                <TextBlock x:Name="NoCloudText" Style="{StaticResource MutedText}" Margin="8" Text="Nothing shared yet. Share a clip and it is listed here, even after the local file is gone." />
-                <ItemsControl x:Name="CloudList" ItemTemplate="{StaticResource CloudRow}" Style="{StaticResource ClipList}" />
+                <TextBlock x:Name="NoSharedText" Style="{StaticResource MutedText}" Margin="8" Text="Nothing shared yet. Share a clip and it is listed here, even after the local file is gone." />
+                <ItemsControl x:Name="SharedList" ItemTemplate="{StaticResource CloudRow}" Style="{StaticResource ClipList}" />
             </Grid>
         </TabItem>
         <TabItem x:Name="TrimTab" Header="Trimmed">

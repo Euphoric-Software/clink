@@ -114,6 +114,9 @@ internal sealed class Toasts
 
     private static TimeSpan Duration(ToastSetting s) => TimeSpan.FromSeconds(Math.Clamp(s.Seconds, 1, 30));
 
+    /// <summary>The title a toast shows: a toast of a <c>--dev</c> instance says so ("Clip saved (dev)"), so nobody takes it for the real Clink's.</summary>
+    internal static string TitleFor(string title) => AppController.IsDev ? title + " (dev)" : title;
+
     private static string ClipSubtitle(ClipEntry e)
     {
         string game = string.IsNullOrEmpty(e.Game) ? "" : e.Game + " · ";
@@ -199,14 +202,15 @@ public partial class ToastWindow : Window
         Link = link;
         _duration = duration;
         _preview = preview;
-        TitleText.Text = title;
+        TitleText.Text = Toasts.TitleFor(title);
         Subtitle.Text = subtitle;
         Subtitle.ToolTip = subtitle;
         Dot.Fill = TryFindResource(kind switch { "shared" or "info" => "Accent", "recording" => "Danger", "problem" => "Warn", "paused" => "Muted", _ => "Good" }) as Brush ?? Brushes.LimeGreen;
         if (kind == "problem") Subtitle.TextWrapping = TextWrapping.Wrap;   // the reason is the point: all of it, not an ellipsis
         ClipButtons.Visibility = kind == "clip" ? Visibility.Visible : Visibility.Collapsed;
         SharedButtons.Visibility = kind == "shared" ? Visibility.Visible : Visibility.Collapsed;
-        if (kind == "clip") ShareButton.Content = entry?.IsShared == true ? "Copy link" : "Share to Copium";
+        // "Share" alone without a token: the button then opens the share window (the file to drag), it does not upload.
+        if (kind == "clip") ShareButton.Content = entry?.IsShared == true ? "Copy link" : AppController.Instance?.HasCopiumToken == true ? "Share to Copium" : "Share";
         _hide.Interval = duration;
         _hide.Tick += (_, _) => { if (!_busy) Dismiss(); };
         MouseEnter += (_, _) => _hide.Stop();
@@ -278,14 +282,13 @@ public partial class ToastWindow : Window
         bool ok = await AppController.Instance.ShareAsync(Entry, progress);
         _busy = false;
         if (ok) { Dismiss(); return; }   // the "Shared" toast takes over
-        if (_dismissed) return;          // closed while it was uploading
         var app = AppController.Instance;
-        bool noToken = string.IsNullOrWhiteSpace(app.Settings.CopiumToken);
-        // Short labels (the card is 330 wide); the full refusal or failure reason is the tooltip. No token: ShareAsync opened the
-        // window to set one.
-        ShareButton.Content = app.ShareRefusal != null ? "Over free limit" : noToken ? "Add a Copium token" : "Upload failed";
+        if (app.LastShareOutcome == ShareOutcome.FileShareOpened) { Dismiss(); return; }   // no Copium token: the share window took over
+        if (_dismissed) return;          // closed while it was uploading
+        // Short labels (the card is 330 wide); the full refusal or failure reason is the tooltip.
+        ShareButton.Content = app.ShareRefusal != null ? (app.Settings.CopiumPlus ? "Over Plus limit" : "Over free limit") : "Upload failed";
         ShareButton.ToolTip = app.ShareRefusal ?? app.ShareError;
-        if (app.ShareRefusal == null && !noToken && app.ShareError is string why)
+        if (app.ShareRefusal == null && app.ShareError is string why)
         {
             // The reason belongs here, where the user is looking: the footer that also has it is usually in the tray.
             Subtitle.Text = why;

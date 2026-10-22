@@ -8,18 +8,36 @@
         </DataTemplate>
     </UserControl.Resources>
     <StackPanel>
-        <Grid Margin="2,0,0,3">
+        <TextBlock Style="{StaticResource MutedText}" Text="Main hotkey" Margin="2,0,0,3" />
+        <!-- the main hotkey (Settings.Hotkeys[0]): always there and always the full replay. It can be cleared, not removed. The keys button
+             takes the same capture as a row's; RefreshMain() fills in all three. -->
+        <Grid Margin="0,0,0,6">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" MinWidth="104" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <Button x:Name="MainKeys" Padding="8,6" HorizontalContentAlignment="Left" FontWeight="SemiBold"
+                    ToolTip="The keys that save the full replay. Click, then press the key combo you want (Esc cancels)" />
+            <TextBlock x:Name="MainHint" Grid.Column="1" Style="{StaticResource MutedText}" Margin="10,0,0,0" VerticalAlignment="Center"
+                       TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
+            <Button x:Name="MainClear" Grid.Column="2" Style="{StaticResource GlyphButton}" Content="&#xE711;" Margin="8,0,0,0" Click="MainClear_Click"
+                    ToolTip="Clear the main hotkey: nothing saves the full replay until you set keys again" />
+        </Grid>
+        <!-- why the keys just pressed were not taken, for the main row (another row has them, or a bare typing key); shown while its capture stays armed -->
+        <TextBlock x:Name="MainCaptureHint" Style="{StaticResource Hint}" Foreground="{StaticResource Warn}" Margin="2,0,0,4" Visibility="Collapsed" />
+        <Grid Margin="2,8,0,3">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
-            <TextBlock Style="{StaticResource MutedText}" Text="Keys · action · length" VerticalAlignment="Center" />
-            <Button x:Name="AddButton" Grid.Column="1" Style="{StaticResource SmallButton}" Content="Add hotkey" Click="Add_Click" ToolTip="Another key combo, e.g. Shift+F9 for a shorter clip" />
+            <TextBlock Style="{StaticResource MutedText}" Text="More hotkeys" VerticalAlignment="Center" />
+            <Button x:Name="AddButton" Grid.Column="1" Style="{StaticResource SmallButton}" Content="Add hotkey" Click="Add_Click" ToolTip="Another key combo, e.g. Shift+F9 for a shorter clip (the last 15 s)" />
         </Grid>
-        <!-- one row per binding: [keys] [action] [length] [✕], built in code -->
+        <!-- one row per additional binding: [keys] [action] [length] [✕], built in code -->
         <StackPanel x:Name="Rows" />
-        <!-- why the keys just pressed were not taken (another row has them, or a bare typing key); shown while the capture stays armed -->
+        <!-- the same for the rows above -->
         <TextBlock x:Name="CaptureHint" Style="{StaticResource Hint}" Foreground="{StaticResource Warn}" Margin="2,0,0,4" Visibility="Collapsed" />
-        <TextBlock x:Name="EmptyText" Style="{StaticResource Hint}" Margin="2,4,0,0" Text="No hotkeys. Add one and press the keys you want." Visibility="Collapsed" />
+        <TextBlock x:Name="EmptyText" Style="{StaticResource Hint}" Margin="2,4,0,0" Text="No more hotkeys. Add one to save a shorter clip, e.g. the last 15 s." Visibility="Collapsed" />
     </StackPanel>
 </UserControl>

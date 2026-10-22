@@ -30,6 +30,8 @@ internal static class SelfTest
         if (codecArg != null) settings.Codec = codecArg;
         if (outDir != null) { outDir = Path.GetFullPath(outDir); Directory.CreateDirectory(outDir); }
         Say($"Clink self-test ({seconds}s). Log: {Log.Path}");
+        // Where the settings are read from: inside a packaged app (the Claude desktop app) that is the app's private copy of AppData.
+        Say($"Settings: {Settings.Dir}" + (AppDataRedirect.Detect() ? $" (this process runs inside {AppDataRedirect.FriendlyName} [{AppDataRedirect.Package}] and sees its private copy: {AppDataRedirect.FinalFolder})" : ""));
 
         var monitors = Monitors.Enumerate();
         foreach (var m in monitors)

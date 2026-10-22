@@ -166,32 +166,59 @@ internal static class TestRunner
             return 1;
         }
 
-        // Nothing a test does by accident may reach the real settings or clip index.
+        // Nothing a test does by accident may reach the real settings, clip index or updates folder.
         string scratch = Path.Combine(Path.GetTempPath(), "clink-unittest", "run-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(scratch);
-        string? dirBefore = Settings.DirOverride, indexBefore = ClipLibrary.IndexPathOverride;
+        var before = Shared.Capture();
         int passed = 0, failed = 0;
         var total = Stopwatch.StartNew();
         try
         {
             foreach (var (name, method) in tests)
             {
-                Settings.DirOverride = scratch;
-                ClipLibrary.IndexPathOverride = Path.Combine(scratch, "clips.json");
+                ResetShared(before, scratch);
                 var sw = Stopwatch.StartNew();
                 string? problem = Invoke(method);
+                ResetShared(before, scratch);
                 if (problem == null) { passed++; Print($"PASS  {name}  ({sw.ElapsedMilliseconds} ms)"); }
                 else { failed++; Print($"FAIL  {name}  {problem}"); }
             }
         }
         finally
         {
-            Settings.DirOverride = dirBefore;
-            ClipLibrary.IndexPathOverride = indexBefore;
+            ResetShared(before, null);
             try { Directory.Delete(scratch, recursive: true); } catch { }
         }
         Print($"{passed} passed, {failed} failed ({total.ElapsedMilliseconds} ms)");
         return failed;
+    }
+
+    /// <summary>The process-wide switches a test could change and forget: where the settings, the clip index and the updates live, and the --dev state.</summary>
+    private sealed record Shared(string? SettingsDir, string? ClipIndex, string? UpdatesDir, string InstanceSuffix, bool DevHotkeys, bool DevAcceptImport, bool DevToken, bool DevRecord)
+    {
+        public static Shared Capture() => new(Settings.DirOverride, ClipLibrary.IndexPathOverride, Updater.UpdatesDirOverride,
+            AppController.InstanceSuffix, AppController.DevHotkeys, AppController.DevAcceptImport, AppController.DevToken, AppController.DevRecord);
+    }
+
+    /// <summary>
+    /// Puts back what a test may have changed that others would trip over: everything in <paramref name="before"/> (the --dev state, so
+    /// no test leaves the process looking like a dev instance), frozen saves, the import state and the redirect findings; and points the
+    /// settings folder, the clip index and the updates folder at <paramref name="scratch"/> (or at where they were, when null).
+    /// Before and after every test.
+    /// </summary>
+    private static void ResetShared(Shared before, string? scratch)
+    {
+        AppController.InstanceSuffix = before.InstanceSuffix;
+        AppController.DevHotkeys = before.DevHotkeys;
+        AppController.DevAcceptImport = before.DevAcceptImport;
+        AppController.DevToken = before.DevToken;
+        AppController.DevRecord = before.DevRecord;
+        Settings.DirOverride = scratch ?? before.SettingsDir;
+        ClipLibrary.IndexPathOverride = scratch != null ? Path.Combine(scratch, "clips.json") : before.ClipIndex;
+        Updater.UpdatesDirOverride = scratch != null ? Path.Combine(scratch, "updates") : before.UpdatesDir;
+        Settings.ThawSaves();
+        SettingsImport.Reset();
+        AppDataRedirect.Reset();
     }
 
     /// <summary>Every [UnitTest] method of namespace Clink.Tests, by "Class.Method" name.</summary>

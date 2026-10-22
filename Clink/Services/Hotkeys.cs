@@ -16,6 +16,8 @@ namespace Clink.Services;
 /// The hook runs on a thread of its own: Windows holds every keystroke on the system until the hook returns, so it must never
 /// wait for the UI thread (a clipboard retry, a GC, the first toast being built). A hook that once took longer than
 /// LowLevelHooksTimeout is dropped by Windows without a word, so it is put back after unlock / resume and once a minute.
+/// A key swallowed while Alt is held (Alt+C, the default) would leave the program in front with a lone Alt press and release,
+/// which opens its menu bar: <see cref="MaskAlt"/> puts a dummy key in between.
 /// </summary>
 internal static unsafe class Hotkeys
 {
@@ -23,6 +25,9 @@ internal static unsafe class Hotkeys
     private const int VK_TAB = 0x09, VK_RETURN = 0x0D, VK_SPACE = 0x20, VK_ESCAPE = 0x1B, VK_F4 = 0x73, VK_DELETE = 0x2E;
     private const int VK_CANCEL = 0x03, VK_PAUSE = 0x13, VK_SCROLL = 0x91;
     private const uint WM_QUIT = 0x0012, WM_REHOOK = 0x8000 + 0x4B;   // WM_APP + n to the hook thread: re-install (wParam 1: forget held keys too)
+    private const byte VK_MASK = 0xE8;          // "unassigned": no program does anything with it (AutoHotkey's default MenuMaskKey)
+    private const uint KEYEVENTF_KEYUP = 0x0002;
+    private const uint MaskTag = 0x4B4E4C43;    // "CLNK": the dwExtraInfo of the dummy key, so the hook lets its own key through
 
     private static HHOOK s_hook;                 // hook thread only
     private static Thread? s_thread;
@@ -184,6 +189,30 @@ internal static unsafe class Hotkeys
     [DllImport("kernel32.dll")]
     private static extern uint GetCurrentThreadId();
 
+    [DllImport("user32.dll", EntryPoint = "keybd_event")]
+    private static extern void KeybdEvent(byte vk, byte scan, uint flags, nuint extraInfo);
+
+    // ------------------------------------------------------------------ alt-chord menu mask
+
+    /// <summary>
+    /// A key swallowed while Alt is held but Ctrl is not needs <see cref="MaskAlt"/>: the program in front sees Alt go down and up
+    /// with nothing in between, and Windows opens its menu bar (File Edit View …) for that. With Ctrl held it does not.
+    /// </summary>
+    internal static bool NeedsMenuMask(bool ctrl, bool alt) => alt && !ctrl;
+
+    /// <summary>
+    /// Puts a dummy key press (vk E8, tagged with <see cref="MaskTag"/> so the hook passes it on) between the Alt press the program
+    /// has seen and the Alt release it will see, so it takes the pair for an Alt chord and leaves its menu bar alone. This is what
+    /// AutoHotkey's MenuMaskKey does. Called from the hook for the key it is about to swallow; the injected events come back
+    /// through <see cref="HookProc"/> at once (same thread) and go straight on.
+    /// </summary>
+    private static void MaskAlt(bool ctrl, bool alt)
+    {
+        if (!NeedsMenuMask(ctrl, alt)) return;
+        KeybdEvent(VK_MASK, 0, 0, MaskTag);
+        KeybdEvent(VK_MASK, 0, KEYEVENTF_KEYUP, MaskTag);
+    }
+
     // ------------------------------------------------------------------ matching
 
     private static bool IsModifier(int vk) => vk is 0xA0 or 0xA1 or VK_SHIFT or 0xA2 or 0xA3 or VK_CONTROL or 0xA4 or 0xA5 or VK_MENU or VK_LWIN or VK_RWIN;
@@ -214,6 +243,7 @@ internal static unsafe class Hotkeys
             try
             {
                 var ks = (KBDLLHOOKSTRUCT*)lParam.Value;
+                if (ks->dwExtraInfo == MaskTag) return PInvoke.CallNextHookEx(s_hook, code, wParam, lParam);   // MaskAlt's own dummy key: never a hotkey, never held back
                 uint msg = (uint)wParam.Value;
                 bool down = msg == PInvoke.WM_KEYDOWN || msg == PInvoke.WM_SYSKEYDOWN;
                 int vk = (int)ks->vkCode, raw = vk;
@@ -243,6 +273,7 @@ internal static unsafe class Hotkeys
                                 if (Interlocked.CompareExchange(ref s_capture, null, capture) == capture)
                                 {
                                     s_swallowed[vk] = true;
+                                    MaskAlt(ctrl, alt);
                                     capture.OnKeys(vk, ctrl, alt, shift, win);
                                     return (LRESULT)1;
                                 }
@@ -255,6 +286,7 @@ internal static unsafe class Hotkeys
                             if (match != null)
                             {
                                 s_swallowed[vk] = true;
+                                MaskAlt(ctrl, alt);
                                 s_onPressed?.Invoke(match);
                                 return (LRESULT)1; // swallow so the game doesn't see it
                             }
