@@ -722,13 +722,16 @@ internal static class SettingsTests
     }
 
     [UnitTest]
-    public static void A_NaN_written_as_text_by_an_earlier_save_is_read_and_put_right_by_the_next()
+    public static void A_NaN_written_as_text_by_an_earlier_save_is_put_right_as_soon_as_it_is_loaded()
     {
         using var dir = new TempDir();
         var s = LoadFrom(dir, """{ "HdrKnee": "NaN", "WindowX": "NaN", "ClickVolume": "Infinity", "Fps": 30 }""");
         Check.Null(s.LoadProblem);
-        Check.True(float.IsNaN(s.HdrKnee));
-        Check.True(double.IsNaN(s.WindowX!.Value));
+        // clean after Load, not only after the next save: BuildConfig and the encoder never see a NaN
+        Check.Equal(0.75f, s.HdrKnee);
+        Check.Null(s.WindowX);
+        Check.Equal(0.5, s.ClickVolume);
+        Check.Equal(30, s.Fps);
         s.Save();
         var again = Settings.Load();
         Check.Equal(0.75f, again.HdrKnee);
@@ -795,7 +798,7 @@ internal static class SettingsTests
     {
         using var dir = new TempDir();
         var s = LoadFrom(dir, """{ "Codec": "hevc", "Hotkeys": [ { "Keys": { "Vk": "x" } } ] }""");
-        Check.Equal(new[] { "Hotkeys" }, s.UnreadableValues.ToArray());
+        Check.Equal(new[] { "Hotkeys row 1" }, s.UnreadableValues.ToArray(), "the one row there is, left out");
         Check.Equal("hevc", s.Codec);
         Check.Equal(new[] { "unset clip 0" }, Rows(s));   // as if the list were empty: nothing is bound for someone whose hotkeys are not known
         Check.True(s.MainHotkeyNeedsSetup);
@@ -956,6 +959,7 @@ internal static class SettingsTests
         Check.Equal(dir.Path, Settings.Dir);
         Check.Equal(dir.File("settings.json"), Settings.FilePath);
         Settings.DirOverride = null;
+        Settings.RealDirOverride = null;   // the runner points the real Clink's folder at a scratch one too
         Check.Equal(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Clink"), Settings.Dir);
     }
 
