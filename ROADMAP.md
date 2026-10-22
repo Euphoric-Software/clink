@@ -7,7 +7,9 @@ Things that were asked for or came up while building, roughly in the order they'
 - [ ] **Frame-accurate trim start** ("smart cut"): re-encode only the partial GOP before the chosen start and copy the
       rest. Today the start snaps to the previous keyframe (1 s grid by default; lower `KeyframeSeconds` for finer).
 - [ ] **Copy on save** option: automatically upload every clip and copy the link (off by default, as requested).
-- [x] **Clip length hotkeys**: the hotkey list (Capture → Hotkeys) gives every binding its own length and action.
+- [x] **Clip length hotkeys**: the hotkey list (Capture → Hotkeys) gives every binding its own length and action. Since
+      v0.2.5 the first one is the main hotkey (Alt+C by default), which always saves the full replay; the others are
+      shorter clips, pause/resume and share-last.
 - [ ] **Auto-follow the game's monitor** instead of a fixed monitor choice.
 - [x] **Manual game process picker** for the Game audio track, plus the custom-apps list for game detection.
 - [ ] Re-check HDR state live (if Windows HDR is toggled while Clink runs, restart capture with the right format).
@@ -17,6 +19,12 @@ Things that were asked for or came up while building, roughly in the order they'
 - [x] **No silent misses** (v0.2.4): a clip or share that does not happen says why over the game (Clink toast) or in a
       tray balloon; a recorder that fails to start is retried with a backoff and reported once.
 - [x] **GPU reset recovery** (v0.2.4): a driver crash / TDR is detected and capture restarts on a fresh device.
+- [x] **Settings that survive** (v0.2.5): a Clink started from inside another app (the Claude desktop app) keeps its
+      settings in that app's private AppData, which a Clink started from Explorer never sees; v0.2.5 detects that, takes
+      the copy over on a first start or offers it (tray, App tab), and a settings file with a bad value, or keys from a
+      newer Clink, no longer costs anything.
+- [x] **Better defaults for a fresh install** (v0.2.5): 1080p, 60 fps, 20 Mbps, H.264, no size target, cursor on,
+      record only while a game runs, a 45 s replay and Alt+C as the main hotkey.
 
 ## Distribution
 
@@ -37,6 +45,8 @@ Things that were asked for or came up while building, roughly in the order they'
 - [x] **Desktop track from a normal audio input as well**: the Desktop picker takes a capture device (a Wave Link
       mix, a virtual cable) or any output's loopback, like the Game and Voice pickers (`in:` / `out:` ids; a bare
       output id from an older settings file still works).
+- [x] **All audio follows the Game / Mic / Voice sliders** (v0.2.5): in the player and the trim editor, live and in the
+      saved file (the mix is rebuilt from those tracks; Desktop never feeds it).
 - [ ] Per-track gain and a mono-mic option.
 - [ ] Mix-down presets for sharing (e.g. "game + mic only" when uploading).
 
@@ -48,15 +58,34 @@ Things that were asked for or came up while building, roughly in the order they'
       AV1 encoder).
 - [ ] Capture a single window instead of a monitor.
 - [x] Optional on-screen "recording" indicator: the status dot (Alerts tab).
-- [x] Toasts and the status dot are excluded from capture, so they never end up in a clip (v0.2.4).
+- [x] Toasts and the status dot are excluded from capture, so they never end up in a clip (v0.2.4; the Share window too
+      since v0.2.5).
 - [x] Outputs wider than 4096 px (super-ultrawide at Native) record HEVC instead of failing in H.264 (v0.2.4).
 - [x] Portrait monitors: the 1440p / 1080p / 720p presets name the short side (v0.2.4).
 - [ ] Trim-editor preview and `--probe` frames of HEVC clips whose height is not a multiple of 16 (1080p) include the
       encoder's 8 padding rows at the bottom: crop to `MF_MT_MINIMUM_DISPLAY_APERTURE`. The saved and trimmed files are
       fine (players crop them); deferred from v0.2.4.
 
+## Interface
+
+- [x] **Replay length beside the size target, one main hotkey, a Copium Plus size target** (v0.2.5): the slider and its
+      readout sit in the Capturing card; Capture → Hotkeys has a main hotkey and "More hotkeys"; the size targets include
+      Copium (200 MB, 10 min) and Copium Plus (2 GB, 60 min).
+- [x] **Clink's own player** (v0.2.5): a click on a clip plays it; the ✂ Trim switch turns it into the trim editor.
+- [x] **Archive now…** (v0.2.5): a dialog that moves what is due by your rules, or every local clip, with progress and a
+      result; the Storage card has a location that is always usable and "Move clips there automatically".
+- [x] **Share without a Copium account** (v0.2.5): with no token Share opens a window with the clip's file to drag into
+      Discord, a browser or a folder (copy only), or to copy and paste. Copium Plus's limits (2 GB, 60 min) are in the
+      share check.
+- [ ] **Share window: make a smaller copy for Discord's 10 MB**: re-encode the clip to a size from the Share window (today
+      it shares the file as it is).
+- [x] **Dark or Light, six accents** (v0.2.5): the new App tab (with Updates and where the settings are kept); every
+      window follows a change at once.
+- [ ] **System theme** (follow Windows): a third choice next to Dark and Light.
+- [ ] **Bundle the Inter and Sora fonts**: the interface asks for them by name, but they are used only where they are
+      installed; otherwise Windows falls back to Segoe UI Variable / Segoe UI.
+
 ## Later, maybe
 
 - [ ] Screenshots (ShareX-style) with the same Copium share flow — explicitly low priority; video is the point.
 - [ ] Replace-on-share ("keep only the trimmed version").
-- [ ] Light theme. (Just kidding.)
