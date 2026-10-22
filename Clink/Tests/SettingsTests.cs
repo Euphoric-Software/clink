@@ -259,15 +259,38 @@ internal static class SettingsTests
     }
 
     [UnitTest]
-    public static void An_empty_hotkey_list_gets_an_Alt_C_main()
+    public static void A_hotkey_list_that_is_empty_by_choice_gets_an_unset_main_not_Alt_C()
     {
+        // "no hotkeys, by choice" in v0.2.4 (Stream Deck and --clip are enough): Alt+C must not be bound, and swallowed system-wide
         using var dir = new TempDir();
         var s = LoadFrom(dir, """{ "Fps": 30, "Hotkeys": [] }""");
         Check.True(s.HotkeysFromFile);
-        Check.Equal(new[] { "Alt+C clip 0" }, Rows(s));
-        Check.True(s.MainHotkeyAssigned);
-        Check.False(s.MainHotkeyNeedsSetup);
-        Check.Equal("Alt+C", s.Hotkey.ToString());
+        Check.Equal(new[] { "unset clip 0" }, Rows(s));
+        Check.True(s.MainHotkeyNeedsSetup, "the user is told once to set it");
+        Check.False(s.MainHotkeyAssigned);
+        Check.Equal("Alt+C", s.Hotkey.ToString(), "the v1 field is left alone: the main has no keys to follow");
+        Check.True(s.Migrated);
+
+        // saved, it is a main the user has not set, which stays quiet from then on
+        s.Save();
+        var again = Settings.Load();
+        Check.Equal(new[] { "unset clip 0" }, Rows(again));
+        Check.False(again.MainHotkeyNeedsSetup);
+        Check.False(again.MainHotkeyAssigned);
+        Check.False(again.Migrated);
+    }
+
+    [UnitTest]
+    public static void A_first_start_and_a_v1_file_still_get_their_main_on_Alt_C_or_their_own_key()
+    {
+        using var fresh = new TempDir();
+        Check.Equal(new[] { "Alt+C clip 0" }, Rows(LoadFrom(fresh, null)));
+        using var v1 = new TempDir();
+        Check.Equal(new[] { "Alt+C clip 0" }, Rows(LoadFrom(v1, """{ "Fps": 30 }""")), "a v0.1 file without a hotkey: the default");
+        using var v1own = new TempDir();
+        var own = LoadFrom(v1own, """{ "Hotkey": { "Vk": 121 } }""");
+        Check.Equal(new[] { "F10 clip 0" }, Rows(own), "a v0.1 file with one: its own");
+        Check.False(own.MainHotkeyAssigned);
     }
 
     [UnitTest]
@@ -275,8 +298,9 @@ internal static class SettingsTests
     {
         using var dir = new TempDir();
         var s = LoadFrom(dir, """{ "Hotkeys": null }""");
-        Check.Equal(new[] { "Alt+C clip 0" }, Rows(s));
-        Check.True(s.MainHotkeyAssigned);
+        Check.Equal(new[] { "unset clip 0" }, Rows(s));
+        Check.True(s.MainHotkeyNeedsSetup);
+        Check.False(s.MainHotkeyAssigned);
     }
 
     [UnitTest]
@@ -378,28 +402,134 @@ internal static class SettingsTests
         Check.Equal("Alt+C", s.Hotkey.ToString());
     }
 
+    // ------------------------------------------------------------------ the hotkey model: files written by an older Clink
+
+    /// <summary>What each combo does when pressed: the first binding on it fires (Hotkeys.Match), so this is what the list means. "F9=pause 0".</summary>
+    private static string[] Fires(Settings s) =>
+        s.Hotkeys.Where(h => h.Keys.Vk > 0).GroupBy(h => h.Keys.ToString()).Select(g => $"{g.Key}={g.First().Action} {g.First().Seconds}").OrderBy(x => x, StringComparer.Ordinal).ToArray();
+
+    [UnitTest]
+    public static void A_Default_row_that_was_never_given_keys_is_not_the_main_it_is_given_Alt_C()
+    {
+        // v0.2.4's Add hotkey makes {Vk 0, clip, 0}, shown as "Default": nobody chose that row to be the main
+        using var dir = new TempDir();
+        var s = LoadFrom(dir, $$"""{ "Hotkeys": {{HotkeysJson((145, "", "clip", 10), (0, "", "clip", 0))}} }""");
+        Check.Equal(new[] { "Alt+C clip 0", "ScrollLock clip 10" }, Rows(s));
+        Check.True(s.MainHotkeyAssigned, "the user is told Alt+C now saves the full replay");
+        Check.False(s.MainHotkeyNeedsSetup);
+        Check.Equal("Alt+C", s.Hotkey.ToString());
+        Check.True(s.Migrated);
+
+        // alone, the same
+        var alone = LoadFrom(dir, $$"""{ "Hotkeys": {{HotkeysJson((0, "", "clip", 0))}} }""");
+        Check.Equal(new[] { "Alt+C clip 0" }, Rows(alone));
+        Check.True(alone.MainHotkeyAssigned);
+
+        // with another row on Alt+C it stays unset (the same row, in front) and the user is asked to give it keys
+        var taken = LoadFrom(dir, $$"""{ "Hotkeys": {{HotkeysJson((0x43, "alt", "pause", 0), (0, "", "clip", 0))}} }""");
+        Check.Equal(new[] { "unset clip 0", "Alt+C pause 0" }, Rows(taken));
+        Check.True(taken.MainHotkeyNeedsSetup);
+        Check.False(taken.MainHotkeyAssigned);
+
+        // two of them: one becomes the main, the other stays an unset row behind it
+        var two = LoadFrom(dir, $$"""{ "Hotkeys": {{HotkeysJson((0, "", "clip", 0), (145, "", "clip", 15), (0, "", "clip", 0))}} }""");
+        Check.Equal(new[] { "Alt+C clip 0", "ScrollLock clip 15", "unset clip 0" }, Rows(two));
+    }
+
+    [UnitTest]
+    public static void In_a_v3_file_a_full_replay_row_without_keys_is_the_main_the_user_cleared()
+    {
+        using var dir = new TempDir();
+        string json = $$"""{ "SchemaVersion": 3, "Hotkey": { "Vk": 145 }, "Hotkeys": {{HotkeysJson((145, "", "clip", 10), (0, "", "clip", 0))}} }""";
+        var s = LoadFrom(dir, json);
+        Check.Equal(new[] { "unset clip 0", "ScrollLock clip 10" }, Rows(s), "it leads the list, as it is");
+        Check.False(s.MainHotkeyAssigned);
+        Check.False(s.MainHotkeyNeedsSetup);
+        Check.Equal("ScrollLock", s.Hotkey.ToString(), "an unset main leaves the v1 field alone");
+        s.Save();
+        var again = Settings.Load();
+        Check.Equal(new[] { "unset clip 0", "ScrollLock clip 10" }, Rows(again));
+        Check.False(again.Migrated);
+    }
+
+    [UnitTest]
+    public static void A_binding_is_never_moved_ahead_of_another_on_the_same_keys()
+    {
+        // The first binding of a combo fires. [F9 pause, F9 clip 0] pauses on F9 today and has to go on doing so.
+        using var dir = new TempDir();
+        var shadowed = LoadFrom(dir, $$"""{ "Hotkeys": {{HotkeysJson((120, "", "pause", 0), (120, "", "clip", 0))}} }""");
+        Check.Equal(new[] { "Alt+C clip 0", "F9 pause 0", "F9 clip 0" }, Rows(shadowed), "the dead F9 row stays where it was; the main is a new row");
+        Check.Equal(new[] { "Alt+C=clip 0", "F9=pause 0" }, Fires(shadowed));
+        Check.True(shadowed.MainHotkeyAssigned);
+
+        // the same for a shorter clip: F9 keeps saving 30 s
+        var shorter = LoadFrom(dir, $$"""{ "Hotkeys": {{HotkeysJson((120, "", "clip", 30), (120, "", "clip", 0))}} }""");
+        Check.Equal(new[] { "Alt+C clip 0", "F9 clip 30", "F9 clip 0" }, Rows(shorter));
+        Check.Equal(new[] { "Alt+C=clip 0", "F9=clip 30" }, Fires(shorter));
+
+        // a full-replay row on other keys, further down, is the one that can lead
+        var other = LoadFrom(dir, $$"""{ "Hotkeys": {{HotkeysJson((120, "", "pause", 0), (120, "", "clip", 0), (121, "", "clip", 0))}} }""");
+        Check.Equal(new[] { "F10 clip 0", "F9 pause 0", "F9 clip 0" }, Rows(other));
+        Check.Equal(new[] { "F10=clip 0", "F9=pause 0" }, Fires(other));
+        Check.False(other.MainHotkeyAssigned);
+
+        // Alt+C taken as well: the new main is unset, and Alt+C still does what it did
+        var taken = LoadFrom(dir, $$"""{ "Hotkeys": {{HotkeysJson((0x43, "alt", "pause", 0), (0x43, "alt", "clip", 0))}} }""");
+        Check.Equal(new[] { "unset clip 0", "Alt+C pause 0", "Alt+C clip 0" }, Rows(taken));
+        Check.Equal(new[] { "Alt+C=pause 0" }, Fires(taken));
+        Check.True(taken.MainHotkeyNeedsSetup);
+
+        // different modifiers are different combos: Shift+F9 does not shadow F9
+        var modifiers = LoadFrom(dir, $$"""{ "Hotkeys": {{HotkeysJson((120, "shift", "pause", 0), (120, "", "clip", 0))}} }""");
+        Check.Equal(new[] { "F9 clip 0", "Shift+F9 pause 0" }, Rows(modifiers));
+        Check.Equal(new[] { "F9=clip 0", "Shift+F9=pause 0" }, Fires(modifiers));
+    }
+
     // ------------------------------------------------------------------ schema, unknown keys, odd values
 
     [UnitTest]
-    public static void Schema_comes_from_the_file_and_is_written_as_3_or_higher()
+    public static void An_older_file_is_migrated_by_its_schema_alone_even_when_its_hotkeys_are_in_shape()
+    {
+        // The other migration tests would pass through the hotkey reshape; this file needs none: a v0.2.4 file with its one hotkey on F9.
+        using var dir = new TempDir();
+        string inShape = $$"""{ "Hotkey": { "Vk": 120 }, "Hotkeys": {{HotkeysJson((120, "", "clip", 0))}} }""";
+        var s = LoadFrom(dir, inShape);
+        Check.Equal(new[] { "F9 clip 0" }, Rows(s));
+        Check.Equal("F9", s.Hotkey.ToString());
+        Check.False(s.MainHotkeyAssigned);
+        Check.False(s.MainHotkeyNeedsSetup);
+        Check.True(s.Migrated, "no SchemaVersion, a Hotkeys list: schema 2, so the file is rewritten as 3");
+        Check.Equal(3, s.SchemaVersion);
+        s.Save();
+        Check.Contains(File.ReadAllText(dir.File("settings.json")), "\"SchemaVersion\": 3");
+
+        // the same hotkeys with a SchemaVersion of 2 say the same; of 3, there is nothing to do
+        Check.True(LoadFrom(dir, $$"""{ "SchemaVersion": 2, "Hotkey": { "Vk": 120 }, "Hotkeys": {{HotkeysJson((120, "", "clip", 0))}} }""").Migrated);
+        Check.False(LoadFrom(dir, $$"""{ "SchemaVersion": 3, "Hotkey": { "Vk": 120 }, "Hotkeys": {{HotkeysJson((120, "", "clip", 0))}} }""").Migrated);
+        // and without any hotkey list it is schema 1
+        Check.True(LoadFrom(dir, """{ "Fps": 30 }""").Migrated);
+    }
+
+    [UnitTest]
+    public static void A_save_always_writes_schema_3_over_any_other_number()
     {
         using var dir = new TempDir();
-        Check.True(LoadFrom(dir, """{ "Fps": 30 }""").Migrated, "no Hotkeys list: schema 1");
-        Check.True(LoadFrom(dir, """{ "Hotkeys": [] }""").Migrated, "a Hotkeys list: schema 2");
-        Check.True(LoadFrom(dir, """{ "SchemaVersion": 2, "Hotkeys": [] }""").Migrated);
-
-        // a file from a newer Clink keeps its number
+        // a file from a newer Clink: read as it is, nothing to migrate, but the number it carries is not trusted after a rewrite
         var newer = LoadFrom(dir, $$"""{ "SchemaVersion": 7, "Hotkey": { "Vk": 120 }, "Hotkeys": {{HotkeysJson((120, "", "clip", 0))}} }""");
-        Check.Equal(7, newer.SchemaVersion);
-        Check.False(newer.Migrated);
+        Check.Equal(3, newer.SchemaVersion);
+        Check.False(newer.Migrated, "nothing to do until something is saved");
         newer.Save();
         using (var doc = JsonDocument.Parse(File.ReadAllText(dir.File("settings.json"))))
-            Check.Equal(7, doc.RootElement.GetProperty("SchemaVersion").GetInt32());
+            Check.Equal(3, doc.RootElement.GetProperty("SchemaVersion").GetInt32());
 
-        // a hand edit that lowers it is raised again on the next save
+        // a hand edit that lowers it, and one that sets it by code, are raised on the next save as well
         var low = LoadFrom(dir, $$"""{ "SchemaVersion": 1, "Hotkey": { "Vk": 120 }, "Hotkeys": {{HotkeysJson((120, "", "clip", 0))}} }""");
         Check.True(low.Migrated);
         low.SchemaVersion = 1;
+        low.Save();
+        using (var doc = JsonDocument.Parse(File.ReadAllText(dir.File("settings.json"))))
+            Check.Equal(3, doc.RootElement.GetProperty("SchemaVersion").GetInt32());
+        low.SchemaVersion = 9;
         low.Save();
         using (var doc = JsonDocument.Parse(File.ReadAllText(dir.File("settings.json"))))
             Check.Equal(3, doc.RootElement.GetProperty("SchemaVersion").GetInt32());
@@ -423,18 +553,331 @@ internal static class SettingsTests
     }
 
     [UnitTest]
-    public static void A_NaN_does_not_stop_the_settings_from_being_saved()
+    public static void Unknown_keys_inside_hotkeys_and_toast_settings_survive_too()
+    {
+        using var dir = new TempDir();
+        const string json = """
+            { "SchemaVersion": 3,
+              "Hotkey": { "Alt": true, "Vk": 67, "Future": 1 },
+              "Hotkeys": [ { "Keys": { "Alt": true, "Vk": 67, "Layer": "x" }, "Action": "clip", "Seconds": 0, "Label": "main" },
+                           { "Keys": { "Vk": 120 }, "Action": "pause", "Seconds": 0, "Icon": [1, 2] } ],
+              "ToastClip": { "Enabled": true, "Seconds": 4, "Sound": "pop" } }
+            """;
+        var s = LoadFrom(dir, json);
+        s.Save();
+        using var doc = JsonDocument.Parse(File.ReadAllText(dir.File("settings.json")));
+        var root = doc.RootElement;
+        Check.Equal(1, root.GetProperty("Hotkey").GetProperty("Future").GetInt32());
+        Check.Equal("x", root.GetProperty("Hotkeys")[0].GetProperty("Keys").GetProperty("Layer").GetString());
+        Check.Equal("main", root.GetProperty("Hotkeys")[0].GetProperty("Label").GetString());
+        Check.Equal(2, root.GetProperty("Hotkeys")[1].GetProperty("Icon").GetArrayLength());
+        Check.Equal("pop", root.GetProperty("ToastClip").GetProperty("Sound").GetString());
+
+        // moving a row to the front takes its own extra keys with it, and a copy of a binding has its own
+        var reshaped = LoadFrom(dir, """{ "Hotkeys": [ { "Keys": { "Shift": true, "Vk": 120 }, "Action": "clip", "Seconds": 30, "Label": "a" }, { "Keys": { "Vk": 120, "Layer": "b" }, "Action": "clip", "Seconds": 0, "Label": "b" } ] }""");
+        Check.Equal(new[] { "F9 clip 0", "Shift+F9 clip 30" }, Rows(reshaped));
+        Check.Equal("b", reshaped.Hotkeys[0].Unknown!["Label"].GetString());
+        Check.Equal("a", reshaped.Hotkeys[1].Unknown!["Label"].GetString());
+        var copy = reshaped.Hotkeys[0].Keys.Clone();
+        Check.Equal("b", copy.Unknown!["Layer"].GetString());
+        copy.Unknown.Remove("Layer");
+        Check.True(reshaped.Hotkeys[0].Keys.Unknown!.ContainsKey("Layer"), "the copy's dictionary is its own");
+        Check.Null(new HotkeyBinding().Clone().Unknown);
+    }
+
+    [UnitTest]
+    public static void Keys_named_like_members_that_are_not_saved_are_kept_and_such_names_are_never_saved()
+    {
+        using var dir = new TempDir();
+        var s = LoadFrom(dir, """{ "Fps": 30, "MainHotkey": { "a": 1 }, "Migrated": "later", "CopiumToken": "x", "LoadProblem": 5, "HotkeysFromFile": true, "Unknown": [1] }""");
+        Check.Equal(30, s.Fps);
+        Check.Null(s.LoadProblem, "a key called LoadProblem is not the member");
+        Check.False(s.UnreadableValues.Any());
+        Check.Equal(new[] { "CopiumToken", "HotkeysFromFile", "LoadProblem", "MainHotkey", "Migrated", "Unknown" },
+            s.Unknown!.Keys.OrderBy(k => k, StringComparer.Ordinal).ToArray());
+        Check.Null(s.CopiumTokenProtected, "and the plain text under that name is not a token");
+        s.Save();
+        using (var doc = JsonDocument.Parse(File.ReadAllText(dir.File("settings.json"))))
+        {
+            Check.Equal(1, doc.RootElement.GetProperty("MainHotkey").GetProperty("a").GetInt32());
+            Check.Equal("later", doc.RootElement.GetProperty("Migrated").GetString());
+            Check.Equal("x", doc.RootElement.GetProperty("CopiumToken").GetString());
+            Check.Equal(5, doc.RootElement.GetProperty("LoadProblem").GetInt32());
+            Check.True(doc.RootElement.GetProperty("HotkeysFromFile").GetBoolean());
+            Check.Equal(1, doc.RootElement.GetProperty("Unknown")[0].GetInt32());
+        }
+
+        // this version itself never writes a key with the name of a member it leaves out, so such keys can only be someone else's
+        var notSaved = typeof(Settings).GetProperties().Where(p => p.GetCustomAttributes(typeof(System.Text.Json.Serialization.JsonIgnoreAttribute), false).Length > 0).Select(p => p.Name).ToList();
+        Check.True(notSaved.Contains("MainHotkey") && notSaved.Contains("Migrated") && notSaved.Contains("CopiumToken"), "the reflection finds the members");
+        using var written = JsonDocument.Parse(Settings.FromJson("{}").ToJson());
+        Check.False(written.RootElement.EnumerateObject().Any(p => notSaved.Contains(p.Name)));
+    }
+
+    [UnitTest]
+    public static void A_NaN_never_reaches_the_file()
+    {
+        // "NaN" as text is no number to anything but the reader that was told to accept it, and means nothing as a window position or
+        // a volume: the values are put back to their defaults before the file is written.
+        using var dir = new TempDir();
+        var s = LoadFrom(dir, null);
+        s.Fps = 30;
+        s.WindowX = double.NaN; s.WindowY = double.PositiveInfinity; s.WindowWidth = double.NaN; s.WindowHeight = double.NegativeInfinity;
+        s.HdrKnee = float.NaN; s.HdrPeak = float.PositiveInfinity; s.KeyframeSeconds = float.NaN;
+        s.ClickVolume = double.NaN; s.ArchiveWhenLocalExceedsGB = double.PositiveInfinity;
+        s.Save();
+
+        string text = File.ReadAllText(dir.File("settings.json"));
+        Check.DoesNotContain(text, "NaN");
+        Check.DoesNotContain(text, "Infinity");
+        using (var doc = JsonDocument.Parse(text))
+        {
+            var root = doc.RootElement;
+            foreach (string key in new[] { "WindowX", "WindowY", "WindowWidth", "WindowHeight" })
+                Check.Equal(JsonValueKind.Null, root.GetProperty(key).ValueKind, key + " is back to \"let Windows place it\"");
+            Check.Equal(0.75, root.GetProperty("HdrKnee").GetDouble());
+            Check.Equal(4.0, root.GetProperty("HdrPeak").GetDouble());
+            Check.Equal(1.0, root.GetProperty("KeyframeSeconds").GetDouble());
+            Check.Equal(0.5, root.GetProperty("ClickVolume").GetDouble());
+            Check.Equal(0.0, root.GetProperty("ArchiveWhenLocalExceedsGB").GetDouble());
+            Check.Equal(30, root.GetProperty("Fps").GetInt32());
+        }
+        // the running settings were put right as well, and a reload agrees
+        Check.Null(s.WindowX);
+        Check.Equal(0.75f, s.HdrKnee);
+        var again = Settings.Load();
+        Check.Null(again.LoadProblem);
+        Check.Null(again.WindowX);
+        Check.Null(again.WindowWidth);
+        Check.Equal(0.75f, again.HdrKnee);
+        Check.Equal(30, again.Fps);
+    }
+
+    [UnitTest]
+    public static void A_NaN_written_as_text_by_an_earlier_save_is_read_and_put_right_by_the_next()
+    {
+        using var dir = new TempDir();
+        var s = LoadFrom(dir, """{ "HdrKnee": "NaN", "WindowX": "NaN", "ClickVolume": "Infinity", "Fps": 30 }""");
+        Check.Null(s.LoadProblem);
+        Check.True(float.IsNaN(s.HdrKnee));
+        Check.True(double.IsNaN(s.WindowX!.Value));
+        s.Save();
+        var again = Settings.Load();
+        Check.Equal(0.75f, again.HdrKnee);
+        Check.Null(again.WindowX);
+        Check.Equal(0.5, again.ClickVolume);
+        Check.Equal(30, again.Fps);
+        Check.DoesNotContain(File.ReadAllText(dir.File("settings.json")), "NaN");
+    }
+
+    // ------------------------------------------------------------------ a file with values that make no sense
+
+    [UnitTest]
+    public static void Unreadable_values_keep_their_defaults_and_everything_else_loads()
+    {
+        using var dir = new TempDir();
+        const string json = """{ "Fps": "sixty", "BufferSeconds": [1], "Codec": "hevc", "BitrateMbps": 16, "ToastPosition": "top-left", "FutureKey": 1 }""";
+        var s = LoadFrom(dir, json);
+        Check.Equal(60, s.Fps);
+        Check.Equal(45, s.BufferSeconds);
+        Check.Equal("hevc", s.Codec);
+        Check.Equal(16, s.BitrateMbps);
+        Check.Equal("top-left", s.ToastPosition);
+        Check.Equal(new[] { "Fps", "BufferSeconds" }, s.UnreadableValues.ToArray());
+        Check.Equal("settings.json: kept the defaults for Fps, BufferSeconds (unreadable values); the original is kept as settings.json.unreadable", s.LoadProblem);
+        Check.False(s.FileWasSkipped, "the file was read, only two values were not");
+        Check.Equal(json, File.ReadAllText(dir.File("settings.json.unreadable")), "what the file said, kept before anything is saved");
+        Check.Equal(json, File.ReadAllText(dir.File("settings.json")), "the file itself is left alone until something saves");
+
+        // a save writes the repaired values, and every other key stays, the unknown one too
+        s.Save();
+        using var doc = JsonDocument.Parse(File.ReadAllText(dir.File("settings.json")));
+        Check.Equal(60, doc.RootElement.GetProperty("Fps").GetInt32());
+        Check.Equal(45, doc.RootElement.GetProperty("BufferSeconds").GetInt32());
+        Check.Equal("hevc", doc.RootElement.GetProperty("Codec").GetString());
+        Check.Equal(16, doc.RootElement.GetProperty("BitrateMbps").GetInt32());
+        Check.Equal("top-left", doc.RootElement.GetProperty("ToastPosition").GetString());
+        Check.Equal(1, doc.RootElement.GetProperty("FutureKey").GetInt32());
+        Check.Equal(json, File.ReadAllText(dir.File("settings.json.unreadable")), "and the copy of the original stays");
+        Check.Null(Settings.Load().LoadProblem, "the repaired file is fine");
+    }
+
+    [UnitTest]
+    public static void A_value_of_the_wrong_kind_or_a_null_for_a_number_is_unreadable()
+    {
+        using var dir = new TempDir();
+        var s = LoadFrom(dir, """
+            { "BufferSeconds": 45.5, "Fps": null, "CaptureCursor": null, "ClipsFolder": 5, "HdrKnee": "0.9", "WindowX": null,
+              "CopiumPlus": "yes", "ToastClip": { "Seconds": "x" }, "Resolution": null }
+            """);
+        Check.Equal(new[] { "BufferSeconds", "Fps", "CaptureCursor", "ClipsFolder", "CopiumPlus", "ToastClip" }, s.UnreadableValues.ToArray());
+        Check.Equal(45, s.BufferSeconds);
+        Check.Equal(60, s.Fps);
+        Check.True(s.CaptureCursor);
+        Check.Equal(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "Clink"), s.ClipsFolder);
+        Check.False(s.CopiumPlus);
+        Check.Equal(7, s.ToastClip.Seconds);
+        Check.Equal(0.9f, s.HdrKnee);          // a number in quotes is fine
+        Check.Null(s.WindowX);                 // so is a null for an optional one
+        Check.Equal("1080p", s.Resolution);    // and a null for a text gets the default, as it always did
+    }
+
+    [UnitTest]
+    public static void An_unreadable_hotkey_list_costs_only_the_hotkeys()
+    {
+        using var dir = new TempDir();
+        var s = LoadFrom(dir, """{ "Codec": "hevc", "Hotkeys": [ { "Keys": { "Vk": "x" } } ] }""");
+        Check.Equal(new[] { "Hotkeys" }, s.UnreadableValues.ToArray());
+        Check.Equal("hevc", s.Codec);
+        Check.Equal(new[] { "unset clip 0" }, Rows(s));   // as if the list were empty: nothing is bound for someone whose hotkeys are not known
+        Check.True(s.MainHotkeyNeedsSetup);
+        Check.False(s.MainHotkeyAssigned);
+    }
+
+    [UnitTest]
+    public static void Text_that_is_not_JSON_still_sends_Load_to_the_backup()
+    {
+        using var dir = new TempDir();
+        File.WriteAllText(dir.File("settings.json.bak"), """{ "Fps": 30 }""");
+        var s = LoadFrom(dir, "{ not json");
+        Check.Equal(30, s.Fps);
+        Check.True(s.FileWasSkipped);
+        Check.Contains(s.LoadProblem, "settings.json was not used");
+        Check.Contains(s.LoadProblem, "the previous settings");
+        Check.Equal("{ not json", File.ReadAllText(dir.File("settings.json.unreadable")));
+
+        // a backup that is no better: the defaults, and the same story
+        using var dir2 = new TempDir();
+        var d = LoadFrom(dir2, "[1, 2]");   // JSON, but not a settings object
+        Check.True(d.FileWasSkipped);
+        Check.Equal(60, d.Fps);
+        Check.Contains(d.LoadProblem, "default settings");
+        Check.True(File.Exists(dir2.File("settings.json.unreadable")));
+    }
+
+    [UnitTest]
+    public static void A_file_that_says_null_is_an_empty_one()
+    {
+        using var dir = new TempDir();
+        var s = LoadFrom(dir, "null");
+        Check.Null(s.LoadProblem);
+        Check.False(s.FileWasSkipped);
+        Check.Equal(60, s.Fps);
+        Check.Equal(new[] { "Alt+C clip 0" }, Rows(s));
+    }
+
+    [UnitTest]
+    public static void FromJson_reads_the_way_Load_does_without_touching_anything()
+    {
+        using var dir = new TempDir();
+        Settings.DirOverride = dir.Path;
+        var logged = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        void Collect(string line) => logged.Enqueue(line);
+        Log.Line += Collect;
+        try
+        {
+            var s = Settings.FromJson("""{ "Fps": "sixty", "ShowToast": false, "FutureKey": 1 }""");
+            Check.Equal(60, s.Fps);
+            Check.False(s.ToastClip.Enabled);
+            Check.NotNull(s.Unknown);
+            Check.Equal(new[] { "Alt+C clip 0" }, Rows(s));
+            Check.Throws<JsonException>(() => Settings.FromJson("{ not json"));
+        }
+        finally { Log.Line -= Collect; }
+        Check.Equal(0, logged.Count, "nothing is logged");
+        Check.Equal(0, Directory.GetFileSystemEntries(Settings.Dir).Length, "and no file is written or copied");
+    }
+
+    // ------------------------------------------------------------------ saving
+
+    [UnitTest]
+    public static void Frozen_saves_write_nothing_until_thawed()
     {
         using var dir = new TempDir();
         var s = LoadFrom(dir, null);
-        s.WindowX = double.NaN;
-        s.HdrKnee = float.NaN;
-        s.Fps = 30;
         s.Save();
-        Check.True(File.Exists(dir.File("settings.json")), "Save wrote the file");
+        string before = File.ReadAllText(dir.File("settings.json"));
+        s.Fps = 30;
+        Settings.FreezeSaves();
+        try
+        {
+            Check.True(Settings.SavesFrozen);
+            s.Save();
+            Check.Equal(before, File.ReadAllText(dir.File("settings.json")), "a frozen save writes nothing");
+            Check.False(File.Exists(dir.File("settings.json.bak")), "and does not rotate the backup either");
+        }
+        finally { Settings.ThawSaves(); }
+        Check.False(Settings.SavesFrozen);
+        s.Save();
+        Check.Contains(File.ReadAllText(dir.File("settings.json")), "\"Fps\": 30");
+    }
+
+    [UnitTest]
+    public static void A_save_asked_for_by_another_thread_is_done_on_the_UI_thread()
+    {
+        using var dir = new TempDir();
+        var s = LoadFrom(dir, null);
+        var other = new Thread(() => s.Save());
+        other.Start();
+        other.Join();
+        Check.False(File.Exists(dir.File("settings.json")), "that thread only queued it");
+        PumpUi();
+        Check.True(File.Exists(dir.File("settings.json")), "the UI thread did it");
+        File.Delete(dir.File("settings.json"));
+        s.Save();   // asked for on the UI thread itself: done right away
+        Check.True(File.Exists(dir.File("settings.json")));
+    }
+
+    /// <summary>Lets what was queued for the UI thread run.</summary>
+    private static void PumpUi()
+    {
+        var frame = new System.Windows.Threading.DispatcherFrame();
+        System.Windows.Application.Current.Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.ApplicationIdle, new Action(() => frame.Continue = false));
+        System.Windows.Threading.Dispatcher.PushFrame(frame);
+    }
+
+    [UnitTest]
+    public static void The_first_save_of_an_older_file_keeps_it_once_as_pre_v3()
+    {
+        using var dir = new TempDir();
+        const string old = """{ "Fps": 30, "Hotkeys": [] }""";   // schema 2
+        var s = LoadFrom(dir, old);
+        Check.False(File.Exists(dir.File("settings.pre-v3.json")), "nothing is copied until the file is replaced");
+        s.Save();
+        Check.Equal(old, File.ReadAllText(dir.File("settings.pre-v3.json")));
+        Check.Contains(File.ReadAllText(dir.File("settings.json")), "\"SchemaVersion\": 3");
+        s.Fps = 60;
+        s.Save();
+        Check.Equal(old, File.ReadAllText(dir.File("settings.pre-v3.json")), "later saves leave it alone");
+
+        // an older file again (the user went back to an old Clink, say): the copy from the first time stays
+        File.WriteAllText(dir.File("settings.json"), """{ "Fps": 120, "Hotkeys": [] }""");
         var again = Settings.Load();
-        Check.Null(again.LoadProblem);
-        Check.Equal(30, again.Fps);
+        again.Save();
+        Check.Equal(old, File.ReadAllText(dir.File("settings.pre-v3.json")), "never overwritten");
+    }
+
+    [UnitTest]
+    public static void A_v1_file_is_kept_too_but_a_v3_file_and_a_first_start_have_nothing_to_keep()
+    {
+        using var v1 = new TempDir();
+        const string old = """{ "Fps": 30, "Hotkey": { "Vk": 120 } }""";
+        LoadFrom(v1, old).Save();
+        Check.Equal(old, File.ReadAllText(v1.File("settings.pre-v3.json")));
+
+        using var v3 = new TempDir();
+        LoadFrom(v3, $$"""{ "SchemaVersion": 3, "Hotkeys": {{HotkeysJson((120, "", "clip", 0))}}, "Hotkey": { "Vk": 120 } }""").Save();
+        Check.False(File.Exists(v3.File("settings.pre-v3.json")));
+
+        using var fresh = new TempDir();
+        LoadFrom(fresh, null).Save();
+        Check.False(File.Exists(fresh.File("settings.pre-v3.json")));
+
+        // a file that was read from the backup is kept as what was read
+        using var viaBackup = new TempDir();
+        File.WriteAllText(viaBackup.File("settings.json.bak"), old);
+        LoadFrom(viaBackup, "{ not json").Save();
+        Check.Equal(old, File.ReadAllText(viaBackup.File("settings.pre-v3.json")));
     }
 
     [UnitTest]
@@ -517,10 +960,15 @@ internal static class SettingsTests
         {
             Check.False(AppController.IsDev);
             Check.Equal("Clink.Control", AppController.PipeName);
+            Check.Equal("Clink.SingleInstance.6F1B", AppController.MutexName);   // the real Clink's, exactly
             AppController.InstanceSuffix = a.InstanceSuffix;
             Check.True(AppController.IsDev);
             Check.Equal("Clink.Control" + a.InstanceSuffix, AppController.PipeName);
             Check.NotEqual("Clink.Control", AppController.PipeName);
+            Check.Equal("Clink.SingleInstance.6F1B" + a.InstanceSuffix, AppController.MutexName);
+            Check.NotEqual("Clink.SingleInstance.6F1B", AppController.MutexName);
+            AppController.InstanceSuffix = b.InstanceSuffix;
+            Check.NotEqual("Clink.SingleInstance.6F1B" + a.InstanceSuffix, AppController.MutexName, "another folder, another mutex");
         }
         finally { AppController.InstanceSuffix = before; }
     }
