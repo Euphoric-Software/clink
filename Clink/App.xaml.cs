@@ -29,6 +29,20 @@ public partial class App : System.Windows.Application
         DispatcherUnhandledException += (_, a) => { Log.Error("UI exception", a.Exception); a.Handled = true; };
         TaskScheduler.UnobservedTaskException += (_, a) => { Log.Error("Task exception", a.Exception); a.SetObserved(); };
 
+        if (args.Length > 0 && args[0].Equals("--unittest", StringComparison.OrdinalIgnoreCase))
+        {
+            // Clink.exe --unittest [nameFilter]: the in-exe tests (Clink/Tests); exit code 0 = every test passed. They are pure: a temp
+            // folder and Settings.DirOverride stand in for %APPDATA%\Clink, and the single-instance mutex and pipe are never touched,
+            // so this is safe next to a running Clink. They run on this (the UI) thread, one after the other.
+            Log.Init(Path.Combine(Path.GetTempPath(), "clink-unittest"), Log.CliFile);
+            AttachParentConsole();
+            int failed;
+            try { failed = Tests.TestRunner.Run(args); }
+            catch (Exception ex) { Log.Error("[unittest] the runner crashed", ex); Console.WriteLine(ex); failed = 1; }
+            Shutdown(failed == 0 ? 0 : 1);
+            return;
+        }
+
         // The command-line modes log to clink-cli.log: the running Clink holds clink.log open.
         if (args.Length > 0 && args[0].Equals("--selftest", StringComparison.OrdinalIgnoreCase))
         {
@@ -104,19 +118,45 @@ public partial class App : System.Windows.Application
 
     private void RunNormal(string[] args)
     {
+        // "--dev [folder] [--dev-hotkeys]": a second Clink for testing next to the real one, with its own data folder, mutex and
+        // pipe. Decided before the single-instance check, so it can never forward a command to (or wait on) the real Clink.
+        DevOptions? dev;
+        try { dev = DevOptions.Parse(args); }
+        catch (Exception ex)
+        {
+            AttachParentConsole();
+            Console.WriteLine("--dev: the data folder is not a valid path: " + ex.Message);
+            Shutdown(2);
+            return;
+        }
+        if (dev != null)
+        {
+            Settings.DirOverride = dev.Folder;
+            AppController.InstanceSuffix = dev.InstanceSuffix;
+            AppController.DevHotkeys = dev.BindHotkeys;
+        }
+
         // Normal run: one instance; "--clip" / "--show" talk to it. A second instance only forwards its command and exits,
         // without touching the log (the running instance holds it).
         if (!AppController.AcquireSingleInstance(args)) { Shutdown(0); return; }
         Log.Init(Settings.Dir);
 
         var settings = Settings.Load();
+        if (dev != null && !settings.LoadedFromFile)
+        {
+            // A first start of this dev folder: the clips, and everything else the real Clink would reach for outside it, stay inside it.
+            settings.ClipsFolder = Path.Combine(dev.Folder, "clips");
+            settings.AutoUpdate = false;
+            settings.RunAtStartup = false;
+        }
         var updater = new Updater(settings);
         updater.LogSource();
 
         // A newer exe was downloaded on an earlier run: hand over to it and let it replace us ("--no-update" skips this).
         // Only an exe that knows its update repository does this: the updates folder is shared by every Clink exe on the
-        // machine, and a local/debug build must never be overwritten by a release download it did not make.
-        bool noUpdate = args.Any(a => a.Equals("--no-update", StringComparison.OrdinalIgnoreCase));
+        // machine, and a local/debug build must never be overwritten by a release download it did not make. A --dev instance
+        // never installs anything.
+        bool noUpdate = dev != null || args.Any(a => a.Equals("--no-update", StringComparison.OrdinalIgnoreCase));
         if (updater.Repo != null && settings.AutoUpdate && !noUpdate && updater.TryGetPendingUpdate(out string pendingExe, out Version pendingVersion))
         {
             Log.Info($"Installing downloaded update v{pendingVersion} from {pendingExe}");
@@ -137,6 +177,7 @@ public partial class App : System.Windows.Application
 
         _controller = new AppController(settings, updater);
         var main = new MainWindow();
+        if (dev != null) main.Title = "Clink (dev)";
         MainWindow = main;
         _controller.Start();
         // "--clip" / "--share-last" / "--trim-last" while Clink was not running: start in the tray and run the command,
@@ -145,7 +186,7 @@ public partial class App : System.Windows.Application
         bool show = args.Any(a => a.Equals("--show", StringComparison.OrdinalIgnoreCase));
         bool minimized = !show && (settings.StartMinimized || cmd != null || args.Any(a => a.Equals("--minimized", StringComparison.OrdinalIgnoreCase)));
         if (!minimized) main.Show();
-        Log.Info($"Clink v{updater.VersionDisplay} started");
+        Log.Info($"Clink v{updater.VersionDisplay} started" + (dev != null ? $" (--dev: data in {dev.Folder}, hotkeys {(dev.BindHotkeys ? "on" : "off")})" : ""));
         if (cmd != null) _controller.RunStartupCommand(cmd);
     }
 
