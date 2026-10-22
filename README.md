@@ -1,4 +1,10 @@
-# Clink
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/clink-wordmark-on-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="docs/brand/clink-wordmark-on-light.svg">
+    <img src="docs/brand/clink-wordmark-on-light.svg" alt="Clink" height="64">
+  </picture>
+</h1>
 
 A tiny Windows replay-buffer clipper for games. It keeps the last stretch of your screen and audio in memory (the
 replay length is yours to set, 45 seconds by default); press a key, hear a click, and the clip is on disk. Share it to

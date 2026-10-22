@@ -50,6 +50,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        AppIcons.Attach(this);   // the taskbar button's own icon size, not WPF's default 32 px frame shrunk to it
         _restartTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(700) };
         _restartTimer.Tick += (_, _) => { _restartTimer.Stop(); _app.StartEngine(); };
         _saveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(800) };

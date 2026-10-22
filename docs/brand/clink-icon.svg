@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-label="Clink">
+  <title>Clink</title>
+  <!-- Clink app icon, master. Redrawn from the supplied art as filled outlines only (no strokes), so browsers and WPF draw it the same.
+       Rounded square #111111 (squircle-style corners); C ring #36CAFA, outer r 348.5 / inner r 239.5, round caps at +/-28.5 deg, opening to the right; dot #FCFCFC r 90.8. -->
+  <path fill="#111111" d="M321.6 0H702.4C901.3 0 1024 122.7 1024 321.6V702.4C1024 901.3 901.3 1024 702.4 1024H321.6C122.7 1024 0 901.3 0 702.4V321.6C0 122.7 122.7 0 321.6 0Z"/>
+  <path fill="#36CAFA" d="M818.27 345.71A348.5 348.5 0 1 0 818.27 678.29A54.5 54.5 0 0 0 796.38 604.39A54.5 54.5 0 0 0 722.48 626.28A239.5 239.5 0 1 1 722.48 397.72A54.5 54.5 0 0 0 796.38 419.61A54.5 54.5 0 0 0 818.27 345.71Z"/>
+  <circle fill="#FCFCFC" cx="512" cy="512" r="90.8"/>
+</svg>

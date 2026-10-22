@@ -60,6 +60,7 @@ public partial class ShareWindow : Window, ICaptureExcludedWindow
     {
         Entry = entry;
         InitializeComponent();
+        AppIcons.Attach(this);   // has its own taskbar button (no owner): the icon size the taskbar draws, not WPF's default frame
         ShowEntry();
         // A local file is taken to be there (the worker's look is quick and only matters when it is not); an archived one waits for
         // its share to answer, which can take the SMB timeout when it is offline.
