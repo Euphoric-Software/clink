@@ -34,6 +34,14 @@ public partial class ClipsPane : UserControl
         LocalList.ItemsSource = _local;
         SharedList.ItemsSource = _shared;
         TrimList.ItemsSource = _trim;
+        // The row a press went down on is good for the release that follows it and no other. A row's own button handles its release
+        // (Click), so the row never hears of it and the press would stay remembered: a later press that began somewhere else (the
+        // empty part of the list, the tab header) and came up over that row would then play it. So every release in the pane forgets
+        // the press once its handlers have had their turn (this one runs last, handled or not), every press starts afresh, and a
+        // pointer that leaves the pane with the button down has not clicked anything.
+        AddHandler(MouseLeftButtonUpEvent, new MouseButtonEventHandler((_, _) => _pressed = null), handledEventsToo: true);
+        PreviewMouseLeftButtonDown += (_, _) => _pressed = null;
+        MouseLeave += (_, _) => _pressed = null;
         // Shown (window back from the tray, Clips tab opened, layout switched): re-read, so files deleted meanwhile drop out and an
         // archive that is back gets looked at again. Hidden: the thumbnail worker stops; nothing is extracted while a game runs.
         IsVisibleChanged += (_, a) =>

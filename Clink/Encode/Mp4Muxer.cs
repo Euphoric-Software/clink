@@ -53,17 +53,30 @@ internal sealed class Mp4Muxer : IDisposable
         public long LastEnd100ns;
     }
 
+    /// <summary>
+    /// The compatible brand that says a file's audio edit lists are alignment-true: every track's first sample sits on the movie
+    /// timeline to the sample, and the Mix and its Game / Mic / Voice sources are placed as they were recorded (the Mix was mixed
+    /// from the sources at whole-sample positions, which the edit lists reproduce). Written by this muxer unless the caller says it
+    /// cannot vouch for the timestamps it was given; read by <c>Trimmer.ReadClipTracks</c>. Files without it (v0.2.4 and earlier,
+    /// and trims made by them, which lost the offsets) are checked by correlation before a source is added to or taken out of the Mix.
+    /// </summary>
+    public const string AlignedBrand = "clk1";
+
     private readonly string _finalPath;
     private readonly string _tempPath;
     private readonly FileStream _temp;
     private readonly Track _video;
     private readonly List<Track> _audio = new();
     private readonly long _origin100ns;
+    private readonly bool _aligned;
+    private readonly Dictionary<Track, long> _starts = new();   // audio track -> where its first sample sits on the movie timeline, in samples
     private long _payload;
     private bool _finished;
 
     /// <param name="origin100ns">Timeline position that becomes t=0 of the movie.</param>
-    public Mp4Muxer(string path, VideoTrackDesc video, IEnumerable<AudioTrackDesc> audio, long origin100ns)
+    /// <param name="aligned">The timestamps of the audio frames are true positions on the movie timeline (a recording; a trim that kept
+    /// every track's offset): the file gets <see cref="AlignedBrand"/> and the Mix's sources are placed relative to it exactly.</param>
+    public Mp4Muxer(string path, VideoTrackDesc video, IEnumerable<AudioTrackDesc> audio, long origin100ns, bool aligned = true)
     {
         _finalPath = path;
         _tempPath = path + ".tmp";
@@ -71,6 +84,7 @@ internal sealed class Mp4Muxer : IDisposable
         _video = new Track { IsVideo = true, V = video, Timescale = video.Timescale };
         foreach (var a in audio) _audio.Add(new Track { A = a, Timescale = a.SampleRate });
         _origin100ns = origin100ns;
+        _aligned = aligned;
     }
 
     public int AudioTrackCount => _audio.Count;
@@ -112,6 +126,12 @@ internal sealed class Mp4Muxer : IDisposable
 
     private static long ToScale(long v100ns, int timescale) => (long)Math.Round(v100ns * (double)timescale / 10_000_000.0);
 
+    /// <summary>A time in the movie's units (truncated, as the milliseconds always were).</summary>
+    private static long ToMovie(long v100ns, int movieTimescale) => v100ns * movieTimescale / 10_000_000;
+
+    /// <summary>The audio rate, as the movie timescale of a file whose tracks start at places that are not whole milliseconds.</summary>
+    private const int FineTimescale = 48000;
+
     public void Finish()
     {
         if (_finished) return;
@@ -119,26 +139,34 @@ internal sealed class Mp4Muxer : IDisposable
 
         var tracks = new List<Track> { _video };
         tracks.AddRange(_audio.Where(a => a.Sizes.Count > 0));
+        PlaceAudioTracks(tracks);
+
+        // The movie counts in milliseconds, which is also what an empty edit (a track that starts after the origin) counts in. A track
+        // that starts a number of samples after the origin that is not a whole number of milliseconds would be off by up to one, so a
+        // file with such a track counts in 1/48000 s instead and the empty edit is exactly as long as the track starts late. Any
+        // other file is written as ever. (The rest of a millisecond cannot be made up with a media time after the empty edit: Media
+        // Foundation's MPEG-4 source then drops that many samples from the start of the track, where it ignores the media time of a
+        // single edit, and the readers rely on every track coming out of it from its first sample.)
+        int movieTimescale = _audio.Any(a => _starts.TryGetValue(a, out long s) && s > 0 && a.Timescale == FineTimescale && s % (FineTimescale / 1000) != 0) ? FineTimescale : 1000;
 
         // Fix the last sample duration of each track (needed for stts) and compute durations.
-        const int movieTimescale = 1000;
-        long movieDurationMs = 0;
+        long movieDuration = 0;
         foreach (var t in tracks)
         {
             long end100ns = TrackEnd100ns(t);
-            movieDurationMs = Math.Max(movieDurationMs, (end100ns - _origin100ns) / 10_000);
+            movieDuration = Math.Max(movieDuration, ToMovie(end100ns - _origin100ns, movieTimescale));
         }
 
-        byte[] ftyp = BuildFtyp(_video.V!);
+        byte[] ftyp = BuildFtyp(_video.V!, _aligned);
         // moov size depends on chunk offsets which depend on moov size: compute with a placeholder first, then rebuild with
         // real offsets. 32-bit offsets (stco) only when the whole file, moov included (several MB for a long clip), stays
         // under 4 GiB; co64 otherwise.
-        byte[] moov = BuildMoov(tracks, movieTimescale, movieDurationMs, 0, false);
+        byte[] moov = BuildMoov(tracks, movieTimescale, movieDuration, 0, false);
         bool use64 = ftyp.Length + moov.Length + 8L + _payload > uint.MaxValue;
-        if (use64) moov = BuildMoov(tracks, movieTimescale, movieDurationMs, 0, true);
+        if (use64) moov = BuildMoov(tracks, movieTimescale, movieDuration, 0, true);
         long mdatHeaderSize = use64 ? 16 : 8;
         long mdatPayloadStart = ftyp.Length + moov.Length + mdatHeaderSize;
-        moov = BuildMoov(tracks, movieTimescale, movieDurationMs, mdatPayloadStart, use64);
+        moov = BuildMoov(tracks, movieTimescale, movieDuration, mdatPayloadStart, use64);
         if (ftyp.Length + moov.Length + mdatHeaderSize != mdatPayloadStart) throw new InvalidOperationException("moov size changed");
 
         // Written under a temporary name and renamed once complete, so a failure (disk full, access denied, the name taken)
@@ -199,22 +227,50 @@ internal sealed class Mp4Muxer : IDisposable
 
     // ---------------------------------------------------------------- boxes
 
-    private static byte[] BuildFtyp(VideoTrackDesc v)
+    private static byte[] BuildFtyp(VideoTrackDesc v, bool aligned)
     {
         var b = new Box("ftyp");
         b.Fourcc("isom"); b.U32(0x200);
         b.Fourcc("isom"); b.Fourcc("iso2"); b.Fourcc(v.SampleEntry); b.Fourcc("mp41");
+        if (aligned) b.Fourcc(AlignedBrand);
         return b.ToArray();
     }
 
-    private byte[] BuildMoov(List<Track> tracks, int movieTimescale, long movieDurationMs, long mdatPayloadStart, bool use64)
+    /// <summary>
+    /// Decides where each audio track's first sample goes on the movie timeline, in whole samples (<see cref="_starts"/>: negative = the
+    /// first samples are before the movie origin and skipped, positive = the track starts after it). Each track on its own is the
+    /// position of its first frame rounded to a sample. The Mix, though, was mixed from its sources at whole-sample positions, so with
+    /// an aligned file the sources are put at the Mix's position minus the whole-sample lag it was mixed at: rounding each track by
+    /// itself would put a source one sample off the Mix a quarter of the time, enough to leave the high end of a source in the Mix
+    /// when it is taken out again.
+    /// </summary>
+    private void PlaceAudioTracks(List<Track> tracks)
+    {
+        var audio = tracks.Where(t => !t.IsVideo).ToList();
+        if (audio.Count == 0) return;
+        var real = audio.Select(t => (t.FirstPts100ns - _origin100ns) * (double)t.Timescale / 10_000_000.0).ToArray();
+        var start = real.Select(r => (long)Math.Round(r, MidpointRounding.AwayFromZero)).ToArray();
+        if (_aligned)
+        {
+            var roles = Engine.MixPlan.Roles(audio.Select(t => t.A!.Name).ToArray(), audio.Count);
+            if (roles[0] == Engine.TrackRole.Mix)
+            {
+                for (int i = 1; i < roles.Length; i++)
+                    if (roles[i] is Engine.TrackRole.Game or Engine.TrackRole.Mic or Engine.TrackRole.Voice)
+                        start[i] = start[0] - (long)Math.Round(real[0] - real[i], MidpointRounding.AwayFromZero);
+            }
+        }
+        for (int i = 0; i < audio.Count; i++) _starts[audio[i]] = start[i];
+    }
+
+    private byte[] BuildMoov(List<Track> tracks, int movieTimescale, long movieDuration, long mdatPayloadStart, bool use64)
     {
         var moov = new Box("moov");
         // mvhd
         var mvhd = new Box("mvhd", version: 0, flags: 0);
         mvhd.U32(0); mvhd.U32(0); // creation/modification
         mvhd.U32((uint)movieTimescale);
-        mvhd.U32((uint)movieDurationMs);
+        mvhd.U32((uint)movieDuration);
         mvhd.U32(0x00010000); // rate 1.0
         mvhd.U16(0x0100);     // volume
         mvhd.U16(0); mvhd.U32(0); mvhd.U32(0);
@@ -231,12 +287,12 @@ internal sealed class Mp4Muxer : IDisposable
             // them. Players that honour the flags (QuickTime, Safari, iOS) would otherwise play every audio track at once.
             bool enabled = t.IsVideo || firstAudio;
             if (!t.IsVideo) firstAudio = false;
-            moov.Child(BuildTrak(t, trackId++, enabled, movieTimescale, movieDurationMs, mdatPayloadStart, use64));
+            moov.Child(BuildTrak(t, trackId++, enabled, movieTimescale, mdatPayloadStart, use64));
         }
         return moov.ToArray();
     }
 
-    private Box BuildTrak(Track t, uint trackId, bool enabled, int movieTimescale, long movieDurationMs, long mdatPayloadStart, bool use64)
+    private Box BuildTrak(Track t, uint trackId, bool enabled, int movieTimescale, long mdatPayloadStart, bool use64)
     {
         var trak = new Box("trak");
 
@@ -249,7 +305,7 @@ internal sealed class Mp4Muxer : IDisposable
         tkhd.U32(0); tkhd.U32(0);
         tkhd.U32(trackId);
         tkhd.U32(0);
-        tkhd.U32((uint)Math.Max(0, (trackEnd100ns - _origin100ns) / 10_000)); // duration in movie timescale (ms)
+        tkhd.U32((uint)Math.Max(0, ToMovie(trackEnd100ns - _origin100ns, movieTimescale))); // duration in movie timescale
         tkhd.U32(0); tkhd.U32(0);
         tkhd.U16(0); tkhd.U16((ushort)(t.IsVideo ? 0 : 1)); // layer, alternate_group (the audio tracks are alternatives)
         tkhd.U16((ushort)(t.IsVideo ? 0 : 0x0100)); tkhd.U16(0);
@@ -261,17 +317,35 @@ internal sealed class Mp4Muxer : IDisposable
         // edts/elst: align the track's first sample to the movie origin.
         var elst = new Box("elst", 0, 0);
         long startOffset100ns = firstPts100ns - _origin100ns; // >0: track starts late (empty edit); <0: skip into media
-        if (startOffset100ns > 0)
+        if (!t.IsVideo && t.Timescale == FineTimescale && _starts.TryGetValue(t, out long startSamples))
+        {
+            // Audio, to the sample. A track that starts before the origin skips that many samples of its media (one edit, whose media
+            // time Media Foundation ignores: it hands the track out from its first sample, which is what the readers expect). One that
+            // starts after it gets an empty edit exactly as long as it starts late, then its media from the start: a media time of 0,
+            // never the rest of a millisecond (see Finish).
+            if (startSamples > 0)
+            {
+                elst.U32(2);
+                elst.U32((uint)(startSamples * movieTimescale / FineTimescale)); elst.U32(0xFFFFFFFF); elst.U16(1); elst.U16(0); // empty edit
+                elst.U32((uint)Math.Max(0, ToMovie(trackEnd100ns - firstPts100ns, movieTimescale))); elst.U32(0); elst.U16(1); elst.U16(0);
+            }
+            else
+            {
+                elst.U32(1);
+                elst.U32((uint)Math.Max(0, ToMovie(trackEnd100ns - _origin100ns, movieTimescale))); elst.U32((uint)(-startSamples)); elst.U16(1); elst.U16(0);
+            }
+        }
+        else if (startOffset100ns > 0)
         {
             elst.U32(2);
-            elst.U32((uint)(startOffset100ns / 10_000)); elst.U32(0xFFFFFFFF); elst.U16(1); elst.U16(0); // empty edit
-            elst.U32((uint)Math.Max(0, (trackEnd100ns - firstPts100ns) / 10_000)); elst.U32(0); elst.U16(1); elst.U16(0);
+            elst.U32((uint)ToMovie(startOffset100ns, movieTimescale)); elst.U32(0xFFFFFFFF); elst.U16(1); elst.U16(0); // empty edit
+            elst.U32((uint)Math.Max(0, ToMovie(trackEnd100ns - firstPts100ns, movieTimescale))); elst.U32(0); elst.U16(1); elst.U16(0);
         }
         else
         {
             long mediaTime = ToScale(-startOffset100ns, t.Timescale);
             elst.U32(1);
-            elst.U32((uint)Math.Max(0, (trackEnd100ns - _origin100ns) / 10_000)); elst.U32((uint)mediaTime); elst.U16(1); elst.U16(0);
+            elst.U32((uint)Math.Max(0, ToMovie(trackEnd100ns - _origin100ns, movieTimescale))); elst.U32((uint)mediaTime); elst.U16(1); elst.U16(0);
         }
         var edts = new Box("edts"); edts.Child(elst); trak.Child(edts);
 

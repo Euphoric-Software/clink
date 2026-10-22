@@ -69,6 +69,28 @@ internal static class TestRunnerTests
         Check.Throws<TestFailure>(() => Check.Fail("no"));
     }
 
+    // Helpers for the next test: not [UnitTest], so the runner does not run them as tests.
+    private static void SkipsForAMissingFeature() => Check.Skip("no AAC encoder here");
+    private static void Passes() { }
+    private static void Fails() => Check.Fail("nope");
+
+    [UnitTest]
+    public static void A_skipped_test_is_counted_apart_and_a_failure_only_when_nothing_may_be_skipped()
+    {
+        System.Reflection.MethodInfo Method(string name) => typeof(TestRunnerTests).GetMethod(name, System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+        var skip = TestRunner.Execute(Method(nameof(SkipsForAMissingFeature)), noSkip: false);
+        Check.Equal(TestState.Skipped, skip.State);
+        Check.Equal("no AAC encoder here", skip.Text);
+        var strict = TestRunner.Execute(Method(nameof(SkipsForAMissingFeature)), noSkip: true);
+        Check.Equal(TestState.Failed, strict.State, "CLINK_TESTS_NO_SKIP turns a skip into a failure");
+        Check.Contains(strict.Text, "no AAC encoder here");
+        Check.Contains(strict.Text, TestRunner.NoSkipVariable);
+        Check.Equal(TestState.Passed, TestRunner.Execute(Method(nameof(Passes)), noSkip: true).State);
+        var failed = TestRunner.Execute(Method(nameof(Fails)), noSkip: false);
+        Check.Equal(TestState.Failed, failed.State);
+        Check.Equal("nope", failed.Text);
+    }
+
     [UnitTest]
     public static void TempDir_exists_while_used_and_is_removed_after()
     {
