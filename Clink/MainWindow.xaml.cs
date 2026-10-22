@@ -19,12 +19,14 @@ internal sealed record Choice(string Label, object Value, bool Header = false, b
 
 /// <summary>
 /// The main window (docs/SPEC-v2.md §1, §10): resizable, settings tabs and the clips pane, which sits in a right column when the
-/// window is ≥ 900 px wide and becomes a fourth tab when it is narrower. Capture holds, top to bottom, Capturing (monitor,
+/// window is ≥ 900 px wide and becomes the last tab, Library, when it is narrower. Capture holds, top to bottom, Capturing (monitor,
 /// quality, size target, replay length with the one size/RAM readout under its slider, cursor) · Audio tracks (under a "set up
 /// your audio" banner that goes away for good once the pointer has rested on the group and moved off, or an option in it
-/// changes) · Recording · Hotkeys (the main hotkey, then shorter ones); Clip holds Copium and Storage; Alerts holds Toasts,
-/// Status dot and Updates (with "run at startup"). Every control writes its setting on change and, where the engine is
-/// affected, restarts it after a short debounce (<see cref="ScheduleRestart"/>).
+/// changes) · Recording · Hotkeys (the main hotkey, then shorter ones); Clips holds Copium and Storage; Alerts holds Toasts and
+/// Status dot; App holds Appearance (theme and accent), Updates (with "run at startup") and Settings (where they are kept, and
+/// the banners about a private copy of AppData and another copy's settings). Every control writes its setting on change and,
+/// where the engine is affected, restarts it after a short debounce (<see cref="ScheduleRestart"/>). Every colour is a
+/// DynamicResource or a resource reference, so the window follows a theme change while it is open.
 /// </summary>
 public partial class MainWindow : Window
 {
@@ -176,7 +178,7 @@ public partial class MainWindow : Window
         return (all, atPointer);
     }
 
-    /// <summary>Wide: settings tabs left, the clips pane in a right column. Narrow: the clips pane is the fourth tab.</summary>
+    /// <summary>Wide: settings tabs left, the clips pane in a right column. Narrow: the clips pane is the Library tab, after the settings tabs.</summary>
     private void ApplyLayout()
     {
         bool wide = ActualWidth >= WideWidth;
@@ -248,7 +250,7 @@ public partial class MainWindow : Window
         UpdateAudioEnabled();
         AudioSetupBanner.Visibility = s.AudioSetupSeen ? Visibility.Collapsed : Visibility.Visible;
 
-        if (!string.IsNullOrEmpty(s.CopiumToken)) { TokenBox.Password = s.CopiumToken; CopiumStatus.Text = "Token saved"; CopiumStatus.Foreground = (Brush)FindResource("Good"); }
+        if (!string.IsNullOrEmpty(s.CopiumToken)) { TokenBox.Password = s.CopiumToken; CopiumStatus.Text = "Token saved"; CopiumStatus.SetResourceReference(TextBlock.ForegroundProperty, "Good"); }
         TokenSaveButton.IsEnabled = false;
         CopiumPlusCheck.IsChecked = s.CopiumPlus;
 
@@ -279,8 +281,13 @@ public partial class MainWindow : Window
         UpdateVersionText.Text = "Clink v" + _app.Updater.VersionDisplay;
         VersionText.ToolTip = _app.Updater.Repo is string repo
             ? $"Updates come from github.com/{repo}{(_app.Updater.RepoOverridden ? " (UpdateRepo in settings.json)" : "")} · click to check now"
-            : "Updates are not configured in this build";
+            : NoUpdatesText;
         RefreshUpdateState();
+        SettingsDirText.Text = "Saved in " + Settings.Dir;
+        RefreshSettingsBanners();
+        SettingsImport.PendingChanged -= OnImportPendingChanged;
+        SettingsImport.PendingChanged += OnImportPendingChanged;
+        BuildAppearanceChoices();
 
         UpdateEstimates();
         Clips.Refresh();
@@ -372,12 +379,12 @@ public partial class MainWindow : Window
         SizeNote.Visibility = note != null ? Visibility.Visible : Visibility.Collapsed;
         // Warn colour when no bitrate can make the clip fit, or when the replay reaches the target's length limit (Copium's 10 min,
         // Copium Plus's 60: no bitrate fixes that either).
-        SizeNote.Foreground = (Brush)FindResource(Capabilities.IsWarningNote(note) ? "Warn" : "Muted");
+        SizeNote.SetResourceReference(TextBlock.ForegroundProperty, Capabilities.IsWarningNote(note) ? "Warn" : "Muted");
         EstimateText.Text = Capabilities.DescribeEstimate(mbps, tracks, seconds);
 
         var (ramText, tooMuch) = Capabilities.DescribeRing(mbps, seconds);
         RamText.Text = ramText;
-        RamText.Foreground = (Brush)FindResource(tooMuch ? "Danger" : "Muted");
+        RamText.SetResourceReference(TextBlock.ForegroundProperty, tooMuch ? "Danger" : "Muted");
         // Longer than the machine's RAM can hold at all cannot be allocated: the slider refuses it (the engine clamps to half anyway).
         long ram = Capabilities.PhysicalRamBytes();
         ReplaySlider.Limit = ram > 0 ? Math.Max(ReplayLengthSlider.Minimum, Capabilities.RingSecondsFor(mbps, ram)) : ReplayLengthSlider.Maximum;
@@ -650,7 +657,7 @@ public partial class MainWindow : Window
         }
         var eng = _app.Engine;
         var state = _app.State;
-        StatusDot.Fill = (Brush)FindResource(state switch
+        StatusDot.SetResourceReference(System.Windows.Shapes.Shape.FillProperty, state switch
         {
             RecordingState.Recording => "Good",
             RecordingState.Error => "Danger",
@@ -700,6 +707,135 @@ public partial class MainWindow : Window
             : game2 != null ? $"Recording whenever Clink runs · game: {game2}" : "Recording whenever Clink runs.";
     }
 
+    // ------------------------------------------------------------------ app tab: appearance, settings folder
+
+    /// <summary>
+    /// The App tab's Appearance card: a pill per theme and a swatch per accent, made from ThemeManager's lists so the ids and labels
+    /// live in one place. Built once, by <see cref="Populate"/>; after that only the checked ones are brought in line with the settings.
+    /// </summary>
+    private void BuildAppearanceChoices()
+    {
+        if (ThemeChoices.Children.Count == 0)
+        {
+            foreach (var theme in ThemeManager.Themes)
+            {
+                var pill = new RadioButton
+                {
+                    Content = theme.Label, Tag = theme.Id, GroupName = "AppTheme", Style = (Style)FindResource("PillRadio"),
+                    Padding = new Thickness(16, 5, 16, 5), FontSize = 12.5, Margin = new Thickness(0, 0, 8, 0),
+                };
+                pill.Checked += ThemeChoice_Checked;
+                ThemeChoices.Children.Add(pill);
+            }
+            foreach (var accent in ThemeManager.Accents)
+            {
+                var swatch = new RadioButton
+                {
+                    Tag = accent.Id, GroupName = "AppAccent", Style = (Style)FindResource("SwatchRadio"), Margin = new Thickness(0, 0, 8, 0),
+                    ToolTip = accent.Label + (accent.Id == SettingsDefaults.Accent ? " (default)" : ""),
+                };
+                System.Windows.Automation.AutomationProperties.SetName(swatch, accent.Label + " accent");
+                swatch.Checked += AccentChoice_Checked;
+                AccentChoices.Children.Add(swatch);
+            }
+            ThemeManager.ThemeChanged -= RefreshAppearance;
+            ThemeManager.ThemeChanged += RefreshAppearance;
+        }
+        RefreshAppearance();
+    }
+
+    /// <summary>The checked pill and swatch follow the settings; each swatch shows its accent as it looks in the theme in force.</summary>
+    private void RefreshAppearance()
+    {
+        bool was = _filling;
+        _filling = true;   // checking a radio here is not a choice
+        try
+        {
+            string theme = ThemeManager.NormalizeTheme(_app.Settings.Theme), accent = ThemeManager.NormalizeAccent(_app.Settings.Accent);
+            foreach (var pill in ThemeChoices.Children.OfType<RadioButton>()) pill.IsChecked = (string?)pill.Tag == theme;
+            foreach (var swatch in AccentChoices.Children.OfType<RadioButton>())
+            {
+                swatch.IsChecked = (string?)swatch.Tag == accent;
+                var fill = new SolidColorBrush(ThemeManager.AccentColor((string?)swatch.Tag, theme));
+                fill.Freeze();
+                swatch.Background = fill;
+            }
+        }
+        finally { _filling = was; }
+    }
+
+    private void ThemeChoice_Checked(object sender, RoutedEventArgs e)
+    {
+        if (_loading || _filling || sender is not RadioButton { Tag: string id }) return;
+        var s = _app.Settings;
+        if (string.Equals(s.Theme, id, StringComparison.OrdinalIgnoreCase)) return;
+        s.Theme = id;
+        s.Save();
+        ThemeManager.Apply(s.Theme, s.Accent);
+    }
+
+    private void AccentChoice_Checked(object sender, RoutedEventArgs e)
+    {
+        if (_loading || _filling || sender is not RadioButton { Tag: string id }) return;
+        var s = _app.Settings;
+        if (string.Equals(s.Accent, id, StringComparison.OrdinalIgnoreCase)) return;
+        s.Accent = id;
+        s.Save();
+        ThemeManager.Apply(s.Theme, s.Accent);
+    }
+
+    private void SettingsFolder_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            Directory.CreateDirectory(Settings.Dir);
+            Process.Start(new ProcessStartInfo(Settings.Dir) { UseShellExecute = true });
+        }
+        catch (Exception ex) { _app.Say("Could not open the folder: " + ex.Message); }
+    }
+
+    /// <summary>
+    /// The SETTINGS card's banners, from <see cref="AppDataRedirect"/> (Clink runs inside a packaged app whose private copy of
+    /// AppData it sees) and <see cref="SettingsImport.Pending"/> (another copy saved settings that differ from these). Shown on
+    /// start and whenever <see cref="SettingsImport.PendingChanged"/> says Pending changed.
+    /// </summary>
+    private void RefreshSettingsBanners()
+    {
+        string? redirected = AppDataRedirect.Notice;
+        RedirectBanner.Visibility = redirected != null ? Visibility.Visible : Visibility.Collapsed;
+        RedirectText.Text = redirected ?? "";
+        var pending = SettingsImport.Pending;
+        ImportBanner.Visibility = pending != null ? Visibility.Visible : Visibility.Collapsed;
+        if (pending != null) ImportText.Text = ImportBannerText(pending);
+    }
+
+    private void OnImportPendingChanged()
+    {
+        if (Dispatcher.CheckAccess()) RefreshSettingsBanners();
+        else Dispatcher.BeginInvoke(RefreshSettingsBanners);
+    }
+
+    /// <summary>"Clink also has settings saved 2026-10-21 14:32 by a copy started from inside Claude (video quality, hotkeys)".</summary>
+    internal static string ImportBannerText(ForeignSettings copy)
+    {
+        string what = copy.Differences.Count > 0 ? $" ({string.Join(", ", copy.Differences)})" : "";
+        return $"Clink also has settings saved {copy.SavedLocalText} by a copy started from inside {copy.FriendlyName}{what}";
+    }
+
+    private void ImportUse_Click(object sender, RoutedEventArgs e)
+    {
+        if (SettingsImport.Pending is not { } copy) return;
+        ImportUseButton.IsEnabled = ImportDismissButton.IsEnabled = false;   // one click: it restarts Clink
+        _app.ImportForeignSettings(copy);
+        // Pending is still there when the import failed (a notice says why) and Clink carries on; after one that worked it is gone.
+        if (SettingsImport.Pending != null) ImportUseButton.IsEnabled = ImportDismissButton.IsEnabled = true;
+    }
+
+    private void ImportDismiss_Click(object sender, RoutedEventArgs e)
+    {
+        if (SettingsImport.Pending is { } copy) SettingsImport.Decline(_app.Settings, copy);   // PendingChanged then hides the banner (and the tray item)
+    }
+
     // ------------------------------------------------------------------ updates
 
     private void RefreshUpdateState()
@@ -710,13 +846,19 @@ public partial class MainWindow : Window
         UpdateNowButton.Content = v != null ? $"Update to v{v}" : "Update";
         UpdateNowButton.Visibility = v != null ? Visibility.Visible : Visibility.Collapsed;
         // LastError also holds a download / install failure after a check that worked: only a failed check is called one.
+        // A --dev instance never looks for updates: the version line below says so, so the "last check failed: updates are off in dev
+        // mode" the updater leaves as its status (Updater.LastError) is not shown a second time as a problem.
         string? problem = _app.Updater.InstallProblem
-            ?? (_app.Updater.LastError is string err ? (_app.Updater.CheckFailed ? "Last check failed: " : "Update problem: ") + err : null);
+            ?? (_app.Updater.LastError is string err && !(AppController.IsDev && string.Equals(err, Updater.DevModeNote, StringComparison.OrdinalIgnoreCase))
+                ? (_app.Updater.CheckFailed ? "Last check failed: " : "Update problem: ") + err : null);
         UpdateProblemText.Text = problem ?? "";
         UpdateProblemText.Visibility = problem != null ? Visibility.Visible : Visibility.Collapsed;
         CheckUpdateButton.IsEnabled = _app.Updater.Repo != null;
-        if (_app.Updater.Repo == null) UpdateVersionText.Text = $"Clink v{_app.Updater.VersionDisplay} · updates are not configured in this build";
+        if (_app.Updater.Repo == null) UpdateVersionText.Text = $"Clink v{_app.Updater.VersionDisplay} · {NoUpdatesText.ToLowerInvariant()}";
     }
+
+    /// <summary>Why there is nothing to check: a --dev instance never looks for updates; any other build has no update repository.</summary>
+    private static string NoUpdatesText => AppController.IsDev ? Updater.DevModeNote : "Updates are not configured in this build";
 
     private void Update_Click(object sender, RoutedEventArgs e) => _app.UpdateNow();
 
@@ -737,7 +879,7 @@ public partial class MainWindow : Window
     {
         if (_checkingUpdate) return;
         var up = _app.Updater;
-        if (up.Repo == null) { _app.Say("Updates are not configured in this build"); return; }
+        if (up.Repo == null) { _app.Say(NoUpdatesText); return; }
         _checkingUpdate = true;
         _app.Say("Checking…");
         try
@@ -959,9 +1101,9 @@ public partial class MainWindow : Window
         _app.Settings.CopiumToken = string.IsNullOrEmpty(t) ? null : t;
         _app.Settings.Save();
         TokenSaveButton.IsEnabled = false;
-        if (string.IsNullOrEmpty(t)) { CopiumStatus.Text = "Not connected"; CopiumStatus.Foreground = (Brush)FindResource("Muted"); }
-        else if (!t.StartsWith("eup_")) { CopiumStatus.Text = "Saved (tokens usually start with eup_)"; CopiumStatus.Foreground = (Brush)FindResource("Warn"); }
-        else { CopiumStatus.Text = "Token saved"; CopiumStatus.Foreground = (Brush)FindResource("Good"); }
+        if (string.IsNullOrEmpty(t)) { CopiumStatus.Text = "Not connected"; CopiumStatus.SetResourceReference(TextBlock.ForegroundProperty, "Muted"); }
+        else if (!t.StartsWith("eup_")) { CopiumStatus.Text = "Saved (tokens usually start with eup_)"; CopiumStatus.SetResourceReference(TextBlock.ForegroundProperty, "Warn"); }
+        else { CopiumStatus.Text = "Token saved"; CopiumStatus.SetResourceReference(TextBlock.ForegroundProperty, "Good"); }
     }
 
     private void CopiumSite_Click(object sender, RoutedEventArgs e)
@@ -1149,7 +1291,7 @@ public partial class MainWindow : Window
     {
         _archiveRefusal = reason;
         ArchiveStatus.Text = reason;
-        ArchiveStatus.Foreground = (Brush)FindResource("Warn");
+        ArchiveStatus.SetResourceReference(TextBlock.ForegroundProperty, "Warn");
         ArchivePathBox.Text = _app.Settings.ArchivePath ?? "";
     }
 
@@ -1175,18 +1317,18 @@ public partial class MainWindow : Window
             // What the user typed was refused and the box shows the saved path again: say why, do not test (and approve) the old path.
             _archiveRefusal = null;
             ArchiveStatus.Text = refused;
-            ArchiveStatus.Foreground = (Brush)FindResource("Warn");
+            ArchiveStatus.SetResourceReference(TextBlock.ForegroundProperty, "Warn");
             return;
         }
         string path = ArchivePathBox.Text.Trim().Trim('"');
         ArchiveTestButton.IsEnabled = false;
         ArchiveStatus.Text = "Testing…";
-        ArchiveStatus.Foreground = (Brush)FindResource("Muted");
+        ArchiveStatus.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
         try
         {
             var (ok, message, _) = await _app.Archive.TestAsync(path);
             ArchiveStatus.Text = message;
-            ArchiveStatus.Foreground = (Brush)FindResource(ok ? "Good" : "Warn");
+            ArchiveStatus.SetResourceReference(TextBlock.ForegroundProperty, ok ? "Good" : "Warn");
         }
         finally { ArchiveTestButton.IsEnabled = true; }
     }
@@ -1224,7 +1366,7 @@ public partial class MainWindow : Window
         ArchiveStatus.Text = _app.Archive.Status;
         string t = ArchiveStatus.Text;
         bool problem = t.Contains("will retry") || t.Contains("unreachable") || t.Contains("denied") || t.Contains("no rule") || t.Contains("archive location");
-        ArchiveStatus.Foreground = (Brush)FindResource(problem ? "Warn" : "Muted");
+        ArchiveStatus.SetResourceReference(TextBlock.ForegroundProperty, problem ? "Warn" : "Muted");
         // Archive now… works with any location set, whether or not the automatic moves are on.
         bool hasLocation = !string.IsNullOrWhiteSpace(_app.Settings.ArchivePath);
         ArchiveNowButton.IsEnabled = hasLocation;

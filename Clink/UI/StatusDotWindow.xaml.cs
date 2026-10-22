@@ -45,7 +45,7 @@ public partial class StatusDotWindow : Window
             RecordingState.Paused => "Muted",
             _ => "Warn",
         };
-        Dot.Fill = TryFindResource(key) as Brush ?? Brushes.Gray;
+        Dot.SetResourceReference(System.Windows.Shapes.Shape.FillProperty, key);   // a resource reference: the dot follows a theme change
         Dot.ToolTip = null;
         // Called about once a second: a game going (DXGI) fullscreen, or any always-on-top window shown later, becomes topmost
         // above the dot, so it is put back on top each time (z-order only, never activated).

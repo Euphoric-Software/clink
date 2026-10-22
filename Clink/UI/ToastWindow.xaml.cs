@@ -205,7 +205,7 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         TitleText.Text = Toasts.TitleFor(title);
         Subtitle.Text = subtitle;
         Subtitle.ToolTip = subtitle;
-        Dot.Fill = TryFindResource(kind switch { "shared" or "info" => "Accent", "recording" => "Danger", "problem" => "Warn", "paused" => "Muted", _ => "Good" }) as Brush ?? Brushes.LimeGreen;
+        Dot.SetResourceReference(System.Windows.Shapes.Shape.FillProperty, kind switch { "shared" or "info" => "Accent", "recording" => "Danger", "problem" => "Warn", "paused" => "Muted", _ => "Good" });
         if (kind == "problem") Subtitle.TextWrapping = TextWrapping.Wrap;   // the reason is the point: all of it, not an ellipsis
         ClipButtons.Visibility = kind == "clip" ? Visibility.Visible : Visibility.Collapsed;
         SharedButtons.Visibility = kind == "shared" ? Visibility.Visible : Visibility.Collapsed;

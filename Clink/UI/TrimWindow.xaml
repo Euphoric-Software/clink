@@ -4,17 +4,17 @@
         xmlns:ui="clr-namespace:Clink.UI"
         Title="Trim clip" Width="940" Height="720" MinWidth="720" MinHeight="560"
         WindowStyle="None" ResizeMode="CanResizeWithGrip" AllowsTransparency="True" Background="Transparent"
-        WindowStartupLocation="CenterScreen" FontFamily="Segoe UI" PreviewKeyDown="Window_PreviewKeyDown">
+        WindowStartupLocation="CenterScreen" FontFamily="{StaticResource UiFont}" PreviewKeyDown="Window_PreviewKeyDown">
     <Window.Resources>
         <!-- "Listen" pill: which single track the preview plays (radio, one per track row) -->
         <Style x:Key="MonitorRadio" TargetType="RadioButton">
-            <Setter Property="Foreground" Value="{StaticResource Muted}" />
+            <Setter Property="Foreground" Value="{DynamicResource Muted}" />
             <Setter Property="FontSize" Value="11.5" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="RadioButton">
-                        <Border x:Name="B" Background="{StaticResource Panel2}" BorderBrush="{StaticResource Border}" BorderThickness="1" CornerRadius="6" Padding="9,2">
+                        <Border x:Name="B" Background="{DynamicResource Panel2}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="6" Padding="9,2">
                             <ContentPresenter VerticalAlignment="Center">
                                 <!-- shadows the app-wide TextBlock style (Fg, 13 px): the label takes the pill's Foreground and FontSize -->
                                 <ContentPresenter.Resources>
@@ -24,12 +24,12 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="B" Property="Background" Value="{StaticResource Panel3}" />
+                                <Setter TargetName="B" Property="Background" Value="{DynamicResource Panel3}" />
                             </Trigger>
                             <Trigger Property="IsChecked" Value="True">
-                                <Setter TargetName="B" Property="Background" Value="{StaticResource Accent}" />
-                                <Setter TargetName="B" Property="BorderBrush" Value="{StaticResource Accent}" />
-                                <Setter Property="Foreground" Value="#FF0E1419" />
+                                <Setter TargetName="B" Property="Background" Value="{DynamicResource Accent}" />
+                                <Setter TargetName="B" Property="BorderBrush" Value="{DynamicResource Accent}" />
+                                <Setter Property="Foreground" Value="{DynamicResource OnAccent}" />
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter Property="Opacity" Value="0.45" />
@@ -39,8 +39,11 @@
                 </Setter.Value>
             </Setter>
         </Style>
-        <!-- "Trim" switch next to Play: off = the player, on = the trim editor (outlined in the accent while on) -->
+        <!-- "Trim" switch next to Play: off = the player, on = the trim editor (outlined in the accent while on; its text stays Fg, which
+             reads on every accent, where the accent itself as text does not on the light theme). It looks like a secondary button
+             while off: the Border outline, which turns Accent2 on hover. -->
         <Style x:Key="TrimSwitch" TargetType="ToggleButton">
+            <Setter Property="FontFamily" Value="{StaticResource UiFont}" />
             <Setter Property="Foreground" Value="{DynamicResource Fg}" />
             <Setter Property="Background" Value="{DynamicResource Panel2}" />
             <Setter Property="FontSize" Value="12.5" />
@@ -50,7 +53,7 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="ToggleButton">
-                        <Border x:Name="B" Background="{TemplateBinding Background}" BorderBrush="{DynamicResource Panel2}" BorderThickness="1" CornerRadius="6" Padding="{TemplateBinding Padding}">
+                        <Border x:Name="B" Background="{TemplateBinding Background}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="6" Padding="{TemplateBinding Padding}">
                             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center">
                                 <!-- shadows the app-wide TextBlock style (Fg, 13 px): the label takes the toggle's Foreground and FontSize -->
                                 <ContentPresenter.Resources>
@@ -61,11 +64,11 @@
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter TargetName="B" Property="Background" Value="{DynamicResource Panel3}" />
+                                <Setter TargetName="B" Property="BorderBrush" Value="{DynamicResource Accent2}" />
                             </Trigger>
                             <Trigger Property="IsChecked" Value="True">
                                 <Setter TargetName="B" Property="Background" Value="{DynamicResource Panel3}" />
                                 <Setter TargetName="B" Property="BorderBrush" Value="{DynamicResource Accent}" />
-                                <Setter Property="Foreground" Value="{DynamicResource Accent}" />
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter Property="Opacity" Value="0.45" />
@@ -76,23 +79,24 @@
             </Setter>
         </Style>
     </Window.Resources>
-    <Border Background="{StaticResource Bg}" CornerRadius="10" BorderBrush="{StaticResource Border}" BorderThickness="1">
+    <Border Background="{DynamicResource Bg}" CornerRadius="10" BorderBrush="{DynamicResource Border}" BorderThickness="1">
         <DockPanel>
             <Grid DockPanel.Dock="Top" Height="42" MouseLeftButtonDown="Header_MouseLeftButtonDown" Background="Transparent">
-                <TextBlock x:Name="TitleText" Text="Trim" FontWeight="SemiBold" FontSize="14" Margin="16,0,200,0" VerticalAlignment="Center" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
+                <TextBlock x:Name="TitleText" Style="{StaticResource Display}" Text="Trim" Margin="16,0,200,0" VerticalAlignment="Center" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
                 <Button x:Name="OpenExternalButton" Style="{StaticResource LinkButton}" Content="Open in default player" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,44,0"
                         FontSize="12" Click="OpenExternal_Click" ToolTip="Open the file in your default video player" />
                 <Button Style="{StaticResource IconButton}" Content="✕" HorizontalAlignment="Right" Margin="0,0,8,0" Click="Close_Click" />
             </Grid>
 
             <!-- Bottom row: replace / save / share / status (the buttons are for trimming; the status line is the player's too) -->
-            <Border x:Name="BottomBar" DockPanel.Dock="Bottom" Padding="16,10,16,14" BorderBrush="{StaticResource Border}" BorderThickness="0,1,0,0">
+            <Border x:Name="BottomBar" DockPanel.Dock="Bottom" Padding="16,10,16,14" BorderBrush="{DynamicResource Border}" BorderThickness="0,1,0,0">
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
-                    <TextBlock x:Name="StatusText" Style="{StaticResource MutedText}" Foreground="{StaticResource Accent}" VerticalAlignment="Center" Margin="0,0,14,0" TextWrapping="Wrap" Text="" MinHeight="17" />
+                    <!-- Accent2, not Accent: the accent as text measures under 4.5:1 on the light theme for Cyan and Orange -->
+                    <TextBlock x:Name="StatusText" Style="{StaticResource MutedText}" Foreground="{DynamicResource Accent2}" VerticalAlignment="Center" Margin="0,0,14,0" TextWrapping="Wrap" Text="" MinHeight="17" />
                     <StackPanel x:Name="SaveButtons" Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
                         <CheckBox x:Name="ReplaceCheck" Content="Replace original" VerticalAlignment="Center" Margin="0,0,14,0" />
                         <Button x:Name="SaveButton" Content="Save trimmed" Click="Save_Click" Margin="0,0,8,0" />
@@ -102,7 +106,7 @@
             </Border>
 
             <!-- Audio tracks: one row per track (include, name, listen, volume) -->
-            <Border DockPanel.Dock="Bottom" Padding="16,8,16,8" BorderBrush="{StaticResource Border}" BorderThickness="0,1,0,0">
+            <Border DockPanel.Dock="Bottom" Padding="16,8,16,8" BorderBrush="{DynamicResource Border}" BorderThickness="0,1,0,0">
                 <StackPanel>
                     <Grid Margin="0,0,0,4">
                         <TextBlock Text="AUDIO TRACKS" Style="{StaticResource H}" Margin="0" VerticalAlignment="Center" />
