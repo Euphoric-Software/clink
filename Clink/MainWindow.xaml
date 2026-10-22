@@ -4,7 +4,7 @@
         xmlns:ui="clr-namespace:Clink.UI"
         Title="Clink" Width="470" Height="780" MinWidth="470" MinHeight="700"
         WindowStyle="None" ResizeMode="CanResizeWithGrip" AllowsTransparency="True" Background="Transparent"
-        WindowStartupLocation="CenterScreen" ShowInTaskbar="True" FontFamily="Segoe UI" TextOptions.TextFormattingMode="Display">
+        WindowStartupLocation="CenterScreen" ShowInTaskbar="True" FontFamily="{StaticResource UiFont}" TextOptions.TextFormattingMode="Display">
     <Window.Resources>
         <!-- long device names / window titles get an ellipsis in the closed box; the dropdown shows them in full -->
         <DataTemplate x:Key="SourceLabel">
@@ -253,8 +253,8 @@
                         </ScrollViewer>
                     </TabItem>
 
-                    <!-- ===================================================== Clip -->
-                    <TabItem Header="Clip">
+                    <!-- ===================================================== Clips (the Copium and Storage settings; the list of clips is the Library) -->
+                    <TabItem Header="Clips">
                         <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,0,4,0">
                             <StackPanel Margin="0,0,0,4">
                                 <TextBlock Style="{StaticResource H}" Text="COPIUM" Margin="0,10,0,6" />
@@ -393,6 +393,25 @@
                                         <TextBlock Style="{StaticResource Hint}" Margin="2,6,0,0" Text="A 12 px click-through dot: green = recording, amber = waiting for a game, red = error, grey = paused." />
                                     </StackPanel>
                                 </Border>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </TabItem>
+
+                    <!-- ===================================================== App (how Clink looks, how it updates, where it keeps its settings) -->
+                    <TabItem Header="App">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,0,4,0">
+                            <StackPanel Margin="0,0,0,4">
+                                <TextBlock Style="{StaticResource H}" Text="APPEARANCE" Margin="0,10,0,6" />
+                                <Border Style="{StaticResource Card}">
+                                    <StackPanel>
+                                        <!-- The choices are built in code from ThemeManager.Themes / Accents (MainWindow.BuildAppearanceChoices), so the ids and labels live in one place -->
+                                        <TextBlock Style="{StaticResource FieldLabel}" Text="Theme" />
+                                        <StackPanel x:Name="ThemeChoices" Orientation="Horizontal" />
+                                        <TextBlock Style="{StaticResource FieldLabel}" Text="Accent" Margin="2,12,0,3" />
+                                        <StackPanel x:Name="AccentChoices" Orientation="Horizontal" />
+                                        <TextBlock Style="{StaticResource Hint}" Margin="2,8,0,0" Text="The accent colours buttons, toggles, sliders and the selected tab." />
+                                    </StackPanel>
+                                </Border>
 
                                 <TextBlock Style="{StaticResource H}" Text="UPDATES" Margin="0,14,0,6" />
                                 <Border Style="{StaticResource Card}">
@@ -406,15 +425,24 @@
                                             <Button x:Name="CheckUpdateButton" Style="{StaticResource LinkButton}" Content="Check now" FontSize="12" Margin="8,0,0,0" Click="CheckUpdate_Click" />
                                             <Button x:Name="UpdateNowButton" Style="{StaticResource AccentButton}" Content="Update" Padding="10,3" Margin="8,0,0,0" Click="Update_Click" Visibility="Collapsed" ToolTip="Restart Clink to install the downloaded update" />
                                         </StackPanel>
-                                        <TextBlock x:Name="UpdateProblemText" Style="{StaticResource Hint}" Foreground="{StaticResource Warn}" Margin="2,6,0,0" Text="" Visibility="Collapsed" />
+                                        <TextBlock x:Name="UpdateProblemText" Style="{StaticResource Hint}" Foreground="{DynamicResource Warn}" Margin="2,6,0,0" Text="" Visibility="Collapsed" />
+                                    </StackPanel>
+                                </Border>
+
+                                <TextBlock Style="{StaticResource H}" Text="SETTINGS" Margin="0,14,0,6" />
+                                <Border Style="{StaticResource Card}">
+                                    <StackPanel>
+                                        <TextBlock x:Name="SettingsDirText" Style="{StaticResource MutedText}" Margin="2,0,0,0" Text="" />
+                                        <Button x:Name="SettingsFolderButton" Style="{StaticResource LinkButton}" Content="Open folder" FontSize="12" HorizontalAlignment="Left" Margin="0,4,0,0"
+                                                Click="SettingsFolder_Click" ToolTip="Open the folder that holds settings.json, the clip index and the log in Explorer" />
                                     </StackPanel>
                                 </Border>
                             </StackPanel>
                         </ScrollViewer>
                     </TabItem>
 
-                    <!-- ===================================================== Clips (narrow layout only; the pane moves to the right column when wide) -->
-                    <TabItem x:Name="ClipsTab" Header="Clips">
+                    <!-- ===================================================== Library (the clips pane when the window is narrow; the pane moves to the right column when wide) -->
+                    <TabItem x:Name="ClipsTab" Header="Library">
                         <ui:ClipsPane x:Name="Clips" Margin="0,8,0,0" />
                     </TabItem>
                 </TabControl>

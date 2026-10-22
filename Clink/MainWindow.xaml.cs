@@ -173,7 +173,7 @@ public partial class MainWindow : Window
         return (all, atPointer);
     }
 
-    /// <summary>Wide: settings tabs left, the clips pane in a right column. Narrow: the clips pane is the fourth tab.</summary>
+    /// <summary>Wide: settings tabs left, the clips pane in a right column. Narrow: the clips pane is the Library tab, after the settings tabs.</summary>
     private void ApplyLayout()
     {
         bool wide = ActualWidth >= WideWidth;
@@ -278,6 +278,8 @@ public partial class MainWindow : Window
             ? $"Updates come from github.com/{repo}{(_app.Updater.RepoOverridden ? " (UpdateRepo in settings.json)" : "")} · click to check now"
             : "Updates are not configured in this build";
         RefreshUpdateState();
+        SettingsDirText.Text = "Saved in " + Settings.Dir;
+        BuildAppearanceChoices();
 
         UpdateEstimates();
         Clips.Refresh();
@@ -662,6 +664,93 @@ public partial class MainWindow : Window
         ModeStatus.Text = _app.GameOnly
             ? game2 != null ? $"Detected: {game2}{(source.Length > 0 ? $" ({source})" : "")}" : "Waiting for a game… detected by a fullscreen window on the captured monitor, a known game-library folder (Steam, Epic, Riot, Battle.net, Ubisoft, EA, GOG, Xbox, Rockstar) or a custom app below."
             : game2 != null ? $"Recording whenever Clink runs · game: {game2}" : "Recording whenever Clink runs.";
+    }
+
+    // ------------------------------------------------------------------ app tab: appearance, settings folder
+
+    /// <summary>
+    /// The App tab's Appearance card: a pill per theme and a swatch per accent, made from ThemeManager's lists so the ids and labels
+    /// live in one place. Built once, by <see cref="Populate"/>; after that only the checked ones are brought in line with the settings.
+    /// </summary>
+    private void BuildAppearanceChoices()
+    {
+        if (ThemeChoices.Children.Count == 0)
+        {
+            foreach (var theme in ThemeManager.Themes)
+            {
+                var pill = new RadioButton
+                {
+                    Content = theme.Label, Tag = theme.Id, GroupName = "AppTheme", Style = (Style)FindResource("PillRadio"),
+                    Padding = new Thickness(16, 5, 16, 5), FontSize = 12.5, Margin = new Thickness(0, 0, 8, 0),
+                };
+                pill.Checked += ThemeChoice_Checked;
+                ThemeChoices.Children.Add(pill);
+            }
+            foreach (var accent in ThemeManager.Accents)
+            {
+                var swatch = new RadioButton
+                {
+                    Tag = accent.Id, GroupName = "AppAccent", Style = (Style)FindResource("SwatchRadio"), Margin = new Thickness(0, 0, 8, 0),
+                    ToolTip = accent.Label + (accent.Id == SettingsDefaults.Accent ? " (default)" : ""),
+                };
+                System.Windows.Automation.AutomationProperties.SetName(swatch, accent.Label + " accent");
+                swatch.Checked += AccentChoice_Checked;
+                AccentChoices.Children.Add(swatch);
+            }
+            ThemeManager.ThemeChanged -= RefreshAppearance;
+            ThemeManager.ThemeChanged += RefreshAppearance;
+        }
+        RefreshAppearance();
+    }
+
+    /// <summary>The checked pill and swatch follow the settings; each swatch shows its accent as it looks in the theme in force.</summary>
+    private void RefreshAppearance()
+    {
+        bool was = _filling;
+        _filling = true;   // checking a radio here is not a choice
+        try
+        {
+            string theme = ThemeManager.NormalizeTheme(_app.Settings.Theme), accent = ThemeManager.NormalizeAccent(_app.Settings.Accent);
+            foreach (var pill in ThemeChoices.Children.OfType<RadioButton>()) pill.IsChecked = (string?)pill.Tag == theme;
+            foreach (var swatch in AccentChoices.Children.OfType<RadioButton>())
+            {
+                swatch.IsChecked = (string?)swatch.Tag == accent;
+                var fill = new SolidColorBrush(ThemeManager.AccentColor((string?)swatch.Tag, theme));
+                fill.Freeze();
+                swatch.Background = fill;
+            }
+        }
+        finally { _filling = was; }
+    }
+
+    private void ThemeChoice_Checked(object sender, RoutedEventArgs e)
+    {
+        if (_loading || _filling || sender is not RadioButton { Tag: string id }) return;
+        var s = _app.Settings;
+        if (string.Equals(s.Theme, id, StringComparison.OrdinalIgnoreCase)) return;
+        s.Theme = id;
+        s.Save();
+        ThemeManager.Apply(s.Theme, s.Accent);
+    }
+
+    private void AccentChoice_Checked(object sender, RoutedEventArgs e)
+    {
+        if (_loading || _filling || sender is not RadioButton { Tag: string id }) return;
+        var s = _app.Settings;
+        if (string.Equals(s.Accent, id, StringComparison.OrdinalIgnoreCase)) return;
+        s.Accent = id;
+        s.Save();
+        ThemeManager.Apply(s.Theme, s.Accent);
+    }
+
+    private void SettingsFolder_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            Directory.CreateDirectory(Settings.Dir);
+            Process.Start(new ProcessStartInfo(Settings.Dir) { UseShellExecute = true });
+        }
+        catch (Exception ex) { _app.Say("Could not open the folder: " + ex.Message); }
     }
 
     // ------------------------------------------------------------------ updates
