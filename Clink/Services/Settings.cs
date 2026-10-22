@@ -460,6 +460,7 @@ internal sealed class Settings
     /// <list type="number">
     /// <item>No Hotkeys key and an empty list (a v0.1 file, or a first start): the main is the <see cref="Hotkey"/> (the file's own key for v0.1, Alt+C on a first start).</item>
     /// <item>A Hotkeys list that is empty ("no hotkeys, by choice" in v0.2.4, or a list that could not be read): an unset main (<see cref="MainHotkeyNeedsSetup"/>). Alt+C is not bound, and swallowed system-wide, for someone who chose to have no hotkeys.</item>
+    /// <item>In a file of schema 3 or higher (or a list already in shape), a full-replay "clip" row that already leads the list is the main, with keys or cleared, and nothing is promoted over it. v0.2.4's Add hotkey made Seconds-0 rows, so a cleared main with another full-replay row below it is common; reading that row as the main would undo the user's choice and push the cleared row down. Older files keep the rules below.</item>
     /// <item>Otherwise the main is the first "clip" row with Seconds 0 that has keys and that no earlier row with the same keys shadows (the first match fires, so putting it ahead of such a row would change what the key does); it moves to index 0 and keeps its keys.</item>
     /// <item>No such row. In a file of schema 3 a full-replay row without keys is the main the user cleared and stays the main. In an older file a full-replay row without keys is the "Default" row that v0.2.4's Add hotkey makes, never given keys, and nobody's choice; and a main is also needed when every clip hotkey has a fixed length, or the full-replay row is shadowed. The main is that unset row, or a new row at index 0, with Alt+C (<see cref="MainHotkeyAssigned"/>) unless a row already uses those keys, then unset (<see cref="MainHotkeyNeedsSetup"/>).</item>
     /// <item>The main is forced to "clip" with Seconds 0, and <see cref="Hotkey"/> follows its keys when it has any.</item>
@@ -495,6 +496,11 @@ internal sealed class Settings
                 MainHotkeyNeedsSetup = true;
             }
             changed = true;
+        }
+        else if (!older && FullReplay(Hotkeys[0]))
+        {
+            // Schema 3 or higher, and a full-replay clip row already leads the list: it is the main, set or cleared. Another full-replay
+            // row below it (with keys or without) is an additional hotkey and is left where it is.
         }
         else
         {
