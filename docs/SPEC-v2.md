@@ -151,15 +151,18 @@ What the app does since v0.2.5. Where this section and §§1, 3, 6, 9 and 10 dif
 - Loading is tolerant. The keys are bound one by one, so a value of the wrong kind (`"Fps": "sixty"`,
   `"BufferSeconds": [1]`, a null for a number) keeps its default and costs nothing else. It is logged and said once at
   start (*settings.json: kept the defaults for Fps, BufferSeconds (unreadable values)*), and the original file is kept as
-  `settings.json.unreadable` before anything is saved. A file that is not JSON at all still falls back to the `.bak` (and
-  is kept as `.unreadable`).
+  `settings.json.unreadable` before anything is saved. A hotkey row that cannot be read (`{ "Keys": { "Vk": "x" } }`, a
+  number where a binding should be) costs only that row: it is left out and logged, listed as *Hotkeys row N* and said
+  at start (*left out hotkey row 2 (unreadable)*), and the other rows are kept in order. A file that is not JSON at all
+  still falls back to the `.bak` (and is kept as `.unreadable`).
 - Keys this version does not know (written by a newer Clink) are kept and written back, inside hotkeys, hotkey keys and
   toast settings too, and so are top-level keys named like a member that is not saved (`MainHotkey`, `Migrated`,
   `CopiumToken`, …): a downgrade and upgrade round trip loses nothing.
-- Saving: a NaN or infinity in a number setting (a window position that was never set) is put back to its default (null
-  for the window's position and size) before every save, so a save never throws on it. A save asked for from another
-  thread (the updater's) runs on the UI thread. `Settings.FreezeSaves()` stops every save while an import replaces the
-  file (§11.9).
+- A NaN or infinity in a number setting (a window position that was never set, the text "NaN" an earlier version wrote)
+  is put back to its default (null for the window's position and size) at the end of `Load` and `FromJson`, so it never
+  reaches `BuildConfig` or the encoder, and again before every save, so a save never throws on it. A save asked for from
+  another thread (the updater's) runs on the UI thread. `Settings.FreezeSaves()` stops every save while an import replaces
+  the file (§11.9).
 
 ### 11.2 Hotkeys (replaces §6's list)
 
@@ -252,7 +255,10 @@ What the app does since v0.2.5. Where this section and §§1, 3, 6, 9 and 10 dif
   **Move clips there automatically** (was *Archive older clips elsewhere…*) switches the background moves, and its rules
   (*older than N days*, *when the local folder exceeds N GB*) are enabled only while it is ticked. *Archive now…* is
   enabled whenever a location is set (tooltip *Set an archive location first* otherwise). A path typed into the box is
-  accepted, or refused with its reason, before the dialog opens. The status line under the location reads *Automatic
+  accepted, or refused with its reason, before the dialog opens; only a refusal made by that click counts (the one made
+  when the press, or an automation client, moves the focus out of the path box onto the button, or by the click's own
+  commit of the typed path): a refusal from an earlier Tab or click elsewhere is ignored, and the dialog names the
+  destination. The status line under the location reads *Automatic
   moves off · Archive now… moves clips by hand* with the switch off and a location set, and *Automatic moves are on, but
   no rule is set (days / GB)* or *Automatic moves are on, but no archive location is set* with it on.
 - *Archive now…* opens the modal **Archive clips** dialog. It needs only a location: not the automatic switch and not a
@@ -266,16 +272,52 @@ What the app does since v0.2.5. Where this section and §§1, 3, 6, 9 and 10 dif
   local file, point the library entry at the archive. A progress bar and *Moving 3 of 12 · Copying clip.mp4 (40 %)* show
   where it is. *Cancel*, or closing the window, stops at the next 512 KB chunk, deletes the partial copy and leaves the
   local clip (clips already moved stay moved). A line at the end says what happened (*Moved 12 clips (3.4 GB) to T:\clips ·
-  1 in use, try again later*, or *Archive unreachable*, *Moved 2 clips (…) · 3 failed: archive is full (1 MB free)*, …). A
-  clip that is open, changed while it was copied, or was saved under 30 s ago is left alone and counted; a later run takes
-  it. The copy goes at full speed when no game is detected; while one runs it keeps the gentle pace of the automatic moves
-  (a pause of 8 ms per 512 KB, about 60 MB/s), chosen when Archive is pressed. A location that is not a full path, is the
-  clips folder, or cannot be reached is refused with the reason.
-- `ArchiveService`: `RunManualAsync(scope, throttle, progress, ct)` queues the run on the archive thread, which does one
-  thing at a time; the automatic pass gives way to it at its next chunk and runs again about a minute after it. The pure
-  `SelectCandidates` picks the clips for the background pass and for the dialog, oldest first: *Due* applies the age and
-  size rules (each pick counts as gone from the folder for the next one), *All* takes every non-archived clip in the clips
-  folder. A run ends when the location is changed; an automatic one also when the switch is turned off.
+  1 in use, try again later*, or *Archive unreachable*, *Moved 2 clips (…) · 3 failed: archive is full (1 MB free)*, …).
+  Two classes of trouble are told apart. **In use, try again later** is a clip that is open (a sharing or lock violation,
+  at the copy or at the delete), changed while it was copied or before its delete, or was saved under 30 s ago: it is left
+  alone and counted, and a later run takes it. **Failed, with its reason** is what waiting does not fix: a clip that may
+  not be read (*cannot read the local clip: access denied*), one that may not be deleted (read-only, access denied:
+  *cannot delete the local clip: access denied (is it read-only?)*; the verified copy stays and the next run finishes the
+  move), a copy that came out short while the clip did not change, an archive copy that is missing or another length, and
+  a link. The reason of the last failure is the result line's (*3 failed: …*). A clip that is gone after its copy was made
+  is not counted at all, and its copy is kept.
+- The copy goes at full speed when no game is detected; while one runs it keeps the gentle pace of the automatic moves (a
+  pause of 8 ms per 512 KB, about 60 MB/s). The pace is asked for again for every chunk, so a game that starts or ends
+  during a long run slows or speeds the copy (an answer that throws counts as gentle). A location that is not a full
+  path, is the clips folder (under any name, see below), or cannot be reached is refused with the reason.
+- **A clip is deleted only while a different, complete copy of it exists.** Three layers, each enough on its own:
+  1. `DeleteGuard`, the last step before every delete. It opens the archive copy first (read access, sharing read only:
+     no write, no delete) and keeps it open, then opens the local clip with DELETE access (sharing read and delete). One
+     file under two names cannot be opened both ways, so the second open fails with a sharing violation and the clip is
+     skipped, never deleted. The clip is then checked through its own handle (length, last write time, and that it is
+     not the archive copy's file) and deleted through that handle (delete disposition), never by name, so a trim that
+     moves the clip aside and puts its cut in its place cannot lose the cut to a delete by path; a *Replace original*
+     rename over the open clip is held off (access denied) for that instant.
+  2. An alias probe: a small file is written into the archive and must not appear in the clips folder, and the other way
+     round. It runs in *Test* (*Archive location is the clips folder under another name: pick another folder, share or
+     drive*), before every manual run, and before the first move of an automatic pass (once per location; `Reevaluate`
+     resets it, so a NAS that sleeps is not written to every 5 minutes), and it leaves no file behind. The automatic
+     status then reads *… archive location is the clips folder under another name*. (The name and file-index checks
+     alone can be fooled: a junction, a second share of the same disk, the `\\?\` spelling, Samba hashing the volume
+     serial per share. The "copy" was then the clip itself, and the delete removed the only copy.)
+  3. A stale copy that an earlier run left is cleaned up only when it is certainly not the clip itself; a copy an earlier
+     run made is adopted rather than copied again, and a different file of the same name in the archive is never
+     overwritten (the copy gets a new name). A clip that is a symbolic link is left alone (a handle delete would take the
+     file behind the link).
+
+  The delete and the library update are one step under the library's lock (`ClipLibrary.MoveToArchive`): it finds the
+  entry as the library holds it now (a reload may have replaced the one the move began with), runs the delete, points the
+  entry (and the trims cut from it) at the archive and saves. A reload cannot run between the delete and the save and
+  orphan the entry, and a clip that left the library is not deleted.
+- `ArchiveService`: `RunManualAsync(scope, throttle, progress, ct)` (the throttle a `Func<bool>` asked per chunk, or a bool
+  decided once) queues the run on the archive thread, which does one thing at a time; the automatic pass gives way to it
+  at its next chunk and runs again about a minute after it. The pure `SelectCandidates` picks the clips for the dialog's
+  counts and for a manual run, oldest first: *Due* applies the age and size rules (each pick counts as gone from the
+  folder for the next one), *All* takes every non-archived clip in the clips folder. The **automatic pass** takes every
+  clip, oldest first, and asks each one whether it is due under the rules as they are and the folder as it is now,
+  taking the folder size down only when a clip really moved: a clip that is open (or fails) does not count as gone, so with
+  the folder at 101 GB (limit 100) and the oldest clip open the next clip moves; a rule changed during a long run applies
+  to the rest. A run ends when the location is changed; an automatic one also when the switch is turned off.
 
 ### 11.6 Sharing without a token; Copium limits
 
@@ -325,8 +367,10 @@ What the app does since v0.2.5. Where this section and §§1, 3, 6, 9 and 10 dif
   the volumes and the ticks stay. The *Trim* button on a row, the toast's *Trim* and `--trim-last` open the editor directly.
   The keyframes of the clip are read only when the editor is shown, so playing a clip does not read the whole file. A second
   click on a clip that is already open brings its window forward, in the mode asked for, instead of stacking another;
-  clicks in the first 350 ms of a new window are ignored, so a double click on a row does not land its second click on the
-  video or a button; a click that began on another row does not play this one.
+  clicks in the first 350 ms of a new window, or of an open one that a second click brought forward, are ignored, so a
+  double click on a row does not land its second click on the video or a button; a click that began on another row does
+  not play this one (the pressed row is forgotten on every left-button release in the pane, handled or not, on every new
+  press, and when the pointer leaves).
 - **All audio follows the sliders.** Track 1 (the Mix) is baked at record time, so the Game, Mic and Voice sliders used to
   change only their own tracks, never what the Mix contains. A plan (`MixPlan`, pure; the roles come from the track names
   in the file, trusted only for a file Clink wrote, whose video trak is named `Video`) now decides what the preview plays
@@ -344,11 +388,38 @@ What the app does since v0.2.5. Where this section and §§1, 3, 6, 9 and 10 dif
     alone: Desktop is never part of All audio. A clip whose names are not Clink's (a v0.1.0 clip's *All audio*, other
     tools' files) behaves as before. The Mix row is labelled *All audio (mix)* (the file keeps the name `Mix`).
   - The tracks of a Clink file start at different instants (an edit list per track), which Media Foundation ignores, so
-    `Trimmer.ReadAudioTracks` reads each track's start offset and the player and the renderer apply it. Plain cuts are
-    byte for byte the same file as before.
+    `Trimmer.ReadAudioTracks` reads each track's start offset and the player and the renderer apply it. Mixing tracks,
+    and above all taking a source out of the baked Mix by adding it at a negative volume, needs them in step to the
+    sample (a few hundred samples off and the game came out louder), so:
+    - A recording of this version places each audio track to the sample (the Mix's sources relative to the Mix, as the
+      engine mixed them); a file with a track that starts a number of samples late that is not a whole millisecond counts
+      its movie in 1/48000 s so that the empty edit is exact. Other files keep the millisecond timescale.
+    - A cut stamps every copied audio frame with its track's offset (the head and tail cut keep the old rule for a track
+      that starts at or before the origin), so the Mix and its sources keep their places against each other. A file whose
+      edit lists are true says so with the compatible brand **`clk1`** in its `ftyp` (`Mp4Muxer.AlignedBrand`,
+      `Trimmer.ReadClipTracks`): recordings of this version and the trims of them carry it and are used as they are.
+    - A file without the mark that has a Mix to correct (delta mode: the Mix and some, not all, of Game, Mic and Voice)
+      has each source lined up with the Mix by cross-correlation of their loudest stretches (`Engine/TrackAlignment.cs`:
+      FFT, ±0.3 s, normalised, refused unless the best lag stands clearly above every other peak; a silent source counts
+      as lined up). A rebuilt Mix (all three sources) does not use the baked one, so there is nothing to line up. The
+      result is cached per file (`Engine/ClipAlignment.cs`) and used by the player, the editor, Trim and `--trim`. A source
+      that cannot be lined up stands alone (`MixPlan.WithoutTracks`): its slider changes only its own track, the editor
+      says *Trimmed by an older Clink: sources cannot be changed inside All audio* (and which volumes only change their
+      own track), and `Trimmer.Trim` refuses a plan that adds it to the Mix or takes it out. A trim of such a file writes
+      the lined-up places, and the mark only when every source was found.
+    - Rendered tracks are stamped at origin + round(k × 1024 / 48000 s) (`Trimmer.FramePts`), not k truncated frames (which
+      drifted a sample per 13 s). `PcmTrackReader` treats a timestamp within 48 frames of where the packet before it ended
+      the same in both directions, and places the first packet to the frame. A Mix put together from its sources
+      (rebuild and delta, in the preview and in the export) is limited with `AudioTrack.SoftKnee`, the curve the recorded
+      Mix was; one track at another volume keeps the plain clip.
+    - What a plain cut of a fresh recording changes in the file: the `ftyp` gets the `clk1` brand (+4 bytes); each audio
+      track's edit list `media_time` and `tkhd` duration now say that track's own place (the old cut wrote the same value
+      for every track); the audio frames are interleaved by their true time, so the `mdat` order and chunk offsets
+      differ. Every frame of every track is byte-identical, except that a track that starts after the cut start (a late
+      source) is cut by its true time, which can move its first and last frame by one.
 - Command line (hidden, for checking without a window): `Clink.exe --trim <in> <out> <start> <end> [--gain Name=value]...
-  [--drop Name]...` builds the plan the editor would (a value is 0.5 or 50%); `Clink.exe --probe <file> --levels` prints the RMS
-  and peak of each audio track.
+  [--drop Name]...` builds the plan the editor would, the alignment note included (a value is 0.5 or 50%); `Clink.exe
+  --probe <file> --levels` prints the RMS and peak of each audio track.
 
 ### 11.8 Themes and the App tab
 
@@ -413,24 +484,76 @@ What the app does since v0.2.5. Where this section and §§1, 3, 6, 9 and 10 dif
   empty: Copium link, page and id, archive time, audio tracks, length, trim source). It says *Imported the settings Clink
   saved while started from inside Claude (2026-10-21 14:32)*.
 - A Clink that already has settings is **never changed unasked**. After start it looks, on a worker, for a copy that differs
-  (ignoring where the window sits, `LastUpdateCheck`, the updater's state, `AudioSetupSeen`, `SchemaVersion` and which copy
-  was turned down; the Copium token is compared decrypted, and nothing is logged but the names of what differs) and offers
-  it: one tray balloon (*Settings from another copy of Clink found: right-click the tray icon to import*), the tray item
-  *Import settings saved 2026-10-21 14:32 (Claude copy)…* and a banner under *App → Settings* (*Clink also has settings
-  saved … by a copy started from inside Claude (video quality, hotkeys, …)* with *Use those settings* and *Dismiss*). The
-  tray item asks, listing what differs: *Yes* imports and restarts Clink (`--show`), *No* keeps the current settings and
-  stops offering that copy, *Cancel* decides later. Importing freezes settings saves first, so no save that is still pending
-  puts the old ones back, and keeps what it replaces as `settings.pre-import.json`. *Dismiss* and *No* write
-  `ImportDeclined` (`<package>|<ticks of the time that copy was saved>`, one per package): that copy is offered again only
-  once it has been saved again.
+  (this installation's own settings are no difference: where the window sits, the updater's state, `LastUpdateCheck`,
+  `UpdateRepo` and which copies were turned down; nor are `AudioSetupSeen` and `SchemaVersion`; the Copium token is
+  compared decrypted, and nothing is logged but the names of what differs) and offers it: one tray balloon (*Settings
+  from another copy of Clink found: right-click the tray icon to import*), the tray item *Import settings saved
+  2026-10-21 14:32 (Claude copy)…* and a banner under *App → Settings* (*Clink also has settings saved … by a copy
+  started from inside Claude (video quality, hotkeys, …)* with *Use those settings* and *Dismiss*). The tray item asks,
+  listing what differs: *Yes* imports and restarts Clink (`--show`), *No* keeps the current settings and stops offering
+  that copy, *Cancel* decides later. *Dismiss* and *No* write `ImportDeclined` (`<package>|<ticks of the time that copy
+  was saved>`, one per package): that copy is offered again only once it has been saved again.
+- **What an import does** (`SettingsImport.Import`, the same for a first start and for a later import):
+  - What it replaces is kept first as `settings.pre-import.json`, or the next free `settings.pre-import.1.json`, `.2.json`,
+    …: nothing is ever written over an earlier backup, and if the current settings cannot be kept first the import stops
+    before anything is changed.
+  - This installation's own values stay (`SettingsImport.KeepOurOwn`, applied to the JSON text before it is written):
+    `Window*`, `PendingUpdate*`, `LastUpdateCheck`, `UpdateRepo` and `ImportDeclined` are ours, or left out when ours
+    has none; everything else is the other copy's. `Differences` ignores these keys (and a few more), so an import never
+    leaves a difference behind that would offer the same copy again.
+  - An incoming Copium token that cannot be decrypted here (another user's or another machine's) is never taken over:
+    the import keeps ours (or none), and `Differences` says *the incoming Copium token cannot be used on this machine*
+    in place of *Copium token*, only beside a difference that is worth an offer, so it is never an offer of its own.
+  - The clip index is merged as at the first start, with the paths compared as the file system does (slashes either way,
+    `.` and `..`, trailing separators, `\\?\` and `\\?\UNC\` prefixes, case; an 8.3 name, or a mapped drive for a
+    network path, may stay a duplicate). Ours is read with its `.bak` as the fallback, a clip list over 4,000,000 bytes is
+    not read, and every reason for leaving something out is logged (a clip list that does not read, entries that are no
+    clip or have no path, repeats). When the clip lists cannot be merged the settings are imported all the same and Clink
+    says so: *Settings imported; the clip list could not be merged: …* (footer; a balloon too at a first start, and at
+    the next start if its retry fails again). A marker, `clips-merge.pending` in the settings folder (where from, why
+    not, how many tries), makes every later start try the merge again, before the clip index is read and whether or not
+    the settings still differ from the other copy's; later retries that fail only log. It ends when the merge works or
+    the other copy has no clip list any more.
+- **The restart is ordered** (`AppController.ImportForeignSettings`): a second import is refused from then on (an "import
+  in progress" flag, which also disables the tray item: *An import is already under way*); saving a clip and starting the
+  recorder are off; settings and clip-index saves are frozen (`Settings.FreezeSaves`, `ClipLibrary.FreezeSaves`, the
+  latter under the library's lock so a write in progress ends first), so no save that is still pending puts the old files
+  back; the recorder and the archive are stopped; only then the import is made and the new Clink started with `--show`,
+  the same dev switches and the hidden **`--after-pid <old pid>`**. `App.RunNormal` waits for that process (at most
+  10 s, and the log says whether it had ended) before it takes the single-instance mutex and opens the log; the old Clink
+  gives the mutex up (`ReleaseMutex` before `Dispose`) as soon as the new one is started, so a hung old process cannot
+  keep it from the new one once its wait is over. A clip being saved at that moment keeps its file (the next start finds
+  it in the clips folder) but its index entry is not written. An update's restart (`UpdateNow`) gets the same
+  `--after-pid`, and a restart of a restarted Clink waits for itself, not for the one before. If the import fails
+  nothing is changed and Clink carries on (*Could not import those settings: …*, footer and balloon). If the new Clink
+  cannot be started, saves are thawed, the recorder and the archive go on, the settings this Clink runs with are written
+  back over the imported ones (otherwise the next save would undo the import without a word), the note about a clip merge
+  still to do is dropped, the import is offered again at once and a notice and a balloon say so (*Clink could not
+  restart itself (…), so the import was not applied: your settings are as they were*); nothing was given up.
 
 ### 11.10 Test aids
 
 - `Clink.exe --unittest [filter]`: the in-exe tests (`Clink/Tests`: `[UnitTest]` static methods found by reflection,
   `Check.*`, `TempDir`), run one after the other on the UI thread; the filter is a case-insensitive substring of
-  `Class.Method`; exit code 0 means all passed. It never touches `%APPDATA%\Clink`, the single-instance mutex or the pipe
-  (`Settings.DirOverride`, `ClipLibrary.IndexPathOverride` and the updates folder point at a scratch folder for the whole run
-  and are put back after every test).
+  `Class.Method`. Each test prints `PASS`, `FAIL` or `SKIP` (the last two with the reason), then *N passed, M failed,
+  K skipped*. Exit code 0 means none failed; 1 means one did, or that the filter matched nothing (a mistyped filter is
+  not a pass).
+  - **Skips.** A test that needs a Windows feature the machine lacks calls `Check.Skip(why)`: the audio mix render
+    tests do when Media Foundation is not installed, its AAC encoder is not registered or it cannot start (any other
+    trouble with the encoder fails them). A skip is counted apart and is not a failure, unless the environment variable
+    **`CLINK_TESTS_NO_SKIP=1`** is set: it turns every skip into a failure (*skipped (…), and CLINK_TESTS_NO_SKIP=1
+    says nothing may be*), which is how a machine that is meant to have everything runs them. The tests that need a
+    junction (`mklink /J`, which needs no privilege) print a `SKIP` line of their own, and pass without checking, when
+    none can be made.
+  - **Nothing real is touched.** It never touches `%APPDATA%\Clink`, the single-instance mutex or the pipe:
+    `Settings.DirOverride`, `ClipLibrary.IndexPathOverride`, the updates folder, the "real" settings folder
+    (`Settings.RealDirOverride`) and the folder that holds other apps' packages (`SettingsImport.PackagesRoot`) point at a
+    scratch folder for the whole run, and these, the `--dev` state, frozen saves, the import state and the redirect
+    findings are put back before and after every test.
+  - `Clink.exe` is a GUI-subsystem exe: from PowerShell, `Start-Process .\Clink.exe --unittest -Wait -PassThru
+    -NoNewWindow` shows the output and returns the exit code. CI does exactly that after the Release build (`build.yml`:
+    the step fails the job on a non-zero exit code; `CLINK_TESTS_NO_SKIP` is not set there, because a hosted runner may
+    lack the AAC encoder).
 - Hidden `Clink.exe --dev [folder] [--dev-hotkeys] [--dev-record] [--dev-token]` (also `--dev=<folder>`) starts a second
   Clink next to the real one: its own data folder (default `%TEMP%\clink-dev`), its own single-instance mutex and control
   pipe (named from a hash of the folder, `.dev.` and eight hex digits, so `--clip` and `--show` only ever reach that
@@ -438,13 +561,35 @@ What the app does since v0.2.5. Where this section and §§1, 3, 6, 9 and 10 dif
   hotkeys bound unless `--dev-hotkeys` (the hook is installed either way, so key capture in the editor works), and no Copium
   token unless `--dev-token`. A fresh dev folder keeps its clips folder inside it, with automatic updates and run at startup
   off; whatever its settings file says, every start and every import keeps the instance away from the real clips folder,
-  archive, updates and account (in memory; the log says what changed). A mistake (an unknown `--dev*` switch, `--dev` twice,
-  `--dev=` with nothing, a dev flag without `--dev`, a folder that is the real settings folder) is an error, exit code 2,
-  before anything starts: never a normal start, which would take the real Clink's mutex or forward to it. Every restart (an
-  import, an update) carries `--dev <folder>` and its flags.
+  archive, updates and account (in memory; the log says what changed): a clips folder outside the dev folder becomes
+  `<folder>\clips`, an archive location outside it is switched off and forgotten. Every restart (an import, an update)
+  carries `--dev <folder>` and its flags.
+  - **A mistake is an error, exit code 2, before anything starts**, never a normal start (which would take the real
+    Clink's mutex or forward to it): an unknown `--dev*` switch, `--dev` twice, `--dev=` with nothing, a dev flag or
+    `--packages-root` without `--dev`, a folder that is not a valid path, a `--packages-root` that is the real
+    `%LOCALAPPDATA%\Packages`. **Look-alikes count**: every argument is read as a person would (invisible characters
+    dropped, every dash U+2010 to U+2015, U+2212, U+FE58, U+FE63 and U+FF0D read as `-`, blanks, dashes, slashes and quotes
+    in front taken away), and one whose name then starts with `dev` or `packages-root` must be exactly one of the
+    switches: `-dev`, `---dev`, `/dev`, an en or em dash, `" --dev"` are errors, because Clink would otherwise skip them
+    as arguments it does not know. The value of `--dev` or `--packages-root` is the next argument only if it is not blank,
+    does not start with a dash and does not look like a dev switch (a folder called `dev-x` is written `.\dev-x`). The
+    message writes anything that is not plain ASCII as `\uXXXX`, so a look-alike dash can be told from a hyphen.
+  - **The data folder is vetted** (`DevOptions.RefuseUnsafeFolder`), as given and, when a junction or symbolic link
+    sends it elsewhere, where it really is. A dev instance treats everything in its folder as its own (its clips are
+    listed, trimmed, shared, archived and deleted from there), so a folder is refused if it is: the real settings folder;
+    anything under `%LOCALAPPDATA%\Packages` or whose final path is a packaged app's private AppData; a drive's root; the
+    user profile folder; or any folder that is, or holds, one of the real Clink's places (`DevOptions.RealPlaces`: its
+    settings folder and local data folder, `%LOCALAPPDATA%\Packages`, `Videos\Clink`, and the clips folder and archive
+    location the real `settings.json` names, so a parent of any of them too); and so is an existing folder that holds
+    other files and no Clink data (`settings.json*`, `settings.pre-*`, `clips.json*`, `clips`, `clink*.log*`). So the
+    dev folder is always one Clink makes, an empty one, or one an earlier dev run made, and "inside the dev folder"
+    (what `Isolate` lets a clips folder or archive location be) never reaches anything the real Clink uses.
 - Test only: `--packages-root <fake Packages folder>` (the only place a dev instance looks for another copy's settings,
   never the real one) and `--dev-accept-import` (import what is offered, once). `--selftest` prints where the settings are
   read from, and says so when this process sees a packaged app's private copy.
+- Hidden, and not a test aid: `--after-pid <pid>`, which a restart (an import, an update) gives the Clink it starts so
+  that it waits for the old one to end (§11.9). It is not a dev switch; a restart drops the one it was itself given before
+  it adds its own.
 
 Not in v0.2.5, on the ROADMAP: a *System* theme that follows Windows, the Inter and Sora fonts bundled with the exe, and a
 smaller copy for Discord's 10 MB made in the Share window.
