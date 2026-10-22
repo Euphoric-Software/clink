@@ -39,6 +39,8 @@ public partial class MainWindow : Window
     private bool _loading = true;
     private bool _filling;                              // a combo is being (re)populated: its SelectionChanged is not a user choice
     private bool _pickingRunningApp;                    // the "Add running app…" list was opened: a selection now is a pick, not a key on the closed box
+    private bool _pickingSizeTarget;                    // the same for the size-target list: only a pick from it ticks "I have Copium+" for Copium Plus
+    private readonly CopiumPlusTick _copiumPlusTick = new();
     private bool _hintShown;
     private bool _checkingUpdate;
     private bool _wide, _layoutApplied;
@@ -393,21 +395,40 @@ public partial class MainWindow : Window
         if (_loading || _filling) return;
         var s = _app.Settings;
         s.SizeTarget = Selected<string>(SizeTargetCombo) ?? SettingsDefaults.SizeTarget;
-        // Picking the Copium Plus target says the account has Copium+, so Share checks Plus's limits: tick "I have Copium+" for the
-        // user (the box under Copium), without CopiumPlusChanged running for it. Unticking it later is the user's call (Share goes
-        // by the account, not by this target).
-        if (Capabilities.SizeTargetFor(s.SizeTarget).Id == "copiumplus" && !s.CopiumPlus)
-        {
-            s.CopiumPlus = true;
-            bool was = _filling;
-            _filling = true;
-            try { CopiumPlusCheck.IsChecked = true; }
-            finally { _filling = was; }
-            Log.Info("settings: the Copium Plus size target ticked \"I have Copium+\"");
-        }
+        // Picking the Copium Plus target says the account has Copium+, so Share checks Plus's limits: "I have Copium+" is ticked for
+        // the user, but only for a pick from the open list. Stepping onto it with the arrow keys on the closed box (on the way to
+        // another target) must not change the account setting: SizeTargetCombo_FocusWithinChanged ticks it if the user stops there.
+        if (_copiumPlusTick.Selected(s.SizeTarget, _pickingSizeTarget, s.CopiumPlus)) TickCopiumPlus();
         s.Save();
         UpdateEstimates();
         ScheduleRestart();
+    }
+
+    private void SizeTargetCombo_DropDownOpened(object sender, EventArgs e) => _pickingSizeTarget = true;
+
+    // Cleared after the events of the close: Enter in the list closes it first and selects the highlighted target after that.
+    private void SizeTargetCombo_DropDownClosed(object sender, EventArgs e) => Dispatcher.BeginInvoke(() => _pickingSizeTarget = false);
+
+    // The box lost the keyboard focus (to another control, another tab, another window): a user who stopped on Copium Plus with the
+    // keys meant it.
+    private void SizeTargetCombo_FocusWithinChanged(object sender, DependencyPropertyChangedEventArgs e)
+    {
+        if (e.NewValue is not false || _loading) return;
+        var s = _app.Settings;
+        if (!_copiumPlusTick.FocusLeft(s.SizeTarget, s.CopiumPlus)) return;
+        TickCopiumPlus();
+        s.Save();
+    }
+
+    /// <summary>Ticks "I have Copium+" for the Copium Plus size target, without CopiumPlusChanged running for it, and says so in the footer. The caller saves.</summary>
+    private void TickCopiumPlus()
+    {
+        _app.Settings.CopiumPlus = true;
+        bool was = _filling;
+        _filling = true;
+        try { CopiumPlusCheck.IsChecked = true; }
+        finally { _filling = was; }
+        _app.Say("Copium Plus size target: ticked I have Copium+");
     }
 
     // ------------------------------------------------------------------ capture: recording mode & custom apps (§5)

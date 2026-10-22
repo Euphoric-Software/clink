@@ -112,6 +112,7 @@
                                             </Grid.ColumnDefinitions>
                                             <TextBlock Style="{StaticResource MutedText}" Text="Size target" VerticalAlignment="Center" Margin="2,0,0,0" />
                                             <ComboBox x:Name="SizeTargetCombo" Grid.Column="1" Margin="10,0,0,0" SelectionChanged="SizeTargetChanged"
+                                                      DropDownOpened="SizeTargetCombo_DropDownOpened" DropDownClosed="SizeTargetCombo_DropDownClosed" IsKeyboardFocusWithinChanged="SizeTargetCombo_FocusWithinChanged"
                                                       ToolTip="Lowers the bitrate when needed so a clip of the replay length fits the limit (audio tracks counted); never raises it. None = always the bitrate above. Copium and Copium Plus also limit how long a clip may be, and picking Copium Plus ticks &quot;I have Copium+&quot;" />
                                         </Grid>
                                         <TextBlock Style="{StaticResource FieldLabel}" Text="Replay length" Margin="2,12,0,3" />
