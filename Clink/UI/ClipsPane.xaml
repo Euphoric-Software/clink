@@ -158,7 +158,7 @@
         </TabItem>
         <TabItem x:Name="SharedTab" Header="Shared">
             <Grid Margin="0,8,0,0">
-                <TextBlock x:Name="NoSharedText" Style="{StaticResource MutedText}" Margin="8" Text="Nothing shared yet. Share a clip and it is listed here, even after the local file is gone." />
+                <TextBlock x:Name="NoSharedText" Style="{StaticResource MutedText}" Margin="8" Text="Nothing shared to Copium yet. Clips shared to Copium are listed here, even after the local file is gone." />
                 <ItemsControl x:Name="SharedList" ItemTemplate="{StaticResource CloudRow}" Style="{StaticResource ClipList}" />
             </Grid>
         </TabItem>
