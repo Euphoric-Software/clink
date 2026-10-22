@@ -83,6 +83,7 @@ internal sealed class AppController : IDisposable
     private readonly CancellationTokenSource _cts = new();
     private readonly SemaphoreSlim _engineGate = new(1, 1);   // Engine.Start / Stop are not thread-safe against each other
     private System.Windows.Forms.NotifyIcon? _tray;
+    private System.Drawing.Icon? _trayIcon;     // the tray's icon at the taskbar's small-icon size (owned here, unlike SystemIcons)
     private System.Windows.Forms.ToolStripMenuItem? _statusItem, _clipItem, _pauseItem, _updateItem;
     private DispatcherTimer? _timer;
     private StatusDotWindow? _dot;
@@ -394,6 +395,8 @@ internal sealed class AppController : IDisposable
         _ui.BeginInvoke(async () =>
         {
             await Task.Delay(1500);
+            RefreshTrayIcon();   // a DPI change moves the tray's and the taskbar buttons' icon sizes
+            AppIcons.RefreshWindows();
             Monitors = Native.Monitors.Enumerate();
             Say("Display changed, restarting capture");
             StartEngine();
@@ -859,16 +862,57 @@ internal sealed class AppController : IDisposable
             menu.Items.Add(_updateItem);
             menu.Items.Add(new System.Windows.Forms.ToolStripSeparator());
             menu.Items.Add("Quit", null, (_, _) => Quit());
+            _trayIcon = LoadTrayIcon();
             _tray = new System.Windows.Forms.NotifyIcon
             {
                 Text = "Clink",
                 Visible = true,
                 ContextMenuStrip = menu,
-                Icon = System.Drawing.Icon.ExtractAssociatedIcon(Environment.ProcessPath!) ?? System.Drawing.SystemIcons.Application,
+                Icon = _trayIcon ?? System.Drawing.SystemIcons.Application,
             };
             _tray.MouseClick += (_, e) => { if (e.Button == System.Windows.Forms.MouseButtons.Left) ShowRequested?.Invoke(); };
         }
         catch (Exception ex) { Log.Warn("tray: " + ex.Message); }
+    }
+
+    /// <summary>
+    /// The exe's icon frame that matches the tray's small-icon size at the taskbar's DPI (16 / 20 / 24 / 32 px at 100 / 125 / 150 / 200 %),
+    /// so the shell shows a frame that was drawn for that size instead of shrinking the 32 px one (which is what
+    /// Icon.ExtractAssociatedIcon returns). The caller owns the result; null if no icon could be read from the exe.
+    /// </summary>
+    private static System.Drawing.Icon? LoadTrayIcon()
+    {
+        string? exe = Environment.ProcessPath;
+        if (exe == null) return null;
+        try
+        {
+            int size = AppIcons.SmallIconSize();
+            if (size > 0)
+            {
+                var icon = System.Drawing.Icon.ExtractIcon(exe, 0, size);
+                if (icon != null) return icon;
+            }
+        }
+        catch (Exception ex) { Log.Warn("tray icon size: " + ex.Message); }
+        try { return System.Drawing.Icon.ExtractAssociatedIcon(exe); }
+        catch (Exception ex) { Log.Warn("tray icon: " + ex.Message); return null; }
+    }
+
+    /// <summary>Swaps in the icon frame for the current DPI (after a display / scaling change) and frees the old one.</summary>
+    private void RefreshTrayIcon()
+    {
+        if (_tray == null || _disposed) return;
+        try
+        {
+            var icon = LoadTrayIcon();
+            if (icon == null) return;
+            if (_trayIcon != null && _trayIcon.Width == icon.Width) { icon.Dispose(); return; }   // same size: leave the icon alone
+            var old = _trayIcon;
+            _tray.Icon = icon;
+            _trayIcon = icon;
+            old?.Dispose();
+        }
+        catch (Exception ex) { Log.Warn("tray icon refresh: " + ex.Message); }
     }
 
     private void UpdateTray()
@@ -920,6 +964,7 @@ internal sealed class AppController : IDisposable
         try { Updater.Dispose(); } catch { }
         try { Engine.Dispose(); } catch { }
         if (_tray != null) { _tray.Visible = false; _tray.Dispose(); _tray = null; }
+        try { _trayIcon?.Dispose(); _trayIcon = null; } catch { }
         ReleaseSingleInstance();
     }
 }

@@ -48,6 +48,7 @@ public partial class TrimWindow : Window
     {
         _entry = entry;
         InitializeComponent();
+        AppIcons.Attach(this);   // has its own taskbar button when it has no owner
         TitleText.Text = "Trim · " + Path.GetFileName(entry.Path);
         _duration = Math.Max(TimelineControl.MinSelection, entry.Duration);
         Timeline.Duration = _duration;

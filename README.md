@@ -1,4 +1,4 @@
-# Clink
+# <img src="docs/brand/clink-icon.svg" width="32" height="32" alt=""> Clink
 
 A tiny Windows replay-buffer clipper for games. It keeps the last couple of minutes of your screen and audio in
 memory; press a key, hear a click, and the clip is on disk. Share it to [Copium](https://copium.pics) with one
