@@ -28,64 +28,85 @@ click and the link lands in your clipboard.
      device (off as a separate track by default; always part of the mix)
   5. **Desktop** (optional) – everything you hear from an output device (the default one follows Windows too), or an
      audio input (a Wave Link / VoiceMeeter mix, a virtual cable), as an extra track
-* Trim (start/end) without re-encoding, then save or save-and-share.
+* Click a clip to play it in Clink's own player; its **✂ Trim** switch turns it into the trim editor: cut start/end
+  without re-encoding the video, set the volume of every audio track (the Game, Mic and Voice sliders also shape *All
+  audio*, live), then save or save-and-share.
 * **Records only while a game runs** (default) or always. Games are detected by a fullscreen/borderless window on the
   captured monitor, by living in a known game-library folder (Steam, Epic, Riot, Battle.net, Ubisoft, EA, GOG, Xbox,
   Rockstar), or by being on your custom-apps list; while nothing runs the capture, encoder and RAM buffer are stopped.
   Maximized apps and overlays (Game Bar, the NVIDIA overlay, PowerToys, widgets) do not count as games; borderless
   games that hide their frame (SDL3 games such as osu!lazer) do.
-* **A list of hotkeys**: each one is a key combo plus what it does (clip, pause/resume, share last clip) and, for clips,
-  how much to save (e.g. F9 = the replay length, Shift+F9 = the last 30 s). While the game is in front a hotkey also
-  fires with extra Ctrl / Alt / Shift held (crouch + F9 still clips); on the desktop only the exact combo does, so
-  Ctrl+F9 in an IDE still reaches the IDE.
+* **One main hotkey, and as many more as you like**: the main one (**Alt+C** by default) always saves the full replay;
+  every other hotkey is a key combo plus what it does (a shorter clip, pause/resume, share last clip) and, for clips,
+  how much to save (e.g. Shift+F9 = the last 15 s). While the game is in front a hotkey also fires with extra Ctrl /
+  Alt / Shift held (crouch + Alt+C still clips); on the desktop only the exact combo does, so Ctrl+Alt+C in another
+  program still reaches that program. An Alt combo does not light up the menu bar of the program in front: Clink sends a
+  dummy key between the Alt press and release (never into a game: nothing synthetic is sent while the game is in front).
 * **Never a silent miss**: if a clip cannot be saved (recording paused, still waiting for a game, the recorder failed,
   disk full) or a share cannot be uploaded, Clink says why where you are looking: a toast over the game, a tray balloon
   otherwise. With nothing recording you hear the Windows error sound instead of the click.
 * **Recovers by itself**: a recorder that fails to start (encoder busy, monitor still waking up) is retried in the
   background, and after a graphics driver crash (TDR) Clink notices, says *The GPU was reset* and restarts capture on a
   fresh device. You are told once, not on every retry.
-* **Replay length slider** from 5 s to 60 min with one readout under it: the **size** per minute and per clip of that
-  length and the **RAM** the buffer costs, live; and **size targets** (Copium 200 MB / 10 min, the default; Discord
-  10 / 50 / 500 MB) that lower the bitrate, only when needed, so a clip of that length fits.
+* **Replay length slider** from 5 s to 60 min (45 s by default), in the Capturing card with one readout under it: the
+  **size** per minute and per clip of that length and the **RAM** the buffer costs, live; and **size targets** (None, the
+  default; Discord 10 / 50 / 500 MB; Copium 200 MB / 10 min; Copium Plus 2 GB / 60 min) that lower the bitrate, only
+  when needed, so a clip of that length fits.
 * H.264 or HEVC, and AV1 (experimental) when the GPU has an AV1 encoder; codecs the GPU lacks are listed greyed out.
   H.264 stops at 4096 px, so a wider recording (a 5120×1440 super-ultrawide at *Native*) is made in HEVC, and the
   Capture tab says so.
 * Toasts for *clip saved*, *shared* and *recording started*, each with its own switch, duration and a preview; eight
   positions on the captured monitor. Away from the window you also get short notices for *Uploading to Copium…*
   (share hotkey), *Recording paused / resumed* (pause hotkey) and anything that went wrong. Optional always-on **status dot** in a corner (green recording, amber waiting, red
-  error, grey paused). Toasts and the dot are hidden from screen capture, so they never end up in a clip.
+  error, grey paused). Toasts, the dot and the Share window are hidden from screen capture, so they never end up in a clip.
+* **Share without a Copium account**: with no token, Share opens a window with the clip's file to drag into Discord, a
+  browser upload box or a folder (it is only ever copied, the clip stays in your library), or to copy and paste.
 * Optional **archive**: clips land in the local folder first and move to a NAS share, mapped drive or any other folder
-  in the background (slowly, oldest first, after N days and/or when the local folder is over N GB).
+  in the background (slowly, oldest first, after N days and/or when the local folder is over N GB), or whenever you
+  say so: *Archive now…* moves what is due, or every local clip, with progress and a result.
 * Shows which monitor it is capturing; click another one on the little map to switch.
-* Resizable borderless dark UI: settings tabs (Capture · Clip · Alerts) with the clips pane beside them when the
-  window is wide, as a fourth tab when it is narrow. Lives in the tray while you play.
+* Resizable borderless UI, dark or light with six accent colours: settings tabs (Capture · Clips · Alerts · App) with
+  the clips pane beside them when the window is wide, as a fifth tab (Library) when it is narrow. Lives in the tray
+  while you play.
 
 ## Screenshots
 
 <table>
 <tr>
 <td width="50%"><a href="docs/screenshots/capture-audio.png"><img src="docs/screenshots/capture-audio.png" width="400" alt="Capture tab scrolled to the audio tracks and the recording mode"></a><br><sub>Audio tracks: a source per track, and what each one is capturing right now. Below, the recording mode and custom apps.</sub></td>
-<td width="50%"><a href="docs/screenshots/replay-length.png"><img src="docs/screenshots/replay-length.png" width="400" alt="Replay length slider with the size and RAM readout, and the hotkey list"></a><br><sub>Replay length with the size / RAM readout and what the size target did, and the hotkey list.</sub></td>
+<td width="50%"><a href="docs/screenshots/replay-length.png"><img src="docs/screenshots/replay-length.png" width="400" alt="The Capturing card with the size target, the replay length slider and the size and RAM readout"></a><br><sub>Replay length, under the size target in the Capturing card, with the size / RAM readout and what the size target did.</sub></td>
 </tr>
 <tr>
-<td><a href="docs/screenshots/clip-tab.png"><img src="docs/screenshots/clip-tab.png" width="400" alt="Clip tab with the Copium token and the archive settings, and the Cloud list of shared clips"></a><br><sub>Clip tab: Copium token and the NAS archive. Right: everything you shared, with its link.</sub></td>
-<td><a href="docs/screenshots/alerts-tab.png"><img src="docs/screenshots/alerts-tab.png" width="400" alt="Alerts tab with toast switches, the status dot and updates"></a><br><sub>Alerts tab: toasts, the status dot, updates and run at startup.</sub></td>
+<td><a href="docs/screenshots/hotkeys.png"><img src="docs/screenshots/hotkeys.png" width="400" alt="Hotkeys: the main hotkey with its keys and what it saves, and more hotkeys for a shorter clip, share last clip and pause"></a><br><sub>Hotkeys: the main hotkey always saves the full replay; more hotkeys add shorter clips, share-last and pause / resume.</sub></td>
+<td><a href="docs/screenshots/clip-tab.png"><img src="docs/screenshots/clip-tab.png" width="400" alt="Clips tab with the Copium token and the storage settings, and the Shared list of shared clips"></a><br><sub>Clips tab: the Copium token and the storage settings, with <i>Archive now…</i>. Right: everything you shared, with its link.</sub></td>
 </tr>
 <tr>
-<td><a href="docs/screenshots/trim-editor.png"><img src="docs/screenshots/trim-editor.png" width="400" alt="Trim editor with preview, timeline and per-track volume"></a><br><sub>Trim editor: in / out on the timeline, per-track include and volume, Save or Save &amp; share.</sub></td>
-<td><a href="docs/screenshots/trimmed-tab.png"><img src="docs/screenshots/trimmed-tab.png" width="400" alt="Clip tab beside the clips pane on its Trimmed list"></a><br><sub>Trimmed: the cuts the trim editor saved next to their originals, with Trim / Share / folder like any clip.</sub></td>
+<td><a href="docs/screenshots/alerts-tab.png"><img src="docs/screenshots/alerts-tab.png" width="400" alt="Alerts tab with toast switches and the status dot"></a><br><sub>Alerts tab: toasts and the status dot.</sub></td>
+<td><a href="docs/screenshots/app-tab.png"><img src="docs/screenshots/app-tab.png" width="400" alt="App tab with the theme and accent choices, the update settings and the settings folder"></a><br><sub>App tab: theme and accent, updates and run at startup, and where the settings are kept.</sub></td>
 </tr>
 <tr>
+<td><a href="docs/screenshots/app-tab-light.png"><img src="docs/screenshots/app-tab-light.png" width="400" alt="The App tab in the light theme"></a><br><sub>The same tab in the light theme: every window repaints at once, an open player or toast included.</sub></td>
+<td><a href="docs/screenshots/narrow.png"><img src="docs/screenshots/narrow.png" width="240" alt="The window at its narrow size, with Library as the fifth tab and its Local, Shared and Trimmed lists"></a><br><sub>Narrow window: the clip list becomes the Library tab.</sub></td>
+</tr>
+<tr>
+<td><a href="docs/screenshots/player.png"><img src="docs/screenshots/player.png" width="400" alt="The player with preview, seek bar, the Trim switch and per-track Listen and volume"></a><br><sub>Player (a click on a clip): a seek bar, and a Listen pill and volume for every audio track; Game, Mic and Voice change <i>All audio</i>, live.</sub></td>
+<td><a href="docs/screenshots/trim-editor.png"><img src="docs/screenshots/trim-editor.png" width="400" alt="Trim editor with preview, timeline and per-track volume"></a><br><sub>Trim editor (the <i>✂ Trim</i> switch): in / out on the timeline, per-track include and volume, Save or Save &amp; share.</sub></td>
+</tr>
+<tr>
+<td><a href="docs/screenshots/trimmed-tab.png"><img src="docs/screenshots/trimmed-tab.png" width="400" alt="Clips tab beside the clips pane on its Trimmed list"></a><br><sub>Trimmed: the cuts the trim editor saved next to their originals, with Trim / Share / folder like any clip.</sub></td>
+<td><a href="docs/screenshots/share-window.png"><img src="docs/screenshots/share-window.png" width="400" alt="The Share window with the clip's file card, Copy file, Open folder and Set up Copium"></a><br><sub>Share without a Copium token: drag the file into Discord, a browser upload box or a folder, or copy it.</sub></td>
+</tr>
+<tr>
+<td><a href="docs/screenshots/archive-window.png"><img src="docs/screenshots/archive-window.png" width="400" alt="The Archive clips dialog with the destination, what is due by the rules and all local clips"></a><br><sub><i>Archive now…</i>: everything due by your rules, or every local clip, then progress and a result.</sub></td>
 <td><a href="docs/screenshots/toast.png"><img src="docs/screenshots/toast.png" width="400" alt="Clip saved and Shared toasts"></a><br><sub>Toasts: <i>Clip saved</i> with Share / Trim / Folder, and <i>Shared · link copied</i>.</sub></td>
-<td><a href="docs/screenshots/notices.png"><img src="docs/screenshots/notices.png" width="400" alt="Clip not saved, Recording started and Uploading to Copium notices"></a><br><sub>Notices away from the window: <i>Clip not saved</i> and why, <i>Recording started</i>, and the share hotkey's <i>Uploading to Copium…</i></sub></td>
 </tr>
 <tr>
+<td><a href="docs/screenshots/notices.png"><img src="docs/screenshots/notices.png" width="400" alt="Clip not saved, Recording started and Uploading to Copium notices"></a><br><sub>Notices away from the window: <i>Clip not saved</i> and why, <i>Recording started</i>, and the share hotkey's <i>Uploading to Copium…</i></sub></td>
 <td><a href="docs/screenshots/in-game.jpg"><img src="docs/screenshots/in-game.jpg" width="400" alt="A racing game on screen with the Clip saved toast in the bottom-right corner and the green status dot in the top-right corner"></a><br><sub>In game: the <i>Clip saved</i> toast and the green status dot (top right) where Clink puts them. Both are hidden from screen capture, so they never end up in your clips.</sub></td>
-<td><a href="docs/screenshots/narrow.png"><img src="docs/screenshots/narrow.png" width="240" alt="The window at its narrow size, with Clips as a fourth tab"></a><br><sub>Narrow window: the clip list becomes a fourth tab.</sub></td>
 </tr>
 </table>
 
-All screenshots are of Clink itself, rendered from synthetic clips (no real games or accounts).
+All screenshots are of Clink itself (the dark theme with the default cyan accent unless a caption says otherwise), rendered from synthetic clips (no real games or accounts).
 
 ## Installing & updating
 
@@ -107,9 +128,9 @@ swapped in by renaming with the previous `Clink.exe` kept as `Clink.exe.bak` unt
 failed install never leaves you without a working Clink: a new exe that does not start is swapped back, and that
 download is not tried again on every start. If an update cannot be installed (for example `Clink.exe`
 lives in a folder you cannot write to, or Clink runs as administrator) Clink says so in the footer, in a tray message
-and under *Alerts → Updates*, and leaves the download in `%LOCALAPPDATA%\Clink\updates` to install by hand. *Alerts →
+and under *App → Updates*, and leaves the download in `%LOCALAPPDATA%\Clink\updates` to install by hand. *App →
 Updates* also shows *Last check failed: …* when GitHub could not be reached (it gives up after 30 s) and *Update
-problem: …* when a download failed. To turn auto-update off, untick *Install updates automatically* under *Alerts →
+problem: …* when a download failed. To turn auto-update off, untick *Install updates automatically* under *App →
 Updates*; this takes effect at once (no restart), Clink then never contacts GitHub on its own, and *Check now* (or
 clicking the version in the footer) checks by hand and opens the release page if there is something newer.
 
@@ -117,92 +138,148 @@ clicking the version in the footer) checks by hand and opens the release page if
 
 1. Run `Clink.exe`. The header says *Waiting for a game…* until a game or custom app starts, then *Recording · Overwatch*
    (switch to *Always* under *Capture → Recording* to record whatever is on the monitor, as before).
-2. Press **F9** (or any hotkey from your list under *Capture → Hotkeys*) while gaming. You hear a short click; the clip is
-   saved to `Videos\Clink\<game> <date>.mp4` and a small "Clip saved" toast appears. If nothing was recording you hear
-   the Windows error sound instead and a *Clip not saved* notice says why (paused, waiting for a game: add it under
-   *Custom apps*, or the recorder's error); a save that fails (disk full) says so the same way. The file is written
-   under a temporary name and renamed when complete, so a failed save never leaves a broken clip behind.
-3. Click **Share** (in the toast or the clip list). The clip is uploaded to Copium and the link is copied.
-   By default the copied link is the raw video file, so pasting it in Discord plays the video inline with no
+2. Press **Alt+C**, the main hotkey (or any other hotkey from your list under *Capture → Hotkeys*), while gaming. It saves
+   the full replay, 45 s by default. You hear a short click; the clip is saved to `Videos\Clink\<game> <date>.mp4` and a
+   small "Clip saved" toast appears. If nothing was recording you hear the Windows error sound instead and a *Clip not
+   saved* notice says why (paused, waiting for a game: add it under *Custom apps*, or the recorder's error); a save that
+   fails (disk full) says so the same way. The file is written under a temporary name and renamed when complete, so a
+   failed save never leaves a broken clip behind. Clink eats the main hotkey while it runs (it is a global hook), so a
+   program that uses Alt+C itself loses it; pick other keys under *Capture → Hotkeys* if that matters. A file from
+   before v0.2.5 with no hotkey for the full replay gets Alt+C for it (left unset when another hotkey already uses
+   Alt+C) and says so once, in the footer and a tray balloon.
+3. Click **Share** (in the toast, the clip list or the trim editor). The clip is uploaded to Copium and the link is
+   copied. By default the copied link is the raw video file, so pasting it in Discord plays the video inline with no
    embed card. If you turn on custom embeds on copium.pics, Copium's `link` becomes the share page instead; Clink
    just uses whatever Copium says to copy. A clip is uploaded once: pressing Share again (or the share hotkey) while
-   it uploads waits for that upload. When an upload fails the toast and the clip row say why (*Add your Copium token
-   first*, *Copium is having trouble (HTTP 502), try again later*, *Can't reach Copium - check your connection*, …).
-4. **Trim** opens an editor: the clip plays in a preview with a timeline underneath; drag the in/out handles (or
-   press I / O at the playhead, Space to play, ←/→ to step a frame). Every audio track has its own include toggle
-   and volume, which you hear in the preview and which are baked into the saved file; the Listen pill picks the
-   track you audition. The in point snaps to a keyframe (every second by default) so the cut is exact in every
-   player, and the export copies the video without re-encoding. *Save trimmed* writes `<clip> (trim).mp4` next to the
-   original (tick *Replace original* to replace the clip with the cut instead), or *Save & share*.
+   it uploads waits for that upload. When an upload fails the toast and the clip row say why (*Copium rejected the
+   token (…)*, *Copium is having trouble (HTTP 502), try again later*, *Can't reach Copium - check your connection*, …).
+   **Without a Copium token** Share does not fail: it opens the **Share window** with the clip's file. Drag the card into
+   Discord, a browser upload box or an Explorer folder (the file is only ever copied, so the clip stays in your library),
+   or press *Copy file* and paste with Ctrl+V; *Open folder* shows it in Explorer and *Set up Copium…* brings Clink's
+   window forward (the footer says where the token goes: *Clips → Copium*). The window floats above other windows so it
+   stays in reach while you bring the drop target forward, but goes behind a game that has the focus (and, opened over a
+   game, appears at the toast position without taking the focus); it is hidden from screen capture like the toasts and
+   shows no file path. The share hotkey (or `--share-last`) opens no window over a game or any other full-screen
+   application: a toast says *No Copium token: open Clink to share the file*. A clip in the archive is looked up first,
+   so an offline NAS never freezes the window.
+4. Click a clip (its row or its thumbnail) to play it in Clink's own **player**: the preview, play / pause (Space), a
+   seek bar, ←/→ to step a frame, Home / End, and a row for every audio track with a Listen pill (the track you hear)
+   and a volume slider; *Open in default player* (top right) hands the file to your system's player. The **✂ Trim**
+   switch next to Play turns the same window into the **trim editor**, and back, without losing anything: drag the in/out
+   handles (or press I / O at the playhead), and tick which tracks to keep. Every audio track has its own include
+   toggle and volume, which you hear in the preview and which are baked into the saved file. **All audio** (the mix,
+   track 1) follows the **Game, Mic and Voice sliders**: it is rebuilt from those tracks, live in the preview and in the
+   saved file, and with every slider at 100 % the baked mix is used untouched. A source's include box only decides
+   whether its own track is saved; its slider always shapes All audio. Desktop is never part of All audio. Voice is not
+   saved as a track of its own by default, so it is only inside All audio: its volume cannot be changed there, and
+   turning Game or Mic down takes it out of the baked mix again, which can leave a faint trace of it (tick *Voice chat*
+   under *Capture → Audio tracks* to keep it as a track). The in point snaps to a keyframe (every second by default) so
+   the cut is exact in every player, and the export copies the video without re-encoding. *Save trimmed* writes
+   `<clip> (trim).mp4` next to the original (tick *Replace original* to replace the clip with the cut instead), or
+   *Save & share*. The *Trim* button on a clip row, the toast's *Trim* and `--trim-last` open the editor directly; a
+   second click on a clip that is already open brings its window forward.
 
 Copium: make an upload token under *ShareX & API* on copium.pics (it starts with `eup_`) and paste it in the
-Copium box. It is stored encrypted for your Windows user (DPAPI). Nothing is uploaded unless you press Share. Without
-Copium+ an upload may be at most **200 MB and 10 minutes** long: Share says so instead of uploading a clip that is over
-either limit (trim it, or tick *I have Copium+* under *Clip → Copium* if you have it), and the *Copium (200 MB, 10 min)*
-size target, the default, keeps clips of the replay length (or of 10 minutes, when the replay length is longer) under the
-size limit. Sizes are shown in decimal MB everywhere, the unit the limits use.
+Copium box (*Clips → Copium*). It is stored encrypted for your Windows user (DPAPI). Nothing is uploaded unless you press
+Share. Share checks a clip against the limits of the account you say you have: without Copium+ an upload may be at most
+**200 MB and 10 minutes** long, with Copium+ (tick *I have Copium+*) **2 GB and 60 minutes**. A clip over the limit is not
+uploaded; Share says so (*Over Copium's free limit (200 MB / 10 min)*, *Over Copium Plus's limit (2 GB / 60 min)*; the footer
+adds how big the clip is and what to do: trim it, or tick *I have Copium+* if you have it) and the toast's button reads
+*Over free limit* / *Over Plus limit*. The *Copium (200 MB, 10 min)* and *Copium Plus (2 GB, 60 min)* size targets keep
+clips of the replay length (or of the length limit, when the replay length is longer) under the size limit; picking
+Copium Plus also ticks *I have Copium+*. The toast's button reads *Share* without a token, *Share to Copium* with one and
+*Copy link* once the clip is shared. Sizes of clips and limits are shown in decimal MB, the unit the limits use.
 
 ### The window
 
 * **Capture**, top to bottom: **Capturing** - the monitor map, resolution / FPS / bitrate / codec with a one-line
   description of each codec (the ones your GPU cannot encode are greyed out; the 1440p / 1080p / 720p presets name the
-  short side, so a portrait 1080×1920 monitor at 1080p records 1080×1920), the **size target** (*None*, *Discord 10 MB*,
-  *Nitro Basic 50 MB*, *Copium 200 MB, 10 min* (the default), *Nitro 500 MB*: when a clip of the replay length would not
-  fit, the encode bitrate is lowered just enough, audio tracks included; it is never raised above the bitrate you chose)
-  and *Capture cursor*; **Audio tracks** - the per-track rows with their source pickers (a *Set up your audio* banner sits
-  above them until you rest the pointer on the group for a moment or change an option; it goes when the pointer leaves
-  the group, so nothing jumps under it, and does not come back) and under them what each track is capturing right now or
-  why it is not (*● Mic (USB Microphone)*, *○ Voice (waiting for app)*); **Recording** - the recording
-  mode and the custom-apps list (type an exe name or pick one of the apps running right now); **Replay length** - the slider
-  (the 30–90 s stretch is the sweet spot) with the one size/RAM readout right under it, recomputed on every resolution, FPS,
-  bitrate, codec, size-target, audio-track or length change; the figures are bitrate × audio tracks × length (resolution and
-  codec decide how good a clip looks at that bitrate, not how big it is): *≈ 124 MB per minute · ≈ 52 MB per 25 s clip*
-  (16 Mbps, three tracks; at 1 h the clip figure becomes the per-hour figure), *≈ 62 MB of RAM for 25 s at 16 Mbps* (red
-  above half of your RAM; the slider refuses lengths that could not be allocated at all) and what the size target did, in
-  yellow when the replay length is Copium's 10 minutes or more - the Copium target then fits a 10-minute clip, not the whole
-  replay, since a longer clip has to be trimmed before Share anyway; **Hotkeys** - the list (click the keys box, press the
-  combo; Esc cancels) with *Clip now* in its header and the click sound under it. A combo another row already has, or
-  a bare letter, digit or editing key (it would be eaten in every program), is refused with a hint and the box keeps
-  listening; F-keys, ScrollLock and Pause work alone.
-* **Clip**: **Copium** - the upload token and the *I have Copium+* switch - and **Storage**: the local clips folder and the
-  archive (below).
+  short side, so a portrait 1080×1920 monitor at 1080p records 1080×1920), the **size target** (*None*, the default;
+  *Discord 10 MB*; *Nitro Basic 50 MB*; *Copium 200 MB, 10 min*; *Nitro 500 MB*; *Copium Plus 2 GB, 60 min*: when a clip
+  of the replay length would not fit, the encode bitrate is lowered just enough, audio tracks included; it is never
+  raised above the bitrate you chose; picking Copium Plus also ticks *I have Copium+*), the **replay length** slider
+  (the 30–90 s stretch is the sweet spot) with the one size/RAM readout right under it, recomputed on every resolution,
+  FPS, bitrate, codec, size-target, audio-track or length change, and *Capture cursor*. The readout's figures are
+  bitrate × audio tracks × length (resolution and codec decide how good a clip looks at that bitrate, not how big it is):
+  *≈ 156 MB per minute · ≈ 117 MB per 45 s clip* (20 Mbps, four tracks; at 1 h the clip figure becomes the per-hour
+  figure), *≈ 132 MB of RAM for 45 s at 20 Mbps* (red above half of your RAM; the slider refuses lengths that could not
+  be allocated at all) and what the size target did, in yellow when no bitrate can make the clip fit or when the replay
+  length reaches the target's own limit (Copium's 10 minutes, Copium Plus's 60) - the target then fits a clip of that
+  length, not the whole replay, since a longer clip has to be trimmed before Share anyway; **Audio tracks** - the
+  per-track rows with their source pickers (a *Set up your audio* banner sits above them until you rest the pointer on
+  the group for a moment or change an option; it goes when the pointer leaves the group, so nothing jumps under it, and
+  does not come back) and under them what each track is capturing right now or why it is not (*● Mic (USB
+  Microphone)*, *○ Voice (waiting for app)*); **Recording** - the recording mode and the custom-apps list (type an exe
+  name or pick one of the apps running right now); **Hotkeys** - the *Main hotkey* (click the keys box, press the combo;
+  Esc cancels; *Clear* empties it) with *saves the full replay (0:45)* beside it, which follows the replay length: the main
+  hotkey always saves the full replay and can be cleared, not removed. Under *More hotkeys* every other one has its keys,
+  an action (*Clip*, *Pause / resume*, *Share last clip*) and, for a clip, a fixed length shorter than the replay length
+  (5 s up to the longest step below it; a saved length at or above the replay length reads *(capped to replay)* and counts
+  again once the replay is longer); *Add hotkey* adds a clip row on 30, 15, 10 or 5 s, whichever is the longest below the
+  replay length. *Clip now* sits in the header (it saves the full replay) and the click sound under the list. A combo
+  another row already has (the main one included), or a bare letter, digit or editing key (it would be eaten in every
+  program), is refused with a hint and the box keeps listening; F-keys, ScrollLock and Pause work alone.
+* **Clips**: **Copium** - the upload token and the *I have Copium+* switch - and **Storage**: the local clips folder, the
+  archive location (*Browse…*, *Test*, *Archive now…*) and *Move clips there automatically* with its rules (below).
 * **Alerts**: **Toasts** - the position and the three toast switches with their durations and a *Preview* button each;
-  **Status dot** - the dot and its corner; **Updates** - auto-update, *Check now* and *Run at startup*.
-* **Clips** (right pane when the window is at least 900 px wide, otherwise the last tab): **Local** lists every file
-  with small icons (cloud = shared, scissors = trimmed, PC = local only, drive = archived) and Trim / Share / folder
-  buttons; **Cloud** lists everything you shared with the link (click = copy), *Open page* and the local file if it
-  still exists, and keeps entries whose local file is gone; **Trimmed** lists the cuts made by the trim editor.
+  **Status dot** - the dot and its corner.
+* **App**: **Appearance** - *Dark* or *Light* and one of six accents (Cyan, the default; Blue, Violet, Pink, Orange,
+  Green), applied at once to every window that is open; **Updates** - auto-update, *Run at startup*, the version and
+  *Check now*; **Settings** - where `settings.json` is kept, with an *Open folder* link, and, when they apply, the banners
+  about a private copy of AppData and about settings another copy of Clink saved (see [Settings](#settings)).
+* **Library** (the clips pane: a right pane when the window is at least 900 px wide, otherwise the last tab): **Local**
+  lists every file with small icons (cloud = shared, scissors = trimmed, PC = local only, drive = archived) and Trim /
+  Share / folder buttons; **Shared** lists everything you shared to Copium with the link (click = copy), *Open page* and
+  the local file if it still exists, and keeps entries whose local file is gone; **Trimmed** lists the cuts made by the
+  trim editor. A click on a clip (its row or thumbnail) plays it in the player.
 * The footer shows the game, encoder, buffer and dropped frames, or the latest notice (hover it for the full text). The
   mouse wheel scrolls the page even over a closed dropdown, so scrolling never changes a setting by accident.
 
 ### Archive (NAS, second drive)
 
-Clips are always written to the local clips folder first. Under *Clip → Storage* you can turn on an archive location:
+Clips are always written to the local clips folder first. Under *Clips → Storage* you can set an archive location:
 a UNC share (`\\nas\clips`), a mapped drive or any folder. Sign in to a share once in Explorer; Clink never asks for
 credentials, and on *access denied* the status line tells you to do exactly that. *Test* checks that it is reachable and
-writable and shows the free space. The rules are *older than N days* and/or *while the local folder is over N GB*,
-whichever comes first (0 = off). A background thread at the lowest priority then copies eligible clips oldest-first in
-small chunks with pauses in between (it never competes with the game), verifies the copy, deletes the local file and
-points the library entry at the archive, so Trim, Share and thumbnails keep working from there; a clip that is open
-(uploading, trimming, playing) is skipped, an unreachable archive is retried on the next run (1 min after a clip is saved
-and every 5 min), and a local file is never deleted before its copy was verified. Every move is logged.
+writable and shows the free space. Two things can then move clips there. By hand, *Archive now…* (below). Automatically,
+once you tick *Move clips there automatically*: the rules under it are *older than N days* and/or *while the local
+folder is over N GB*, whichever comes first (0 = off), and apply only while that is ticked. A background thread at the
+lowest priority then copies eligible clips oldest-first in small chunks with pauses in between (it never competes with
+the game), verifies the copy, deletes the local file and points the library entry at the archive, so Trim, Share and
+thumbnails keep working from there; a clip that is open (uploading, trimming, playing) is skipped, an unreachable
+archive is retried on the next run (1 min after a clip is saved and every 5 min), and a local file is never deleted
+before its copy was verified. Every move is logged. With the switch off and a location set the status line reads
+*Automatic moves off · Archive now… moves clips by hand*.
+
+**Archive now…** opens the *Archive clips* dialog. It shows where clips go and whether that works (*Share reachable ·
+writable · 1.8 TB free*) and offers two things to move, with counts and sizes: *Everything due by your rules* (the rule in
+words, *older than 1 day / while the folder is over 100 GB*; disabled when no rule is set) and *All local clips* (every
+clip still in the clips folder, oldest first, whatever the rules say; preselected when nothing is due, which is what you
+want when the folder is under its limit and the clips are young). *Archive* moves them the way the background job does
+(copy, verify the length, delete the local file, point the library at the archive) with a progress bar and *Moving 3 of
+12 · Copying clip.mp4 (40 %)*; *Cancel*, or closing the window, stops after the chunk being copied, deletes the partial
+copy and leaves the local clip (clips already moved stay moved). A line at the end says what happened (*Moved 12 clips
+(3.4 GB) to T:\clips · 1 in use, try again later*, *Archive unreachable*, *Moved 2 clips (…) · 3 failed: archive is full
+(1 MB free)*, …): a clip that is open, changed while it was copied, or was saved less than 30 s ago is left alone and
+counted, and a later run takes it. It needs only a location, not the automatic switch and not a rule, and runs at full
+speed unless a game is detected, in which case it keeps the gentle pace of the automatic moves (about 60 MB/s).
 
 The path must be a full one (`D:\Clips`, `\\nas\clips`); a relative path (`\nas\clips`, a lost backslash) is refused
 with a hint, and *Test* then says why instead of testing the previous path. Before each copy Clink checks the free space:
 a clip that does not fit is skipped without writing anything, and an archive that is full, read-only or denies access
 ends the run with a status line that says which (*archive is full (12 GB free)*, *archive is read-only*, *access denied:
-open the share in Explorer once to sign in*) instead of trying every clip again. Turning the archive off or pointing it
-elsewhere stops a run in progress (the partial copy is deleted). *Archive now* moves what is due right away, or says why
-nothing is (*no clip is older than 14 days and the clips folder is under 200 GB*). In the clip list an archived clip
-whose share is offline says *archive offline* at once (Trim, play and folder do not wait out the network timeout) and
-clears itself when the share is back; a clip that was deleted from the archive drops out of the list, or, if you shared
-it, stays under **Cloud** marked *deleted from the archive*.
+open the share in Explorer once to sign in*) instead of trying every clip again. Pointing the archive elsewhere stops a
+run in progress, and so does turning the automatic moves off (for an automatic run); a manual run also stops on *Cancel*
+or when its dialog is closed, and the partial copy is deleted each time. A path typed into the box is accepted, or refused
+with its reason, before the dialog opens. In the clip list an archived clip whose share is offline says *archive
+offline* at once (Trim, play and folder do not wait out the network timeout) and clears itself when the share is back; a
+clip that was deleted from the archive drops out of the list, or, if you shared it, stays under **Shared** marked
+*deleted from the archive*.
 
 ### Stream Deck
 
 Two ways, no plugin needed:
 
-* Add a **Hotkey** action that sends one of Clink's hotkeys (F9 by default; a second binding with a shorter length
+* Add a **Hotkey** action that sends one of Clink's hotkeys (Alt+C by default; a second binding with a shorter length
   makes a good second button). Clink uses a low-level keyboard hook, so it sees injected keys even when a game has focus.
 * Or use a **System → Open** action with `Clink.exe --clip`. If Clink is already running this just tells it to
   clip and exits. `Clink.exe --trim-last` opens the trim editor on the newest clip and `Clink.exe --share-last`
@@ -214,24 +291,60 @@ Two ways, no plugin needed:
 Other commands: `--show`, `--minimized` (start in the tray), `--no-update` (start without installing a downloaded
 update, handy for a debug build), `--selftest [seconds] [folder] [--codec h264|hevc|av1] [--quiet]` (records headless
 and writes a clip to that folder, the clips folder by default, and prints what it did),
-`--probe <file.mp4> [frame.png] [seconds]` (stream timing report, optional decoded frame),
-`--trim <in> <out> <start> <end>`. The last three can run next to a running Clink.
+`--probe <file.mp4> [frame.png] [seconds] [--levels]` (stream timing report, optional decoded frame; `--levels` also
+prints the RMS and peak level of every audio track),
+`--trim <in> <out> <start> <end> [--gain Name=value]... [--drop Name]...` (the editor's cut without the window:
+`--gain Game=0.5` or `Game=50%` sets a track's volume the way its slider does, so Game, Mic and Voice shape All audio as
+well, and `--drop Voice` leaves a track out; the names are the file's own: Mix, Game, Mic, Voice, Desktop). The last
+three can run next to a running Clink, and so can `--unittest` (see [Testing](#testing)).
 
 ### Settings
 
-`%APPDATA%\Clink\settings.json` (the UI writes it; it and the clip index `clips.json` are replaced in one rename on every
-save and keep the previous version as `.bak`, which is read when the file is damaged; hand edits may use `//` comments,
-trailing commas and numbers in quotes, and a hand edit that still does not parse is kept as `settings.json.unreadable`
-and Clink says so at start). The audio track pickers (*Capture → Audio tracks*) store
+`%APPDATA%\Clink\settings.json` (the UI writes it; *App → Settings* says where it is and has an *Open folder* link). It
+and the clip index `clips.json` are replaced in one rename on every save and keep the previous version as `.bak`, which
+is read when the file is damaged. Hand edits may use `//` comments, trailing commas and numbers in quotes. Loading is
+forgiving: a value of the wrong kind (`"Fps": "sixty"`, `"BufferSeconds": [1]`) keeps its default and costs nothing else
+(Clink says at start which settings it could not read and keeps the original as `settings.json.unreadable` before it
+saves); a hand edit that does not parse at all is kept as `settings.json.unreadable` too, and Clink starts from the
+`.bak` and says so; keys this version does not know (written by a newer Clink) are kept and written back, inside
+hotkeys and toast settings too, so going back and forth between versions loses nothing; and a NaN or infinite number is
+put back to its default instead of making a save fail.
+
+The file carries a `SchemaVersion`: **3** since v0.2.5 (a file without one counts as 2 when it has `Hotkeys`, else 1; an
+older file is saved once, at start, in the new layout, and that save keeps the old file once as `settings.pre-v3.json`).
+An existing file keeps every value it has: a default only fills in a key the file does not have, so an update never
+changes what you chose (a v0.1 file never had `SizeTarget`, so it now starts on `none`, not `copium200`). What a fresh
+install starts with:
+
+| setting | key | fresh-install default |
+|---------|-----|-----------------------|
+| Resolution | `Resolution` | `1080p` (also `native`, `1440p`, `720p`) |
+| FPS | `Fps` | 60 |
+| Bitrate | `BitrateMbps` | 20 |
+| Codec | `Codec` | `h264` (also `hevc`, `av1`) |
+| Size target | `SizeTarget` | `none` |
+| Capture cursor | `CaptureCursor` | true |
+| Recording | `RecordingMode` | `game`: only while a game or custom app runs |
+| Replay length | `BufferSeconds` | 45 |
+| Main hotkey | `Hotkeys[0]` | Alt+C, the full replay |
+| Theme and accent | `Theme` / `Accent` | `dark` / `cyan` |
+
+The audio track pickers (*Capture → Audio tracks*) store
 `AllDeviceId` (the Desktop track: `out:<id>` or a bare id = that output's loopback, `in:<id>` = a capture device) /
 `MicDeviceId` (endpoint ids; `null` = the default device, which follows Windows when you change the default; a device
 that is unplugged stays selected until you pick another, and the status line says why it is not recording) and
 `GameProcess` / `VoiceApp` (a process name, `.exe` optional, any case; `auto` = detect: the fullscreen app on the captured
 monitor, or the first of Discord, TeamSpeak, Slack, Mumble, Zoom, Skype found running). The v2 keys are `RecordingMode`
-(`game` | `always`), `CustomApps`, `Hotkeys` (a list of `{ Keys, Action, Seconds }`; `Seconds` 0 = the replay length),
-`SizeTarget` (`none` | `copium200` | `discord10` | `discord50` | `discord500`, default `copium200`), `CopiumPlus`, `AudioSetupSeen`, `ToastPosition`, `ToastClip` / `ToastShared` / `ToastRecording` (`{ Enabled, Seconds }`; an empty `Hotkeys` list means no hotkeys, only a file without the key gets the old single `Hotkey` migrated), `StatusDot` /
-`StatusDotPosition`, `ArchiveEnabled` / `ArchivePath` / `ArchiveAfterDays` / `ArchiveWhenLocalExceedsGB` and the window
-position and size. Things not in the UI:
+(`game` | `always`), `CustomApps`, `Hotkeys` (a list of `{ Keys, Action, Seconds }`; **`Hotkeys[0]` is the main hotkey**:
+a `clip` with `Seconds` 0, always the full replay, whose keys may be unset (`Vk` 0); the rows after it are the additional
+hotkeys: a `clip` with `Seconds` above 0, `pause` or `share-last`; the v1 `Hotkey` field mirrors the main hotkey's keys),
+`SizeTarget` (`none` | `discord10` | `discord50` | `copium200` | `discord500` | `copiumplus`, default `none`; `copium200`
+is Copium's free limit, 200 MB / 10 min, and `copiumplus` Copium Plus's, 2 GB / 60 min), `CopiumPlus`, `AudioSetupSeen`,
+`ToastPosition`, `ToastClip` / `ToastShared` / `ToastRecording` (`{ Enabled, Seconds }`), `StatusDot` /
+`StatusDotPosition`, `ArchiveEnabled` (the automatic moves: *Move clips there automatically*) / `ArchivePath` /
+`ArchiveAfterDays` / `ArchiveWhenLocalExceedsGB` and the window position and size. The v3 keys are `SchemaVersion`,
+`Theme` (`dark` | `light`), `Accent` (`cyan` | `blue` | `violet` | `pink` | `orange` | `green`) and `ImportDeclined` (the
+copies of another Clink's settings you turned down, `<package>|<time>`, one per package). Things not in the UI:
 
 | key | default | what |
 |-----|---------|------|
@@ -240,6 +353,35 @@ position and size. Things not in the UI:
 | `ClickVolume` | 0.5 | 0..1 |
 | `StartMinimized` | false | |
 | `UpdateRepo` | *(built in)* | GitHub `owner/repo` whose releases to install, overriding the repository baked into the exe. Only for your own fork: it is logged at start and shown in the version tooltip |
+
+How `Hotkeys` is put in shape when a file is loaded (nothing that is bound changes what it does): a v0.1 file's single
+`Hotkey` becomes the main hotkey; a full-replay `clip` row that has keys moves to the front and keeps them (an F9 file
+stays on F9); a list with no such row (every clip hotkey has a fixed length) gets a main hotkey on Alt+C, or an unset
+one when another row already uses Alt+C; an empty list (no hotkeys, by choice) gets an unset main hotkey, never Alt+C.
+The last two say so once, in the footer and a tray balloon: *Alt+C now saves the full replay. Change it under Capture →
+Hotkeys*, or *Set your main hotkey under Capture → Hotkeys: it saves the full replay*. A main hotkey you cleared stays the
+main one: it is not replaced by another full-replay row below it. Key code `0xE8` is reserved (it is the dummy key of the
+Alt menu mask, AutoHotkey's too) and is never a hotkey.
+
+**Started from inside another app.** Windows keeps a private copy of `%APPDATA%` and `%LOCALAPPDATA%` for an app that
+runs from a package (the Claude desktop app is one): a Clink it starts, an agent running `Clink.exe` for instance, writes
+its settings, clip index and log to `%LOCALAPPDATA%\Packages\<package>\LocalCache\Roaming\Clink`, where a Clink started
+from Explorer or the Start menu never looks, so what you changed there seems lost. v0.2.5 notices (one notice at start,
+and a banner under *App → Settings*) and, for a Clink that is not itself inside such an app:
+
+* on its **first start**, with no settings of its own, it takes over the newest copy it finds before anything reads
+  settings: `settings.json` as it is and the clip index merged (every clip once; Copium links, archive times, audio
+  tracks and the like fill in what yours leaves empty), and says *Imported the settings Clink saved while started from
+  inside Claude (2026-10-21 14:32)*;
+* **otherwise** it never changes your settings unasked. It looks, after start, for a copy that differs (where the window
+  sits, the last update check and the like do not count; the Copium token is compared decrypted and never logged) and
+  offers it: one tray balloon (*Settings from another copy of Clink found: right-click the tray icon to import*), the tray
+  item *Import settings saved 2026-10-21 14:32 (Claude copy)…*, which lists what differs and asks (*Yes* imports and
+  restarts Clink, *No* keeps yours and stops offering that copy until it is saved again, *Cancel* decides later), and
+  the banner under *App → Settings* with *Use those settings* and *Dismiss*. An import keeps what it replaces as
+  `settings.pre-import.json`.
+
+<a href="docs/screenshots/app-settings-import.png"><img src="docs/screenshots/app-settings-import.png" width="600" alt="The App tab's Settings card with the offer to use the settings another copy of Clink saved: Use those settings and Dismiss"></a>
 
 Logs: `%APPDATA%\Clink\clink.log`, written only by the running Clink (a Stream Deck `--clip` that just forwards its
 command does not touch it); `--selftest` / `--probe` / `--trim` write `clink-cli.log`. Each starts with a header line
@@ -253,6 +395,33 @@ command does not touch it); `--selftest` / `--probe` / `--trim` write `clink-cli
   Runtime on the target machine; add `-p:SelfContained=true` to the publish for a runtime-free but ~70 MB exe).
 * No native dependencies. Win32/COM is reached through CsWin32-generated bindings (`NativeMethods.txt`), Windows
   Graphics Capture through the built-in WinRT projection.
+
+### Testing
+
+* `Clink.exe --unittest [filter]` runs the in-exe unit tests (`Clink\Tests`: static methods marked `[UnitTest]`, found by
+  reflection, so there is no test framework to restore). It prints `PASS` / `FAIL` per test and a summary, runs only the
+  tests whose `Class.Method` name contains `filter` (case ignored), and exits 0 when all passed (1 when a test failed, or
+  the filter matched nothing). It never touches `%APPDATA%\Clink`, the single-instance mutex or the control pipe, so it is
+  safe next to a running Clink. `Clink.exe` is a GUI-subsystem exe: from PowerShell use
+  `Start-Process .\Clink.exe '--unittest' -Wait -PassThru -NoNewWindow` to see the output and get the exit code.
+* `Clink.exe --dev [folder] [--dev-hotkeys] [--dev-record] [--dev-token]` (hidden; `--dev=<folder>` works too) starts a
+  **second Clink next to the real one**, for trying a build out. It has its own data folder (settings, clip index, log
+  and clips; `%TEMP%\clink-dev` when no folder is given), its own single-instance mutex and control pipe (named from the
+  folder, so `--clip` or `--show` aimed at it never reach the real Clink and two dev folders never meet), "Clink (dev)" in
+  its title, tray and toasts, no updater (the Updates card says *updates are off in dev mode*) and no Run-key writes.
+  It starts **paused** (`--dev-record` records), binds **no hotkeys** (`--dev-hotkeys` binds them, and its keyboard hook
+  then swallows those combos system-wide while it runs, so use other keys than the real Clink's) and has **no Copium
+  token** (`--dev-token` keeps the one its settings hold). Whatever its settings file says, a dev instance is kept away
+  from the real clips folder, archive, updates and account (it says what it changed in its log), and a mistake in a
+  `--dev` switch (an unknown one, one without `--dev`, a folder that is the real settings folder) exits with code 2
+  before anything starts. Two more switches exist for testing the settings import: `--packages-root <folder>` (a made-up
+  `Packages` folder, the only place a dev instance looks for another copy's settings; never the real one) and
+  `--dev-accept-import` (import what is offered, once).
+  **`--dev` is the only safe way to run a second Clink.** A plain second `Clink.exe` does not start another copy: it
+  hands its command (`--clip`, `--share-last`, `--trim-last`, or just *show*) to the Clink that is running and exits, so
+  a test run that forgets `--dev` acts on your live session.
+* `--selftest` prints where the settings are read from, and says so when this process sees a packaged app's private
+  copy of AppData (see [Settings](#settings)).
 
 ### Releasing
 
