@@ -15,7 +15,7 @@ namespace Clink.Tests;
 
 /// <summary>
 /// <see cref="ClipSource"/>: Clink reads its clips with the audio edit lists hidden from Media Foundation (which applies them on Windows
-/// Server 2025 and ignores them on Windows 10 and 11), the stream that does it, the timeline self-check that makes sure every track
+/// Server 2025 and ignores them on Windows 11), the stream that does it, the timeline self-check that makes sure every track
 /// still starts at 0 on the Windows at hand, and what Clink does where it does not. The audio tests of <see cref="AlignmentTests"/> and
 /// <see cref="MixRenderTests"/> are the proof that the readers put the tracks on the timeline right; <see cref="EditListEmulation"/> runs
 /// them (CLINK_EMULATE_ELST=1) as on a Media Foundation that applies the edit lists.
