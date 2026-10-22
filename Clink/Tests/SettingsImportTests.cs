@@ -363,18 +363,20 @@ internal static class SettingsImportTests
     }
 
     [UnitTest]
-    public static void A_second_import_keeps_the_settings_it_replaced_not_the_first_ones()
+    public static void A_second_import_keeps_its_own_copy_and_never_overwrites_the_first_ones()
     {
         using var home = new TempDir();
         using var root = new TempDir();
         LoadFrom(home, Json(s => s.Fps = 30)).Save();
+        string original = File.ReadAllText(home.File("settings.json"));
         FakeCopy(root, "Foo_abc", Json(s => s.Fps = 120));
         var copy = SettingsImport.FindForeignCopies(root.Path).Single();
         SettingsImport.Import(copy);
         string afterFirst = File.ReadAllText(home.File("settings.json"));
         File.WriteAllText(copy.SettingsPath, Json(s => s.Fps = 15));
         SettingsImport.Import(copy);
-        Check.Equal(afterFirst, File.ReadAllText(home.File("settings.pre-import.json")));
+        Check.Equal(original, File.ReadAllText(home.File("settings.pre-import.json")), "the first copy stays what it was");
+        Check.Equal(afterFirst, File.ReadAllText(home.File("settings.pre-import.1.json")), "the second import keeps what it replaced beside it");
         Check.Equal(15, Settings.Load().Fps);
     }
 
@@ -395,7 +397,11 @@ internal static class SettingsImportTests
         var taken = SettingsImport.ImportNewest();
         Check.NotNull(taken);
         Check.Equal("Old_1", taken!.Package);
-        Check.Equal(older, File.ReadAllText(home.File("settings.json")));
+        // theirs, except that the values that belong to this installation (where the window sits, the updater's state) are not taken over
+        string written = File.ReadAllText(home.File("settings.json"));
+        Check.Equal(SettingsImport.KeepOurOwn(older, null, keepOurToken: false), written);
+        Check.DoesNotContain(written, "WindowX");
+        Check.Contains(written, "\"Codec\": \"hevc\"");
         Check.False(File.Exists(home.File("settings.pre-import.json")), "there was nothing to keep");
         Check.Equal("hevc", Settings.Load().Codec);
     }

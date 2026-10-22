@@ -28,6 +28,15 @@ internal sealed record ForeignSettings(string Package, string Folder, DateTime S
     public string SavedLocalText => SavedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
 }
 
+/// <summary>What <see cref="SettingsImport.Import"/> did besides writing the settings.</summary>
+/// <param name="BackupPath">Where the settings it replaced were kept (<c>settings.pre-import.json</c>, or the next free <c>settings.pre-import.N.json</c>); null when there were none.</param>
+/// <param name="ClipsProblem">Why the clip lists were not merged; null when they were, or the other copy had no clips to merge.</param>
+internal sealed record ImportResult(string? BackupPath, string? ClipsProblem)
+{
+    /// <summary>"Settings imported; the clip list could not be merged: …", or null when it was merged.</summary>
+    public string? ClipsNotice => ClipsProblem == null ? null : SettingsImport.ClipsNoticeFor(ClipsProblem);
+}
+
 /// <summary>
 /// Windows keeps a private copy of %APPDATA% and %LOCALAPPDATA% for an app that runs from a package (MSIX): every write the app
 /// or a process it starts makes there lands in <c>%LOCALAPPDATA%\Packages\&lt;package&gt;\LocalCache\{Roaming,Local}</c>, and every read
@@ -125,6 +134,35 @@ internal static class AppDataRedirect
         return FinalPathOfExisting(dir);
     }
 
+    /// <summary>
+    /// Where <paramref name="path"/> really is once the junctions and symbolic links in it are followed: Windows' final path of the
+    /// part of it that exists, with the rest (a folder that is yet to be created) added back. A <c>--dev</c> folder that is a
+    /// junction into a packaged app's AppData, or into the real settings folder, is judged by that, not by what it is called. In the
+    /// <c>C:\...</c> / <c>\\server\share\...</c> form, not <c>\\?\...</c>. Null when no part of it exists or Windows will not say; never throws.
+    /// </summary>
+    internal static string? ResolvedPath(string path)
+    {
+        try
+        {
+            string existing = Path.GetFullPath(path);
+            var missing = new Stack<string>();
+            while (!Directory.Exists(existing))
+            {
+                string? parent = Path.GetDirectoryName(existing);
+                if (string.IsNullOrEmpty(parent)) return null;
+                missing.Push(Path.GetFileName(existing));
+                existing = parent;
+            }
+            string? final = FinalPathOfExisting(existing);
+            if (final == null) return null;
+            if (final.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase)) final = @"\\" + final[8..];
+            else if (final.StartsWith(@"\\?\", StringComparison.Ordinal)) final = final[4..];
+            foreach (string part in missing) final = Path.Combine(final, part);   // a stack reads the part nearest the existing folder first
+            return final;
+        }
+        catch (Exception) { return null; }
+    }
+
     private static string? ParentOf(string? path)
     {
         if (path == null) return null;
@@ -179,6 +217,9 @@ internal static class SettingsImport
 {
     private const long MaxFileBytes = 4_000_000;   // a settings.json is a few kB and a clip index a few hundred kB: anything bigger is not one
 
+    /// <summary>"4,000,000", the same on every machine (the log and the notices are read by people who speak to each other).</summary>
+    private static string Bytes(long n) => n.ToString("N0", CultureInfo.InvariantCulture);
+
     /// <summary>
     /// The folder that holds the package folders, instead of <c>%LOCALAPPDATA%\Packages</c>: the hidden <c>--packages-root</c> test aid
     /// of <c>--dev</c> and the unit tests. Null in a real run. Without it a <c>--dev</c> instance looks nowhere, so a test never takes
@@ -227,7 +268,12 @@ internal static class SettingsImport
                 {
                     string folder = Path.Combine(pkgDir, "LocalCache", "Roaming", "Clink");
                     var file = new FileInfo(Path.Combine(folder, "settings.json"));
-                    if (!file.Exists || file.Length == 0 || file.Length > MaxFileBytes) continue;
+                    if (!file.Exists || file.Length == 0) continue;
+                    if (file.Length > MaxFileBytes)
+                    {
+                        Log.Warn($"import: the settings.json in {folder} is {Bytes(file.Length)} bytes, more than the {Bytes(MaxFileBytes)} that are read: skipped");
+                        continue;
+                    }
                     found.Add(new ForeignSettings(Path.GetFileName(pkgDir), folder, file.LastWriteTimeUtc, Array.Empty<string>()));
                 }
                 catch (Exception ex) { Log.Warn($"import: cannot look at {pkgDir}: {ex.Message}"); }
@@ -253,31 +299,50 @@ internal static class SettingsImport
         ("archive", new[] { nameof(Settings.ArchiveEnabled), nameof(Settings.ArchivePath), nameof(Settings.ArchiveAfterDays), nameof(Settings.ArchiveWhenLocalExceedsGB) }),
         ("clips folder", new[] { nameof(Settings.ClipsFolder) }),
         ("Copium token", Array.Empty<string>()),   // compared decrypted, below
+        (UnusableTokenNote, Array.Empty<string>()),
         ("Copium+", new[] { nameof(Settings.CopiumPlus) }),
         ("startup", new[] { nameof(Settings.StartMinimized), nameof(Settings.RunAtStartup) }),
-        ("updates", new[] { nameof(Settings.AutoUpdate), nameof(Settings.UpdateRepo) }),
+        ("updates", new[] { nameof(Settings.AutoUpdate) }),
         ("theme", new[] { nameof(Settings.Theme), nameof(Settings.Accent) }),
     };
     private const string OtherLabel = "other settings";
+    /// <summary>Said in place of "Copium token" when the other copy holds a token that this user on this machine cannot decrypt: an import keeps ours.</summary>
+    internal const string UnusableTokenNote = "the incoming Copium token cannot be used on this machine";
 
-    // Differences that say nothing: where the window sits, when updates were last looked for, what the updater holds, whether the
-    // audio banner was dismissed, the schema number, and which copy was turned down.
-    private static bool IsVolatile(string key) =>
+    /// <summary>
+    /// The settings that belong to this installation and are never taken over: where the window sits, when updates were last looked
+    /// for and from where, what the updater holds, and which copies of the settings were turned down. <see cref="Import"/> keeps
+    /// ours (or leaves them out when we have none), and <see cref="Differences"/> ignores them, so an import never leaves a
+    /// difference behind that would offer the same copy again.
+    /// </summary>
+    internal static bool IsOwnKey(string key) =>
         key.StartsWith("Window", StringComparison.OrdinalIgnoreCase)
         || key.StartsWith("PendingUpdate", StringComparison.OrdinalIgnoreCase)
         || key.Equals(nameof(Settings.LastUpdateCheck), StringComparison.OrdinalIgnoreCase)
+        || key.Equals(nameof(Settings.UpdateRepo), StringComparison.OrdinalIgnoreCase)
+        || key.Equals(nameof(Settings.ImportDeclined), StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>The settings hold a protected Copium token that cannot be decrypted here (another user's, or another machine's).</summary>
+    internal static bool IsTokenUnusable(Settings s) => !string.IsNullOrEmpty(s.CopiumTokenProtected) && s.CopiumToken == null;
+
+    // Differences that say nothing: this installation's own settings (above), the schema number, whether the audio banner was
+    // dismissed, and the protected Copium token (its DPAPI text differs on every save: the token is compared decrypted).
+    private static bool IsVolatile(string key) =>
+        IsOwnKey(key)
         || key.Equals(nameof(Settings.SchemaVersion), StringComparison.OrdinalIgnoreCase)
         || key.Equals(nameof(Settings.AudioSetupSeen), StringComparison.OrdinalIgnoreCase)
-        || key.Equals(nameof(Settings.ImportDeclined), StringComparison.OrdinalIgnoreCase)
-        || key.Equals(nameof(Settings.CopiumTokenProtected), StringComparison.OrdinalIgnoreCase);   // the DPAPI text differs on every save
+        || key.Equals(nameof(Settings.CopiumTokenProtected), StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// What taking <paramref name="theirJson"/> over would change in <paramref name="ourJson"/>, as labels in the user's words
     /// ("video quality", "replay length", "hotkeys", "audio", "alerts", "archive", "clips folder", "Copium token", "theme", ...).
     /// Both are read the way Clink loads settings (a missing key is its default, hotkeys are put in shape), so only a setting that
-    /// would really change is listed. Where the window sits, <c>LastUpdateCheck</c>, <c>PendingUpdate*</c>, <c>AudioSetupSeen</c>,
-    /// <c>SchemaVersion</c> and <c>ImportDeclined</c> are ignored. The Copium token is compared decrypted (the protected text
-    /// differs on every save) and neither it nor any other value is ever logged or returned.
+    /// would really change is listed. This installation's own settings (<see cref="IsOwnKey"/>: where the window sits,
+    /// <c>LastUpdateCheck</c>, <c>UpdateRepo</c>, <c>PendingUpdate*</c>, <c>ImportDeclined</c>), <c>AudioSetupSeen</c> and
+    /// <c>SchemaVersion</c> are ignored. The Copium token is compared decrypted (the protected text differs on every save) and neither
+    /// it nor any other value is ever logged or returned. A token the other copy holds that cannot be decrypted here (another
+    /// user or machine) is no difference: an import keeps ours, and the list says so (<see cref="UnusableTokenNote"/>) instead of
+    /// "Copium token", but only beside a difference that is worth an offer, so it is never an offer of its own.
     /// <paramref name="guard"/> is applied to the other copy once it is read (<see cref="ForeignGuard"/>).
     /// </summary>
     public static IReadOnlyList<string> Differences(string ourJson, string theirJson, Action<Settings>? guard = null)
@@ -294,7 +359,8 @@ internal static class SettingsImport
             if (a.TryGetValue(key, out var x) && b.TryGetValue(key, out var y) && JsonSame(x, y)) continue;
             labels.Add(s_labels.FirstOrDefault(l => l.Keys.Contains(key, StringComparer.OrdinalIgnoreCase)).Label ?? OtherLabel);
         }
-        if (!string.Equals(ours.CopiumToken ?? "", theirs.CopiumToken ?? "", StringComparison.Ordinal)) labels.Add("Copium token");
+        if (IsTokenUnusable(theirs)) { if (labels.Count > 0) labels.Add(UnusableTokenNote); }
+        else if (!string.Equals(ours.CopiumToken ?? "", theirs.CopiumToken ?? "", StringComparison.Ordinal)) labels.Add("Copium token");
         var ordered = s_labels.Select(l => l.Label).Where(labels.Contains).ToList();
         if (labels.Contains(OtherLabel)) ordered.Add(OtherLabel);
         return ordered;
@@ -361,6 +427,9 @@ internal static class SettingsImport
         });
     }
 
+    /// <summary>Offers <paramref name="copy"/> again at once, as <see cref="Pending"/>: an import of it was taken back (the new Clink could not be started).</summary>
+    internal static void Offer(ForeignSettings copy) => SetPending(copy);
+
     private static void SetPending(ForeignSettings? value)
     {
         var old = Interlocked.Exchange(ref s_pending, value);
@@ -415,82 +484,341 @@ internal static class SettingsImport
     }
 
     /// <summary>
-    /// Replaces the settings with <paramref name="copy"/>'s: its settings.json is written over this one (atomically; what it replaces
-    /// is kept first as settings.pre-import.json) and its clip index is merged into this one (<see cref="MergeClips"/>). Throws when
-    /// the copy cannot be read, before anything is changed. The running Clink has to restart to use the result
-    /// (<c>AppController.ImportForeignSettings</c> freezes saves first and restarts after).
+    /// Replaces the settings with <paramref name="copy"/>'s: its settings.json is written over this one (atomically) and its clip
+    /// index is merged into this one. Throws when the copy cannot be read, or the current settings cannot be kept first, before
+    /// anything is changed. What is replaced is kept first, never over an earlier copy: settings.pre-import.json, then
+    /// settings.pre-import.1.json, .2.json, and so on. This installation's own values stay (<see cref="IsOwnKey"/>: the window's
+    /// place, the updater's state, which copies were turned down), and so does our Copium token when the copy's cannot be decrypted
+    /// here. The clip lists are merged as <see cref="TryMergeClips"/> says; when that does not work the settings are imported all
+    /// the same, the reason is in the result and in <see cref="ClipsNotice"/>, and a marker makes every later start try again
+    /// (<see cref="RetryPendingClipMerge"/>). The running Clink has to restart to use the result (<c>AppController.ImportForeignSettings</c>
+    /// freezes the settings and the clip index first, and restarts after).
     /// </summary>
-    public static void Import(ForeignSettings copy)
+    public static ImportResult Import(ForeignSettings copy)
     {
         string theirs = ReadCapped(copy.SettingsPath) ?? throw new IOException("settings.json is missing or too big");
-        _ = Settings.FromJson(theirs);   // throws when it is not JSON, or not a JSON object
+        var incoming = Settings.FromJson(theirs);   // throws when it is not JSON, or not a JSON object
 
         string dir = Settings.Dir;
         Directory.CreateDirectory(dir);
-        if (File.Exists(Settings.FilePath))
-        {
-            try { File.Copy(Settings.FilePath, Path.Combine(dir, "settings.pre-import.json"), overwrite: true); }
-            catch (Exception ex) { Log.Warn("import: could not keep the current settings first: " + ex.Message); }
-        }
-        AtomicFile.WriteAllText(Settings.FilePath, theirs);
-        try { MergeClipIndex(copy); }
-        catch (Exception ex) { Log.Warn("import: the clip index was not merged: " + ex.Message); }   // the clips folder is scanned anyway
+        string text = KeepOurOwn(theirs, ReadOurSettings(), keepOurToken: IsTokenUnusable(incoming));
+        string? backup = File.Exists(Settings.FilePath) ? KeepCurrentSettings(dir) : null;   // throws when it cannot be kept: nothing is changed yet
+        AtomicFile.WriteAllText(Settings.FilePath, text);
+
+        string? clipsProblem = MergeClipIndex(copy.Folder);
         if (Pending?.DeclineKey == copy.DeclineKey) SetPending(null);
         Log.Info($"import: took over the settings saved {copy.SavedLocalText} inside {copy.Package}"
-            + (copy.Differences.Count > 0 ? $" (changes: {string.Join(", ", copy.Differences)})" : ""));
+            + (copy.Differences.Count > 0 ? $" (changes: {string.Join(", ", copy.Differences)})" : "")
+            + (backup != null ? $"; the replaced settings are kept as {Path.GetFileName(backup)}" : "")
+            + (clipsProblem != null ? "; the clip list was not merged" : ""));
+        return new ImportResult(backup, clipsProblem);
     }
 
-    private static void MergeClipIndex(ForeignSettings copy)
+    // ------------------------------------------------------------------ what an import keeps of ours
+
+    private static readonly JsonDocumentOptions s_lenient = new() { AllowTrailingCommas = true, CommentHandling = JsonCommentHandling.Skip };
+
+    /// <summary>The text of our settings.json (its .bak when that does not read), or null when there is none that is a JSON object.</summary>
+    private static string? ReadOurSettings()
     {
-        string? theirs = File.Exists(copy.ClipsPath) ? ReadCapped(copy.ClipsPath) : null;
-        if (theirs == null) return;
-        string mine = ClipLibrary.IndexPathOverride ?? Path.Combine(Settings.Dir, "clips.json");
-        string? ours = File.Exists(mine) ? File.ReadAllText(mine) : null;
-        AtomicFile.WriteAllText(mine, MergeClips(ours, theirs));   // a clips.json of ours that is not JSON throws first: nothing is replaced
+        try
+        {
+            return AtomicFile.ReadWithFallback(Settings.FilePath, text =>
+            {
+                using var doc = JsonDocument.Parse(text, s_lenient);
+                if (doc.RootElement.ValueKind != JsonValueKind.Object) throw new JsonException("not a JSON object");
+                return text;
+            });
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("import: the current settings cannot be read, so none of their values are kept back: " + ex.Message);
+            return null;
+        }
+    }
+
+    private static KeyValuePair<string, JsonNode?>? Find(JsonObject? obj, string key)
+    {
+        if (obj == null) return null;
+        foreach (var p in obj) if (p.Key.Equals(key, StringComparison.OrdinalIgnoreCase)) return p;
+        return null;
     }
 
     /// <summary>
-    /// The clip index of this Clink and another copy's as one: every clip once (by path, ignoring case), ours first. Where both
-    /// know a clip, ours is kept and the other copy only fills what ours leaves empty: the Copium link, page and id, when it was
-    /// archived, its audio tracks, its length and size, whether it is a trim and what it was cut from. Fields this version does
-    /// not know are carried along. Both texts are JSON arrays of clips as ClipLibrary writes them; <paramref name="ours"/> may be null.
+    /// <paramref name="theirs"/> (a settings.json) with this installation's own values put back from <paramref name="ours"/>: every
+    /// key <see cref="IsOwnKey"/> says is ours is taken from ours, or left out when ours has none. With
+    /// <paramref name="keepOurToken"/> the Copium token is ours too. The text comes back as it was when none of that changes anything.
     /// </summary>
-    internal static string MergeClips(string? ours, string theirs)
+    internal static string KeepOurOwn(string theirs, string? ours, bool keepOurToken)
+    {
+        if (JsonNode.Parse(theirs, documentOptions: s_lenient) is not JsonObject t) return theirs;
+        JsonObject? o = null;
+        if (ours != null)
+        {
+            try { o = JsonNode.Parse(ours, documentOptions: s_lenient) as JsonObject; }
+            catch (JsonException) { }
+        }
+        string before = t.ToJsonString();
+
+        foreach (string key in t.Select(p => p.Key).Where(IsOwnKey).ToList())
+        {
+            if (Find(o, key) is { } mine) t[key] = mine.Value?.DeepClone();   // in place: the order of the keys stays theirs
+            else t.Remove(key);
+        }
+        if (o != null)
+            foreach (var p in o.ToList().Where(p => IsOwnKey(p.Key)))
+                if (Find(t, p.Key) == null) t[p.Key] = p.Value?.DeepClone();
+
+        if (keepOurToken)
+        {
+            const string token = nameof(Settings.CopiumTokenProtected);
+            foreach (string key in t.Select(p => p.Key).Where(k => k.Equals(token, StringComparison.OrdinalIgnoreCase)).ToList()) t.Remove(key);
+            if (Find(o, token) is { Value: not null } mine) t[mine.Key] = mine.Value!.DeepClone();
+        }
+        string after = t.ToJsonString();
+        return after == before ? theirs : t.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
+    }
+
+    /// <summary>
+    /// Copies the current settings.json to the first free of settings.pre-import.json, settings.pre-import.1.json, .2.json, ...: a
+    /// copy of what an earlier import replaced is never overwritten. Returns the path; throws when none could be made.
+    /// </summary>
+    private static string KeepCurrentSettings(string dir)
+    {
+        for (int n = 0; n < 1000; n++)
+        {
+            string path = Path.Combine(dir, n == 0 ? "settings.pre-import.json" : $"settings.pre-import.{n}.json");
+            if (File.Exists(path)) continue;
+            try
+            {
+                File.Copy(Settings.FilePath, path, overwrite: false);
+                return path;
+            }
+            catch (IOException) when (File.Exists(path)) { }   // made by someone else meanwhile: the next name
+            catch (Exception ex) { throw new IOException("the current settings could not be kept first: " + ex.Message, ex); }
+        }
+        throw new IOException($"there are too many settings.pre-import files in {dir}");
+    }
+
+    // ------------------------------------------------------------------ merging the clip lists
+
+    /// <summary>"Settings imported; the clip list could not be merged: …".</summary>
+    internal static string ClipsNoticeFor(string problem) => "Settings imported; the clip list could not be merged: " + problem;
+
+    private static string? s_clipsNotice;
+
+    /// <summary>
+    /// Said once to the user (<c>AppController.Start</c>): the settings were imported but the clip list could not be merged, and why.
+    /// Set by an import that did not merge, and by the first retry that does not (<see cref="RetryPendingClipMerge"/>).
+    /// </summary>
+    public static string? TakeClipsNotice() => Interlocked.Exchange(ref s_clipsNotice, null);
+
+    internal sealed record ClipsMarker(string From, string Reason, int Attempts);
+
+    /// <summary>"clips merge pending from &lt;folder&gt;": what a start looks for to finish a merge that did not work.</summary>
+    internal static string ClipsMarkerPath => Path.Combine(Settings.Dir, "clips-merge.pending");
+
+    private static ClipsMarker? ReadClipsMarker()
+    {
+        try
+        {
+            if (!File.Exists(ClipsMarkerPath)) return null;
+            var marker = JsonSerializer.Deserialize<ClipsMarker>(File.ReadAllText(ClipsMarkerPath));
+            if (marker != null && !string.IsNullOrWhiteSpace(marker.From)) return marker;
+        }
+        catch (Exception ex) { Log.Warn("import: the note about a pending clip merge cannot be read: " + ex.Message); }
+        ForgetPendingClipMerge();
+        return null;
+    }
+
+    private static void WriteClipsMarker(ClipsMarker marker)
+    {
+        try
+        {
+            Directory.CreateDirectory(Settings.Dir);
+            File.WriteAllText(ClipsMarkerPath, JsonSerializer.Serialize(marker));
+        }
+        catch (Exception ex) { Log.Warn("import: could not note the pending clip merge: " + ex.Message); }
+    }
+
+    /// <summary>Drops the note about a clip merge still to do (it is done, there is nothing to merge from any more, or the import was taken back).</summary>
+    internal static void ForgetPendingClipMerge()
+    {
+        try { if (File.Exists(ClipsMarkerPath)) File.Delete(ClipsMarkerPath); }
+        catch (Exception ex) { Log.Warn("import: could not remove the note about a pending clip merge: " + ex.Message); }
+    }
+
+    /// <summary>The pending clip merge, if any: the folder it merges from and why it has not worked yet. For the unit tests.</summary>
+    internal static (string From, string Reason, int Attempts)? PendingClipMerge()
+    {
+        var m = ReadClipsMarker();
+        return m == null ? null : (m.From, m.Reason, m.Attempts);
+    }
+
+    /// <summary>Merges <paramref name="folder"/>'s clip list into ours and keeps the marker in step. Returns why it could not, or null. Never throws.</summary>
+    private static string? MergeClipIndex(string folder)
+    {
+        string? problem = TryMergeClips(folder);
+        if (problem == null) { ForgetPendingClipMerge(); return null; }
+        WriteClipsMarker(new ClipsMarker(folder, problem, 1));
+        Interlocked.Exchange(ref s_clipsNotice, ClipsNoticeFor(problem));
+        return problem;
+    }
+
+    /// <summary>
+    /// Called at every start, before the clip index is read, and independent of whether the settings still differ from any other
+    /// copy's: a merge that did not work (<see cref="Import"/> left a marker) is tried again from the folder the marker names. Done
+    /// means the marker is gone. A copy that has no clip list any more ends it too. The first retry that fails again says so
+    /// (<see cref="TakeClipsNotice"/>, the import's own notice having died with the process that restarted); later ones only log.
+    /// </summary>
+    public static void RetryPendingClipMerge()
+    {
+        var marker = ReadClipsMarker();
+        if (marker == null) return;
+        if (!File.Exists(Path.Combine(marker.From, "clips.json")))
+        {
+            Log.Info($"import: {marker.From} has no clip list any more: no clip merge left to finish");
+            ForgetPendingClipMerge();
+            return;
+        }
+        string? problem = TryMergeClips(marker.From);
+        if (problem == null)
+        {
+            Log.Info($"import: finished the clip merge from {marker.From} that was pending");
+            ForgetPendingClipMerge();
+            return;
+        }
+        if (marker.Attempts <= 1) Interlocked.Exchange(ref s_clipsNotice, ClipsNoticeFor(problem));
+        WriteClipsMarker(marker with { Reason = problem, Attempts = marker.Attempts + 1 });
+    }
+
+    /// <summary>
+    /// Merges the clip list in <paramref name="folder"/> into ours (<see cref="MergeClips"/>) and writes it. Returns null when that
+    /// is done, or when the other copy has no clip list; otherwise the reason it was not (also logged), and nothing is changed:
+    /// the other copy's list is too big (<see cref="MaxFileBytes"/>) or does not read, ours does not read (the .bak is tried before
+    /// giving up on it), the two cannot be combined, or ours cannot be written. The clips folder is scanned at every start anyway,
+    /// so a clip is never lost, only its link, game and length. Never throws.
+    /// </summary>
+    internal static string? TryMergeClips(string folder)
+    {
+        static string Skipped(string reason)
+        {
+            Log.Warn("import: the clip list was not merged: " + reason);
+            return reason;
+        }
+
+        string theirsPath = Path.Combine(folder, "clips.json");
+        string theirs;
+        try
+        {
+            var info = new FileInfo(theirsPath);
+            if (!info.Exists) { Log.Info("import: the other copy has no clip list: nothing to merge"); return null; }
+            if (info.Length > MaxFileBytes) return Skipped($"the other copy's clip list is too big ({Bytes(info.Length)} bytes; more than {Bytes(MaxFileBytes)} is not read)");
+            theirs = File.ReadAllText(theirsPath);
+            _ = ClipObjects(theirs, null, "");
+        }
+        catch (Exception ex) { return Skipped($"the other copy's clip list cannot be read ({Describe(ex)})"); }
+
+        string mine = ClipLibrary.IndexPathOverride ?? Path.Combine(Settings.Dir, "clips.json");
+        string? ours;
+        try { ours = AtomicFile.ReadWithFallback(mine, text => { _ = ClipObjects(text, null, ""); return text; }); }
+        catch (Exception ex) { return Skipped($"your clip list cannot be read, nor its backup ({Describe(ex)})"); }
+
+        string merged;
+        var left = new List<string>();
+        try { merged = MergeClips(ours, theirs, left); }
+        catch (Exception ex) { return Skipped($"the clip lists could not be combined ({Describe(ex)})"); }
+        foreach (string reason in left) Log.Info("import: clip list: " + reason);
+
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(mine) ?? Settings.Dir);
+            AtomicFile.WriteAllText(mine, merged);
+        }
+        catch (Exception ex) { return Skipped($"your clip list cannot be written ({Describe(ex)})"); }
+        return null;
+    }
+
+    private static string Describe(Exception ex) => ex switch
+    {
+        JsonException { LineNumber: long line } => $"not valid JSON: error on line {line + 1}",
+        _ => ex.Message,
+    };
+
+    /// <summary>
+    /// The clip index of this Clink and another copy's as one: every clip once (by path), ours first. Paths are compared as the
+    /// file system would (<see cref="NormalizePath"/>: slashes either way, <c>.</c> and <c>..</c>, a trailing separator, the
+    /// <c>\\?\</c> prefix, upper or lower case); a short 8.3 name or a mapped drive for a network path stays a different path.
+    /// Where both know a clip, ours is kept and the other copy only fills what ours leaves empty: the Copium link, page and id, when
+    /// it was archived, its audio tracks, its length and size, whether it is a trim and what it was cut from. Fields this version
+    /// does not know are carried along. Both texts are JSON arrays of clips as ClipLibrary writes them; <paramref name="ours"/> may
+    /// be null. What is left out is added to <paramref name="skipped"/>, one sentence each: an entry that is no clip, one without a
+    /// path (theirs), a path listed twice (ours).
+    /// </summary>
+    internal static string MergeClips(string? ours, string theirs, List<string>? skipped = null)
     {
         var merged = new JsonArray();
         var byPath = new Dictionary<string, JsonObject>(StringComparer.OrdinalIgnoreCase);
-        foreach (var clip in ClipObjects(ours))
+        int twice = 0, noPath = 0;
+        foreach (var clip in ClipObjects(ours, skipped, "your clip list"))
         {
-            string? path = PathOf(clip);
-            if (path == null) merged.Add(clip.DeepClone());
-            else if (!byPath.ContainsKey(path)) { var mine = (JsonObject)clip.DeepClone(); byPath[path] = mine; merged.Add(mine); }
+            string? key = KeyOf(clip);
+            if (key == null) merged.Add(clip.DeepClone());   // our own entry with no path: kept as it is
+            else if (byPath.ContainsKey(key)) twice++;
+            else { var mine = (JsonObject)clip.DeepClone(); byPath[key] = mine; merged.Add(mine); }
         }
-        foreach (var clip in ClipObjects(theirs))
+        if (twice > 0) skipped?.Add($"your clip list names {twice} clip{(twice == 1 ? "" : "s")} twice: the repeats are dropped");
+        foreach (var clip in ClipObjects(theirs, skipped, "the other copy's clip list"))
         {
-            string? path = PathOf(clip);
-            if (path == null) continue;
-            if (byPath.TryGetValue(path, out var mine))
+            string? key = KeyOf(clip);
+            if (key == null) { noPath++; continue; }
+            if (byPath.TryGetValue(key, out var mine))
             {
                 foreach (var field in clip)
                     if (field.Value != null && IsEmpty(mine[field.Key]) && !IsEmpty(field.Value)) mine[field.Key] = field.Value.DeepClone();
             }
-            else { var copy = (JsonObject)clip.DeepClone(); byPath[path] = copy; merged.Add(copy); }
+            else { var copy = (JsonObject)clip.DeepClone(); byPath[key] = copy; merged.Add(copy); }
         }
+        if (noPath > 0) skipped?.Add($"the other copy's clip list has {noPath} entr{(noPath == 1 ? "y" : "ies")} without a path: left out");
         return merged.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
     }
 
-    private static IEnumerable<JsonObject> ClipObjects(string? json)
+    /// <summary>
+    /// The clips of a clip index text (a JSON array; empty text is no clips). Throws when it is not a JSON array. An entry that
+    /// is not a clip (a number, a list) is left out and, when <paramref name="skipped"/> is given, said so there ("whose").
+    /// </summary>
+    private static List<JsonObject> ClipObjects(string? json, List<string>? skipped, string whose)
     {
-        if (string.IsNullOrWhiteSpace(json)) return Array.Empty<JsonObject>();
-        var node = JsonNode.Parse(json, documentOptions: new JsonDocumentOptions { AllowTrailingCommas = true, CommentHandling = JsonCommentHandling.Skip });
+        if (string.IsNullOrWhiteSpace(json)) return new List<JsonObject>();
+        var node = JsonNode.Parse(json, documentOptions: s_lenient);
         if (node is not JsonArray array) throw new JsonException("a clip index is a JSON array");
-        return array.OfType<JsonObject>().ToList();
+        var clips = array.OfType<JsonObject>().ToList();
+        int notClips = array.Count - clips.Count;
+        if (notClips > 0) skipped?.Add($"{whose} has {notClips} entr{(notClips == 1 ? "y" : "ies")} that {(notClips == 1 ? "is" : "are")} not a clip: left out");
+        return clips;
     }
 
-    private static string? PathOf(JsonObject clip)
+    /// <summary>The clip's path as a comparison key (<see cref="NormalizePath"/>), or null when it has none.</summary>
+    private static string? KeyOf(JsonObject clip)
     {
         var path = clip.FirstOrDefault(p => p.Key.Equals("Path", StringComparison.OrdinalIgnoreCase)).Value;
-        return path is JsonValue v && v.TryGetValue<string>(out var s) && !string.IsNullOrWhiteSpace(s) ? s : null;
+        return path is JsonValue v && v.TryGetValue<string>(out var s) && !string.IsNullOrWhiteSpace(s) ? NormalizePath(s) : null;
+    }
+
+    /// <summary>
+    /// A path as the file system sees it, for comparing two clip lists: slashes either way are one, <c>.</c> and <c>..</c> are
+    /// resolved, a trailing separator and the <c>\\?\</c> (and <c>\\?\UNC\</c>) prefix go. A path that cannot be resolved is compared
+    /// as it is, with backslashes. The case is the caller's business (the keys are compared ignoring it).
+    /// </summary>
+    internal static string NormalizePath(string path)
+    {
+        string p = path.Trim();
+        if (p.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase)) p = @"\\" + p[8..];
+        else if (p.StartsWith(@"\\?\", StringComparison.Ordinal)) p = p[4..];
+        p = p.Replace('/', '\\');
+        try { p = Path.GetFullPath(p); } catch (Exception) { }
+        string root = Path.GetPathRoot(p) ?? "";
+        return p.Length > root.Length ? p.TrimEnd('\\') : p;
     }
 
     /// <summary>null, "", 0, false, an empty list or object, and a date that is not one (0001-01-01) say nothing.</summary>
@@ -510,12 +838,21 @@ internal static class SettingsImport
         }
     }
 
-    private static string? ReadCapped(string path)
+    /// <summary>
+    /// The text of a file of at most <see cref="MaxFileBytes"/>; null when it is not there, or too big (said in the log: a file
+    /// that big is not Clink's), or cannot be read (also said).
+    /// </summary>
+    internal static string? ReadCapped(string path)
     {
         try
         {
             var info = new FileInfo(path);
-            if (!info.Exists || info.Length > MaxFileBytes) return null;
+            if (!info.Exists) return null;
+            if (info.Length > MaxFileBytes)
+            {
+                Log.Warn($"import: {Path.GetFileName(path)} in {Path.GetDirectoryName(path)} is {Bytes(info.Length)} bytes, more than the {Bytes(MaxFileBytes)} that are read: skipped");
+                return null;
+            }
             return File.ReadAllText(path);
         }
         catch (Exception ex)
@@ -525,11 +862,47 @@ internal static class SettingsImport
         }
     }
 
-    /// <summary>Back to a fresh start: no test root, nothing pending. For the unit tests.</summary>
+    /// <summary>
+    /// The clips folder and the archive location a settings.json names, as Clink would load them (the default clips folder when it
+    /// names none); (null, null) when there is no such file or it does not read. Nothing is written or logged.
+    /// </summary>
+    internal static (string? Clips, string? Archive) SavedLocations(string settingsPath)
+    {
+        try
+        {
+            var info = new FileInfo(settingsPath);
+            if (!info.Exists || info.Length > MaxFileBytes) return (null, null);
+            var s = Settings.FromJson(File.ReadAllText(settingsPath));
+            return (s.ClipsFolder, s.ArchivePath);
+        }
+        catch (Exception) { return (null, null); }
+    }
+
+    // ------------------------------------------------------------------ when it is done
+
+    /// <summary>
+    /// A start with no settings of its own yet (<paramref name="freshStore"/>) takes over the newest copy another Clink saved inside
+    /// a packaged app's private AppData (<see cref="ImportNewest"/>), unless this process is itself inside such an app (what it
+    /// would find is its own kind of copy), and unless it is a <c>--dev</c> instance without a test packages root
+    /// (<see cref="PackagesRoot"/>): a test never takes over the settings of the person whose machine it runs on.
+    /// </summary>
+    internal static bool CanTakeOverAtStart(bool freshStore, bool isDev) =>
+        freshStore && AppDataRedirect.Package == null && (!isDev || PackagesRoot != null);
+
+    /// <summary>
+    /// A start with settings of its own that were not just taken over from a copy looks for other copies to offer
+    /// (<see cref="Scan"/>), on the same terms as <see cref="CanTakeOverAtStart"/>: not from inside a packaged app, and a
+    /// <c>--dev</c> instance only where <see cref="PackagesRoot"/> says.
+    /// </summary>
+    internal static bool CanOffer(Settings settings, bool isDev) =>
+        AppDataRedirect.Package == null && settings.LoadedFromFile && settings.ImportedFrom == null && (!isDev || PackagesRoot != null);
+
+    /// <summary>Back to a fresh start: no test root, nothing pending, nothing to say. For the unit tests.</summary>
     internal static void Reset()
     {
         PackagesRoot = null;
         ForeignGuard = null;
         Interlocked.Exchange(ref s_pending, null);
+        Interlocked.Exchange(ref s_clipsNotice, null);
     }
 }

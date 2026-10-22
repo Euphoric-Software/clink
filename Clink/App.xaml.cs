@@ -142,10 +142,16 @@ public partial class App : System.Windows.Application
             SettingsImport.ForeignGuard = s => dev.Isolate(s, freshStore: false);   // and compares them as they would be once loaded here
         }
 
+        // A Clink that another one restarted into (the hidden --after-pid <pid>) waits for that one to be gone before it takes the mutex
+        // and opens the log, at most 10 s: the older one may still be writing the files the restart has just changed.
+        int? previous = AppController.AfterPid(args);
+        bool previousGone = previous is not int previousPid || AppController.WaitForExit(previousPid, TimeSpan.FromSeconds(10));
+
         // Normal run: one instance; "--clip" / "--show" talk to it. A second instance only forwards its command and exits,
         // without touching the log (the running instance holds it).
         if (!AppController.AcquireSingleInstance(args)) { Shutdown(0); return; }
         Log.Init(Settings.Dir);
+        if (previous != null) Log.Info($"restart: the Clink with pid {previous} {(previousGone ? "has ended" : "was still running after 10 s")}");
 
         // Is this Clink running inside a packaged app (the Claude desktop app), so that the AppData it reads and writes is that app's
         // private copy? A --dev instance keeps everything in its own folder: nothing to find out.
@@ -153,10 +159,13 @@ public partial class App : System.Windows.Application
 
         var settings = Settings.Load();
         bool freshStore = !settings.LoadedFromFile;
+        // A clip merge that an earlier import could not do is tried again at every start, before the clip index is read, whether or
+        // not the settings still differ from any other copy's.
+        SettingsImport.RetryPendingClipMerge();
         // A first start of a real Clink takes over the newest settings another copy saved inside a packaged app's private AppData
         // (before anything has read them, so no window or timer can save over them). Not from inside such an app, and not in a
         // --dev instance, which looks only where --packages-root says. An existing store is only ever offered a copy (AppController).
-        if (freshStore && AppDataRedirect.Package == null && (dev == null || SettingsImport.PackagesRoot != null) && SettingsImport.ImportNewest() is { } imported)
+        if (SettingsImport.CanTakeOverAtStart(freshStore, dev != null) && SettingsImport.ImportNewest() is { } imported)
         {
             settings = Settings.Load();
             settings.ImportedFrom = imported;

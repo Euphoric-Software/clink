@@ -193,18 +193,22 @@ internal static class TestRunner
         return failed;
     }
 
-    /// <summary>The process-wide switches a test could change and forget: where the settings, the clip index and the updates live, and the --dev state.</summary>
-    private sealed record Shared(string? SettingsDir, string? ClipIndex, string? UpdatesDir, string InstanceSuffix, bool DevHotkeys, bool DevAcceptImport, bool DevToken, bool DevRecord)
+    /// <summary>The process-wide switches a test could change and forget: where the settings, the clip index, the updates, the real Clink's folder and the other apps' packages live, and the --dev state.</summary>
+    private sealed record Shared(string? SettingsDir, string? ClipIndex, string? UpdatesDir, string InstanceSuffix, bool DevHotkeys, bool DevAcceptImport, bool DevToken, bool DevRecord,
+        string? RealDir, string? PackagesRoot)
     {
         public static Shared Capture() => new(Settings.DirOverride, ClipLibrary.IndexPathOverride, Updater.UpdatesDirOverride,
-            AppController.InstanceSuffix, AppController.DevHotkeys, AppController.DevAcceptImport, AppController.DevToken, AppController.DevRecord);
+            AppController.InstanceSuffix, AppController.DevHotkeys, AppController.DevAcceptImport, AppController.DevToken, AppController.DevRecord,
+            Settings.RealDirOverride, SettingsImport.PackagesRoot);
     }
 
     /// <summary>
     /// Puts back what a test may have changed that others would trip over: everything in <paramref name="before"/> (the --dev state, so
     /// no test leaves the process looking like a dev instance), frozen saves, the import state and the redirect findings; and points the
-    /// settings folder, the clip index and the updates folder at <paramref name="scratch"/> (or at where they were, when null).
-    /// Before and after every test.
+    /// settings folder, the clip index, the updates folder, the "real" %APPDATA%\Clink (<see cref="Settings.RealDirOverride"/>: nothing is
+    /// there) and the folder that holds other apps' packages (<see cref="SettingsImport.PackagesRoot"/>: nothing is there) at
+    /// <paramref name="scratch"/> (or at where they were, when null). So a test never looks at the real settings or at the packages of
+    /// whoever runs it. Before and after every test.
     /// </summary>
     private static void ResetShared(Shared before, string? scratch)
     {
@@ -214,10 +218,12 @@ internal static class TestRunner
         AppController.DevToken = before.DevToken;
         AppController.DevRecord = before.DevRecord;
         Settings.DirOverride = scratch ?? before.SettingsDir;
+        Settings.RealDirOverride = scratch != null ? Path.Combine(scratch, "RealClink") : before.RealDir;
         ClipLibrary.IndexPathOverride = scratch != null ? Path.Combine(scratch, "clips.json") : before.ClipIndex;
         Updater.UpdatesDirOverride = scratch != null ? Path.Combine(scratch, "updates") : before.UpdatesDir;
         Settings.ThawSaves();
         SettingsImport.Reset();
+        SettingsImport.PackagesRoot = scratch != null ? Path.Combine(scratch, "Packages") : before.PackagesRoot;
         AppDataRedirect.Reset();
     }
 
