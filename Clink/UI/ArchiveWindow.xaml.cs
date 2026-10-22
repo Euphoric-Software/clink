@@ -112,9 +112,9 @@ public partial class ArchiveWindow : Window
         ArchiveRunResult result;
         try
         {
-            // While a game runs the copy keeps the gentle speed of the automatic moves; with no game it goes at full speed.
-            bool throttle = _app.CurrentGame != null;
-            result = await _app.Archive.RunManualAsync(scope, throttle, new Progress<ArchiveProgress>(OnProgress), _cts.Token);
+            // While a game runs the copy keeps the gentle speed of the automatic moves; with no game it goes at full speed. The
+            // service asks again for every chunk, so a game that starts (or ends) during a long run is followed.
+            result = await _app.Archive.RunManualAsync(scope, () => _app.CurrentGame != null, new Progress<ArchiveProgress>(OnProgress), _cts.Token);
         }
         catch (Exception ex)
         {
