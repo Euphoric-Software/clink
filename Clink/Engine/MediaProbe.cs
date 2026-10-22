@@ -189,7 +189,7 @@ internal static unsafe class MediaProbe
         for (int n = 0; n < streams.Count; n++)
         {
             string name = info != null ? info[n].Name : $"Audio {n + 1}";
-            using var reader = new Trimmer.PcmTrackReader(path, streams[n], info != null ? info[n].StartOffset : 0, 0, long.MaxValue / 4);
+            using var reader = new Trimmer.PcmTrackReader(path, streams[n], info != null ? info[n].StartFrames : 0, 0, long.MaxValue / 4);
             double sum = 0, peak = 0;
             long frames = 0;
             int got;

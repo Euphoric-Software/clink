@@ -36,6 +36,13 @@ internal static class TrimCli
         foreach (var (name, volume) in gains) gain[IndexOf(names, name)] = volume;
         foreach (string name in drops) include[IndexOf(names, name)] = false;
         var roles = MixPlan.Roles(names, names.Length);
+        // The editor's plan: a source that cannot be lined up with the Mix (a clip an older Clink trimmed) is not part of it.
+        var align = ClipAlignment.Read(src);
+        if (align.Unlined.Length > 0)
+        {
+            Console.WriteLine($"  {ClipAlignment.OlderClinkNote} ({string.Join(", ", align.Unlined.Select(i => names[i]))}: their volumes only change their own tracks)");
+            roles = MixPlan.WithoutTracks(roles, align.Unlined);
+        }
         var mix = MixPlan.Export(roles, include, gain);
         for (int i = 0; i < mix.Length; i++) Console.WriteLine("  " + Describe(i, names, mix[i]));
         Trimmer.Trim(src, dst, start, end, names, mix);

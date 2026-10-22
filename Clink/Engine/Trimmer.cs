@@ -31,7 +31,16 @@ internal readonly record struct TrackMix(bool Include, float Gain, MixInput[]? S
 /// <param name="Name">The track's name in the file (Mix, Game, Mic…).</param>
 /// <param name="StartOffset">Where the track's first sample sits on the clip's timeline, 100 ns: negative when the file starts the
 /// track before the clip origin, positive when after it.</param>
-internal readonly record struct AudioTrackInfo(string Name, long StartOffset);
+internal readonly record struct AudioTrackInfo(string Name, long StartOffset)
+{
+    /// <summary><see cref="StartOffset"/> in 48 kHz frames: the muxer writes it to the sample.</summary>
+    public long StartFrames => (long)Math.Round(StartOffset * (ClipAlignment.Rate / 10_000_000.0), MidpointRounding.AwayFromZero);
+}
+
+/// <summary>The audio tracks of a file Clink wrote (see <see cref="Trimmer.ReadClipTracks"/>).</summary>
+/// <param name="Marked">The file says its edit lists are alignment-true (<see cref="Mp4Muxer.AlignedBrand"/>).</param>
+/// <param name="Audio">The audio tracks in file order.</param>
+internal sealed record ClipTracks(bool Marked, AudioTrackInfo[] Audio);
 
 /// <summary>
 /// Trims an MP4 made by Clink: copies compressed samples in [start, end] into a new file without re-encoding.
@@ -42,6 +51,24 @@ internal static unsafe class Trimmer
     private const uint AnyStream = 0xFFFFFFFE;
     private const uint AllStreams = 0xFFFFFFFE;
 
+    /// <summary>What a trim does with one audio track it keeps.</summary>
+    private sealed class PlannedTrack
+    {
+        /// <summary>The source reader's stream number of the track.</summary>
+        public uint Stream;
+        public AudioTrackDesc Desc = null!;
+        /// <summary>The volume (the master volume of a track that is a sum).</summary>
+        public float Gain;
+        /// <summary>Rendered again (a volume change, or a sum of tracks) instead of copied.</summary>
+        public bool Reencode;
+        /// <summary>The render is limited with the recording's soft knee (<see cref="AudioTrack.SoftKnee"/>): a Mix put together from its sources.</summary>
+        public bool Knee;
+        /// <summary>What a render is made of: the reader's stream, the volume and the track's offset in frames on the clip's timeline.</summary>
+        public (uint stream, float gain, long offset)[] Inputs = Array.Empty<(uint, float, long)>();
+        /// <summary>Where the track's own time 0 sits on the clip's timeline, 100 ns: what a copied track's frames are stamped later by.</summary>
+        public long Shift;
+    }
+
     public static string[] Trim(string src, string dst, double startSec, double endSec, string[]? audioNames)
         => Trim(src, dst, startSec, endSec, audioNames, null);
 
@@ -49,6 +76,9 @@ internal static unsafe class Trimmer
     /// reads them from the file.</param>
     /// <param name="mix">Per source audio track, in file order (the order <see cref="AudioInFileOrder"/> gives).</param>
     /// <returns>The names of the audio tracks written to <paramref name="dst"/>, in file order.</returns>
+    /// <exception cref="InvalidOperationException">A track of <paramref name="mix"/> adds a source to the Mix or takes it out of it
+    /// (<see cref="MixInput"/> 0 with others) although the source could not be lined up with the Mix (<see cref="ClipAlignment.Unlined"/>:
+    /// a clip an older Clink trimmed). The tracks of a recording and of a trim by this Clink are always in line.</exception>
     public static string[] Trim(string src, string dst, double startSec, double endSec, string[]? audioNames, TrackMix[]? mix)
     {
         Mf.EnsureStarted();
@@ -91,14 +121,13 @@ internal static unsafe class Trimmer
             AudioInFileOrder(audioIdx, (uint)videoIndex);
             string[]? names = audioNames != null && audioNames.Length == audioIdx.Count ? audioNames : ReadAudioTrackNames(src);
             if (names != null && names.Length != audioIdx.Count) names = null;
-            var audioStreams = new List<(uint index, AudioTrackDesc desc, float gain, (uint stream, float gain, long offset)[] inputs, bool reencode)>();
-            // Where each audio track's first sample sits on the clip's timeline (its edit list), read once when a track is rendered.
-            long[]? startOffsets = null;
-            long OffsetOf(int track)
-            {
-                startOffsets ??= ReadAudioTracks(src) is { } info && info.Length == audioIdx.Count ? info.Select(t => t.StartOffset).ToArray() : new long[audioIdx.Count];
-                return startOffsets[track];
-            }
+            // Where each audio track's first sample sits on the clip's timeline, to the sample, and whether the file's edit lists can
+            // be trusted (ClipAlignment; for an older clip with a Mix to correct this checks its sources against it, which takes a
+            // moment unless the editor did it already). A file Clink did not write has no offsets: its tracks start together.
+            var align = ClipAlignment.Read(src);
+            bool placed = align.OffsetFrames.Length == audioIdx.Count;
+            long OffsetOf(int track) => placed ? align.OffsetFrames[track] : 0;
+            var audioStreams = new List<PlannedTrack>();
             for (int n = 0; n < audioIdx.Count; n++)
             {
                 uint i = audioIdx[n];
@@ -108,6 +137,10 @@ internal static unsafe class Trimmer
                     reader->SetStreamSelection(i, false); // dropped from the export
                     continue;
                 }
+                // A source that could not be lined up with the Mix is neither added to it nor taken out of it (the editor offers no
+                // such slider; this is for a plan made by anything else).
+                if (m.Sum != null && m.Sum.Any(s => s.Track == 0) && m.Sum.Any(s => Array.IndexOf(align.Unlined, s.Track) >= 0))
+                    throw new InvalidOperationException(ClipAlignment.OlderClinkNote);
                 IMFMediaType* t;
                 reader->GetNativeMediaType(i, 0, &t).Check("GetNativeMediaType(audio)");
                 try
@@ -129,7 +162,13 @@ internal static unsafe class Trimmer
                         Channels = reencode ? 2 : (int)Mf.GetU32(a, PInvoke.MF_MT_AUDIO_NUM_CHANNELS, 2),
                         Bitrate = reencode ? 24000 * 8 : (int)Mf.GetU32(a, PInvoke.MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 24000) * 8,
                     };
-                    audioStreams.Add((i, desc, m.Gain, inputs, reencode));
+                    audioStreams.Add(new PlannedTrack
+                    {
+                        Stream = i, Desc = desc, Gain = m.Gain, Inputs = inputs, Reencode = reencode,
+                        // A Mix put together from its sources is limited with the curve the recording's Mix was; one track at another volume keeps the plain clip.
+                        Knee = m.Sum != null,
+                        Shift = ClipAlignment.To100ns(OffsetOf(n)),
+                    });
                     // Re-encoded tracks are decoded by their own reader later; the compressed samples are not needed here.
                     reader->SetStreamSelection(i, !reencode);
                 }
@@ -141,7 +180,7 @@ internal static unsafe class Trimmer
             var audio = audioStreams.Select(_ => new List<AacFrame>()).ToList();
             var ps = new ParameterSets();
             if (seqHeader != null) Nal.ToLengthPrefixed(seqHeader, hevc, ps);
-            int ended = 0, selected = 1 + audioStreams.Count(s => !s.reencode);
+            int ended = 0, selected = 1 + audioStreams.Count(s => !s.Reencode);
             long frameDur = 213_333;
             var pending = new List<VideoSample>(); // frames since last keyframe before `start`
             while (ended < selected)
@@ -153,7 +192,15 @@ internal static unsafe class Trimmer
                 if (sample == null) continue;
                 try
                 {
-                    if (ts > end + 10_000_000) continue;
+                    // An audio frame is stamped with where it sits on the clip's timeline: the stream's own time (Media Foundation
+                    // starts every track at 0, whatever the edit list says) plus the track's offset, so the tracks keep their places
+                    // against each other. The cut keeps what the frame-by-frame rule always kept, measured in the stream's own time
+                    // from an offset of 0 up (a track that starts before the origin keeps its frames just as it did).
+                    uint streamIdx = idx;   // a copy: idx has its address taken above, which a lambda may not capture
+                    int track = streamIdx == (uint)videoIndex ? -1 : audioStreams.FindIndex(s => s.Stream == streamIdx);
+                    long shift = track >= 0 ? audioStreams[track].Shift : 0;
+                    long lead = Math.Max(0, shift);
+                    if (ts + lead > end + 10_000_000) continue;
                     byte[] data = Mf.ReadSampleBytes(sample);
                     if (idx == (uint)videoIndex)
                     {
@@ -180,12 +227,10 @@ internal static unsafe class Trimmer
                     }
                     else
                     {
-                        uint streamIdx = idx;
-                        int ai = audioStreams.FindIndex(s => s.index == streamIdx);
-                        if (ai < 0) continue;
+                        if (track < 0) continue;
                         // Keep everything up to `end`; the cut at the (keyframe-snapped) origin happens below once it is known,
                         // so audio starts together with the video instead of at the requested start.
-                        if (ts <= end) audio[ai].Add(new AacFrame(ts, data));
+                        if (ts + lead <= end) audio[track].Add(new AacFrame(ts + shift, data));
                     }
                 }
                 finally { sample->Release(); }
@@ -198,20 +243,25 @@ internal static unsafe class Trimmer
             var tracks = new List<(AudioTrackDesc desc, List<AacFrame> frames)>();
             for (int i = 0; i < audioStreams.Count; i++)
             {
-                var (_, desc, gain, inputs, reencode) = audioStreams[i];
-                if (!reencode)
+                var plan = audioStreams[i];
+                if (!plan.Reencode)
                 {
-                    tracks.Add((desc, audio[i].Where(f => f.Pts + frameDur > origin).ToList()));
+                    // The frames are the track's own, stamped where they sit; the head is cut by the same rule as ever (the frame's
+                    // stream time plus a lead of at least 0 ends after the origin), so the same frames stay as in a cut that
+                    // did not know the offsets; the muxer's edit list then puts them where the stamps say.
+                    long slack = Math.Max(0, plan.Shift) - plan.Shift;
+                    tracks.Add((plan.Desc, audio[i].Where(f => f.Pts + slack + frameDur > origin).ToList()));
                 }
                 else
                 {
-                    var frames = RenderTrack(src, inputs, gain, origin, end, out byte[] asc);
-                    desc.AudioSpecificConfig = asc;
-                    tracks.Add((desc, frames));
+                    var frames = RenderTrack(src, plan.Inputs, plan.Gain, origin, end, plan.Knee, out byte[] asc);
+                    plan.Desc.AudioSpecificConfig = asc;
+                    tracks.Add((plan.Desc, frames));
                 }
             }
-            // The names the muxer really wrote (it leaves out a track with no frames in range), as for a clip save.
-            return ClipWriter.Write(dst, video, hevc, w, h, seqHeader, tracks, origin, 0);
+            // The names the muxer really wrote (it leaves out a track with no frames in range), as for a clip save. The file says its
+            // tracks are in their true places when the one it was cut from did, or when its sources were lined up with the Mix here.
+            return ClipWriter.Write(dst, video, hevc, w, h, seqHeader, tracks, origin, 0, placed && align.Aligned);
         }
         finally { reader->Release(); }
     }
@@ -265,13 +315,32 @@ internal static unsafe class Trimmer
     /// offset: the first frames are skipped) or after it (a positive one), so tracks that are mixed together must be moved by
     /// these offsets to line up. Null when the file cannot be parsed or was not written by Clink.
     /// </summary>
-    internal static AudioTrackInfo[]? ReadAudioTracks(string path)
+    internal static AudioTrackInfo[]? ReadAudioTracks(string path) => ReadClipTracks(path)?.Audio;
+
+    /// <summary>
+    /// <see cref="ReadAudioTracks"/> with the file's mark: whether the brands of its 'ftyp' include <see cref="Mp4Muxer.AlignedBrand"/>,
+    /// which a Clink that writes every track's place to the sample puts there (a recording, and a trim that kept the places). Null when
+    /// the file cannot be parsed or was not written by Clink.
+    /// </summary>
+    internal static ClipTracks? ReadClipTracks(string path)
     {
         try
         {
             using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 4096, FileOptions.RandomAccess);
-            var moov = Boxes(fs, 0, fs.Length).FirstOrDefault(b => b.type == "moov");
+            var top = Boxes(fs, 0, fs.Length);
+            var moov = top.FirstOrDefault(b => b.type == "moov");
             if (moov.type == null) return null;
+            bool marked = false;
+            var ftyp = top.FirstOrDefault(b => b.type == "ftyp");
+            if (ftyp.type != null && ftyp.end - ftyp.start >= 8 && ftyp.end - ftyp.start <= 1024)
+            {
+                // major brand, minor version, then the compatible brands, four bytes each.
+                var brands = new byte[(int)(ftyp.end - ftyp.start)];
+                fs.Position = ftyp.start;
+                fs.ReadExactly(brands);
+                string aligned = Mp4Muxer.AlignedBrand;
+                for (int at = 8; at + 4 <= brands.Length && !marked; at += 4) marked = Encoding.ASCII.GetString(brands, at, 4) == aligned;
+            }
             var moovBoxes = Boxes(fs, moov.start, moov.end);
             var mvhd = moovBoxes.FirstOrDefault(b => b.type == "mvhd");
             long movieScale = mvhd.type == null ? 1000 : ReadU32(fs, mvhd.start + (ReadU8(fs, mvhd.start) == 1 ? 20 : 12));
@@ -297,7 +366,7 @@ internal static unsafe class Trimmer
             }
             // Only Clink's muxer names the video trak exactly "Video". Other writers use generic names (ffmpeg/OBS:
             // VideoHandler, SoundHandler on every track) or Pascal strings, so their files fall back to Audio 1, Audio 2…
-            return clink ? tracks.ToArray() : null;
+            return clink ? new ClipTracks(marked, tracks.ToArray()) : null;
         }
         catch (Exception ex)
         {
@@ -391,28 +460,36 @@ internal static unsafe class Trimmer
     }
 
     /// <summary>
+    /// The pts of the <paramref name="k"/>-th AAC frame of a track rendered from <paramref name="origin"/>: its exact place, rounded to
+    /// 100 ns once. A frame is 213,333.33 units long, so stamping k whole truncated frames would put the track a sample early for
+    /// every 600 frames (13 s) and, read back, make a long render look as if it had holes in it.
+    /// </summary>
+    internal static long FramePts(long origin, long k) => origin + (long)Math.Round(k * (double)AacEncoder.FrameSamples * 10_000_000 / PcmTrackReader.Rate);
+
+    /// <summary>
     /// Renders one output track from <paramref name="origin"/> to <paramref name="end"/> as AAC, a block at a time: each input is
     /// decoded to 48 kHz stereo float by its own <see cref="PcmTrackReader"/>, the blocks are summed at their gains, multiplied by
     /// <paramref name="master"/>, soft-clipped and encoded. Only the current block of each input is ever held, however long the
     /// clip, so a Mix rebuilt from three sources costs a few blocks of memory and not three decoded tracks. A single input at
-    /// gain 1 with the volume as master is the plain volume change. Output frame k gets pts origin + k * 1024 / 48 kHz so the
-    /// track lines up with the passthrough ones. No inputs render silence for the length of the selection.
+    /// gain 1 with the volume as master is the plain volume change. Output frame k gets pts origin + round(k * 1024 / 48 kHz) so the
+    /// track lines up with the passthrough ones however long it is (<see cref="FramePts"/>). The sum is limited with the recording's
+    /// soft knee (<paramref name="knee"/>, a Mix put together from its sources) or, for one track at another volume, simply held to
+    /// full scale. No inputs render silence for the length of the selection.
     /// </summary>
-    private static List<AacFrame> RenderTrack(string src, (uint stream, float gain, long offset)[] inputs, float master, long origin, long end, out byte[] asc)
+    private static List<AacFrame> RenderTrack(string src, (uint stream, float gain, long offset)[] inputs, float master, long origin, long end, bool knee, out byte[] asc)
     {
         const int Rate = PcmTrackReader.Rate, Block = AacEncoder.FrameSamples;
-        long frameDur = Block * 10_000_000L / Rate;
         var frames = new List<AacFrame>();
         var readers = new List<(PcmTrackReader reader, float gain)>();
         try
         {
-            // The same stream listed twice would only be decoded twice: one reader at the summed gain.
-            foreach (var same in inputs.GroupBy(x => x.stream))
-                readers.Add((new PcmTrackReader(src, same.Key, same.First().offset, origin, end), same.Sum(x => x.gain)));
-            using var enc = new AacEncoder(Rate, 2, 24000);
-            asc = enc.AudioSpecificConfig;
             long originFrame = (long)Math.Round(origin * (Rate / 10_000_000.0));
             long endFrame = (long)Math.Round(end * (Rate / 10_000_000.0));
+            // The same stream listed twice would only be decoded twice: one reader at the summed gain.
+            foreach (var same in inputs.GroupBy(x => x.stream))
+                readers.Add((new PcmTrackReader(src, same.Key, same.First().offset, originFrame, endFrame), same.Sum(x => x.gain)));
+            using var enc = new AacEncoder(Rate, 2, 24000);
+            asc = enc.AudioSpecificConfig;
             var acc = new float[Block * 2];
             var block = new float[Block * 2];
             var pcm = new byte[Block * 4];
@@ -423,14 +500,13 @@ internal static unsafe class Trimmer
                 for (int i = 0; i < Block * 2; i++)
                 {
                     float x = acc[i] * master;
-                    x /= MathF.Max(1f, MathF.Abs(x)); // soft clip
+                    x = knee ? AudioTrack.SoftKnee(x) : x / MathF.Max(1f, MathF.Abs(x));
                     int s = (int)MathF.Round(x * 32767f);
                     pcm[i * 2] = (byte)s; pcm[i * 2 + 1] = (byte)(s >> 8);
                 }
-                long inPts = origin + inBlocks++ * frameDur;
-                enc.Encode(pcm, inPts, (_, data) =>
+                enc.Encode(pcm, FramePts(origin, inBlocks++), (_, data) =>
                 {
-                    long pts = origin + outIndex++ * frameDur;
+                    long pts = FramePts(origin, outIndex++);
                     if (pts <= end) frames.Add(new AacFrame(pts, data));
                 });
             }
@@ -459,36 +535,41 @@ internal static unsafe class Trimmer
     }
 
     /// <summary>
-    /// One audio stream of the clip as 48 kHz stereo float on the clip's timeline, handed out from <c>origin</c> in blocks of
+    /// One audio stream of the clip as 48 kHz stereo float on the clip's timeline, handed out from frame <c>originFrame</c> in blocks of
     /// 1024 frames. It has a source reader of its own (any number of them can read one file at once, as the player does) and holds
     /// only the packet being handed out. The timeline is repaired as the trimmer always did: frames before the cut are dropped, a
     /// packet that starts before what was already delivered loses its first frames, a gap of more than 48 frames (1 ms) is filled
-    /// with silence, a hole of ten seconds or more is closed instead of filled, and a jitter of up to 48 frames is ignored.
+    /// with silence, a hole of ten seconds or more is closed instead of filled. A packet whose timestamp is within 48 frames of where
+    /// the one before it ended, early or late, just follows it: that is jitter in the timestamps and not a hole or a repeat, and
+    /// dropping or inserting frames for it would put a click into the sound. The first packet is placed to the frame, so a stream that
+    /// starts a few samples after the origin starts that many samples in.
     /// The stream's own timestamps start at 0 whatever the file says; the track's offset (<see cref="ReadAudioTracks"/>) puts it
     /// on the clip's timeline, so readers of tracks that were recorded together line up to the sample.
     /// </summary>
     internal sealed class PcmTrackReader : IDisposable
     {
         public const int Rate = 48000, Block = AacEncoder.FrameSamples;
+        /// <summary>Timestamps this many frames (1 ms) off where the packet before ended are jitter.</summary>
+        private const int Jitter = 48;
         private IMFSourceReader* _reader;
         private readonly uint _stream;
-        private readonly long _offset, _end;
+        private readonly long _offset, _end;                // frames
         private long _next;                                 // the timeline frame (48 kHz) the next decoded frame lands on
         private float[] _pcm = new float[Block * 2];        // the packet being handed out, interleaved stereo
         private int _pcmPos, _pcmCount;                     // frames of it still to hand out
         private long _silence;                              // frames of silence to hand out before it
-        private bool _eos;
+        private bool _eos, _running;                        // the stream ended; a packet has been taken (the first one is placed to the frame)
 
         /// <param name="stream">The source reader's stream number (not the file order).</param>
-        /// <param name="offset">Where the stream's first sample sits on the clip's timeline, 100 ns (<see cref="AudioTrackInfo.StartOffset"/>).</param>
-        /// <param name="origin">Where the first block starts on the clip's timeline, 100 ns.</param>
-        /// <param name="end">The end of what will be read, 100 ns; a packet that starts a second after it ends the stream.</param>
-        public PcmTrackReader(string src, uint stream, long offset, long origin, long end)
+        /// <param name="offsetFrames">Where the stream's first sample sits on the clip's timeline, 48 kHz frames (<see cref="AudioTrackInfo.StartFrames"/>).</param>
+        /// <param name="originFrame">The timeline frame the first block starts at.</param>
+        /// <param name="endFrame">The end of what will be read, as a timeline frame; a packet that starts a second after it ends the stream.</param>
+        public PcmTrackReader(string src, uint stream, long offsetFrames, long originFrame, long endFrame)
         {
             Mf.EnsureStarted();
             _stream = stream;
-            _offset = offset;
-            _end = end;
+            _offset = offsetFrames;
+            _end = endFrame;
             IMFSourceReader* reader;
             PInvoke.MFCreateSourceReaderFromURL(src, null, &reader).Check("MFCreateSourceReaderFromURL(audio)");
             _reader = reader;
@@ -512,16 +593,16 @@ internal static unsafe class Trimmer
                 }
                 finally { want->Release(); }
 
-                long seekTo = origin - offset;   // the stream's own time of the clip origin; before its first sample, nothing to skip
-                if (seekTo > 0)
+                long seekFrames = originFrame - offsetFrames;   // the stream's own position of the clip origin; before its first sample, nothing to skip
+                if (seekFrames > 0)
                 {
                     PROPVARIANT pos = default;
                     pos.vt = VARENUM.VT_I8;
-                    pos.hVal = seekTo;
+                    pos.hVal = (long)Math.Round(seekFrames * (10_000_000.0 / Rate));
                     Guid timeFormat = Guid.Empty;
                     reader->SetCurrentPosition(&timeFormat, &pos);
                 }
-                _next = (long)Math.Round(origin * (Rate / 10_000_000.0));
+                _next = originFrame;
             }
             catch
             {
@@ -577,29 +658,28 @@ internal static unsafe class Trimmer
                 if (sample == null) continue;
                 try
                 {
-                    long at = ts + _offset;   // on the clip's timeline
-                    if (at > _end + 10_000_000) { _eos = true; return false; }
+                    long sf = (long)Math.Round(ts * (Rate / 10_000_000.0)) + _offset;   // the packet's first frame on the clip's timeline
+                    if (sf > _end + Rate) { _eos = true; return false; }
                     byte[] raw = Mf.ReadSampleBytes(sample);
                     int n = raw.Length / 8;
                     if (n == 0) continue;
-                    long sf = (long)Math.Round(at * (Rate / 10_000_000.0));
-                    if (sf + n <= _next) continue;           // entirely before the cut
+                    long gap = sf - _next;
+                    if (gap <= -n) continue;                 // entirely before the cut, or a repeat of what was handed out
                     int skip = 0;
-                    if (sf > _next)
+                    if (_running && Math.Abs(gap) <= Jitter) { }   // follows the packet before it
+                    else if (gap > 0)
                     {
-                        long gap = sf - _next;
-                        if (gap <= 48) { }                   // sub-millisecond jitter
-                        else if (gap < Rate * 10) _silence += gap;
-                        else { /* a hole of ten seconds or more: closed, not filled */ }
+                        if (gap < Rate * 10) _silence += gap;      // a hole of ten seconds or more is closed, not filled
                         _next = sf;
                     }
-                    else if (sf < _next) skip = (int)(_next - sf);
+                    else if (gap < 0) skip = (int)-gap;
                     n -= skip;
                     if (_pcm.Length < n * 2) _pcm = new float[n * 2];
                     MemoryMarshal.Cast<byte, float>(raw.AsSpan(skip * 8, n * 8)).CopyTo(_pcm);
                     _pcmPos = 0;
                     _pcmCount = n;
                     _next += n;
+                    _running = true;
                     return true;
                 }
                 finally { sample->Release(); }

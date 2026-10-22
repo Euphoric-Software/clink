@@ -6,6 +6,7 @@ using Windows.Win32.Foundation;
 using Windows.Win32.Media.MediaFoundation;
 using Windows.Win32.System.Com.StructuredStorage;
 using Windows.Win32.System.Variant;
+using Clink.Audio;
 using Clink.Native;
 
 namespace Clink.Playback;
@@ -40,10 +41,11 @@ internal sealed unsafe class ClipPlayer : IDisposable
         public IMFSourceReader* Reader;
         public uint Stream;
         /// <summary>
-        /// Where the stream's first sample sits on the clip timeline, 100 ns (its edit list: negative when the file starts the track
-        /// before the clip origin, positive after). The stream's own timestamps start at 0 whatever the file says.
+        /// Where the stream's first sample sits on the clip timeline, 48 kHz frames (its edit list, with the lag a check against the
+        /// Mix found for an older clip: negative when the file starts the track before the clip origin, positive after). The
+        /// stream's own timestamps start at 0 whatever the file says.
         /// </summary>
-        public long Offset;
+        public long OffsetFrames;
         public bool Eos;
         public bool SrcFloat = true;
         public int SrcChannels = 2;
@@ -195,6 +197,7 @@ internal sealed unsafe class ClipPlayer : IDisposable
 
     // ---- audio
     private readonly AudioTrackState[] _tracks;
+    private readonly bool _headless;
     private AudioOutput? _out;
     private bool _useAudioClock;
     private readonly float[] _mix = new float[Block * 2];
@@ -229,6 +232,19 @@ internal sealed unsafe class ClipPlayer : IDisposable
     public int TrackCount => _tracks.Length;
     /// <summary>Audio track names as stored in the file, one per track (null if the file has none or they could not be read).</summary>
     public string[]? TrackNames { get; }
+    /// <summary>
+    /// Where the audio tracks sit against each other and which of them could be lined up with the Mix (see <see cref="Engine.ClipAlignment"/>);
+    /// the player has put the tracks on the timeline by it.
+    /// </summary>
+    public Engine.ClipAlignment Alignment { get; } = new();
+    /// <summary>Where each track's first sample sits on the clip's timeline, 48 kHz frames: what the player mixes them by.</summary>
+    public long[] TrackOffsets => _tracks.Select(t => t.OffsetFrames).ToArray();
+    /// <summary>
+    /// The sum of the tracks is limited with the recording's soft knee (<see cref="AudioTrack.SoftKnee"/>), as a Mix put together from its
+    /// sources is when it is saved, and not held to full scale as one track at its own volume is. Read live by the mixer.
+    /// </summary>
+    public bool SoftKnee { get => _softKnee; set => _softKnee = value; }
+    private volatile bool _softKnee;
     public int VideoWidth => _w;
     public int VideoHeight => _h;
     /// <summary>Per-track linear gain (1 = unchanged); read live by the mixer, applied as a short ramp.</summary>
@@ -243,8 +259,13 @@ internal sealed unsafe class ClipPlayer : IDisposable
     /// <summary>Raised (on the worker thread) when playback reached the end of the clip; the player is paused then.</summary>
     public event Action? Ended;
 
-    public ClipPlayer(string path, int previewMaxWidth)
+    public ClipPlayer(string path, int previewMaxWidth) : this(path, previewMaxWidth, headless: false) { }
+
+    /// <param name="headless">No worker thread and no output: the audio is mixed on demand by <see cref="RenderAudio"/> on the calling
+    /// thread, which then owns the readers (for the tests of how the tracks are put on the timeline; nothing is ever played).</param>
+    internal ClipPlayer(string path, int previewMaxWidth, bool headless)
     {
+        _headless = headless;
         Mf.EnsureStarted();
         IMFAttributes* attrs = Mf.CreateAttributes(2);
         Mf.SetU32(attrs, PInvoke.MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, 1);
@@ -282,9 +303,11 @@ internal sealed unsafe class ClipPlayer : IDisposable
             if (videoIdx == uint.MaxValue) throw new InvalidOperationException("No video stream in file");
             // Track i is the file's i-th audio track (the mix first), the same numbering the trimmer's mix uses.
             Engine.Trimmer.AudioInFileOrder(audioIdx, videoIdx);
-            var info = Engine.Trimmer.ReadAudioTracks(path);
-            string[]? names = info?.Select(t => t.Name).ToArray();
-            TrackNames = names != null && names.Length == audioIdx.Count ? names : null;
+            // The tracks' names and places from the file's edit lists; a clip an older Clink trimmed has its sources checked against
+            // the Mix first (a moment, here on the thread that opens the player), so what is mixed below is lined up.
+            var align = Engine.ClipAlignment.Read(path);
+            TrackNames = align.Names.Length == audioIdx.Count ? align.Names : null;
+            Alignment = align;
             _videoStream = videoIdx;
             _video->SetStreamSelection(AllStreams, false);
             _video->SetStreamSelection(videoIdx, true).Check("SetStreamSelection(video)");
@@ -309,7 +332,7 @@ internal sealed unsafe class ClipPlayer : IDisposable
             // Every slot is populated before any reader is created so that ReleaseAll can walk the array after a failure
             // part-way through (a null Reader is simply skipped).
             _tracks = new AudioTrackState[audioIdx.Count];
-            for (int i = 0; i < _tracks.Length; i++) _tracks[i] = new AudioTrackState { Stream = audioIdx[i], Offset = TrackNames != null ? info![i].StartOffset : 0 };
+            for (int i = 0; i < _tracks.Length; i++) _tracks[i] = new AudioTrackState { Stream = audioIdx[i], OffsetFrames = TrackNames != null ? align.OffsetFrames[i] : 0 };
             Gain = new float[_tracks.Length];
             Array.Fill(Gain, 1f);
             Muted = new bool[_tracks.Length];
@@ -324,6 +347,7 @@ internal sealed unsafe class ClipPlayer : IDisposable
             }
             Log.Info($"Preview: {Path.GetFileName(path)} {nw}x{nh} -> {_w}x{_h} @ {1 / _frameDuration:0.##} fps, {_tracks.Length} audio track(s), {Duration:0.00}s");
 
+            if (headless) return;
             _pendingSeek = 0; // show the first frame right away
             _seeking = true;
             _thread = new Thread(Worker) { IsBackground = true, Name = "Clink.Preview", Priority = ThreadPriority.AboveNormal };
@@ -627,14 +651,7 @@ internal sealed unsafe class ClipPlayer : IDisposable
         }
 
         // Audio: restart every track at the target; the FIFOs fill lazily from the mixer. Pointless without an output.
-        if (_out != null)
-        {
-            foreach (var t in _tracks)
-            {
-                SeekReader(t.Reader, Math.Max(0, target - t.Offset / 10_000_000.0));   // the track's own time of that moment
-                t.Clear();
-            }
-        }
+        if (_out != null) SeekAudio(target);
         _outFrame = FrameOf(target);
 
         // Video: show the frame that is due at the target (newest pts <= target), decoding ahead only as far as needed.
@@ -692,6 +709,36 @@ internal sealed unsafe class ClipPlayer : IDisposable
         if (_playing) StartClock();
     }
 
+    /// <summary>Puts every audio reader at the clip's time <paramref name="target"/> (seconds) and empties its FIFO.</summary>
+    private void SeekAudio(double target)
+    {
+        foreach (var t in _tracks)
+        {
+            SeekReader(t.Reader, Math.Max(0, target - t.OffsetFrames / (double)Rate));   // the track's own time of that moment
+            t.Clear();
+        }
+    }
+
+    /// <summary>
+    /// For the tests of a <c>headless</c> player: the audio of the clip from <paramref name="fromSeconds"/> on, <paramref name="frames"/>
+    /// frames of interleaved stereo, mixed as the preview would mix it at the current <see cref="Gain"/> and <see cref="Muted"/>
+    /// (no fade-in: the gains are taken as they are from the first sample) and put on the timeline by the tracks' offsets.
+    /// </summary>
+    internal float[] RenderAudio(double fromSeconds, int frames)
+    {
+        if (!_headless) throw new InvalidOperationException("RenderAudio is for a headless player");
+        SeekAudio(fromSeconds);
+        for (int i = 0; i < _tracks.Length; i++) _tracks[i].Current = Muted[i] ? 0f : Gain[i];
+        _outFrame = FrameOf(fromSeconds);
+        var result = new float[frames * 2];
+        for (int done = 0; done < frames; done += Block)
+        {
+            MixBlock();
+            Array.Copy(_mix, 0, result, done * 2, Math.Min(Block, frames - done) * 2);
+        }
+        return result;
+    }
+
     private static void SeekReader(IMFSourceReader* reader, double seconds)
     {
         PROPVARIANT pos = default;
@@ -718,10 +765,12 @@ internal sealed unsafe class ClipPlayer : IDisposable
             t.Current = target;
             t.Discard(until);
         }
+        // Limited with the curve the export uses: the recording's soft knee for a Mix put together from its sources, plain full scale for a track.
+        bool knee = _softKnee;
         for (int i = 0; i < _mix.Length; i++)
         {
             float v = _mix[i];
-            _mix[i] = v / MathF.Max(1f, MathF.Abs(v)); // soft clip, the same curve the export uses
+            _mix[i] = knee ? AudioTrack.SoftKnee(v) : v / MathF.Max(1f, MathF.Abs(v));
         }
         _outFrame = until;
     }
@@ -737,7 +786,7 @@ internal sealed unsafe class ClipPlayer : IDisposable
         {
             byte[] raw = Mf.ReadSampleBytes(sample);
             if (raw.Length == 0) return;
-            t.Append(t.Convert(raw), FrameOf(ts + t.Offset));
+            t.Append(t.Convert(raw), FrameOf(ts) + t.OffsetFrames);
         }
         finally { sample->Release(); }
     }

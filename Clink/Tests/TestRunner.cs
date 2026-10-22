@@ -9,7 +9,8 @@ namespace Clink.Tests;
 
 // The in-exe unit tests (docs: v0.2.5 plan section 4.6). There is no test project, and no test framework in the NuGet cache, so
 // `Clink.exe --unittest [nameFilter]` finds every [UnitTest] method in namespace Clink.Tests by reflection, runs them one after
-// the other on the UI thread, prints PASS / FAIL per test and exits 0 only when all passed. Each area adds its own
+// the other on the UI thread, prints PASS / FAIL / SKIP per test and exits 0 only when none failed (a skip is a failure when
+// CLINK_TESTS_NO_SKIP=1: see TestSkipped). Each area adds its own
 // Clink/Tests/<Area>Tests.cs; nothing is registered anywhere.
 //
 // A test is `[UnitTest] public static void Name()` in a static class of namespace Clink.Tests, using Check for its assertions.
@@ -27,10 +28,23 @@ internal sealed class TestFailure : Exception
     public TestFailure(string message) : base(message) { }
 }
 
+/// <summary>
+/// A test that cannot run on this machine because a Windows feature it needs is missing (see <see cref="Check.Skip"/>): the runner
+/// prints SKIP and counts it, and it is a FAIL when the environment variable CLINK_TESTS_NO_SKIP is 1, which is how a machine
+/// that is supposed to have the feature (a developer's, the PM's) runs them so that nothing is skipped by accident.
+/// </summary>
+internal sealed class TestSkipped : Exception
+{
+    public TestSkipped(string why) : base(why) { }
+}
+
 /// <summary>Assertions. Every check takes an optional <c>what</c> that is put in front of the failure message.</summary>
 internal static class Check
 {
     public static void Fail(string message) => throw new TestFailure(message);
+
+    /// <summary>Stops the test as skipped: <paramref name="why"/> names the missing feature.</summary>
+    public static void Skip(string why) => throw new TestSkipped(why);
 
     public static void True(bool condition, string? what = null)
     {
@@ -146,14 +160,23 @@ internal sealed class TempDir : IDisposable
     }
 }
 
+internal enum TestState { Passed, Failed, Skipped }
+
+/// <param name="Text">Why it failed or was skipped; null for a pass.</param>
+internal readonly record struct TestOutcome(TestState State, string? Text);
+
 internal static class TestRunner
 {
     private const string TestNamespace = "Clink.Tests";
 
+    /// <summary>The environment variable that turns a skipped test into a failure.</summary>
+    internal const string NoSkipVariable = "CLINK_TESTS_NO_SKIP";
+
     /// <summary>
     /// Runs the tests whose "Class.Method" name contains the filter (the first argument after <c>--unittest</c> that is not a
-    /// switch; no filter runs all), prints one PASS / FAIL line per test and a summary, and returns the number of tests that
-    /// failed (1 when the filter matched nothing, so a mistyped filter is not a pass).
+    /// switch; no filter runs all), prints one PASS / FAIL / SKIP line per test and a summary, and returns the number of tests that
+    /// failed (1 when the filter matched nothing, so a mistyped filter is not a pass). A skipped test is not a failure unless
+    /// CLINK_TESTS_NO_SKIP=1.
     /// </summary>
     public static int Run(string[] args)
     {
@@ -170,7 +193,8 @@ internal static class TestRunner
         string scratch = Path.Combine(Path.GetTempPath(), "clink-unittest", "run-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(scratch);
         string? dirBefore = Settings.DirOverride, indexBefore = ClipLibrary.IndexPathOverride;
-        int passed = 0, failed = 0;
+        bool noSkip = IsOn(Environment.GetEnvironmentVariable(NoSkipVariable));
+        int passed = 0, failed = 0, skipped = 0;
         var total = Stopwatch.StartNew();
         try
         {
@@ -179,9 +203,13 @@ internal static class TestRunner
                 Settings.DirOverride = scratch;
                 ClipLibrary.IndexPathOverride = Path.Combine(scratch, "clips.json");
                 var sw = Stopwatch.StartNew();
-                string? problem = Invoke(method);
-                if (problem == null) { passed++; Print($"PASS  {name}  ({sw.ElapsedMilliseconds} ms)"); }
-                else { failed++; Print($"FAIL  {name}  {problem}"); }
+                var outcome = Execute(method, noSkip);
+                switch (outcome.State)
+                {
+                    case TestState.Passed: passed++; Print($"PASS  {name}  ({sw.ElapsedMilliseconds} ms)"); break;
+                    case TestState.Skipped: skipped++; Print($"SKIP  {name}  {outcome.Text}"); break;
+                    default: failed++; Print($"FAIL  {name}  {outcome.Text}"); break;
+                }
             }
         }
         finally
@@ -190,9 +218,11 @@ internal static class TestRunner
             ClipLibrary.IndexPathOverride = indexBefore;
             try { Directory.Delete(scratch, recursive: true); } catch { }
         }
-        Print($"{passed} passed, {failed} failed ({total.ElapsedMilliseconds} ms)");
+        Print($"{passed} passed, {failed} failed, {skipped} skipped ({total.ElapsedMilliseconds} ms)");
         return failed;
     }
+
+    private static bool IsOn(string? value) => value is "1" || string.Equals(value, "true", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Every [UnitTest] method of namespace Clink.Tests, by "Class.Method" name.</summary>
     private static List<(string Name, MethodInfo Method)> Discover()
@@ -205,27 +235,32 @@ internal static class TestRunner
             .ToList();
     }
 
-    /// <summary>Runs one test; null when it passed, otherwise the reason it failed (one line).</summary>
-    private static string? Invoke(MethodInfo method)
+    /// <summary>
+    /// Runs one test: a pass, a failure with the reason (one line), or a skip with the reason. With <paramref name="noSkip"/> a skip
+    /// is reported as a failure that says so.
+    /// </summary>
+    internal static TestOutcome Execute(MethodInfo method, bool noSkip)
     {
         if (!method.IsStatic || method.GetParameters().Length != 0 || method.ReturnType != typeof(void))
-            return "a test must be `public static void Name()` with no parameters";
+            return new(TestState.Failed, "a test must be `public static void Name()` with no parameters");
         try
         {
             method.Invoke(null, null);
-            return null;
+            return new(TestState.Passed, null);
         }
         catch (TargetInvocationException tie)
         {
             var ex = tie.InnerException ?? tie;
-            if (ex is TestFailure) return ex.Message;
+            if (ex is TestSkipped skip)
+                return noSkip ? new(TestState.Failed, $"skipped ({skip.Message}), and {NoSkipVariable}=1 says nothing may be") : new(TestState.Skipped, skip.Message);
+            if (ex is TestFailure) return new(TestState.Failed, ex.Message);
             // Anything else is a bug in the code under test or in the test: show where.
             string where = (ex.StackTrace ?? "").Split('\n').Select(l => l.Trim()).FirstOrDefault(l => l.Length > 0) ?? "";
-            return $"{ex.GetType().Name}: {ex.Message} {where}".Replace('\r', ' ').Replace('\n', ' ');
+            return new(TestState.Failed, $"{ex.GetType().Name}: {ex.Message} {where}".Replace('\r', ' ').Replace('\n', ' '));
         }
         catch (Exception ex)
         {
-            return $"{ex.GetType().Name}: {ex.Message}";
+            return new(TestState.Failed, $"{ex.GetType().Name}: {ex.Message}");
         }
     }
 
