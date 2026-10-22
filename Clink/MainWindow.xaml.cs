@@ -20,11 +20,11 @@ internal sealed record Choice(string Label, object Value, bool Header = false, b
 /// <summary>
 /// The main window (docs/SPEC-v2.md §1, §10): resizable, settings tabs and the clips pane, which sits in a right column when the
 /// window is ≥ 900 px wide and becomes a fourth tab when it is narrower. Capture holds, top to bottom, Capturing (monitor,
-/// quality, size target, cursor) · Audio tracks (under a "set up your audio" banner that goes away for good once the pointer
-/// has rested on the group and moved off, or an option in it changes) · Recording · Replay length (the slider with the one size/RAM readout under
-/// it) · Hotkeys; Clip holds Copium and Storage; Alerts holds Toasts, Status dot and Updates (with "run at startup"). Every
-/// control writes its setting on change and, where the engine is affected, restarts it after a short debounce
-/// (<see cref="ScheduleRestart"/>).
+/// quality, size target, replay length with the one size/RAM readout under its slider, cursor) · Audio tracks (under a "set up
+/// your audio" banner that goes away for good once the pointer has rested on the group and moved off, or an option in it
+/// changes) · Recording · Hotkeys (the main hotkey, then shorter ones); Clip holds Copium and Storage; Alerts holds Toasts,
+/// Status dot and Updates (with "run at startup"). Every control writes its setting on change and, where the engine is
+/// affected, restarts it after a short debounce (<see cref="ScheduleRestart"/>).
 /// </summary>
 public partial class MainWindow : Window
 {
@@ -85,6 +85,7 @@ public partial class MainWindow : Window
         _app.UpdateStateChanged += () => Dispatcher.BeginInvoke(RefreshUpdateState);
         _app.Archive.Changed += () => Dispatcher.BeginInvoke(RefreshArchiveStatus);
         Clips.TrimRequested += OpenTrim;
+        Clips.PlayRequested += entry => OpenClip(entry, trim: false);
         HotkeyEditor.Changed += HotkeysChanged;
         ReplaySlider.ValueChanged += v => { if (!_loading) UpdateEstimates(v); };
         ReplaySlider.ValueCommitted += ReplayLengthCommitted;
@@ -222,7 +223,7 @@ public partial class MainWindow : Window
         Fill(FpsCombo, new[] { new Choice("30", 30), new Choice("60", 60), new Choice("120", 120) }, s.Fps);
         Fill(BitrateCombo, _bitratePresets, s.BitrateMbps);
         FillCodecs();
-        Fill(SizeTargetCombo, new[] { "none", "discord10", "discord50", "copium200", "discord500" }.Select(t => new Choice(Capabilities.SizeTargetName(t), t)).ToArray(), s.SizeTarget);
+        Fill(SizeTargetCombo, Capabilities.SizeTargets.Select(t => new Choice(t.Name, t.Id)).ToArray(), s.SizeTarget);
         Fill(ModeCombo, new[] { new Choice("Only while a game or custom app is running", "game"), new Choice("Always (whenever Clink runs)", "always") }, s.RecordingMode);
         _customApps.Clear();
         foreach (var a in (s.CustomApps ?? new()).Select(GameProcessTracker.NormalizeName).Where(a => a.Length > 0 && !IsAuto(a)).Distinct(StringComparer.OrdinalIgnoreCase)) _customApps.Add(a);
@@ -341,7 +342,7 @@ public partial class MainWindow : Window
     private int AudioTrackCount() => _app.AudioTrackCount;   // the mix is always track 1; the same count the engine's bitrate is resolved with
 
     /// <summary>
-    /// The readout under the replay-length slider (§10, the only place size and RAM are shown): per-minute / per-clip sizes
+    /// The readout under the replay-length slider in the Capturing card (§10, the only place size and RAM are shown): per-minute / per-clip sizes
     /// (<see cref="EstimateText"/>), the buffer's RAM (<see cref="RamText"/>, Danger over half of it) and the size-target note
     /// (<see cref="SizeNote"/>, Warn when no bitrate can make the clip fit); plus the bitrate combo's tooltip and the slider's RAM
     /// limit. Called on every resolution / FPS / bitrate / codec / size-target / audio-track / length change.
@@ -369,8 +370,9 @@ public partial class MainWindow : Window
 
         SizeNote.Text = note ?? "";
         SizeNote.Visibility = note != null ? Visibility.Visible : Visibility.Collapsed;
-        // Warn colour when no bitrate can make the clip fit, or when the Copium target's 10 min is exceeded (no bitrate fixes that either).
-        SizeNote.Foreground = (Brush)FindResource(note != null && (note.Contains("does not fit") || note.Contains(Capabilities.CopiumLengthNote)) ? "Warn" : "Muted");
+        // Warn colour when no bitrate can make the clip fit, or when the replay reaches the target's length limit (Copium's 10 min,
+        // Copium Plus's 60: no bitrate fixes that either).
+        SizeNote.Foreground = (Brush)FindResource(Capabilities.IsWarningNote(note) ? "Warn" : "Muted");
         EstimateText.Text = Capabilities.DescribeEstimate(mbps, tracks, seconds);
 
         var (ramText, tooMuch) = Capabilities.DescribeRing(mbps, seconds);
@@ -384,8 +386,21 @@ public partial class MainWindow : Window
     private void SizeTargetChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_loading || _filling) return;
-        _app.Settings.SizeTarget = Selected<string>(SizeTargetCombo) ?? "none";
-        _app.Settings.Save();
+        var s = _app.Settings;
+        s.SizeTarget = Selected<string>(SizeTargetCombo) ?? SettingsDefaults.SizeTarget;
+        // Picking the Copium Plus target says the account has Copium+, so Share checks Plus's limits: tick "I have Copium+" for the
+        // user (the box under Copium), without CopiumPlusChanged running for it. Unticking it later is the user's call (Share goes
+        // by the account, not by this target).
+        if (Capabilities.SizeTargetFor(s.SizeTarget).Id == "copiumplus" && !s.CopiumPlus)
+        {
+            s.CopiumPlus = true;
+            bool was = _filling;
+            _filling = true;
+            try { CopiumPlusCheck.IsChecked = true; }
+            finally { _filling = was; }
+            Log.Info("settings: the Copium Plus size target ticked \"I have Copium+\"");
+        }
+        s.Save();
         UpdateEstimates();
         ScheduleRestart();
     }
@@ -395,7 +410,7 @@ public partial class MainWindow : Window
     private void ModeChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_loading || _filling) return;
-        _app.Settings.RecordingMode = Selected<string>(ModeCombo) ?? "game";
+        _app.Settings.RecordingMode = Selected<string>(ModeCombo) ?? SettingsDefaults.RecordingMode;
         _app.Settings.Save();
         RefreshStatus();
         // The mode is not part of the engine config: a running engine keeps its replay buffer (with no game, game-only mode stops
@@ -833,9 +848,17 @@ public partial class MainWindow : Window
 
     // ------------------------------------------------------------------ clips
 
-    internal void OpenTrim(ClipEntry entry)
+    /// <summary>Opens the clip in the trim editor (the Trim button, the toast, --trim-last).</summary>
+    internal void OpenTrim(ClipEntry entry) => OpenClip(entry, trim: true);
+
+    /// <summary>
+    /// Opens a clip in the player (a click on its row; <paramref name="trim"/> false) or in the trim editor. A clip that is already
+    /// open comes forward in the mode asked for instead of a second window opening on it.
+    /// </summary>
+    internal void OpenClip(ClipEntry entry, bool trim)
     {
-        var w = new TrimWindow(entry) { Owner = IsVisible ? this : null };
+        if (TrimWindow.Find(entry) is { } open) { open.Reveal(trim); return; }
+        var w = new TrimWindow(entry, trim) { Owner = IsVisible ? this : null };
         w.Show();
     }
 
@@ -856,10 +879,10 @@ public partial class MainWindow : Window
     {
         if (_loading || _filling) return;
         var s = _app.Settings;
-        s.Resolution = Selected<string>(ResolutionCombo) ?? "native";
-        s.Fps = Selected<int>(FpsCombo) is var f && f > 0 ? f : 60;
+        s.Resolution = Selected<string>(ResolutionCombo) ?? SettingsDefaults.Resolution;
+        s.Fps = Selected<int>(FpsCombo) is var f && f > 0 ? f : SettingsDefaults.Fps;
         if (BitrateCombo.IsEnabled && Selected<int>(BitrateCombo) is var b && b > 0) s.BitrateMbps = b;   // read-only while a size target picks it
-        s.Codec = Selected<string>(CodecCombo) ?? "h264";
+        s.Codec = Selected<string>(CodecCombo) ?? SettingsDefaults.Codec;
         s.CaptureCursor = CursorCheck.IsChecked == true;
         s.Save();
         UpdateCodecDescription();
@@ -886,9 +909,9 @@ public partial class MainWindow : Window
         if (_loading) return;
         var s = _app.Settings;
         s.Hotkeys = HotkeyEditor.Actions.ToList();
-        // Keep the v1 single binding in step with the first clip hotkey (the tray and balloon labels read ClipHotkeyLabel from the list).
-        var clip = s.Hotkeys.FirstOrDefault(h => Hotkeys.IsClip(h.Action) && h.Keys.Vk > 0);
-        if (clip != null) s.Hotkey = clip.Keys;
+        // Hotkeys[0] is the main hotkey (the editor keeps it first): the v1 single binding follows its keys while it has any. A cleared
+        // main leaves the old keys in Hotkey, as Settings does on load (the tray and balloon labels read ClipHotkeyLabel from the list).
+        if (s.Hotkeys.Count > 0 && s.Hotkeys[0].Keys.Vk > 0) s.Hotkey = s.Hotkeys[0].Keys.Clone();
         s.Save();
         _app.ReloadHotkeys();
     }
@@ -1016,7 +1039,7 @@ public partial class MainWindow : Window
 
     private void CopiumPlusChanged(object sender, RoutedEventArgs e)
     {
-        if (_loading) return;
+        if (_loading || _filling) return;   // _filling: the Copium Plus size target ticked the box (SizeTargetChanged saves)
         _app.Settings.CopiumPlus = CopiumPlusCheck.IsChecked == true;
         _app.Settings.Save();
     }
@@ -1131,11 +1154,12 @@ public partial class MainWindow : Window
         catch (Exception ex) { _app.Say("Folder picker failed: " + ex.Message); return null; }
     }
 
+    /// <summary>The days / GB rules apply only to the automatic moves, so only they follow the switch; the location, Test and Archive now… are always there.</summary>
     private void UpdateArchiveEnabled()
     {
-        if (ArchivePanel == null || ArchiveCheck == null) return;
-        ArchivePanel.IsEnabled = ArchiveCheck.IsChecked == true;
-        ArchivePanel.Opacity = ArchiveCheck.IsChecked == true ? 1 : 0.55;
+        if (ArchiveRulesPanel == null || ArchiveCheck == null) return;
+        ArchiveRulesPanel.IsEnabled = ArchiveCheck.IsChecked == true;
+        ArchiveRulesPanel.Opacity = ArchiveCheck.IsChecked == true ? 1 : 0.55;
     }
 
     private void ArchiveChanged(object sender, RoutedEventArgs e)
@@ -1235,24 +1259,25 @@ public partial class MainWindow : Window
         finally { ArchiveTestButton.IsEnabled = true; }
     }
 
-    private async void ArchiveNow_Click(object sender, RoutedEventArgs e)
+    /// <summary>
+    /// "Archive now…": the dialog where the user picks what to move (what the rules pick, or every local clip) and watches it
+    /// happen. It needs a location, nothing else: not the automatic switch and not a rule.
+    /// </summary>
+    private void ArchiveNow_Click(object sender, RoutedEventArgs e)
     {
-        if (!_app.Settings.ArchiveEnabled || string.IsNullOrWhiteSpace(_app.Settings.ArchivePath)) { _app.Say("Turn the archive on and set its location first"); return; }
-        ArchiveNowButton.IsEnabled = false;
-        try
+        // A path typed into the box is taken (or refused) before the dialog opens, as Test does: the dialog must not move
+        // clips to the old saved path while the box showed another.
+        ArchivePathBox_LostFocus(sender, e);
+        if (_archiveRefusal is string refused)
         {
-            await _app.Archive.RunNowAsync();
-            if (_app.Archive.LastRunEligible == 0)
-            {
-                // The run looked and nothing is due: say why, or the button seems to do nothing.
-                var s = _app.Settings;
-                var why = new List<string>();
-                if (s.ArchiveAfterDays > 0) why.Add(s.ArchiveAfterDays == 1 ? "no clip is older than 1 day" : $"no clip is older than {s.ArchiveAfterDays} days");
-                if (s.ArchiveWhenLocalExceedsGB > 0) why.Add($"the clips folder is under {s.ArchiveWhenLocalExceedsGB.ToString("0.##", CultureInfo.InvariantCulture)} GB");
-                _app.Say("Nothing to archive yet" + (why.Count > 0 ? ": " + string.Join(" and ", why) : ""));
-            }
+            _archiveRefusal = null;
+            ArchiveStatus.Text = refused;
+            ArchiveStatus.SetResourceReference(TextBlock.ForegroundProperty, "Warn");
+            return;
         }
-        finally { ArchiveNowButton.IsEnabled = true; RefreshArchiveStatus(); }
+        if (string.IsNullOrWhiteSpace(_app.Settings.ArchivePath)) { _app.Say("Set an archive location first"); return; }
+        new ArchiveWindow(_app) { Owner = this }.ShowDialog();
+        RefreshArchiveStatus();
     }
 
     private bool _archiveReachable;
@@ -1268,6 +1293,10 @@ public partial class MainWindow : Window
         string t = ArchiveStatus.Text;
         bool problem = t.Contains("will retry") || t.Contains("unreachable") || t.Contains("denied") || t.Contains("no rule") || t.Contains("archive location");
         ArchiveStatus.Foreground = (Brush)FindResource(problem ? "Warn" : "Muted");
+        // Archive now… works with any location set, whether or not the automatic moves are on.
+        bool hasLocation = !string.IsNullOrWhiteSpace(_app.Settings.ArchivePath);
+        ArchiveNowButton.IsEnabled = hasLocation;
+        ArchiveNowButton.ToolTip = hasLocation ? "Choose which clips to move to the archive location now" : "Set an archive location first";
     }
 
     // ------------------------------------------------------------------ window chrome

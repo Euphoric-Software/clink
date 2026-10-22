@@ -68,7 +68,14 @@ public partial class App : System.Windows.Application
                     string report = Engine.MediaProbe.Report(args[1]);
                     Console.WriteLine(report);
                     Log.Info("[probe]\n" + report);
-                    if (args.Length > 2)
+                    if (args.Skip(2).Any(a => a.Equals("--levels", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        // Clink.exe --probe <file> --levels: how loud each audio track really is (RMS / peak of the decoded audio)
+                        string levels = Engine.MediaProbe.Levels(args[1]);
+                        Console.WriteLine(levels);
+                        Log.Info("[probe]\n" + levels);
+                    }
+                    if (args.Length > 2 && !args[2].StartsWith("--", StringComparison.Ordinal))
                     {
                         long at = args.Length > 3 && double.TryParse(args[3], out double sec) ? (long)(sec * 10_000_000) : 0;
                         var frame = Engine.MediaProbe.DecodeFrame(args[1], at);
@@ -86,13 +93,13 @@ public partial class App : System.Windows.Application
         }
         if (args.Length > 1 && args[0].Equals("--trim", StringComparison.OrdinalIgnoreCase))
         {
-            // Clink.exe --trim <in> <out> <startSec> <endSec>
+            // Clink.exe --trim <in> <out> <startSec> <endSec> [--gain Name=volume]... [--drop Name]...  (see Engine/TrimCli.cs)
             Log.Init(Settings.Dir, Log.CliFile);
             AttachParentConsole();
             int code = 0;
             var t = new Thread(() =>
             {
-                try { Engine.Trimmer.Trim(args[1], args[2], double.Parse(args[3]), double.Parse(args[4]), null); Console.WriteLine("ok"); }
+                try { Engine.TrimCli.Run(args); Console.WriteLine("ok"); }
                 catch (Exception ex) { Log.Error("[trim] failed", ex); Console.WriteLine(ex); code = 5; }
             });
             t.SetApartmentState(ApartmentState.MTA);
@@ -120,12 +127,13 @@ public partial class App : System.Windows.Application
     {
         // "--dev [folder] [--dev-hotkeys]": a second Clink for testing next to the real one, with its own data folder, mutex and
         // pipe. Decided before the single-instance check, so it can never forward a command to (or wait on) the real Clink.
+        // A mistake in a --dev switch is an error, not a normal start: a normal start would take the real Clink's mutex or forward to it.
         DevOptions? dev;
         try { dev = DevOptions.Parse(args); }
-        catch (Exception ex)
+        catch (ArgumentException ex)
         {
             AttachParentConsole();
-            Console.WriteLine("--dev: the data folder is not a valid path: " + ex.Message);
+            Console.WriteLine("Clink: " + ex.Message);
             Shutdown(2);
             return;
         }
@@ -134,6 +142,11 @@ public partial class App : System.Windows.Application
             Settings.DirOverride = dev.Folder;
             AppController.InstanceSuffix = dev.InstanceSuffix;
             AppController.DevHotkeys = dev.BindHotkeys;
+            AppController.DevAcceptImport = dev.AcceptImport;
+            AppController.DevToken = dev.AllowToken;
+            AppController.DevRecord = dev.Record;
+            SettingsImport.PackagesRoot = dev.PackagesRoot;   // a --dev instance looks for other copies' settings only where this says (tests)
+            SettingsImport.ForeignGuard = s => dev.Isolate(s, freshStore: false);   // and compares them as they would be once loaded here
         }
 
         // Normal run: one instance; "--clip" / "--show" talk to it. A second instance only forwards its command and exits,
@@ -141,13 +154,27 @@ public partial class App : System.Windows.Application
         if (!AppController.AcquireSingleInstance(args)) { Shutdown(0); return; }
         Log.Init(Settings.Dir);
 
+        // Is this Clink running inside a packaged app (the Claude desktop app), so that the AppData it reads and writes is that app's
+        // private copy? A --dev instance keeps everything in its own folder: nothing to find out.
+        if (dev == null) AppDataRedirect.Detect();
+
         var settings = Settings.Load();
-        if (dev != null && !settings.LoadedFromFile)
+        bool freshStore = !settings.LoadedFromFile;
+        // A first start of a real Clink takes over the newest settings another copy saved inside a packaged app's private AppData
+        // (before anything has read them, so no window or timer can save over them). Not from inside such an app, and not in a
+        // --dev instance, which looks only where --packages-root says. An existing store is only ever offered a copy (AppController).
+        if (freshStore && AppDataRedirect.Package == null && (dev == null || SettingsImport.PackagesRoot != null) && SettingsImport.ImportNewest() is { } imported)
         {
-            // A first start of this dev folder: the clips, and everything else the real Clink would reach for outside it, stay inside it.
-            settings.ClipsFolder = Path.Combine(dev.Folder, "clips");
-            settings.AutoUpdate = false;
-            settings.RunAtStartup = false;
+            settings = Settings.Load();
+            settings.ImportedFrom = imported;
+        }
+        if (dev != null)
+        {
+            // Whatever the dev folder's settings file says (a copied fixture, one taken over from another copy, a real Clink's), this
+            // instance stays away from the real clips, archive, updates and account: on every start, and after an import.
+            var isolated = dev.Isolate(settings, freshStore);
+            if (isolated.Count > 0) Log.Info("dev: kept away from the real world: " + string.Join("; ", isolated));
+            if (settings.ImportedFrom != null) settings.Save();   // an imported file may not need migrating, which would leave it as it came
         }
         var updater = new Updater(settings);
         updater.LogSource();

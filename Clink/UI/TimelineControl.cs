@@ -7,7 +7,9 @@ namespace Clink.UI;
 
 /// <summary>
 /// Editor-style timeline: a bar with the selected (kept) range, draggable in/out handles, a playhead that can be
-/// scrubbed, time labels and keyframe ticks. Keyboard handling is left to the hosting window.
+/// scrubbed, time labels and keyframe ticks. Keyboard handling is left to the hosting window. With
+/// <see cref="ShowSelection"/> off it is a plain seek bar: the played part, the playhead and the time labels, no range,
+/// handles or keyframes.
 /// </summary>
 internal sealed class TimelineControl : FrameworkElement
 {
@@ -21,12 +23,19 @@ internal sealed class TimelineControl : FrameworkElement
         nameof(SelectionEnd), typeof(double), typeof(TimelineControl), new FrameworkPropertyMetadata(0.0, FrameworkPropertyMetadataOptions.AffectsRender, OnSelectionChanged));
     public static readonly DependencyProperty KeyframesProperty = DependencyProperty.Register(
         nameof(Keyframes), typeof(IList<double>), typeof(TimelineControl), new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
+    public static readonly DependencyProperty ShowSelectionProperty = DependencyProperty.Register(
+        nameof(ShowSelection), typeof(bool), typeof(TimelineControl), new FrameworkPropertyMetadata(true, FrameworkPropertyMetadataOptions.AffectsRender));
 
     public double Duration { get => (double)GetValue(DurationProperty); set => SetValue(DurationProperty, value); }
     public double Position { get => (double)GetValue(PositionProperty); set => SetValue(PositionProperty, value); }
     public double SelectionStart { get => (double)GetValue(SelectionStartProperty); set => SetValue(SelectionStartProperty, value); }
     public double SelectionEnd { get => (double)GetValue(SelectionEndProperty); set => SetValue(SelectionEndProperty, value); }
     public IList<double>? Keyframes { get => (IList<double>?)GetValue(KeyframesProperty); set => SetValue(KeyframesProperty, value); }
+    /// <summary>
+    /// True (the default): the range to keep, its two handles and the keyframe ticks are drawn and the handles can be dragged.
+    /// False: a seek bar for playing a clip, where a click or drag anywhere only moves the playhead and the part already played is filled.
+    /// </summary>
+    public bool ShowSelection { get => (bool)GetValue(ShowSelectionProperty); set => SetValue(ShowSelectionProperty, value); }
 
     /// <summary>Raised when the user scrubs the playhead (the new position has already been applied).</summary>
     public event Action<double>? PositionSeeked;
@@ -92,13 +101,15 @@ internal sealed class TimelineControl : FrameworkElement
 
         if (dur > 0)
         {
+            bool select = ShowSelection;
             double xs = XOf(SelectionStart), xe = XOf(SelectionEnd);
             if (xe < xs) (xs, xe) = (xe, xs);
+            if (!select) { xs = PadX + 1; xe = XOf(Position); }   // a seek bar: what has been played so far
             // Dimmed outside, highlighted inside.
             dc.DrawRoundedRectangle(accentDim, null, new Rect(xs, BarTop + 1, Math.Max(0, xe - xs), BarH - 2), 3, 3);
 
             // Keyframe ticks along the bottom edge of the bar.
-            var keys = Keyframes;
+            var keys = select ? Keyframes : null;
             if (keys != null && keys.Count > 0)
             {
                 var tickPen = new Pen(muted, 1) { StartLineCap = PenLineCap.Flat };
@@ -129,8 +140,11 @@ internal sealed class TimelineControl : FrameworkElement
             }
 
             // Handles (centred on their time, a bit taller than the bar) with a grip line.
-            DrawHandle(dc, xs, accent, bg);
-            DrawHandle(dc, xe, accent, bg);
+            if (select)
+            {
+                DrawHandle(dc, xs, accent, bg);
+                DrawHandle(dc, xe, accent, bg);
+            }
 
             // Playhead: 2 px line with a small triangle on top.
             double xp = Math.Round(XOf(Position));
@@ -177,7 +191,7 @@ internal sealed class TimelineControl : FrameworkElement
 
     private Drag HitTest(double x)
     {
-        if (Duration <= 0) return Drag.Scrub;
+        if (Duration <= 0 || !ShowSelection) return Drag.Scrub;
         double xs = XOf(SelectionStart), xe = XOf(SelectionEnd);
         double ds = Math.Abs(x - xs), de = Math.Abs(x - xe);
         if (ds <= HitTol && de <= HitTol) return ds <= de ? Drag.Start : Drag.End;

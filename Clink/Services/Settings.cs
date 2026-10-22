@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.IO;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -37,7 +38,14 @@ internal sealed class HotkeyBinding
     public bool Win { get; set; }
     public int Vk { get; set; } = 0x78; // F9 (what a hand-edited binding without a "Vk" has always meant)
 
-    public HotkeyBinding Clone() => new() { Ctrl = Ctrl, Alt = Alt, Shift = Shift, Win = Win, Vk = Vk };
+    /// <summary>Keys inside this binding that this version does not know (written by a newer Clink): kept and written back, like <see cref="Settings.Unknown"/>.</summary>
+    [JsonExtensionData] public Dictionary<string, JsonElement>? Unknown { get; set; }
+
+    public HotkeyBinding Clone() => new()
+    {
+        Ctrl = Ctrl, Alt = Alt, Shift = Shift, Win = Win, Vk = Vk,
+        Unknown = Unknown == null ? null : new Dictionary<string, JsonElement>(Unknown),
+    };
 
     /// <summary>The same key with the same modifiers (two unset bindings, <see cref="Vk"/> 0, are the same).</summary>
     public bool SameKeys(HotkeyBinding? other) =>
@@ -62,12 +70,16 @@ internal sealed class HotkeyAction
     /// <summary>clip | pause | share-last</summary>
     public string Action { get; set; } = "clip";
     public int Seconds { get; set; } = 0;
+    /// <summary>Keys inside this hotkey that this version does not know (written by a newer Clink): kept and written back, like <see cref="Settings.Unknown"/>.</summary>
+    [JsonExtensionData] public Dictionary<string, JsonElement>? Unknown { get; set; }
 }
 
 internal sealed class ToastSetting
 {
     public bool Enabled { get; set; } = true;
     public int Seconds { get; set; } = 5;
+    /// <summary>Keys inside this toast setting that this version does not know (written by a newer Clink): kept and written back, like <see cref="Settings.Unknown"/>.</summary>
+    [JsonExtensionData] public Dictionary<string, JsonElement>? Unknown { get; set; }
 }
 
 internal sealed class Settings
@@ -75,8 +87,9 @@ internal sealed class Settings
     /// <summary>The settings.json layout this version writes: 1 = v0.1 (one Hotkey), 2 = v0.2 (the Hotkeys list), 3 = v0.2.5 (the main hotkey first, Theme, Accent).</summary>
     public const int CurrentSchema = 3;
     /// <summary>
-    /// Layout version of the file. A file without it is 2 when it has a Hotkeys list, else 1; saving writes at least
-    /// <see cref="CurrentSchema"/>, and a number from a newer Clink is kept as it is.
+    /// Layout version of the file. A file without it is 2 when it has a Hotkeys list, else 1. Saving always writes
+    /// <see cref="CurrentSchema"/>, over a higher number too: a newer Clink that reads the file after this version has rewritten it
+    /// must see "3" and check its own rules again, not trust a number that no longer describes what is in the file.
     /// </summary>
     public int SchemaVersion { get; set; } = CurrentSchema;
 
@@ -155,6 +168,12 @@ internal sealed class Settings
     /// <summary>cyan | blue | violet | pink | orange | green</summary>
     public string Accent { get; set; } = SettingsDefaults.Accent;
     /// <summary>
+    /// The copies of the settings that another Clink saved in a packaged app's private AppData (SettingsImport) which the user turned
+    /// down: "&lt;package&gt;|&lt;ticks of the time it was saved&gt;", one per package, ';' between them. A copy saved again later is a
+    /// different one and is offered again.
+    /// </summary>
+    public string? ImportDeclined { get; set; }
+    /// <summary>
     /// Keys in settings.json that this version does not know (written by a newer Clink). They are kept and written back by
     /// <see cref="Save"/>, so going back and forth between versions does not drop the newer one's settings.
     /// </summary>
@@ -196,13 +215,37 @@ internal sealed class Settings
 
     /// <summary>The schema number the loaded file had (see <see cref="SchemaVersion"/>); 0 when nothing was read from a file.</summary>
     private int _fileSchema;
+    /// <summary>The text of a settings file of schema 1 or 2 that was loaded: <see cref="Save"/> keeps it once as settings.pre-v3.json before the file is rewritten in schema 3.</summary>
+    private string? _preV3Text;
+    private bool _hotkeysInShape;   // EnsureHotkeyModel has run: Hotkeys is in schema-3 shape, whatever schema the file had
+    private readonly List<string> _unreadable = new();
 
-    /// <summary>settings.json exists but could not be read (a hand edit with a typo), so Clink started from the backup or the defaults: a message for the user, or null.</summary>
+    /// <summary>
+    /// settings.json (or its backup) parsed, but these values could not be read: they kept their defaults. Empty when every value
+    /// was fine. The file itself stays as it is until the next save, and a copy of it is kept as settings.json.unreadable.
+    /// </summary>
+    [JsonIgnore] public IReadOnlyList<string> UnreadableValues => _unreadable;
+
+    /// <summary>
+    /// settings.json exists but could not be read (a hand edit with a typo), so Clink started from the backup or the defaults, or it
+    /// was read except for some values that kept their defaults: a message for the user, or null.
+    /// </summary>
     [JsonIgnore] public string? LoadProblem { get; private set; }
+
+    /// <summary>settings.json itself was skipped (it did not parse), as opposed to read with some values that kept their defaults.</summary>
+    [JsonIgnore] public bool FileWasSkipped { get; private set; }
+
+    /// <summary>
+    /// Set by a first start that took over the settings another Clink had saved inside a packaged app's private AppData
+    /// (<see cref="SettingsImport.ImportNewest"/>); <c>AppController.Start</c> says so once.
+    /// </summary>
+    [JsonIgnore] public ForeignSettings? ImportedFrom { get; set; }
 
     /// <summary>Where the settings live instead of <c>%APPDATA%\Clink</c>: set by <c>--dev &lt;folder&gt;</c> and by the unit tests, null otherwise.</summary>
     internal static string? DirOverride { get; set; }
-    public static string Dir => DirOverride ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Clink");
+    /// <summary>The real settings folder, <c>%APPDATA%\Clink</c>, whatever <see cref="DirOverride"/> says: what a <c>--dev</c> folder must never be.</summary>
+    internal static string RealDir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Clink");
+    public static string Dir => DirOverride ?? RealDir;
     public static string FilePath => Path.Combine(Dir, "settings.json");
 
     // Lenient reading, because README invites hand edits: a trailing comma, a // comment or a number in quotes must not make
@@ -216,6 +259,39 @@ internal sealed class Settings
     };
     private static readonly JsonDocumentOptions s_doc = new() { AllowTrailingCommas = true, CommentHandling = JsonCommentHandling.Skip };
     private static readonly object s_saveGate = new();        // Save() is also called from the updater's background thread
+    private static volatile bool s_frozen;
+
+    /// <summary>
+    /// From now on <see cref="Save"/> writes nothing. An import replaces settings.json behind the running Clink's back and then
+    /// restarts it; a save that is still pending (the window's 800 ms timer, the updater) must not put the old settings back.
+    /// </summary>
+    public static void FreezeSaves()
+    {
+        s_frozen = true;
+        Log.Info("settings: saves are frozen");
+    }
+
+    /// <summary>Undoes <see cref="FreezeSaves"/> (an import that failed before it replaced anything, and the unit tests).</summary>
+    internal static void ThawSaves() => s_frozen = false;
+
+    internal static bool SavesFrozen => s_frozen;
+
+    // The properties a settings file can set: public with a public setter, not [JsonIgnore], not the extension data.
+    private static Dictionary<string, PropertyInfo>? s_bindable;
+    private static Dictionary<string, PropertyInfo> Bindable => s_bindable ??= typeof(Settings)
+        .GetProperties(BindingFlags.Public | BindingFlags.Instance)
+        .Where(p => p.CanWrite && p.SetMethod!.IsPublic && p.GetIndexParameters().Length == 0
+                    && p.GetCustomAttribute<JsonIgnoreAttribute>() == null && p.GetCustomAttribute<JsonExtensionDataAttribute>() == null)
+        .ToDictionary(p => p.Name, StringComparer.OrdinalIgnoreCase);
+
+    // The floating-point settings (Window*, HdrKnee, HdrPeak, KeyframeSeconds, ClickVolume, ArchiveWhenLocalExceedsGB, ...) and
+    // what a fresh Settings holds in them: a NaN / Infinity is put back to that before every save (see Sanitize).
+    private static PropertyInfo[]? s_floating;
+    private static PropertyInfo[] FloatingProperties => s_floating ??= Bindable.Values
+        .Where(p => p.PropertyType == typeof(double) || p.PropertyType == typeof(float) || p.PropertyType == typeof(double?) || p.PropertyType == typeof(float?))
+        .ToArray();
+    private static Settings? s_defaults;
+    private static Settings Defaults => s_defaults ??= new Settings();
 
     public static Settings Load()
     {
@@ -230,37 +306,100 @@ internal sealed class Settings
         bool fromBackup = s != null && unreadable != null;
         s ??= new Settings();
         s.LoadedFromFile = existed;
+        s.FileWasSkipped = unreadable != null;
         // Said at start (AppController.Start): a hand edit that does not parse must not just silently have no effect.
-        if (unreadable != null) s.LoadProblem = $"settings.json was not used ({unreadable}): Clink started with {(fromBackup ? "the previous settings" : "default settings")}";
+        var problems = new List<string>();
+        if (unreadable != null) problems.Add($"settings.json was not used ({unreadable}): Clink started with {(fromBackup ? "the previous settings" : "default settings")}");
+        if (s._unreadable.Count > 0)
+        {
+            // It parsed, but some values did not make sense: those keep their defaults. The file is left as it is until the next save,
+            // so what it said is kept beside it first. (When the file itself was skipped, ReadWithFallback has kept it already.)
+            bool kept = unreadable == null && KeepUnreadableCopy();
+            problems.Add($"settings.json: kept the defaults for {string.Join(", ", s._unreadable)} (unreadable values)" + (kept ? "; the original is kept as settings.json.unreadable" : ""));
+        }
+        if (problems.Count > 0) s.LoadProblem = string.Join(". ", problems);
         s.Normalize();
         // A file of an older schema, or no usable file at all (a first start): the caller saves once, in the current layout.
         if (s._fileSchema < CurrentSchema) s.Migrated = true;
-        s.SchemaVersion = Math.Max(s._fileSchema, CurrentSchema);
+        s.SchemaVersion = CurrentSchema;   // what a save writes, whatever number the file had (see SchemaVersion)
         return s;
     }
 
-    /// <summary>Deserializes one settings file and applies the migrations that need to know which keys the file had.</summary>
-    private static Settings Parse(string json)
+    private static bool KeepUnreadableCopy()
     {
-        var s = JsonSerializer.Deserialize<Settings>(json, s_json) ?? new Settings();
-        s._fileSchema = 1;
-        try
+        try { File.Copy(FilePath, FilePath + ".unreadable", overwrite: true); return true; }
+        catch (Exception ex) { Log.Warn("settings.json: could not keep a copy: " + ex.Message); return false; }
+    }
+
+    /// <summary>
+    /// Reads settings from JSON text the way <see cref="Load"/> does (tolerant, normalized) but touches no file and logs nothing:
+    /// for comparing another copy of the settings with the running ones (SettingsImport). Throws when the text is not a JSON object.
+    /// </summary>
+    internal static Settings FromJson(string json)
+    {
+        var s = ParseCore(json, quiet: true);
+        s.Normalize();
+        return s;
+    }
+
+    /// <summary>These settings as the JSON text <see cref="Save"/> would write (without touching the file or the values).</summary>
+    internal string ToJson()
+    {
+        lock (s_saveGate) return JsonSerializer.Serialize(this, s_json);
+    }
+
+    /// <summary>These settings as a JSON tree, for comparing two copies key by key.</summary>
+    internal JsonElement ToElement()
+    {
+        lock (s_saveGate) return JsonSerializer.SerializeToElement(this, s_json);
+    }
+
+    /// <summary>Deserializes one settings file and applies the migrations that need to know which keys the file had.</summary>
+    private static Settings Parse(string json) => ParseCore(json, quiet: false);
+
+    /// <summary>
+    /// Binds the keys of a settings file one by one, so that a value that cannot be read (<c>"Fps": "sixty"</c>, <c>"BufferSeconds": [1]</c>)
+    /// costs that one setting its default and nothing else; it is logged, and listed in <see cref="UnreadableValues"/>. Keys this
+    /// version has no setting for go to <see cref="Unknown"/>. Text that is not JSON at all still throws, which is what sends
+    /// <see cref="AtomicFile.ReadWithFallback"/> to the backup.
+    /// </summary>
+    private static Settings ParseCore(string json, bool quiet)
+    {
+        using var doc = JsonDocument.Parse(json, s_doc);
+        var root = doc.RootElement;
+        var s = new Settings { _fileSchema = 1 };
+        if (root.ValueKind == JsonValueKind.Null) return s;   // a file that says "null" has always been an empty one
+        if (root.ValueKind != JsonValueKind.Object) throw new JsonException($"expected a JSON object, found {root.ValueKind.ToString().ToLowerInvariant()}");
+        foreach (var p in root.EnumerateObject())
         {
-            using var doc = JsonDocument.Parse(json, s_doc);
-            if (doc.RootElement.ValueKind == JsonValueKind.Object)
+            if (!Bindable.TryGetValue(p.Name, out var prop))
             {
-                s.HotkeysFromFile = HasKey(doc.RootElement, nameof(Hotkeys));
-                s._fileSchema = SchemaOf(doc.RootElement);
-                // v1 "ShowToast": false becomes the clip toast's switch when the file has no v2 toast setting yet.
-                if (!s.ShowToast && !HasKey(doc.RootElement, nameof(ToastClip)))
-                {
-                    s.ToastClip ??= new ToastSetting { Seconds = 7 };
-                    s.ToastClip.Enabled = false;
-                    Log.Info("settings: migrated ShowToast=false → ToastClip.Enabled=false");
-                }
+                (s.Unknown ??= new())[p.Name] = p.Value.Clone();   // the document is disposed below: keep a copy of the element
+                continue;
+            }
+            try
+            {
+                // null is a value for a text or an optional number, not for a number or a switch: PropertyInfo.SetValue would turn it into 0 / false.
+                if (p.Value.ValueKind == JsonValueKind.Null && prop.PropertyType.IsValueType && Nullable.GetUnderlyingType(prop.PropertyType) == null)
+                    throw new JsonException("null for a setting that has to have a value");
+                prop.SetValue(s, p.Value.Deserialize(prop.PropertyType, s_json));
+            }
+            catch (Exception ex)
+            {
+                if (!s._unreadable.Contains(prop.Name)) s._unreadable.Add(prop.Name);
+                if (!quiet) Log.Warn($"settings: {prop.Name} could not be read ({(ex is JsonException ? "wrong kind of value" : ex.Message)}); it keeps its default");
             }
         }
-        catch (Exception ex) { Log.Warn("settings: key scan: " + ex.Message); }
+        s.HotkeysFromFile = HasKey(root, nameof(Hotkeys));
+        s._fileSchema = SchemaOf(root);
+        // v1 "ShowToast": false becomes the clip toast's switch when the file has no v2 toast setting yet.
+        if (!s.ShowToast && !HasKey(root, nameof(ToastClip)))
+        {
+            s.ToastClip ??= new ToastSetting { Seconds = 7 };
+            s.ToastClip.Enabled = false;
+            if (!quiet) Log.Info("settings: migrated ShowToast=false → ToastClip.Enabled=false");
+        }
+        if (s._fileSchema < CurrentSchema) s._preV3Text = json;
         return s;
     }
 
@@ -316,66 +455,150 @@ internal sealed class Settings
     /// <summary>
     /// Puts <see cref="Hotkeys"/> in the shape the rest of Clink relies on: <c>Hotkeys[0]</c> is the main hotkey, a "clip" with
     /// Seconds 0 (the full replay) that may be unset, and every later row is an additional hotkey. Runs on every load and does
-    /// nothing to a list that is already in shape (the flags below are only ever raised, never cleared).
+    /// nothing to a list that is already in shape (the flags below are only ever raised, never cleared). Nothing that is bound
+    /// changes what it does: a key that fires something today fires the same thing afterwards.
     /// <list type="number">
-    /// <item>An empty list from a file without a Hotkeys key (v0.1, or a first start): the main is the <see cref="Hotkey"/> (Alt+C on a first start, the file's own key for v0.1).</item>
-    /// <item>Otherwise the main is the first "clip" row with Seconds 0 that has keys, else the first one without; it moves to index 0 and keeps its keys. Nobody's binding changes what it does.</item>
-    /// <item>No such row (every clip hotkey has a fixed length, or the list is empty): a main is inserted at index 0 and every other row stays as it is. It gets Alt+C (<see cref="MainHotkeyAssigned"/>) unless a row already uses those keys, then it is unset (<see cref="MainHotkeyNeedsSetup"/>).</item>
+    /// <item>No Hotkeys key and an empty list (a v0.1 file, or a first start): the main is the <see cref="Hotkey"/> (the file's own key for v0.1, Alt+C on a first start).</item>
+    /// <item>A Hotkeys list that is empty ("no hotkeys, by choice" in v0.2.4, or a list that could not be read): an unset main (<see cref="MainHotkeyNeedsSetup"/>). Alt+C is not bound, and swallowed system-wide, for someone who chose to have no hotkeys.</item>
+    /// <item>Otherwise the main is the first "clip" row with Seconds 0 that has keys and that no earlier row with the same keys shadows (the first match fires, so putting it ahead of such a row would change what the key does); it moves to index 0 and keeps its keys.</item>
+    /// <item>No such row. In a file of schema 3 a full-replay row without keys is the main the user cleared and stays the main. In an older file a full-replay row without keys is the "Default" row that v0.2.4's Add hotkey makes, never given keys, and nobody's choice; and a main is also needed when every clip hotkey has a fixed length, or the full-replay row is shadowed. The main is that unset row, or a new row at index 0, with Alt+C (<see cref="MainHotkeyAssigned"/>) unless a row already uses those keys, then unset (<see cref="MainHotkeyNeedsSetup"/>).</item>
     /// <item>The main is forced to "clip" with Seconds 0, and <see cref="Hotkey"/> follows its keys when it has any.</item>
     /// </list>
     /// <see cref="Migrated"/> is raised when anything changed, so the caller saves once.
     /// </summary>
     internal void EnsureHotkeyModel()
     {
+        // Clink.Services.Hotkeys, not the Hotkeys property of this class.
+        static bool FullReplay(HotkeyAction h) => global::Clink.Services.Hotkeys.IsClip(h.Action) && h.Seconds <= 0;
         bool changed = false;
-        if (Hotkeys.Count == 0 && !HotkeysFromFile)
+        bool older = !_hotkeysInShape && _fileSchema > 0 && _fileSchema < CurrentSchema;   // rows written by v0.1 / v0.2.x
+
+        void MoveToFront(int i)
         {
-            Hotkeys.Add(new HotkeyAction { Keys = Hotkey.Clone(), Action = "clip", Seconds = 0 });
-            if (Hotkey.Vk <= 0) MainHotkeyNeedsSetup = true;   // a hand-edited v0.1 file with no key at all
+            if (i <= 0) return;
+            var row = Hotkeys[i];
+            Hotkeys.RemoveAt(i);
+            Hotkeys.Insert(0, row);
+            changed = true;
+        }
+
+        if (Hotkeys.Count == 0)
+        {
+            if (!HotkeysFromFile)
+            {
+                Hotkeys.Add(new HotkeyAction { Keys = Hotkey.Clone(), Action = "clip", Seconds = 0 });
+                if (Hotkey.Vk <= 0) MainHotkeyNeedsSetup = true;   // a hand-edited v0.1 file with no key at all
+            }
+            else
+            {
+                Hotkeys.Add(new HotkeyAction { Keys = new HotkeyBinding { Vk = 0 }, Action = "clip", Seconds = 0 });
+                MainHotkeyNeedsSetup = true;
+            }
             changed = true;
         }
         else
         {
-            // Clink.Services.Hotkeys, not the Hotkeys property of this class.
-            static bool FullReplayClip(HotkeyAction h) => global::Clink.Services.Hotkeys.IsClip(h.Action) && h.Seconds <= 0;
-            int main = Hotkeys.FindIndex(h => FullReplayClip(h) && h.Keys.Vk > 0);
-            if (main < 0) main = Hotkeys.FindIndex(FullReplayClip);
-            if (main > 0)
+            int lead = -1;
+            for (int i = 0; i < Hotkeys.Count && lead < 0; i++)
             {
-                var row = Hotkeys[main];
-                Hotkeys.RemoveAt(main);
-                Hotkeys.Insert(0, row);
-                changed = true;
+                var h = Hotkeys[i];
+                if (!FullReplay(h) || h.Keys.Vk <= 0) continue;
+                bool shadowed = false;
+                for (int j = 0; j < i && !shadowed; j++) shadowed = Hotkeys[j].Keys.SameKeys(h.Keys);
+                if (!shadowed) lead = i;
             }
-            else if (main < 0)
+            if (lead >= 0) MoveToFront(lead);
+            else
             {
-                // Alt+C unless one of the rows (a pause, a share, a shorter clip) is already on it: it must not be bound twice.
-                var alt = SettingsDefaults.MainHotkey();
-                bool taken = Hotkeys.Any(h => h.Keys.SameKeys(alt));
-                Hotkeys.Insert(0, new HotkeyAction { Keys = taken ? new HotkeyBinding { Vk = 0 } : alt, Action = "clip", Seconds = 0 });
-                if (taken) MainHotkeyNeedsSetup = true; else MainHotkeyAssigned = true;
-                changed = true;
+                int unset = Hotkeys.FindIndex(h => FullReplay(h) && h.Keys.Vk <= 0);
+                if (unset >= 0 && !older) MoveToFront(unset);   // schema 3: the main the user cleared
+                else
+                {
+                    // Alt+C unless one of the rows (a pause, a share, a shorter clip) is already on it: it must not be bound twice.
+                    var alt = SettingsDefaults.MainHotkey();
+                    bool free = !Hotkeys.Any(h => h.Keys.SameKeys(alt));
+                    HotkeyAction main;
+                    if (unset >= 0) { main = Hotkeys[unset]; MoveToFront(unset); }   // the "Default" row nobody gave keys
+                    else { main = new HotkeyAction { Keys = new HotkeyBinding { Vk = 0 }, Action = "clip", Seconds = 0 }; Hotkeys.Insert(0, main); }
+                    if (free) { main.Keys = alt; MainHotkeyAssigned = true; } else MainHotkeyNeedsSetup = true;
+                    changed = true;
+                }
             }
         }
         var m = Hotkeys[0];
         if (m.Action != "clip") { m.Action = "clip"; changed = true; }
         if (m.Seconds != 0) { m.Seconds = 0; changed = true; }
         if (m.Keys.Vk > 0 && !Hotkey.SameKeys(m.Keys)) { Hotkey = m.Keys.Clone(); changed = true; }
+        _hotkeysInShape = true;   // what is here now is schema-3 shape: a second pass must not read it as an older file's rows
         if (changed) Migrated = true;
     }
 
+    /// <summary>
+    /// Writes settings.json. Always on the UI thread: a save asked for from another thread (the updater's, after a check or a
+    /// download) is queued there, so it never reads the hotkey or custom-app lists while the UI changes them ("Collection was
+    /// modified"). Does nothing while <see cref="FreezeSaves"/> is in force.
+    /// </summary>
     public void Save()
     {
+        if (s_frozen) return;
+        var ui = System.Windows.Application.Current?.Dispatcher;
+        if (ui != null && !ui.CheckAccess() && !ui.HasShutdownStarted)
+        {
+            ui.BeginInvoke(new Action(Save));
+            return;
+        }
         try
         {
             lock (s_saveGate)
             {
-                if (SchemaVersion < CurrentSchema) SchemaVersion = CurrentSchema;
+                if (s_frozen) return;
+                Sanitize();
+                SchemaVersion = CurrentSchema;
                 Directory.CreateDirectory(Dir);
+                KeepPreV3Copy();
                 AtomicFile.WriteAllText(FilePath, JsonSerializer.Serialize(this, s_json));
             }
         }
         catch (Exception ex) { Log.Warn("Settings save failed: " + ex.Message); }
+    }
+
+    /// <summary>
+    /// A NaN or Infinity in a floating-point setting (a window position that was never set, a hand edit) is put back to what a
+    /// fresh Settings holds there (null for the window's position and size, which means "let Windows place it"): such a value would
+    /// be written as the text "NaN", which is no number to anything else that reads the file, and means nothing as a position or a
+    /// volume. Under the save gate.
+    /// </summary>
+    private void Sanitize()
+    {
+        foreach (var p in FloatingProperties)
+        {
+            bool nonFinite = p.GetValue(this) switch { double d => !double.IsFinite(d), float f => !float.IsFinite(f), _ => false };
+            if (!nonFinite) continue;
+            p.SetValue(this, p.GetValue(Defaults));
+            Log.Warn($"settings: {p.Name} was not a number, it is back to its default");
+        }
+    }
+
+    /// <summary>
+    /// The first save in schema 3 of a file that was in schema 1 or 2: what the old file said is kept beside it as
+    /// settings.pre-v3.json, once. An existing copy is never overwritten, so it stays the file Clink found before it first changed it.
+    /// </summary>
+    private void KeepPreV3Copy()
+    {
+        string? old = _preV3Text;
+        if (old == null) return;
+        _preV3Text = null;
+        try
+        {
+            string path = Path.Combine(Dir, "settings.pre-v3.json");
+            if (File.Exists(path)) return;
+            using var fs = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+            byte[] bytes = new UTF8Encoding(false).GetBytes(old);
+            fs.Write(bytes, 0, bytes.Length);
+            Log.Info($"settings: the schema-{_fileSchema} file is kept as settings.pre-v3.json");
+        }
+        catch (IOException) { }   // it appeared meanwhile: leave it alone
+        catch (Exception ex) { Log.Warn("settings: could not keep settings.pre-v3.json: " + ex.Message); }
     }
 
     private static string? Protect(string? value)
