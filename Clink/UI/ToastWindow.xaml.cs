@@ -175,7 +175,7 @@ internal sealed class Toasts
 /// over it), and every way out (the timer, the close button, a button action, <see cref="Toasts.CloseAll"/>) goes through
 /// <see cref="Dismiss"/>: a fade-out, then the real Close().
 /// </summary>
-public partial class ToastWindow : Window
+public partial class ToastWindow : Window, ICaptureExcludedWindow
 {
     private static readonly TimeSpan FadeInTime = TimeSpan.FromMilliseconds(180), FadeOutTime = TimeSpan.FromMilliseconds(260);
 
@@ -217,13 +217,9 @@ public partial class ToastWindow : Window
 
     /// <summary>
     /// A tooltip's popup is a window of its own: every tooltip on a toast's elements (a plain string or a ToolTip, wherever it
-    /// is set) is kept out of capture like the toast it belongs to. A tooltip's PlacementTarget is its owner element.
+    /// is set) is kept out of capture like the toast it belongs to, as are those of the share window (<see cref="CaptureExclusion"/>).
     /// </summary>
-    static ToastWindow() => EventManager.RegisterClassHandler(typeof(System.Windows.Controls.ToolTip), System.Windows.Controls.ToolTip.OpenedEvent, new RoutedEventHandler((s, _) =>
-    {
-        if (s is System.Windows.Controls.ToolTip { PlacementTarget: { } owner } tip && GetWindow(owner) is ToastWindow && PresentationSource.FromVisual(tip) is HwndSource src)
-            ScreenPlacement.ExcludeFromCapture(src.Handle);
-    }));
+    static ToastWindow() => CaptureExclusion.Register();
 
     /// <summary>v1 MainWindow compatibility (<c>new ToastWindow().Show(entry)</c>); the v2 UI goes through <see cref="AppController.Toasts"/>.</summary>
     public ToastWindow() : this(null!, "clip", null, null, "Clip saved", "", TimeSpan.FromSeconds(7), false) { }
@@ -282,8 +278,10 @@ public partial class ToastWindow : Window
         var app = AppController.Instance;
         if (app.LastShareOutcome == ShareOutcome.FileShareOpened) { Dismiss(); return; }   // no Copium token: the share window took over
         if (_dismissed) return;          // closed while it was uploading
-        // Short labels (the card is 330 wide); the full refusal or failure reason is the tooltip.
-        ShareButton.Content = app.ShareRefusal != null ? (app.Settings.CopiumPlus ? "Over Plus limit" : "Over free limit") : "Upload failed";
+        // Short labels (the card is 330 wide); the full refusal or failure reason is the tooltip. The rare "could not open the share
+        // window" (no token) is no upload failure: the subtitle below names it.
+        ShareButton.Content = app.ShareRefusal != null ? (app.Settings.CopiumPlus ? "Over Plus limit" : "Over free limit")
+            : app.LastShareOutcome == ShareOutcome.WindowFailed ? "Share failed" : "Upload failed";
         ShareButton.ToolTip = app.ShareRefusal ?? app.ShareError;
         if (app.ShareRefusal == null && app.ShareError is string why)
         {
