@@ -14,6 +14,9 @@ namespace Clink.Services;
 /// <summary>What Clink is doing right now, for the window, the tray and the status dot.</summary>
 internal enum RecordingState { Starting, Recording, WaitingForGame, Paused, Error }
 
+/// <summary>How a Share ended (<see cref="AppController.LastShareOutcome"/>): a link copied or uploaded; the share window opened because there is no Copium token (nothing failed); turned down for Copium's limits; or failed.</summary>
+internal enum ShareOutcome { None, LinkCopied, Uploaded, FileShareOpened, Refused, Failed }
+
 /// <summary>Owns the engine, settings, clip library, hotkeys, game detection, toasts, status dot, archive, tray icon and the single-instance pipe.</summary>
 internal sealed class AppController : IDisposable
 {
@@ -46,6 +49,13 @@ internal sealed class AppController : IDisposable
     public string? ShareRefusal { get; private set; }
     /// <summary>Why the last <see cref="ShareAsync"/> failed (no token, Copium's answer, the network), for the clip row, the toast and the trim editor to show; null when it did not fail.</summary>
     public string? ShareError { get; private set; }
+    /// <summary>
+    /// How the last <see cref="ShareAsync"/> ended, set on every path of it. The callers tell "the share window opened" (no Copium
+    /// token: the user has the file to drag, nothing failed, so no error line) from a failure by it; read it right after the call returns.
+    /// </summary>
+    public ShareOutcome LastShareOutcome { get; private set; }
+    /// <summary>A Copium upload token is saved: Share uploads. Without one it opens the share window (the file to drag) instead.</summary>
+    public bool HasCopiumToken => !string.IsNullOrWhiteSpace(Settings.CopiumToken);
     /// <summary>Version of a downloaded update waiting to be installed, or null.</summary>
     public Version? PendingVersion => Updater.PendingVersion;
 
@@ -706,7 +716,11 @@ internal sealed class AppController : IDisposable
         finally { saved.TrySetResult(null); _saving = 0; }
     }
 
-    /// <summary>Shares the newest clip (the "share last clip" hotkey / tray item): uploads it, or copies its link if it already has one.</summary>
+    /// <summary>
+    /// Shares the newest clip (the "share last clip" hotkey / tray item): uploads it, or copies its link if it already has one. With
+    /// no Copium token it opens the share window for the file (see <see cref="ShareAsync"/>), except over the detected game, where it
+    /// only says to open Clink.
+    /// </summary>
     public async void ShareLast()
     {
         // "Clip, then share" (a Stream Deck multi-action, --clip then --share-last, two quick presses) means the clip being saved
@@ -728,42 +742,95 @@ internal sealed class AppController : IDisposable
             return;
         }
         else entry = Library.Entries.FirstOrDefault(e => e.IsShared || e.IsArchived || e.Exists);
-        bool ok = false, joined = false;
+        bool ok = false, joined = false, windowOpened = false;
         if (entry == null) Say("No clips to share yet");
         else
         {
             // A second press during the same upload gets the same result: the press that started it reports a failure, once.
             joined = _uploads.TryGetValue(entry, out var running) && running.Announced;
             ok = await ShareAsync(entry, announce: true);
+            windowOpened = LastShareOutcome == ShareOutcome.FileShareOpened;   // no Copium token: the share window is the answer, not a problem
         }
         // The hotkey, the tray item and --share-last have no UI of their own, and the window is usually in the tray, minimized or
         // behind the game: a refusal (or a failure) that only reached the footer would be invisible (NotifyProblem: a toast over
         // the game, a tray balloon otherwise).
-        if (!ok && !joined && LastNotice.Length > 0) NotifyProblem("Clip not uploaded", LastNotice);
+        if (!ok && !joined && !windowOpened && LastNotice.Length > 0) NotifyProblem("Clip not uploaded", LastNotice);
     }
 
-    /// <param name="announce">From the hotkey / tray / --share-last, which have no progress UI of their own: unless the window is in front, a toast says the upload started.</param>
+    /// <summary>
+    /// Why a clip may not go to Copium with this account, or null when it fits: "Over Copium's free limit (200 MB / 10 min)"
+    /// without Copium+, "Over Copium Plus's limit (2 GB / 60 min)" with it (<see cref="Capabilities.CopiumLimits"/>). Copium would
+    /// refuse it after a long upload; Share says so up front. A clip exactly at a limit passes. Pure.
+    /// </summary>
+    internal static string? ShareRefusalFor(long size, double duration, bool plus)
+    {
+        var (maxBytes, maxSeconds, label) = Capabilities.CopiumLimits(plus);
+        return size > maxBytes || duration > maxSeconds ? "Over " + label : null;
+    }
+
+    /// <summary>The footer line for a clip <see cref="ShareRefusalFor"/> turned down: what the account takes, how big the clip is, what to do about it.</summary>
+    internal static string ShareRefusalNotice(long size, double duration, bool plus)
+    {
+        var (maxBytes, maxSeconds, _) = Capabilities.CopiumLimits(plus);
+        // Rounded up: a full 10:00 replay saves a moment over 10 min (it starts on a keyframe) and must not read "10:00".
+        int secs = (int)Math.Ceiling(Math.Max(0, duration));
+        string length = duration > 0 ? $" / {secs / 60}:{secs % 60:00}" : "";   // folder-scanned clips have no duration
+        string limits = $"{Capabilities.FormatBytes(maxBytes)} / {maxSeconds / 60} min";
+        string clip = $"this clip is {Capabilities.FormatBytes(size)}{length}";
+        return plus
+            ? $"Copium Plus accepts up to {limits}; {clip} - trim it first"
+            : $"Copium free accepts up to {limits}; {clip} - trim it, or tick 'I have Copium+' if you do";
+    }
+
+    /// <summary>
+    /// Shares a clip: copies its link when it has one, otherwise uploads it to Copium. With no Copium token there is nothing to
+    /// upload to, so the share window opens with the file to drag into Discord, a browser or a folder instead
+    /// (<see cref="LastShareOutcome"/> is then <see cref="ShareOutcome.FileShareOpened"/>, and the result is false without a
+    /// <see cref="ShareError"/>). Returns true only when a link was copied or the clip was uploaded.
+    /// </summary>
+    /// <param name="announce">From the hotkey / tray / --share-last, which have no progress UI of their own: unless the window is in front, a toast says the upload started; and no window opens over a game.</param>
     public async Task<bool> ShareAsync(ClipEntry entry, IProgress<double>? progress = null, bool announce = false)
     {
         ShareRefusal = null;
         ShareError = null;
+        LastShareOutcome = ShareOutcome.None;
         if (!string.IsNullOrEmpty(entry.CopiumLink))
         {
             CopyToClipboard(entry.CopiumLink);
             Say("Link copied");
             Toasts.ShowShared(entry, entry.CopiumLink);
+            LastShareOutcome = ShareOutcome.LinkCopied;
             return true;
         }
         string? token = Settings.CopiumToken;
-        if (string.IsNullOrWhiteSpace(token)) { ShareError = "Add your Copium token first (Clip tab)"; Say(ShareError); ShowRequested?.Invoke(); return false; }
-        // Copium refuses files over 200 MB or 10 min without Copium+: say so now instead of uploading for a while and failing.
-        if (!Settings.CopiumPlus && (entry.Size > Capabilities.CopiumFreeBytes || entry.Duration > Capabilities.CopiumFreeSeconds))
+        if (string.IsNullOrWhiteSpace(token))
         {
-            // Rounded up: a full 10:00 replay saves a moment over 10 min (it starts on a keyframe) and must not read "10:00".
-            int secs = (int)Math.Ceiling(Math.Max(0, entry.Duration));
-            string length = entry.Duration > 0 ? $" / {secs / 60}:{secs % 60:00}" : "";   // folder-scanned clips have no duration
-            ShareRefusal = "Over Copium's free limit (200 MB / 10 min)";
-            Say($"Copium free accepts up to 200 MB / 10 min; this clip is {Capabilities.FormatBytes(entry.Size)}{length} - trim it, or tick 'I have Copium+' if you do");
+            // Nothing to upload to: hand over the file instead. The hotkey path over the game opens no window (it would land on the
+            // picture, and in the replay): it says where to go, and the caller shows the line over the game.
+            if (announce && Hotkeys.GameInFront())
+            {
+                ShareError = "No Copium token: open Clink to share the file";
+                Say(ShareError);
+                LastShareOutcome = ShareOutcome.Failed;
+                return false;
+            }
+            if (!OpenShareWindow(entry))
+            {
+                ShareError = "Could not open the share window";
+                Say(ShareError);
+                LastShareOutcome = ShareOutcome.Failed;
+                return false;
+            }
+            Say("Drag the clip where you want to share it");
+            LastShareOutcome = ShareOutcome.FileShareOpened;
+            return false;
+        }
+        // Copium refuses clips over the account's limits (200 MB / 10 min free, 2 GB / 60 min with Copium+): say so now instead of uploading for a while and failing.
+        if (ShareRefusalFor(entry.Size, entry.Duration, Settings.CopiumPlus) is string refusal)
+        {
+            ShareRefusal = refusal;
+            Say(ShareRefusalNotice(entry.Size, entry.Duration, Settings.CopiumPlus));
+            LastShareOutcome = ShareOutcome.Refused;
             return false;
         }
         // One upload per clip: the hotkey, the tray, the toast and the clip list can all ask for the same clip while it is going
@@ -772,7 +839,9 @@ internal sealed class AppController : IDisposable
         {
             Say("Already uploading this clip…");
             if (announce && !MainWindowInFront) Toasts.ShowUploading(entry, "Already uploading to Copium…");
-            return await running.Task;
+            bool joinedOk = await running.Task;
+            LastShareOutcome = joinedOk ? ShareOutcome.Uploaded : ShareOutcome.Failed;
+            return joinedOk;
         }
         var done = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         _uploads[entry] = (done.Task, announce);
@@ -805,9 +874,47 @@ internal sealed class AppController : IDisposable
         finally
         {
             _uploads.Remove(entry);
+            LastShareOutcome = ok ? ShareOutcome.Uploaded : ShareOutcome.Failed;   // before the waiting asks continue, which read it
             done.SetResult(ok);
         }
         return ok;
+    }
+
+    private readonly List<ShareWindow> _shareWindows = new();   // the open share windows (UI thread), one per clip
+
+    /// <summary>
+    /// Opens the share window for a clip: its file to drag into Discord, a browser upload box or a folder, Copy file, Open folder.
+    /// An open window for the same clip is brought forward instead of a second one. It has no owner (unlike the trim editor): the
+    /// user minimizes or hides the main window to get at the drop target, and an owned window would go with it. It floats on top
+    /// by itself and opens centred on the monitor under the pointer. UI thread; from another it runs there. False when the window
+    /// could not be opened (logged).
+    /// </summary>
+    public bool OpenShareWindow(ClipEntry entry)
+    {
+        if (!_ui.CheckAccess()) return _ui.Invoke(() => OpenShareWindow(entry));
+        try
+        {
+            var open = _shareWindows.FirstOrDefault(w => string.Equals(w.Entry.Path, entry.Path, StringComparison.OrdinalIgnoreCase));
+            if (open != null) { open.BringForward(); return true; }
+            var window = new ShareWindow(entry);
+            _shareWindows.Add(window);
+            window.Closed += (_, _) => _shareWindows.Remove(window);
+            try { window.Show(); }
+            catch { _shareWindows.Remove(window); throw; }
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.Error("share window", ex);
+            return false;
+        }
+    }
+
+    /// <summary>The share window's "Set up Copium…": brings the main window forward and says where the token goes.</summary>
+    public void ShowCopiumSetup()
+    {
+        Say("Add your token under Clips → Copium");
+        ShowRequested?.Invoke();
     }
 
     /// <summary>Asks the window to open the trim editor on a clip. False when no window has subscribed to <see cref="TrimRequested"/>.</summary>
