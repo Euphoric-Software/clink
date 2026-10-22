@@ -14,8 +14,12 @@ namespace Clink.Services;
 /// <summary>What Clink is doing right now, for the window, the tray and the status dot.</summary>
 internal enum RecordingState { Starting, Recording, WaitingForGame, Paused, Error }
 
-/// <summary>How a Share ended (<see cref="AppController.LastShareOutcome"/>): a link copied or uploaded; the share window opened because there is no Copium token (nothing failed); turned down for Copium's limits; or failed.</summary>
-internal enum ShareOutcome { None, LinkCopied, Uploaded, FileShareOpened, Refused, Failed }
+/// <summary>
+/// How a Share ended (<see cref="AppController.LastShareOutcome"/>): a link copied or uploaded; the share window opened because there is
+/// no Copium token (nothing failed); turned down for Copium's limits; failed (the upload, or no window over the game); or, rarely,
+/// the share window itself could not be opened (<see cref="AppController.ShareError"/> says so; no upload was tried).
+/// </summary>
+internal enum ShareOutcome { None, LinkCopied, Uploaded, FileShareOpened, Refused, Failed, WindowFailed }
 
 /// <summary>Owns the engine, settings, clip library, hotkeys, game detection, toasts, status dot, archive, tray icon and the single-instance pipe.</summary>
 internal sealed class AppController : IDisposable
@@ -54,6 +58,8 @@ internal sealed class AppController : IDisposable
     /// token: the user has the file to drag, nothing failed, so no error line) from a failure by it; read it right after the call returns.
     /// </summary>
     public ShareOutcome LastShareOutcome { get; private set; }
+    /// <summary>What <see cref="ShareError"/> says when <see cref="LastShareOutcome"/> is <see cref="ShareOutcome.WindowFailed"/>: not an upload failure, so the row and the toast show it as it is.</summary>
+    public const string ShareWindowFailedText = "Could not open the share window";
     /// <summary>A Copium upload token is saved: Share uploads. Without one it opens the share window (the file to drag) instead.</summary>
     public bool HasCopiumToken => !string.IsNullOrWhiteSpace(Settings.CopiumToken);
     /// <summary>Version of a downloaded update waiting to be installed, or null.</summary>
@@ -363,12 +369,13 @@ internal sealed class AppController : IDisposable
     /// Why something asked for from the hotkey, the tray or the command line (no UI of their own) did not happen, shown once
     /// where the user is looking; the caller has already put it in the footer. Nothing more while the window is in front; a
     /// Clink toast (wrapped, at least 8 s) while the detected game is in front, since Windows holds tray balloons back over a
-    /// game; a tray balloon otherwise.
+    /// game; a tray balloon otherwise. <paramref name="overGame"/>: the caller found a full-screen application in front that Clink
+    /// did not detect as a game (<see cref="UserNotificationState"/>), which holds balloons back just the same.
     /// </summary>
-    private void NotifyProblem(string title, string text)
+    private void NotifyProblem(string title, string text, bool overGame = false)
     {
         if (MainWindowInFront) return;
-        if (Hotkeys.GameInFront()) Toasts.ShowProblem(title, text);
+        if (overGame || Hotkeys.GameInFront()) Toasts.ShowProblem(title, text);
         else ShowBalloon(title, text);
     }
 
@@ -754,7 +761,7 @@ internal sealed class AppController : IDisposable
         // The hotkey, the tray item and --share-last have no UI of their own, and the window is usually in the tray, minimized or
         // behind the game: a refusal (or a failure) that only reached the footer would be invisible (NotifyProblem: a toast over
         // the game, a tray balloon otherwise).
-        if (!ok && !joined && !windowOpened && LastNotice.Length > 0) NotifyProblem("Clip not uploaded", LastNotice);
+        if (!ok && !joined && !windowOpened && LastNotice.Length > 0) NotifyProblem("Clip not uploaded", LastNotice, overGame: UserNotificationState.FullScreenInFront());
     }
 
     /// <summary>
@@ -806,8 +813,9 @@ internal sealed class AppController : IDisposable
         if (string.IsNullOrWhiteSpace(token))
         {
             // Nothing to upload to: hand over the file instead. The hotkey path over the game opens no window (it would land on the
-            // picture, and in the replay): it says where to go, and the caller shows the line over the game.
-            if (announce && Hotkeys.GameInFront())
+            // picture): it says where to go, and the caller shows the line over the game. "Over the game" is the detected game, and
+            // also a full-screen application the shell reports (a Direct3D game Clink did not detect, another full-screen program).
+            if (announce && (Hotkeys.GameInFront() || UserNotificationState.FullScreenInFront()))
             {
                 ShareError = "No Copium token: open Clink to share the file";
                 Say(ShareError);
@@ -816,9 +824,9 @@ internal sealed class AppController : IDisposable
             }
             if (!OpenShareWindow(entry))
             {
-                ShareError = "Could not open the share window";
+                ShareError = ShareWindowFailedText;
                 Say(ShareError);
-                LastShareOutcome = ShareOutcome.Failed;
+                LastShareOutcome = ShareOutcome.WindowFailed;
                 return false;
             }
             Say("Drag the clip where you want to share it");
@@ -886,20 +894,26 @@ internal sealed class AppController : IDisposable
     /// Opens the share window for a clip: its file to drag into Discord, a browser upload box or a folder, Copy file, Open folder.
     /// An open window for the same clip is brought forward instead of a second one. It has no owner (unlike the trim editor): the
     /// user minimizes or hides the main window to get at the drop target, and an owned window would go with it. It floats on top
-    /// by itself and opens centred on the monitor under the pointer. UI thread; from another it runs there. False when the window
-    /// could not be opened (logged).
+    /// by itself and opens centred on the monitor under the pointer, except over a game (<see cref="OverGame"/>): there it opens
+    /// without taking the focus, at the toasts' position on the captured monitor, and goes behind the game when that has the focus.
+    /// UI thread; from another it runs there. False when the window could not be opened (logged).
     /// </summary>
     public bool OpenShareWindow(ClipEntry entry)
     {
         if (!_ui.CheckAccess()) return _ui.Invoke(() => OpenShareWindow(entry));
         try
         {
+            bool overGame = OverGame;
             var open = _shareWindows.FirstOrDefault(w => string.Equals(w.Entry.Path, entry.Path, StringComparison.OrdinalIgnoreCase));
-            if (open != null) { open.BringForward(); return true; }
+            if (open != null) { open.BringForward(activate: !overGame); return true; }
             var window = new ShareWindow(entry);
             _shareWindows.Add(window);
             window.Closed += (_, _) => _shareWindows.Remove(window);
-            try { window.Show(); }
+            try
+            {
+                if (overGame) window.ShowOverGame(SelectedMonitor, Settings.ToastPosition);
+                else window.Show();
+            }
             catch { _shareWindows.Remove(window); throw; }
             return true;
         }
@@ -909,6 +923,16 @@ internal sealed class AppController : IDisposable
             return false;
         }
     }
+
+    /// <summary>
+    /// The user is over a game that Clink detected: the game has the focus, or a toast over it was just clicked (the click made the
+    /// toast the active window, so the game is no longer in front; and the toast asks without <c>announce</c>, so the hotkey path's
+    /// "no window over the game" never applies to it). A window that opens then must neither take the focus from the game nor sit in
+    /// the middle of its picture. With no game running (the main window, the trim editor, the desktop) it is false.
+    /// </summary>
+    private bool OverGame => CurrentGame != null && (Hotkeys.GameInFront() || ToastIsActive);
+
+    private static bool ToastIsActive => System.Windows.Application.Current?.Windows.OfType<ToastWindow>().Any(t => t.IsActive) == true;
 
     /// <summary>The share window's "Set up Copium…": brings the main window forward and says where the token goes.</summary>
     public void ShowCopiumSetup()

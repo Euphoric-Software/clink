@@ -148,6 +148,62 @@ internal static class ShareTests
     }
 
     [UnitTest]
+    public static void The_drag_allows_copy_and_nothing_else()
+    {
+        // The one place the allowed effects are named: the drag uses it, and the data's "Preferred DropEffect" is built from it. Adding
+        // Move (or Link) here is what would let Explorer take the clip out of the library.
+        Check.Equal(DragDropEffects.Copy, ShareWindow.DragEffects);
+        Check.Equal(0, (int)(ShareWindow.DragEffects & DragDropEffects.Move), "no Move");
+        Check.Equal(0, (int)(ShareWindow.DragEffects & DragDropEffects.Link), "no Link");
+        Check.Equal(0, (int)(ShareWindow.DragEffects & DragDropEffects.Scroll), "no Scroll");
+
+        var stream = (Stream)ShareWindow.FileData(@"C:\Clips\a.mp4").GetData(ShareWindow.PreferredDropEffect)!;
+        using var bytes = new MemoryStream();
+        stream.Position = 0;
+        stream.CopyTo(bytes);
+        Check.Equal(BitConverter.GetBytes((int)ShareWindow.DragEffects), bytes.ToArray(), "the data says what the drag allows");
+    }
+
+    [UnitTest]
+    public static void The_windows_kept_out_of_captures_are_marked_so_their_tooltips_are_too()
+    {
+        // The tooltip handler (CaptureExclusion) matches the marker, not a window class: a window that hides itself from captures
+        // without it would show its tooltips to the recorder.
+        Check.True(typeof(ICaptureExcludedWindow).IsAssignableFrom(typeof(ShareWindow)), "the share window");
+        Check.True(typeof(ICaptureExcludedWindow).IsAssignableFrom(typeof(ToastWindow)), "the toasts");
+        CaptureExclusion.Register();   // idempotent: every such class calls it from its static constructor
+        CaptureExclusion.Register();
+    }
+
+    [UnitTest]
+    public static void A_full_screen_application_counts_as_the_game_in_front()
+    {
+        // QUERY_USER_NOTIFICATION_STATE: 1 not present, 2 busy, 3 running D3D full screen, 4 presentation mode, 5 accepts
+        // notifications, 6 quiet time, 7 app
+        foreach (int busy in new[] { 2, 3, 4 }) Check.True(UserNotificationState.IsFullScreenLike(busy), $"state {busy}");
+        foreach (int free in new[] { 0, 1, 5, 6, 7, 8 }) Check.False(UserNotificationState.IsFullScreenLike(free), $"state {free}");
+    }
+
+    [UnitTest]
+    public static void Over_a_game_the_window_opens_where_the_toasts_do()
+    {
+        // a 2560x1440 work area with a 40 px taskbar, a 480x283 window, a 16 px margin
+        (int x, int y) At(string? position) => ShareWindow.ToastCorner(0, 0, 2560, 1400, position, 480, 283, 16);
+        Check.Equal((2064, 1101), At("bottom-right"));
+        Check.Equal((2064, 1101), At(null));            // nothing set: the toasts' default
+        Check.Equal((16, 1101), At("bottom-left"));
+        Check.Equal((2064, 16), At("top-right"));
+        Check.Equal((16, 16), At("top-left"));
+        Check.Equal((1040, 16), At("top"));              // a side the name does not give is the middle
+        Check.Equal((1040, 1101), At("bottom"));
+        Check.Equal((16, 558), At("left"));
+        Check.Equal((2064, 558), At("right"));
+        Check.Equal((2064, 1101), At("  Bottom-Right "));
+        // another monitor: the work area's own origin counts
+        Check.Equal((-1920 + 16, 215 + 16), ShareWindow.ToastCorner(-1920, 215, 0, 1255, "top-left", 480, 283, 16));
+    }
+
+    [UnitTest]
     public static void The_card_shows_size_then_length_when_it_is_known()
     {
         Check.Equal("190 MB · 1:30", ShareWindow.MetaFor(190 * MB, 90));
