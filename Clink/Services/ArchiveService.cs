@@ -278,7 +278,9 @@ internal sealed class ArchiveService
             if (!IsDue(e, s.ArchiveAfterDays, s.ArchiveWhenLocalExceedsGB, localBytes, DateTime.Now)) continue;
             FileInfo fi;
             try { fi = new FileInfo(e.Path); if (!fi.Exists) continue; } catch { continue; }
-            if (DateTime.UtcNow - fi.LastWriteTimeUtc < MinAge) continue;
+            var verdict = Judge(fi, DateTime.UtcNow);
+            if (verdict == FileVerdict.Link) { RefuseLink(fi.Name); continue; }
+            if (verdict == FileVerdict.TooNew) continue;
 
             if (!aliasChecked)
             {
@@ -435,7 +437,9 @@ internal sealed class ArchiveService
             FileInfo fi;
             try { fi = new FileInfo(e.Path); if (!fi.Exists) continue; } catch { continue; }
             req.Eligible++;
-            if (DateTime.UtcNow - fi.LastWriteTimeUtc < MinAge) { req.TooNew++; continue; }
+            var verdict = Judge(fi, DateTime.UtcNow);
+            if (verdict == FileVerdict.Link) { RefuseLink(fi.Name); req.Failed++; continue; }   // _problem says why
+            if (verdict == FileVerdict.TooNew) { req.TooNew++; continue; }
 
             req.Index = i + 1;
             var outcome = MoveOne(e, fi, root, req);
@@ -484,10 +488,10 @@ internal sealed class ArchiveService
 
         // A symbolic link in the clips folder: its content would be copied, but the delete (through a handle on what the link
         // points to) would take the file behind the link, not the link. Clink does not write links; leave them to their owner.
-        if ((fi.Attributes & FileAttributes.ReparsePoint) != 0 && IsLink(fi))
+        // (The runs look for one before they get here, see Judge; this is the second line of defence.)
+        if (IsLinkFile(fi))
         {
-            _problem = "the clip is a link to another file, not a file";
-            Log.Warn($"archive: {name}: {_problem}, kept");
+            RefuseLink(name);
             return Outcome.Skipped;
         }
 
@@ -659,6 +663,30 @@ internal sealed class ArchiveService
     {
         try { return fi.LinkTarget != null; }
         catch { return false; }
+    }
+
+    private static bool IsLinkFile(FileInfo fi) => (fi.Attributes & FileAttributes.ReparsePoint) != 0 && IsLink(fi);
+
+    private const string LinkProblem = "the clip is a link to another file, not a file";
+
+    /// <summary>What a run makes of a file before it looks at it any further (see <see cref="Judge"/>).</summary>
+    internal enum FileVerdict { Movable, Link, TooNew }
+
+    /// <summary>
+    /// A link is looked for first, whatever its age: a link's timestamps are its own, not those of the clip behind it (a link made a
+    /// moment ago to a clip written last week looks new), so they say nothing about whether the clip is still in use, and counting
+    /// such a link as "too new" for its first half minute would be a wrong report. Then a file written less than
+    /// <see cref="MinAge"/> ago is left for later: the muxer or an upload may still be using it.
+    /// </summary>
+    internal static FileVerdict Judge(FileInfo fi, DateTime nowUtc) =>
+        IsLinkFile(fi) ? FileVerdict.Link
+        : nowUtc - fi.LastWriteTimeUtc < MinAge ? FileVerdict.TooNew
+        : FileVerdict.Movable;
+
+    private void RefuseLink(string name)
+    {
+        _problem = LinkProblem;
+        Log.Warn($"archive: {name}: {LinkProblem}, kept");
     }
 
     /// <summary>What a finished copy turned out to be.</summary>
