@@ -337,6 +337,11 @@ SetWindowPos
 SET_WINDOW_POS_FLAGS
 HWND_TOPMOST
 GetDpiForWindow
+GetDpiForSystem
+GetSystemMetricsForDpi
+SYSTEM_METRICS_INDEX
+SendMessage
+WM_SETICON
 GetCurrentProcess
 IAudioRenderClient
 
