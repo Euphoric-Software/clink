@@ -1,8 +1,8 @@
 # Clink
 
-A tiny Windows replay-buffer clipper for games. It keeps the last couple of minutes of your screen and audio in
-memory; press a key, hear a click, and the clip is on disk. Share it to [Copium](https://copium.pics) with one
-click and the link lands in your clipboard.
+A tiny Windows replay-buffer clipper for games. It keeps the last stretch of your screen and audio in memory (the
+replay length is yours to set, 45 seconds by default); press a key, hear a click, and the clip is on disk. Share it to
+[Copium](https://copium.pics) with one click and the link lands in your clipboard.
 
 ![Clink's window: the Capture tab with the monitor map, codec, size target and audio tracks on the left, the clip list with Trim / Share buttons on the right](docs/screenshots/main-window.png)
 <sub>Recording a game: capture settings and audio tracks on the left, your clips on the right. More under
@@ -173,7 +173,12 @@ clicking the version in the footer) checks by hand and opens the release page if
    whether its own track is saved; its slider always shapes All audio. Desktop is never part of All audio. Voice is not
    saved as a track of its own by default, so it is only inside All audio: its volume cannot be changed there, and
    turning Game or Mic down takes it out of the baked mix again, which can leave a faint trace of it (tick *Voice chat*
-   under *Capture → Audio tracks* to keep it as a track). The in point snaps to a keyframe (every second by default) so
+   under *Capture → Audio tracks* to keep it as a track). Taking a source out of the mix only cancels when the tracks
+   are in step to the sample: a recording of this version and a trim of one keep every track's place exactly (the file
+   says so with a `clk1` brand in its `ftyp`), but a clip an older Clink trimmed lost how its tracks sat against each
+   other, so the editor lines each source up with the Mix by comparing them, and when it cannot be sure of one it says
+   *Trimmed by an older Clink: sources cannot be changed inside All audio*: that source's slider then changes only its own
+   track (`--trim` prints the same note and does the same). The in point snaps to a keyframe (every second by default) so
    the cut is exact in every player, and the export copies the video without re-encoding. *Save trimmed* writes
    `<clip> (trim).mp4` next to the original (tick *Replace original* to replace the clip with the cut instead), or
    *Save & share*. The *Trim* button on a clip row, the toast's *Trim* and `--trim-last` open the editor directly; a
@@ -245,10 +250,22 @@ once you tick *Move clips there automatically*: the rules under it are *older th
 folder is over N GB*, whichever comes first (0 = off), and apply only while that is ticked. A background thread at the
 lowest priority then copies eligible clips oldest-first in small chunks with pauses in between (it never competes with
 the game), verifies the copy, deletes the local file and points the library entry at the archive, so Trim, Share and
-thumbnails keep working from there; a clip that is open (uploading, trimming, playing) is skipped, an unreachable
-archive is retried on the next run (1 min after a clip is saved and every 5 min), and a local file is never deleted
-before its copy was verified. Every move is logged. With the switch off and a location set the status line reads
-*Automatic moves off · Archive now… moves clips by hand*.
+thumbnails keep working from there; a clip that is open (uploading, trimming, playing) is skipped (when the size rule is
+what makes clips due and the oldest one is open, the next one is taken instead: the folder only counts as smaller once a
+clip has really moved), an unreachable archive is retried on the next run (1 min after a clip is saved and every 5
+min), and a local file is never deleted before its copy was verified. Every move is logged. With the switch off and a
+location set the status line reads *Automatic moves off · Archive now… moves clips by hand*.
+
+**A clip is only ever deleted while a different, complete copy of it exists.** Right before the local file goes, Clink
+holds the archive copy open and opens the clip with delete access, checks the clip through that handle (its length and
+last write time, and that it is not the archive copy's own file) and deletes it through that handle, never by name. If
+the archive location turns out to be the clips folder under another name (a junction, a second share of the same disk,
+the `\\?\` spelling), the two names cannot be opened both ways at once, so that clip is skipped and never deleted; and a
+trim that moves the clip aside and puts its cut in its place cannot lose the cut to a delete by name. Beyond that, *Test*,
+the dialog and the automatic pass refuse a location that is the clips folder under another name (*Archive location is the
+clips folder under another name: pick another folder, share or drive*): a small file is written into the archive and must
+not show up in the clips folder, and the other way round (before every manual run and before the first move of an
+automatic pass, once per location; it leaves no file behind). A clip that is a symbolic link is left alone.
 
 **Archive now…** opens the *Archive clips* dialog. It shows where clips go and whether that works (*Share reachable ·
 writable · 1.8 TB free*) and offers two things to move, with counts and sizes: *Everything due by your rules* (the rule in
@@ -259,9 +276,14 @@ want when the folder is under its limit and the clips are young). *Archive* move
 12 · Copying clip.mp4 (40 %)*; *Cancel*, or closing the window, stops after the chunk being copied, deletes the partial
 copy and leaves the local clip (clips already moved stay moved). A line at the end says what happened (*Moved 12 clips
 (3.4 GB) to T:\clips · 1 in use, try again later*, *Archive unreachable*, *Moved 2 clips (…) · 3 failed: archive is full
-(1 MB free)*, …): a clip that is open, changed while it was copied, or was saved less than 30 s ago is left alone and
-counted, and a later run takes it. It needs only a location, not the automatic switch and not a rule, and runs at full
-speed unless a game is detected, in which case it keeps the gentle pace of the automatic moves (about 60 MB/s).
+(1 MB free)*, …). A clip that is open, changed while it was copied or before its delete, not deletable yet (a sharing or
+lock violation), or was saved less than 30 s ago is left alone and counted as *in use, try again later*, and a later run
+takes it. Anything that waiting does not fix is a *failure* with its reason (*3 failed: cannot delete the local clip:
+access denied (is it read-only?)*): a clip that may not be read, one that may not be deleted (the verified copy stays and
+the next run finishes the move), a copy that came out short, an archive copy that is missing or another length, a link.
+It needs only a location, not the automatic switch and not a rule, and runs at full speed unless a game is detected, in
+which case it keeps the gentle pace of the automatic moves (about 60 MB/s); the pace is asked for again for every chunk,
+so a game that starts or ends during a long run slows or speeds the copy.
 
 The path must be a full one (`D:\Clips`, `\\nas\clips`); a relative path (`\nas\clips`, a lost backslash) is refused
 with a hint, and *Test* then says why instead of testing the previous path. Before each copy Clink checks the free space:
@@ -270,10 +292,11 @@ ends the run with a status line that says which (*archive is full (12 GB free)*,
 open the share in Explorer once to sign in*) instead of trying every clip again. Pointing the archive elsewhere stops a
 run in progress, and so does turning the automatic moves off (for an automatic run); a manual run also stops on *Cancel*
 or when its dialog is closed, and the partial copy is deleted each time. A path typed into the box is accepted, or refused
-with its reason, before the dialog opens. In the clip list an archived clip whose share is offline says *archive
-offline* at once (Trim, play and folder do not wait out the network timeout) and clears itself when the share is back; a
-clip that was deleted from the archive drops out of the list, or, if you shared it, stays under **Shared** marked
-*deleted from the archive*.
+with its reason, before the dialog opens (only a refusal that click caused stops it: one from an earlier tab or click
+elsewhere does not eat the click, and the dialog names its destination). In the clip list an archived clip whose share is
+offline says *archive offline* at once (Trim, play and folder do not wait out the network timeout) and clears itself when
+the share is back; a clip that was deleted from the archive drops out of the list, or, if you shared it, stays under
+**Shared** marked *deleted from the archive*.
 
 ### Stream Deck
 
@@ -296,7 +319,9 @@ prints the RMS and peak level of every audio track),
 `--trim <in> <out> <start> <end> [--gain Name=value]... [--drop Name]...` (the editor's cut without the window:
 `--gain Game=0.5` or `Game=50%` sets a track's volume the way its slider does, so Game, Mic and Voice shape All audio as
 well, and `--drop Voice` leaves a track out; the names are the file's own: Mix, Game, Mic, Voice, Desktop). The last
-three can run next to a running Clink, and so can `--unittest` (see [Testing](#testing)).
+three can run next to a running Clink, and so can `--unittest` (see [Testing](#testing)). The hidden `--after-pid <pid>`
+is Clink's own: it puts it on the command line of the Clink it restarts into (after an import or an update), and that
+one waits for the old process to end, at most 10 s, before it takes the single-instance mutex.
 
 ### Settings
 
@@ -305,10 +330,12 @@ and the clip index `clips.json` are replaced in one rename on every save and kee
 is read when the file is damaged. Hand edits may use `//` comments, trailing commas and numbers in quotes. Loading is
 forgiving: a value of the wrong kind (`"Fps": "sixty"`, `"BufferSeconds": [1]`) keeps its default and costs nothing else
 (Clink says at start which settings it could not read and keeps the original as `settings.json.unreadable` before it
-saves); a hand edit that does not parse at all is kept as `settings.json.unreadable` too, and Clink starts from the
+saves); a hotkey row that cannot be read costs only that row (*left out hotkey row 2 (unreadable)*) and the others are
+kept; a hand edit that does not parse at all is kept as `settings.json.unreadable` too, and Clink starts from the
 `.bak` and says so; keys this version does not know (written by a newer Clink) are kept and written back, inside
-hotkeys and toast settings too, so going back and forth between versions loses nothing; and a NaN or infinite number is
-put back to its default instead of making a save fail.
+hotkeys and toast settings too, so going back and forth between versions loses nothing; and a NaN or infinite number
+(an earlier version wrote them as text) is put back to its default when settings are loaded, so it never reaches the
+encoder, and again before every save, instead of making a save fail.
 
 The file carries a `SchemaVersion`: **3** since v0.2.5 (a file without one counts as 2 when it has `Hotkeys`, else 1; an
 older file is saved once, at start, in the new layout, and that save keeps the old file once as `settings.pre-v3.json`).
@@ -373,13 +400,38 @@ and a banner under *App → Settings*) and, for a Clink that is not itself insid
   settings: `settings.json` as it is and the clip index merged (every clip once; Copium links, archive times, audio
   tracks and the like fill in what yours leaves empty), and says *Imported the settings Clink saved while started from
   inside Claude (2026-10-21 14:32)*;
-* **otherwise** it never changes your settings unasked. It looks, after start, for a copy that differs (where the window
-  sits, the last update check and the like do not count; the Copium token is compared decrypted and never logged) and
-  offers it: one tray balloon (*Settings from another copy of Clink found: right-click the tray icon to import*), the tray
-  item *Import settings saved 2026-10-21 14:32 (Claude copy)…*, which lists what differs and asks (*Yes* imports and
-  restarts Clink, *No* keeps yours and stops offering that copy until it is saved again, *Cancel* decides later), and
-  the banner under *App → Settings* with *Use those settings* and *Dismiss*. An import keeps what it replaces as
-  `settings.pre-import.json`.
+* **otherwise** it never changes your settings unasked. It looks, after start, for a copy that differs (this
+  installation's own settings do not count: where the window sits, the update state, which copies you turned down; the
+  Copium token is compared decrypted and never logged) and offers it: one tray balloon (*Settings from another copy of
+  Clink found: right-click the tray icon to import*), the tray item *Import settings saved 2026-10-21 14:32 (Claude
+  copy)…*, which lists what differs and asks (*Yes* imports and restarts Clink, *No* keeps yours and stops offering that
+  copy until it is saved again, *Cancel* decides later), and the banner under *App → Settings* with *Use those settings*
+  and *Dismiss*.
+
+**What an import does.** It keeps what it replaces as `settings.pre-import.json`, or the next free
+`settings.pre-import.1.json`, `.2.json`, …: an earlier backup is never overwritten, and if the current settings cannot be
+kept first the import stops before anything is changed. It keeps this installation's own values (the window's position
+and size, the updater's state: `PendingUpdate*`, `LastUpdateCheck`, `UpdateRepo`, and `ImportDeclined`); everything else
+comes from the other copy. An incoming Copium token that cannot be decrypted here (another user's, or another machine's)
+never replaces a working one: your own stays, and the offer lists *the incoming Copium token cannot be used on this
+machine* beside what else differs, never as a reason to offer a copy on its own. The clip index is merged as above, its
+paths compared as the file system does (slashes either way, `.` and `..`, a trailing separator, `\\?\` prefixes, case; an
+8.3 name, or a mapped drive for a network path, may stay a duplicate). If the clip lists cannot be merged (the other
+copy's is over 4,000,000 bytes, or a list does not read) the settings are imported all the same and Clink says *Settings
+imported; the clip list could not be merged: the other copy's clip list cannot be read (not valid JSON: error on line 3)*
+in the footer. A marker, `clips-merge.pending` in the settings folder, makes every later start try the merge again,
+before the clip index is read, until it works or the other copy has no clip list any more; the first retry that fails
+again says it once more, with a tray balloon, and later ones only write to the log.
+
+**The restart is ordered.** Before the new Clink is started the import stops what writes (saving a clip, starting the
+recorder, settings and clip-index saves), stops the recorder and the archive, and only then imports. The new Clink gets
+the hidden `--after-pid <pid of the old one>` and waits for that process to end (at most 10 s) before it takes the
+single-instance mutex and opens the log; an update's restart does the same. A clip being saved at that moment keeps its
+file (the next start finds it in the clips folder), but its index entry is not written. If the new Clink cannot be
+started nothing is given up: this one carries on, the settings it runs with are written back over the imported ones, the
+offer comes back at once, and a notice and a balloon say so (*Clink could not restart itself (…), so the import was not
+applied: your settings are as they were*). While an import runs the tray item is disabled and a second import is refused
+(*An import is already under way*).
 
 <a href="docs/screenshots/app-settings-import.png"><img src="docs/screenshots/app-settings-import.png" width="600" alt="The App tab's Settings card with the offer to use the settings another copy of Clink saved: Use those settings and Dismiss"></a>
 
@@ -391,7 +443,8 @@ command does not touch it); `--selftest` / `--probe` / `--trim` write `clink-cli
 ## Building
 
 * .NET 10 SDK (`build.ps1` also finds a user-local SDK in `%USERPROFILE%\.dotnet`).
-* `.\build.ps1` → debug build. `.\build.ps1 -Publish` → `dist\Clink.exe` (single file, needs the .NET 10 Desktop
+* `.\build.ps1` → a Release build in `Clink\bin\Release\net10.0-windows10.0.26100.0\win-x64\` (`-Configuration Debug`
+  for a debug one, `-Run` to start it). `.\build.ps1 -Publish` → `dist\Clink.exe` (single file, needs the .NET 10 Desktop
   Runtime on the target machine; add `-p:SelfContained=true` to the publish for a runtime-free but ~70 MB exe).
 * No native dependencies. Win32/COM is reached through CsWin32-generated bindings (`NativeMethods.txt`), Windows
   Graphics Capture through the built-in WinRT projection.
@@ -399,11 +452,17 @@ command does not touch it); `--selftest` / `--probe` / `--trim` write `clink-cli
 ### Testing
 
 * `Clink.exe --unittest [filter]` runs the in-exe unit tests (`Clink\Tests`: static methods marked `[UnitTest]`, found by
-  reflection, so there is no test framework to restore). It prints `PASS` / `FAIL` per test and a summary, runs only the
-  tests whose `Class.Method` name contains `filter` (case ignored), and exits 0 when all passed (1 when a test failed, or
-  the filter matched nothing). It never touches `%APPDATA%\Clink`, the single-instance mutex or the control pipe, so it is
-  safe next to a running Clink. `Clink.exe` is a GUI-subsystem exe: from PowerShell use
-  `Start-Process .\Clink.exe '--unittest' -Wait -PassThru -NoNewWindow` to see the output and get the exit code.
+  reflection, so there is no test framework to restore). It prints `PASS` / `FAIL` / `SKIP` per test and a summary
+  (*N passed, M failed, K skipped*), runs only the tests whose `Class.Method` name contains `filter` (case ignored), and
+  exits 0 when none failed (1 when a test failed, or the filter matched nothing). A test that needs a Windows feature this
+  machine lacks (the audio mix render tests need Media Foundation's AAC encoder) is skipped, and counted apart, rather
+  than failed; with the environment variable `CLINK_TESTS_NO_SKIP=1` a skip is a failure, which is how a machine that is
+  meant to have everything runs them so that nothing is skipped by accident. `--unittest` never touches
+  `%APPDATA%\Clink`, the single-instance mutex or the control pipe, so it is safe next to a running Clink. `Clink.exe` is
+  a GUI-subsystem exe: from PowerShell use `Start-Process .\Clink.exe '--unittest' -Wait -PassThru -NoNewWindow` to see
+  the output and get the exit code. CI does exactly that after the Release build ([`build.yml`](.github/workflows/build.yml))
+  and fails the job on a non-zero exit code. It leaves `CLINK_TESTS_NO_SKIP` unset, so a runner without the AAC encoder
+  skips the mix tests instead of failing.
 * `Clink.exe --dev [folder] [--dev-hotkeys] [--dev-record] [--dev-token]` (hidden; `--dev=<folder>` works too) starts a
   **second Clink next to the real one**, for trying a build out. It has its own data folder (settings, clip index, log
   and clips; `%TEMP%\clink-dev` when no folder is given), its own single-instance mutex and control pipe (named from the
@@ -412,22 +471,37 @@ command does not touch it); `--selftest` / `--probe` / `--trim` write `clink-cli
   It starts **paused** (`--dev-record` records), binds **no hotkeys** (`--dev-hotkeys` binds them, and its keyboard hook
   then swallows those combos system-wide while it runs, so use other keys than the real Clink's) and has **no Copium
   token** (`--dev-token` keeps the one its settings hold). Whatever its settings file says, a dev instance is kept away
-  from the real clips folder, archive, updates and account (it says what it changed in its log), and a mistake in a
-  `--dev` switch (an unknown one, one without `--dev`, a folder that is the real settings folder) exits with code 2
-  before anything starts. Two more switches exist for testing the settings import: `--packages-root <folder>` (a made-up
-  `Packages` folder, the only place a dev instance looks for another copy's settings; never the real one) and
-  `--dev-accept-import` (import what is offered, once).
+  from the real clips folder, archive, updates and account (it says what it changed in its log). Two more switches exist
+  for testing the settings import: `--packages-root <folder>` (a made-up `Packages` folder, the only place a dev instance
+  looks for another copy's settings; never the real one) and `--dev-accept-import` (import what is offered, once).
   **`--dev` is the only safe way to run a second Clink.** A plain second `Clink.exe` does not start another copy: it
   hands its command (`--clip`, `--share-last`, `--trim-last`, or just *show*) to the Clink that is running and exits, so
   a test run that forgets `--dev` acts on your live session.
+  * **The dev folder must be a leaf Clink can own**: new, empty, or one an earlier dev run made (an existing folder that
+    holds other files and no Clink data is refused). A dev instance treats everything in its folder as its own (its
+    clips are listed, trimmed, shared, archived and deleted from there), so it is refused, with exit code 2 before
+    anything starts, for: the real settings folder or any folder that holds it (`%APPDATA%`, say);
+    anything under `%LOCALAPPDATA%\Packages` or whose real path is a packaged app's private AppData (a junction or
+    symbolic link is followed); the real clips folder (the saved `ClipsFolder` of the real settings.json, and
+    `Videos\Clink`) or the real archive folder, or a parent of either; the real Clink's local data folder; a drive root;
+    and the user profile folder.
+  * **A mistyped switch is an error, never a normal start** (a normal start would take the real Clink's mutex or forward
+    to it): an unknown `--dev…` switch, one without `--dev`, `--dev` twice, `--dev=` with nothing. Every argument is read
+    as a person would (invisible characters dropped, an en or em dash or any other dash read as `-`, blanks, leading
+    dashes, slashes and quotes stripped), and anything that then starts with `dev` or `packages-root` must be exactly one
+    of the switches: `-dev`, `---dev`, `/dev`, `—dev` and `" --dev"` are errors. A dash, or a name that looks like a dev
+    switch, after `--dev` is another switch and never its folder. The message shows the argument with anything that is
+    not plain ASCII as `\uXXXX`, so a lookalike dash can be told from a hyphen. A restart (an import, an update) carries
+    `--dev <folder>` and its flags again.
 * `--selftest` prints where the settings are read from, and says so when this process sees a packaged app's private
   copy of AppData (see [Settings](#settings)).
 
 ### Releasing
 
 Releases are built by GitHub Actions ([`.github/workflows/release.yml`](.github/workflows/release.yml)), not on a
-dev machine, so the published exe always corresponds to a tag. Every push to `main` is also compiled by
-[`build.yml`](.github/workflows/build.yml).
+dev machine, so the published exe always corresponds to a tag. Every push to `main` (and every pull request) is also
+compiled by [`build.yml`](.github/workflows/build.yml), which then runs the unit tests (`--unittest`, see
+[Testing](#testing)).
 
 * **First time**: `.\tools\publish-repo.ps1` creates the GitHub repository (public by default; the updater reads
   releases anonymously, so it needs to be public), pushes `main` and prints what to do next. It needs Git and the
