@@ -303,7 +303,9 @@ What the app does since v0.2.5. Where this section and §§1, 3, 6, 9 and 10 dif
   3. A stale copy that an earlier run left is cleaned up only when it is certainly not the clip itself; a copy an earlier
      run made is adopted rather than copied again, and a different file of the same name in the archive is never
      overwritten (the copy gets a new name). A clip that is a symbolic link is left alone (a handle delete would take the
-     file behind the link).
+     file behind the link). That is judged before the 30-second age rule (`ArchiveService.Judge`, by the manual run and
+     the automatic pass alike): a link's timestamps are the link's own, so one made a moment ago is refused as a link and
+     not counted as too new.
 
   The delete and the library update are one step under the library's lock (`ClipLibrary.MoveToArchive`): it finds the
   entry as the library holds it now (a reload may have replaced the one the move began with), runs the delete, points the
@@ -555,7 +557,9 @@ What the app does since v0.2.5. Where this section and §§1, 3, 6, 9 and 10 dif
     **`CLINK_TESTS_NO_SKIP=1`** is set: it turns every skip into a failure (*skipped (…), and CLINK_TESTS_NO_SKIP=1
     says nothing may be*), which is how a machine that is meant to have everything runs them. The tests that need a
     junction (`mklink /J`, which needs no privilege) print a `SKIP` line of their own, and pass without checking, when
-    none can be made.
+    none can be made. The archive tests over a symbolic link (which takes Developer Mode or an elevated process, as on
+    CI's runner) say why they checked nothing when this process may not make one; the junction test beside them checks
+    the order of the link and age rules on every machine.
   - **Nothing real is touched.** It never touches `%APPDATA%\Clink`, the single-instance mutex or the pipe:
     `Settings.DirOverride`, `ClipLibrary.IndexPathOverride`, the updates folder, the "real" settings folder
     (`Settings.RealDirOverride`) and the folder that holds other apps' packages (`SettingsImport.PackagesRoot`) point at a
