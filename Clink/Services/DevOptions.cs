@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
@@ -15,8 +16,10 @@ namespace Clink.Services;
 /// Two more switches exist only for testing how settings are taken over from another copy of Clink (SettingsImport), which a
 /// <c>--dev</c> instance otherwise never looks for: <c>--packages-root &lt;folder&gt;</c> names a fake <c>%LOCALAPPDATA%\Packages</c> to
 /// look in (never the real one), and <c>--dev-accept-import</c> accepts what is offered there at once.
-/// Every <c>--dev*</c> switch is checked, and a mistake (an unknown one, one without <c>--dev</c>, a folder that is the real Clink's)
-/// is an error before anything is started: a typo must not turn into a normal start that talks to the real Clink.
+/// Every <c>--dev*</c> switch is checked, and a mistake (an unknown one, one without <c>--dev</c>, a switch that only looks like one
+/// because of a different dash, a slash or a stray space, a folder that is the real Clink's or holds any of it) is an error before
+/// anything is started (exit code 2, before the single-instance mutex): a typo must not turn into a normal start that talks to the
+/// real Clink.
 /// </summary>
 internal sealed record DevOptions(string Folder, bool BindHotkeys)
 {
@@ -37,8 +40,58 @@ internal sealed record DevOptions(string Folder, bool BindHotkeys)
 
     private static bool Is(string arg, string name) => arg.Equals(name, StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>An argument that can be the value of a switch: not another switch, not empty.</summary>
-    private static bool IsValue(string arg) => !arg.StartsWith("--", StringComparison.Ordinal) && arg.Trim().Length > 0;
+    // ------------------------------------------------------------------ look-alike switches
+
+    /// <summary>
+    /// Every dash a keyboard, a word processor or a web page can produce, as the hyphen-minus: U+2010..U+2015 (hyphen, non-breaking
+    /// hyphen, figure dash, en dash, em dash, horizontal bar), U+2212 (minus sign) and the small and full-width forms U+FE58, U+FE63, U+FF0D.
+    /// </summary>
+    private static bool IsDash(char c) => c is >= (char)0x2010 and <= (char)0x2015 or (char)0x2212 or (char)0xFE58 or (char)0xFE63 or (char)0xFF0D;
+
+    /// <summary>An argument as a person reads it: invisible characters (zero-width spaces, soft hyphens, control codes) dropped, every dash a '-', blanks at both ends trimmed.</summary>
+    private static string Plain(string arg)
+    {
+        var sb = new StringBuilder(arg.Length);
+        foreach (char c in arg)
+        {
+            if (char.GetUnicodeCategory(c) is UnicodeCategory.Format or UnicodeCategory.Control) continue;
+            sb.Append(IsDash(c) ? '-' : c);
+        }
+        return sb.ToString().Trim();
+    }
+
+    /// <summary>The name of an argument without what is put in front of it: "--dev", "-dev", "---dev", "/dev", " --dev", "\"--dev\"" and any of these with an en or em dash for a hyphen are all "dev".</summary>
+    private static string Normalized(string arg) => Plain(arg).TrimStart(' ', '-', '/', '"', '\'');
+
+    /// <summary>
+    /// The argument is, or is meant to be, a dev switch: whatever is put in front of it, its name starts with "dev" or "packages-root".
+    /// Used on what is not exactly one of the switches: such an argument is a mistake, never something to pass over (a normal
+    /// start would take the real Clink's mutex or forward a command to it).
+    /// </summary>
+    private static bool LooksLikeDevSwitch(string arg)
+    {
+        string name = Normalized(arg);
+        return name.StartsWith("dev", StringComparison.OrdinalIgnoreCase) || name.StartsWith("packages-root", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>An argument that can be the value of a switch: not blank, not another switch (with any kind of dash), not a dev switch spelled wrongly.</summary>
+    private static bool IsValue(string arg)
+    {
+        string plain = Plain(arg);
+        return plain.Length > 0 && plain[0] != '-' && !LooksLikeDevSwitch(arg);
+    }
+
+    /// <summary>An argument for an error message, with anything that is not plain ASCII written as \uXXXX (a dash that looks like another, an invisible character).</summary>
+    private static string Shown(string arg)
+    {
+        var sb = new StringBuilder("'");
+        foreach (char c in arg)
+        {
+            if (c < ' ' || c > '~') sb.Append("\\u").Append(((int)c).ToString("X4", CultureInfo.InvariantCulture));
+            else sb.Append(c);
+        }
+        return sb.Append('\'').ToString();
+    }
 
     private static string Unquote(string value) => value.Trim().Trim('"');
 
@@ -47,7 +100,11 @@ internal sealed record DevOptions(string Folder, bool BindHotkeys)
     /// The folder is the argument right after <c>--dev</c> (unless that is another switch: the default folder then), or what follows
     /// <c>--dev=</c>. Throws <see cref="ArgumentException"/>, with a message for the person who typed the command line, for: an unknown
     /// <c>--dev…</c> switch, <c>--dev</c> twice, <c>--dev=</c> with nothing after it, a dev switch (or <c>--packages-root</c>) without
-    /// <c>--dev</c>, a folder that is not a valid path or that is the real settings folder, and a packages root that is the real one.
+    /// <c>--dev</c>, a folder that is not a valid path or that is not safe for a dev instance (<see cref="RefuseUnsafeFolder"/>), and
+    /// a packages root that is the real one. Every argument whose name, once the dashes, slashes, quotes, blanks and invisible
+    /// characters in front of it are taken away (<c>-dev</c>, <c>---dev</c>, <c>/dev</c>, an en or em dash, <c>" --dev"</c>), starts with
+    /// "dev" or "packages-root" must be exactly one of the switches, or it is an error: anything else would be skipped as an
+    /// argument Clink does not know, and the start would be a normal one.
     /// </summary>
     public static DevOptions? Parse(string[] args)
     {
@@ -78,8 +135,9 @@ internal sealed record DevOptions(string Folder, bool BindHotkeys)
                 sawRoot = true;
                 if (i + 1 < args.Length && IsValue(args[i + 1])) rootArg = args[++i];
             }
-            else if (a.StartsWith(Dev, StringComparison.OrdinalIgnoreCase))
-                throw new ArgumentException($"{a} is not a dev switch (they are --dev [folder] or --dev=<folder>, --dev-hotkeys, --dev-record, --dev-token, --dev-accept-import)");
+            else if (LooksLikeDevSwitch(a))
+                throw new ArgumentException($"{Shown(a)} is not a dev switch (they are --dev [folder] or --dev=<folder>, --dev-hotkeys, --dev-record, --dev-token, --dev-accept-import and --packages-root <folder>, "
+                    + "written with two plain hyphens and nothing around them; a folder is written with its path, like .\\devdata)");
         }
         if (!sawDev)
         {
@@ -94,8 +152,7 @@ internal sealed record DevOptions(string Folder, bool BindHotkeys)
         {
             throw new ArgumentException($"the data folder '{folder}' is not a valid path");
         }
-        if (SamePath(folder, Settings.RealDir))
-            throw new ArgumentException($"the data folder is the real Clink's settings folder ({Settings.RealDir}): a --dev instance needs a folder of its own");
+        RefuseUnsafeFolder(folder);
 
         string? root = null;
         if (rootArg != null)
@@ -115,7 +172,120 @@ internal sealed record DevOptions(string Folder, bool BindHotkeys)
     private static bool SamePath(string a, string b) =>
         string.Equals(Path.GetFullPath(a).TrimEnd('\\', '/'), Path.GetFullPath(b).TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>True when <paramref name="path"/> is the dev folder or inside it (a path that cannot be resolved is not).</summary>
+    /// <summary>True when <paramref name="child"/> is <paramref name="parent"/> or inside it.</summary>
+    private static bool Within(string child, string parent)
+    {
+        string c = Path.GetFullPath(child).TrimEnd('\\', '/'), p = Path.GetFullPath(parent).TrimEnd('\\', '/');
+        return c.Equals(p, StringComparison.OrdinalIgnoreCase) || c.StartsWith(p + "\\", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsRoot(string path)
+    {
+        string full = Path.GetFullPath(path);
+        string? root = Path.GetPathRoot(full);
+        return root != null && full.TrimEnd('\\', '/').Equals(root.TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase);
+    }
+
+    // ------------------------------------------------------------------ a folder that is safe for a dev instance
+
+    /// <summary>
+    /// What the real Clink and the Windows around it keep that a dev folder must neither be nor hold: the real settings folder
+    /// (<see cref="Settings.RealDir"/>), the real Clink's local data (the updates), the folder that holds the packaged apps' private
+    /// AppData, the default clips folder, and the clips folder and archive location the real settings.json names. A dev instance
+    /// treats everything inside its own folder as its own (its clips are listed, trimmed, shared, archived and deleted from there),
+    /// so a folder that held any of these would make the real clips fair game.
+    /// </summary>
+    internal static List<(string Path, string What)> RealPlaces()
+    {
+        var places = new List<(string Path, string What)>();
+        void Add(string? path, string what)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return;
+            try { places.Add((System.IO.Path.GetFullPath(path), what)); } catch (Exception) { }
+        }
+        string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        string videos = Environment.GetFolderPath(Environment.SpecialFolder.MyVideos);
+        Add(Settings.RealDir, "the real Clink's settings folder");
+        if (local.Length > 0)
+        {
+            Add(System.IO.Path.Combine(local, "Clink"), "the real Clink's local data folder");
+            Add(System.IO.Path.Combine(local, "Packages"), "%LOCALAPPDATA%\\Packages");
+        }
+        if (videos.Length > 0) Add(System.IO.Path.Combine(videos, "Clink"), "the default clips folder");
+        var (clips, archive) = SettingsImport.SavedLocations(System.IO.Path.Combine(Settings.RealDir, "settings.json"));
+        Add(clips, "the real clips folder");
+        Add(archive, "the real archive folder");
+        return places;
+    }
+
+    /// <summary>
+    /// Refuses a data folder a dev instance must not live in, as an <see cref="ArgumentException"/> that says why (exit code 2).
+    /// Judged as given and, when a junction or symbolic link sends it elsewhere, where it really is. Refused: the real settings
+    /// folder; anything under <c>%LOCALAPPDATA%\Packages</c> or whose final path is a packaged app's private AppData (what Windows
+    /// shows for a folder made inside such an app: <see cref="AppDataRedirect.PackageFromFinalPath"/>); a drive's root and the user
+    /// profile folder; any folder that holds one of <see cref="RealPlaces"/> (a parent of the real settings, clips or archive); and an
+    /// existing folder that holds other files and no Clink data. So the dev folder is always a leaf folder Clink makes, an empty one,
+    /// or one an earlier dev run made, and "inside the dev folder" (<see cref="IsInsideFolder"/>, what <see cref="Isolate"/> lets a
+    /// clips folder or archive location be) never reaches anything the real Clink uses.
+    /// </summary>
+    private static void RefuseUnsafeFolder(string folder)
+    {
+        string? resolved = AppDataRedirect.ResolvedPath(folder);
+        var candidates = new List<string> { folder };
+        if (resolved != null && !SamePath(resolved, folder)) candidates.Add(resolved);
+
+        string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        string profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var places = RealPlaces();
+        foreach (string path in candidates)
+        {
+            string name = path == folder ? $"the data folder {folder}" : $"the data folder {folder} (really {path})";
+            if (SamePath(path, Settings.RealDir))
+                throw new ArgumentException(path == folder
+                    ? $"the data folder is the real Clink's settings folder ({Settings.RealDir}): a --dev instance needs a folder of its own"
+                    : $"{name} is the real Clink's settings folder ({Settings.RealDir}): a --dev instance needs a folder of its own");
+            if (local.Length > 0 && Within(path, System.IO.Path.Combine(local, "Packages")))
+                throw new ArgumentException($"{name} is under %LOCALAPPDATA%\\Packages, where Windows keeps the private copies of AppData that packaged apps (the Claude desktop app, say) get: a --dev instance needs a folder of its own somewhere else");
+            if (AppDataRedirect.PackageFromFinalPath(path + "\\") is { } package)
+                throw new ArgumentException($"{name} is inside {package}'s private copy of AppData: a --dev instance needs a folder of its own somewhere else (the Temp folder is fine)");
+            if (IsRoot(path))
+                throw new ArgumentException($"{name} is a drive's root: a --dev instance keeps its settings, clips and log in its folder, so it needs one of its own (like {DefaultFolder})");
+            if (profile.Length > 0 && SamePath(path, profile))
+                throw new ArgumentException($"{name} is your user profile folder: a --dev instance keeps its settings, clips and log in its folder, so it needs one of its own (like {DefaultFolder})");
+            foreach (var (place, what) in places)
+                if (Within(place, path))
+                    throw new ArgumentException($"{name} holds {what} ({place}): a --dev instance treats everything in its folder as its own, so it needs a folder that holds nothing of the real Clink's (like {DefaultFolder})");
+        }
+        if (HoldsOtherFiles(folder))
+            throw new ArgumentException($"the data folder {folder} already holds other files and no Clink data: a --dev instance keeps its settings, clips and log in its folder, so use a new or an empty one (or one an earlier --dev run made)");
+    }
+
+    /// <summary>The folder exists, has something in it, and nothing in it is Clink's own (settings, clip index, log, clips).</summary>
+    private static bool HoldsOtherFiles(string folder)
+    {
+        try
+        {
+            if (!Directory.Exists(folder)) return false;
+            bool any = false;
+            foreach (string entry in Directory.EnumerateFileSystemEntries(folder))
+            {
+                any = true;
+                string name = System.IO.Path.GetFileName(entry);
+                if (name.StartsWith("settings.json", StringComparison.OrdinalIgnoreCase) || name.StartsWith("settings.pre-", StringComparison.OrdinalIgnoreCase)
+                    || name.StartsWith("clips.json", StringComparison.OrdinalIgnoreCase) || name.Equals("clips", StringComparison.OrdinalIgnoreCase)
+                    || (name.StartsWith("clink", StringComparison.OrdinalIgnoreCase) && name.Contains(".log", StringComparison.OrdinalIgnoreCase)))
+                    return false;
+            }
+            return any;
+        }
+        catch (Exception) { return false; }   // a folder that cannot be listed is not this check's business
+    }
+
+    /// <summary>
+    /// True when <paramref name="path"/> is the dev folder or inside it (a path that cannot be resolved is not). The dev folder itself
+    /// was vetted by <see cref="Parse"/> (<see cref="RefuseUnsafeFolder"/>): it holds nothing of the real Clink's, so "inside it" is
+    /// never the real clips folder or archive.
+    /// </summary>
     internal bool IsInsideFolder(string? path)
     {
         if (string.IsNullOrWhiteSpace(path)) return false;

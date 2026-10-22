@@ -219,12 +219,14 @@ internal sealed class Settings
     private string? _preV3Text;
     private bool _hotkeysInShape;   // EnsureHotkeyModel has run: Hotkeys is in schema-3 shape, whatever schema the file had
     private readonly List<string> _unreadable = new();
+    private readonly List<int> _droppedRows = new();   // 1-based rows of the Hotkeys list that could not be read and were left out
 
     /// <summary>
-    /// settings.json (or its backup) parsed, but these values could not be read: they kept their defaults. Empty when every value
-    /// was fine. The file itself stays as it is until the next save, and a copy of it is kept as settings.json.unreadable.
+    /// settings.json (or its backup) parsed, but these values could not be read: they kept their defaults ("Fps"), or, for the
+    /// hotkey list, the row was left out and the others kept ("Hotkeys row 2"). Empty when every value was fine. The file itself
+    /// stays as it is until the next save, and a copy of it is kept as settings.json.unreadable.
     /// </summary>
-    [JsonIgnore] public IReadOnlyList<string> UnreadableValues => _unreadable;
+    [JsonIgnore] public IReadOnlyList<string> UnreadableValues => _unreadable.Concat(_droppedRows.Select(r => $"Hotkeys row {r}")).ToList();
 
     /// <summary>
     /// settings.json exists but could not be read (a hand edit with a typo), so Clink started from the backup or the defaults, or it
@@ -243,8 +245,10 @@ internal sealed class Settings
 
     /// <summary>Where the settings live instead of <c>%APPDATA%\Clink</c>: set by <c>--dev &lt;folder&gt;</c> and by the unit tests, null otherwise.</summary>
     internal static string? DirOverride { get; set; }
+    /// <summary>Stands in for <see cref="RealDir"/> in the unit tests (a made-up <c>%APPDATA%\Clink</c> to check a <c>--dev</c> folder against); null otherwise.</summary>
+    internal static string? RealDirOverride { get; set; }
     /// <summary>The real settings folder, <c>%APPDATA%\Clink</c>, whatever <see cref="DirOverride"/> says: what a <c>--dev</c> folder must never be.</summary>
-    internal static string RealDir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Clink");
+    internal static string RealDir => RealDirOverride ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Clink");
     public static string Dir => DirOverride ?? RealDir;
     public static string FilePath => Path.Combine(Dir, "settings.json");
 
@@ -285,7 +289,7 @@ internal sealed class Settings
         .ToDictionary(p => p.Name, StringComparer.OrdinalIgnoreCase);
 
     // The floating-point settings (Window*, HdrKnee, HdrPeak, KeyframeSeconds, ClickVolume, ArchiveWhenLocalExceedsGB, ...) and
-    // what a fresh Settings holds in them: a NaN / Infinity is put back to that before every save (see Sanitize).
+    // what a fresh Settings holds in them: a NaN / Infinity is put back to that when settings are loaded and before every save (see Sanitize).
     private static PropertyInfo[]? s_floating;
     private static PropertyInfo[] FloatingProperties => s_floating ??= Bindable.Values
         .Where(p => p.PropertyType == typeof(double) || p.PropertyType == typeof(float) || p.PropertyType == typeof(double?) || p.PropertyType == typeof(float?))
@@ -310,15 +314,22 @@ internal sealed class Settings
         // Said at start (AppController.Start): a hand edit that does not parse must not just silently have no effect.
         var problems = new List<string>();
         if (unreadable != null) problems.Add($"settings.json was not used ({unreadable}): Clink started with {(fromBackup ? "the previous settings" : "default settings")}");
-        if (s._unreadable.Count > 0)
+        if (s._unreadable.Count > 0 || s._droppedRows.Count > 0)
         {
-            // It parsed, but some values did not make sense: those keep their defaults. The file is left as it is until the next save,
-            // so what it said is kept beside it first. (When the file itself was skipped, ReadWithFallback has kept it already.)
+            // It parsed, but some values did not make sense: those keep their defaults (a hotkey row that does not make sense is left
+            // out, the others stay). The file is left as it is until the next save, so what it said is kept beside it first.
+            // (When the file itself was skipped, ReadWithFallback has kept it already.)
             bool kept = unreadable == null && KeepUnreadableCopy();
-            problems.Add($"settings.json: kept the defaults for {string.Join(", ", s._unreadable)} (unreadable values)" + (kept ? "; the original is kept as settings.json.unreadable" : ""));
+            var what = new List<string>();
+            if (s._unreadable.Count > 0) what.Add($"kept the defaults for {string.Join(", ", s._unreadable)} (unreadable values)");
+            if (s._droppedRows.Count > 0) what.Add($"left out hotkey row{(s._droppedRows.Count > 1 ? "s" : "")} {string.Join(", ", s._droppedRows)} (unreadable)");
+            problems.Add("settings.json: " + string.Join("; ", what) + (kept ? "; the original is kept as settings.json.unreadable" : ""));
         }
         if (problems.Count > 0) s.LoadProblem = string.Join(". ", problems);
         s.Normalize();
+        // A NaN / Infinity the file holds (an earlier version wrote them as text) is put back to the default here, before anything
+        // reads it: BuildConfig, the encoder and the window never see it, not only the next save.
+        s.Sanitize(quiet: false);
         // A file of an older schema, or no usable file at all (a first start): the caller saves once, in the current layout.
         if (s._fileSchema < CurrentSchema) s.Migrated = true;
         s.SchemaVersion = CurrentSchema;   // what a save writes, whatever number the file had (see SchemaVersion)
@@ -339,6 +350,7 @@ internal sealed class Settings
     {
         var s = ParseCore(json, quiet: true);
         s.Normalize();
+        s.Sanitize(quiet: true);   // as Load does, so two copies are compared as they would be once loaded
         return s;
     }
 
@@ -382,7 +394,10 @@ internal sealed class Settings
                 // null is a value for a text or an optional number, not for a number or a switch: PropertyInfo.SetValue would turn it into 0 / false.
                 if (p.Value.ValueKind == JsonValueKind.Null && prop.PropertyType.IsValueType && Nullable.GetUnderlyingType(prop.PropertyType) == null)
                     throw new JsonException("null for a setting that has to have a value");
-                prop.SetValue(s, p.Value.Deserialize(prop.PropertyType, s_json));
+                if (prop.Name == nameof(Hotkeys) && p.Value.ValueKind == JsonValueKind.Array)
+                    prop.SetValue(s, ReadHotkeyRows(p.Value, s, quiet));   // row by row: one that makes no sense costs only itself
+                else
+                    prop.SetValue(s, p.Value.Deserialize(prop.PropertyType, s_json));
             }
             catch (Exception ex)
             {
@@ -401,6 +416,28 @@ internal sealed class Settings
         }
         if (s._fileSchema < CurrentSchema) s._preV3Text = json;
         return s;
+    }
+
+    /// <summary>
+    /// The rows of a "Hotkeys" array, one by one. A row that cannot be read (<c>{ "Keys": { "Vk": "x" } }</c>, a number where a
+    /// binding should be) is left out and logged, and listed in <see cref="UnreadableValues"/> as "Hotkeys row N"; the rows around it
+    /// are kept, in order. A JSON null stays a null row, which <see cref="Normalize"/> removes as it always did.
+    /// </summary>
+    private static List<HotkeyAction> ReadHotkeyRows(JsonElement array, Settings s, bool quiet)
+    {
+        var rows = new List<HotkeyAction>();
+        int number = 0;
+        foreach (var item in array.EnumerateArray())
+        {
+            number++;
+            try { rows.Add(item.Deserialize<HotkeyAction>(s_json)!); }
+            catch (Exception ex)
+            {
+                s._droppedRows.Add(number);
+                if (!quiet) Log.Warn($"settings: hotkey row {number} could not be read ({(ex is JsonException ? "wrong kind of value" : ex.Message)}); it is left out and the other rows are kept");
+            }
+        }
+        return rows;
     }
 
     private static bool HasKey(JsonElement obj, string name)
@@ -569,19 +606,20 @@ internal sealed class Settings
     }
 
     /// <summary>
-    /// A NaN or Infinity in a floating-point setting (a window position that was never set, a hand edit) is put back to what a
-    /// fresh Settings holds there (null for the window's position and size, which means "let Windows place it"): such a value would
-    /// be written as the text "NaN", which is no number to anything else that reads the file, and means nothing as a position or a
-    /// volume. Under the save gate.
+    /// A NaN or Infinity in a floating-point setting (a window position that was never set, a hand edit, the text "NaN" an earlier
+    /// version wrote) is put back to what a fresh Settings holds there (null for the window's position and size, which means "let
+    /// Windows place it"): such a value would be written as the text "NaN", which is no number to anything else that reads the file,
+    /// and means nothing as a position, a volume or an encoder setting. Run when settings are loaded (<see cref="Load"/>,
+    /// <see cref="FromJson"/>) and again before every save (under the save gate). <paramref name="quiet"/>: say nothing in the log.
     /// </summary>
-    private void Sanitize()
+    private void Sanitize(bool quiet = false)
     {
         foreach (var p in FloatingProperties)
         {
             bool nonFinite = p.GetValue(this) switch { double d => !double.IsFinite(d), float f => !float.IsFinite(f), _ => false };
             if (!nonFinite) continue;
             p.SetValue(this, p.GetValue(Defaults));
-            Log.Warn($"settings: {p.Name} was not a number, it is back to its default");
+            if (!quiet) Log.Warn($"settings: {p.Name} was not a number, it is back to its default");
         }
     }
 
