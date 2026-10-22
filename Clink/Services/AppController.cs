@@ -17,8 +17,18 @@ internal enum RecordingState { Starting, Recording, WaitingForGame, Paused, Erro
 /// <summary>Owns the engine, settings, clip library, hotkeys, game detection, toasts, status dot, archive, tray icon and the single-instance pipe.</summary>
 internal sealed class AppController : IDisposable
 {
-    public const string PipeName = "Clink.Control";
-    private const string MutexName = "Clink.SingleInstance.6F1B";
+    /// <summary>
+    /// Appended to the mutex and pipe names so a "--dev" instance runs next to the real one without ever seeing its commands:
+    /// "" for a normal run, ".dev.&lt;hash of the data folder&gt;" with <c>--dev</c> (<see cref="DevOptions.InstanceSuffix"/>). Set before
+    /// <see cref="AcquireSingleInstance"/>, never changed afterwards.
+    /// </summary>
+    public static string InstanceSuffix { get; set; } = "";
+    /// <summary>Running as <c>--dev &lt;folder&gt;</c>: own data folder, mutex and pipe; no updater, no Run key, hotkeys off unless <see cref="DevHotkeys"/>.</summary>
+    public static bool IsDev => InstanceSuffix.Length > 0;
+    /// <summary><c>--dev-hotkeys</c>: a dev instance binds its hotkeys too (its hook then swallows those combos system-wide while it runs).</summary>
+    public static bool DevHotkeys { get; set; }
+    public static string PipeName => "Clink.Control" + InstanceSuffix;
+    private static string MutexName => "Clink.SingleInstance.6F1B" + InstanceSuffix;
     private static readonly TimeSpan GameExitGrace = TimeSpan.FromSeconds(5);   // keep recording this long after the game's process is gone
 
     public static AppController Instance { get; private set; } = null!;
@@ -104,6 +114,7 @@ internal sealed class AppController : IDisposable
     private string? _announceGame;          // show the "Recording started" toast for this game once the engine is up
     private int _detecting;
     private string _trayText = "";
+    private string? _hotkeyNotice;          // said once at start when the main hotkey was claimed for Alt+C or left unset (MigrateHotkeys)
 
     public AppController(Settings settings, Updater updater)
     {
@@ -210,7 +221,7 @@ internal sealed class AppController : IDisposable
         Monitors = Native.Monitors.Enumerate();
         Library.Load(Settings.ClipsFolder);
         MigrateHotkeys();
-        Hotkeys.Install(Settings.Hotkeys, a => _ui.BeginInvoke(() => OnHotkey(a)));
+        Hotkeys.Install(ActiveHotkeys, a => _ui.BeginInvoke(() => OnHotkey(a)));
         // Hardware encoder enumeration loads vendor DLLs and can take a while on some machines: warm it on a worker so the
         // window's codec list and the first engine start find the answer ready instead of probing on the UI thread.
         Task.Run(() => { try { _ = Capabilities.Codecs; } catch (Exception ex) { Log.Warn("codec probe: " + ex.Message); } });
@@ -226,10 +237,12 @@ internal sealed class AppController : IDisposable
         else StartEngine();
         Archive.Start();
         ApplyStatusDot();
-        Updater.StartBackgroundChecks();
+        if (!IsDev) Updater.StartBackgroundChecks();   // a --dev instance never contacts GitHub
         // A downloaded update was skipped at startup (install failed earlier, read-only folder, elevated): tell the user, once per start.
         if (Updater.InstallProblem is string problem) { Say(problem); ShowBalloon("Clink update not installed", problem); }
         if (Settings.LoadProblem is string unread) { Say(unread); ShowBalloon("Clink settings not loaded", unread); }   // a hand edit of settings.json that does not parse
+        // The footer line of MigrateHotkeys is easy to miss when Clink starts in the tray; this is a hotkey it just claimed or left unset.
+        if (_hotkeyNotice is string hotkeyNotice) ShowBalloon("Clink hotkey", hotkeyNotice);
         RaiseStateChanged();
     }
 
@@ -580,27 +593,41 @@ internal sealed class AppController : IDisposable
     // ------------------------------------------------------------------ hotkeys (docs/SPEC-v2.md §6)
 
     /// <summary>
-    /// A settings file without a v2 hotkey list (v1, or a fresh install) gets the single v1 hotkey as its one "clip" binding
-    /// (replay-length slider value). Runs once at start: a list the file does have is the user's, an empty one included.
+    /// Settings.Load() has already put the hotkey list in shape (<c>Hotkeys[0]</c> is the main hotkey, see
+    /// <see cref="Settings.EnsureHotkeyModel"/>) and noted what changed: a settings file of an older schema, a first start or a list
+    /// that had to be fixed is saved once here, in the current layout. When no hotkey saved the full replay, the user is told once
+    /// which key the main hotkey got, or that it still needs one.
     /// </summary>
     private void MigrateHotkeys()
     {
-        if (Settings.HotkeysFromFile || Settings.Hotkeys.Count > 0) return;
-        Settings.Hotkeys.Add(new HotkeyAction { Keys = Settings.Hotkey, Action = "clip", Seconds = 0 });
-        Settings.Save();
-        Log.Info($"hotkeys: migrated {Settings.Hotkey} → clip");
+        if (Settings.Migrated) { Settings.Save(); Log.Info("settings: migrated to schema 3"); }
+        if (Settings.MainHotkeyAssigned) Say(_hotkeyNotice = "Alt+C now saves the full replay. Change it under Capture → Hotkeys");
+        else if (Settings.MainHotkeyNeedsSetup) Say(_hotkeyNotice = "Set your main hotkey under Capture → Hotkeys: it saves the full replay");
     }
 
-    /// <summary>Re-reads <see cref="Settings.Hotkeys"/> after the list changed in the UI (an empty list means no hotkeys).</summary>
+    /// <summary>
+    /// The bindings the keyboard hook gets: <see cref="Settings.Hotkeys"/>, except in a <c>--dev</c> instance, which binds nothing
+    /// unless started with <c>--dev-hotkeys</c>, so it never swallows a combo the real Clink (or a game) is waiting for. The hook is
+    /// installed either way, which is all the hotkey editor's key capture needs.
+    /// </summary>
+    private IReadOnlyList<HotkeyAction> ActiveHotkeys => IsDev && !DevHotkeys ? Array.Empty<HotkeyAction>() : Settings.Hotkeys;
+
+    /// <summary>Re-reads <see cref="Settings.Hotkeys"/> after the list changed in the UI (an unset main hotkey and no other row means no hotkeys).</summary>
     public void ReloadHotkeys()
     {
-        Hotkeys.Rebind(Settings.Hotkeys);
+        Hotkeys.Rebind(ActiveHotkeys);
         UpdateTrayHotkey();
     }
 
-    /// <summary>The keys of the first "clip" binding, for labels ("Press F9 to save a clip"); null when no hotkey is bound (the list may be empty by choice).</summary>
-    public string? ClipHotkeyLabel =>
-        (Settings.Hotkeys.FirstOrDefault(h => Hotkeys.IsClip(h.Action) && h.Keys.Vk > 0) ?? Settings.Hotkeys.FirstOrDefault(h => h.Keys.Vk > 0))?.Keys.ToString();
+    /// <summary>The keys that save a clip, for labels ("Press Alt+C to save a clip"): the main hotkey's, else the first additional "clip" hotkey that is set; null when neither is (the main may be unset by choice).</summary>
+    public string? ClipHotkeyLabel => ClipHotkeyLabelFor(Settings.Hotkeys);
+
+    /// <summary><see cref="ClipHotkeyLabel"/> for a hotkey list: <c>[0]</c> is the main hotkey; any "clip" row after it with keys is the fallback.</summary>
+    internal static string? ClipHotkeyLabelFor(IReadOnlyList<HotkeyAction> hotkeys)
+    {
+        if (hotkeys.Count > 0 && hotkeys[0].Keys.Vk > 0) return hotkeys[0].Keys.ToString();
+        return hotkeys.Skip(1).FirstOrDefault(h => Hotkeys.IsClip(h.Action) && h.Keys.Vk > 0)?.Keys.ToString();
+    }
 
     /// <summary>"Clip now (F9)" for the tray menu, or just "Clip now" without a binding.</summary>
     private string ClipTrayText => ClipHotkeyLabel is string l ? $"Clip now ({l})" : "Clip now";
@@ -812,6 +839,7 @@ internal sealed class AppController : IDisposable
 
     public void SetRunAtStartup(bool on)
     {
+        if (IsDev) return;   // a --dev instance must never touch the real Run entry (it would point the real startup at the dev build)
         try
         {
             using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run", writable: true);
@@ -840,6 +868,9 @@ internal sealed class AppController : IDisposable
 
     // ------------------------------------------------------------------ tray
 
+    /// <summary>The tray icon's name: "Clink", or "Clink (dev)" for a --dev instance, so the two icons can be told apart.</summary>
+    private static string TrayName => IsDev ? "Clink (dev)" : "Clink";
+
     private void CreateTray()
     {
         try
@@ -861,7 +892,7 @@ internal sealed class AppController : IDisposable
             menu.Items.Add("Quit", null, (_, _) => Quit());
             _tray = new System.Windows.Forms.NotifyIcon
             {
-                Text = "Clink",
+                Text = TrayName,
                 Visible = true,
                 ContextMenuStrip = menu,
                 Icon = System.Drawing.Icon.ExtractAssociatedIcon(Environment.ProcessPath!) ?? System.Drawing.SystemIcons.Application,
@@ -876,7 +907,7 @@ internal sealed class AppController : IDisposable
         if (_tray == null) return;
         string status = StatusText;
         if (State == RecordingState.Error && Engine.Error != null) status = "Error: " + Engine.Error;
-        string text = "Clink · " + status;
+        string text = TrayName + " · " + status;
         if (text.Length > 120) text = text[..119] + "…";   // NotifyIcon.Text throws above 127 characters
         if (text != _trayText)
         {
