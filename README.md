@@ -1,4 +1,9 @@
-# Clink
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/brand/wordmark-dark.png">
+  <img src="docs/brand/wordmark-light.png" alt="Clink" width="360">
+</picture>
+
+**Press a key. Hear a click. The clip is on disk.**
 
 A tiny Windows replay-buffer clipper for games. It keeps the last couple of minutes of your screen and audio in
 memory; press a key, hear a click, and the clip is on disk. Share it to [Copium](https://copium.pics) with one

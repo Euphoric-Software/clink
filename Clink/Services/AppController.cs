@@ -864,7 +864,7 @@ internal sealed class AppController : IDisposable
                 Text = "Clink",
                 Visible = true,
                 ContextMenuStrip = menu,
-                Icon = System.Drawing.Icon.ExtractAssociatedIcon(Environment.ProcessPath!) ?? System.Drawing.SystemIcons.Application,
+                Icon = AppIcon.Tray(),
             };
             _tray.MouseClick += (_, e) => { if (e.Button == System.Windows.Forms.MouseButtons.Left) ShowRequested?.Invoke(); };
         }

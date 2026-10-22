@@ -44,6 +44,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Brand artwork, reachable as pack://application:,,,/Assets/<name>. The .ico is also the exe's ApplicationIcon above. -->
+    <Resource Include="Assets\*.png" />
+    <Resource Include="Assets\clink.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
     <AssemblyMetadata Include="UpdateRepo" Value="$(UpdateRepo)" />
   </ItemGroup>
 

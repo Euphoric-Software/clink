@@ -1,4 +1,5 @@
 ﻿<Window x:Class="Clink.UI.TrimWindow"
+        Icon="pack://application:,,,/Assets/clink.ico"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:ui="clr-namespace:Clink.UI"
