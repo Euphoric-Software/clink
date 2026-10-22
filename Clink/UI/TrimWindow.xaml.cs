@@ -44,7 +44,8 @@ public partial class TrimWindow : Window
     private bool _trimMode;       // the trim editor (true) or the player (false)
     private bool _settingMode;    // SetTrimMode is moving the switch: its Checked / Unchecked are not a click
     private TrackRole[] _roles = Array.Empty<TrackRole>();   // what each row's track is (Mix, Game…), from the names in the file
-    private long _openedAt;       // Environment.TickCount64 when the window first showed
+    private TrackRole[] _unlined = Array.Empty<TrackRole>(); // sources of an older clip that could not be lined up with the Mix: _roles has them standing alone
+    private long _openedAt;       // Environment.TickCount64 when the window first showed or was brought forward
 
     private sealed class TrackRow
     {
@@ -98,6 +99,9 @@ public partial class TrimWindow : Window
     /// <summary>Brings the window forward in the mode asked for (a save in progress keeps its mode).</summary>
     internal void Reveal(bool trim)
     {
+        // A second click on the clip's row (or on its Trim button) lands here and brings this window up under the pointer: like the
+        // opening click's second half it must not reach a button of the window (a double click on the row would pause the preview).
+        _openedAt = Environment.TickCount64;
         if (!_busy && trim != _trimMode) SetTrimMode(trim);
         if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
         Activate();
@@ -128,6 +132,7 @@ public partial class TrimWindow : Window
             TracksPanel.Children.Clear();
             _rows.Clear();
             _roles = Array.Empty<TrackRole>();
+            _unlined = Array.Empty<TrackRole>();
             MixNote.Visibility = Visibility.Collapsed;
             _monitor = -1;
         }
@@ -213,6 +218,7 @@ public partial class TrimWindow : Window
         _rows.Clear();
         _monitor = -1;
         _roles = Array.Empty<TrackRole>();
+        _unlined = Array.Empty<TrackRole>();
         MixNote.Visibility = Visibility.Collapsed;
         if (player.TrackCount == 0)
         {
@@ -224,8 +230,12 @@ public partial class TrimWindow : Window
         string[]? names = player.TrackNames
             ?? (_entry.AudioTracks != null && _entry.AudioTracks.Length == player.TrackCount ? _entry.AudioTracks : null);
         // What each track is comes from the names in the file itself (a file Clink did not write has none): only a Clink clip's
-        // first track is a Mix that its Game, Mic and Voice tracks can be mixed into again.
-        _roles = MixPlan.Roles(player.TrackNames, player.TrackCount);
+        // first track is a Mix that its Game, Mic and Voice tracks can be mixed into again. A source of a clip an older Clink
+        // trimmed, which could not be lined up with the Mix (the player checked), stands alone: its slider is for its own track.
+        var fileRoles = MixPlan.Roles(player.TrackNames, player.TrackCount);
+        var unlined = player.Alignment.Unlined;
+        _roles = MixPlan.WithoutTracks(fileRoles, unlined);
+        _unlined = unlined.Where(i => i > 0 && i < fileRoles.Length && _roles[i] != fileRoles[i]).Select(i => fileRoles[i]).ToArray();
         bool remix = MixPlan.CanRemix(_roles);
         for (int i = 0; i < player.TrackCount; i++)
         {
@@ -322,16 +332,28 @@ public partial class TrimWindow : Window
     /// </summary>
     private void UpdateMixNote()
     {
-        var missing = MixPlan.MissingSources(_roles);
-        if (missing.Length == 0)
+        // A source that could not be lined up is not "missing" (it has its track): it just does not feed All audio.
+        var missing = MixPlan.MissingSources(_roles).Where(r => !_unlined.Contains(r)).ToArray();
+        string? older = null;
+        if (_unlined.Length > 0)
+        {
+            bool few = _unlined.Length == 1;
+            older = $"{ClipAlignment.OlderClinkNote}. The {JoinNames(_unlined, "and")} volume{(few ? "" : "s")} only change{(few ? "s" : "")} {(few ? "its" : "their")} own track{(few ? "" : "s")}.";
+        }
+        string? baked = null;
+        if (missing.Length > 0)
+        {
+            var present = new[] { TrackRole.Game, TrackRole.Mic, TrackRole.Voice }.Where(r => !missing.Contains(r) && !_unlined.Contains(r)).ToArray();
+            bool many = missing.Length > 1;
+            baked = $"{JoinNames(missing, "and")} {(many ? "are" : "is")} only inside All audio (not saved as {(many ? "tracks" : "a track")} of {(many ? "their" : "its")} own), "
+                + $"so {(many ? "their volumes" : "its volume")} cannot be changed. Turning {JoinNames(present, "or")} down takes it out of the baked mix again, which can leave a faint trace of it.";
+        }
+        if (older == null && baked == null)
         {
             MixNote.Visibility = Visibility.Collapsed;
             return;
         }
-        var present = new[] { TrackRole.Game, TrackRole.Mic, TrackRole.Voice }.Where(r => !missing.Contains(r)).ToArray();
-        bool many = missing.Length > 1;
-        MixNote.Text = $"{JoinNames(missing, "and")} {(many ? "are" : "is")} only inside All audio (not saved as {(many ? "tracks" : "a track")} of {(many ? "their" : "its")} own), "
-            + $"so {(many ? "their volumes" : "its volume")} cannot be changed. Turning {JoinNames(present, "or")} down takes it out of the baked mix again, which can leave a faint trace of it.";
+        MixNote.Text = older == null ? baked! : baked == null ? older : older + " " + baked;
         MixNote.Visibility = Visibility.Visible;
     }
 
@@ -344,7 +366,11 @@ public partial class TrimWindow : Window
     {
         var player = _player;
         if (player == null) return;
-        var gains = MixPlan.PreviewGains(_roles, _rows.Select(InFile).ToArray(), _rows.Select(r => r.Gain).ToArray(), _monitor);
+        var include = _rows.Select(InFile).ToArray();
+        var volume = _rows.Select(r => r.Gain).ToArray();
+        var gains = MixPlan.PreviewGains(_roles, include, volume, _monitor);
+        // A Mix put together from the sources is limited with the recording's soft knee, as the saved one is; a track on its own is not.
+        player.SoftKnee = MixPlan.PreviewIsRemix(_roles, include, volume, _monitor);
         for (int i = 0; i < _rows.Count && i < player.TrackCount && i < gains.Length; i++)
         {
             player.Gain[i] = gains[i];

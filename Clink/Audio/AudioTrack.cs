@@ -139,15 +139,20 @@ internal sealed unsafe class AudioTrack : IDisposable
     /// <summary>Soft limiter: linear below 0.8, then a smooth knee that never exceeds 1.0 (keeps a loud mic + game from hard-clipping).</summary>
     private static void SoftClip(Span<float> s)
     {
-        for (int i = 0; i < s.Length; i++)
-        {
-            float v = s[i];
-            float a = MathF.Abs(v);
-            if (a <= 0.8f) continue;
-            float over = (a - 0.8f) / 0.2f;
-            float y = 0.8f + 0.2f * MathF.Tanh(over);
-            s[i] = v < 0 ? -y : y;
-        }
+        for (int i = 0; i < s.Length; i++) s[i] = SoftKnee(s[i]);
+    }
+
+    /// <summary>
+    /// <see cref="SoftClip"/> for one sample: the curve the recorded Mix was limited with, which a Mix rebuilt from its sources (the
+    /// trim editor's preview and export) must use too, so that its loud peaks come out as they did in the recording.
+    /// </summary>
+    public static float SoftKnee(float v)
+    {
+        float a = MathF.Abs(v);
+        if (a <= 0.8f) return v;
+        float over = (a - 0.8f) / 0.2f;
+        float y = 0.8f + 0.2f * MathF.Tanh(over);
+        return v < 0 ? -y : y;
     }
 
     /// <summary>Copies this track's timeline PCM for [pts, pts + frames) into <paramref name="dst"/> (zeros where nothing is known).</summary>
