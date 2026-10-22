@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using Microsoft.Win32.SafeHandles;
 using Windows.Win32;
 using Windows.Win32.Foundation;
 using Windows.Win32.Media.MediaFoundation;
@@ -343,8 +344,26 @@ internal static unsafe class Trimmer
     {
         try
         {
-            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 4096, FileOptions.RandomAccess);
-            var top = Boxes(fs, 0, fs.Length);
+            using var file = File.OpenHandle(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, FileOptions.RandomAccess);
+            return ReadClipTracks(file, Path.GetFileName(path));
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"Track names of {Path.GetFileName(path)}: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// <see cref="ReadClipTracks(string)"/> of a file that is open already. Every read is a positional one on <paramref name="fs"/>, so what is
+    /// parsed is the file that handle is: <see cref="EditListFreeStream"/> parses the file it serves, and a clip that is replaced
+    /// meanwhile cannot give it the offsets of another one. <paramref name="fileName"/> is for the log.
+    /// </summary>
+    internal static ClipTracks? ReadClipTracks(SafeFileHandle fs, string fileName)
+    {
+        try
+        {
+            var top = Boxes(fs, 0, RandomAccess.GetLength(fs));
             var moov = top.FirstOrDefault(b => b.type == "moov");
             if (moov.type == null) return null;
             bool marked = false;
@@ -353,8 +372,7 @@ internal static unsafe class Trimmer
             {
                 // major brand, minor version, then the compatible brands, four bytes each.
                 var brands = new byte[(int)(ftyp.end - ftyp.start)];
-                fs.Position = ftyp.start;
-                fs.ReadExactly(brands);
+                ReadAt(fs, ftyp.start, brands);
                 string aligned = Mp4Muxer.AlignedBrand;
                 for (int at = 8; at + 4 <= brands.Length && !marked; at += 4) marked = Encoding.ASCII.GetString(brands, at, 4) == aligned;
             }
@@ -373,8 +391,7 @@ internal static unsafe class Trimmer
                 var hdlr = mdiaParts.FirstOrDefault(b => b.type == "hdlr");
                 if (hdlr.type == null || hdlr.end - hdlr.start < 24) return null;
                 var buf = new byte[(int)Math.Min(hdlr.end - hdlr.start, 512)];
-                fs.Position = hdlr.start;
-                fs.ReadExactly(buf);
+                ReadAt(fs, hdlr.start, buf);
                 // version/flags, pre_defined, handler type, 3 reserved words, then the zero-terminated UTF-8 name.
                 string type = Encoding.ASCII.GetString(buf, 8, 4);
                 int z = Array.IndexOf(buf, (byte)0, 24);
@@ -392,7 +409,7 @@ internal static unsafe class Trimmer
         }
         catch (Exception ex)
         {
-            Log.Warn($"Track names of {Path.GetFileName(path)}: {ex.Message}");
+            Log.Warn($"Track names of {fileName}: {ex.Message}");
             return null;
         }
     }
@@ -401,7 +418,7 @@ internal static unsafe class Trimmer
     /// Where the track's first sample sits on the movie's timeline, in 100 ns: an empty edit in front of the media delays it, and a
     /// media time on the first real edit is the part of the media before the clip origin, which is skipped. 0 without an edit list.
     /// </summary>
-    private static long StartOffset(FileStream fs, List<(string type, long start, long end, long box)> trak, List<(string type, long start, long end, long box)> mdia, long movieScale)
+    private static long StartOffset(SafeFileHandle fs, List<(string type, long start, long end, long box)> trak, List<(string type, long start, long end, long box)> mdia, long movieScale)
     {
         var edts = trak.FirstOrDefault(b => b.type == "edts");
         var mdhd = mdia.FirstOrDefault(b => b.type == "mdhd");
@@ -425,43 +442,53 @@ internal static unsafe class Trimmer
         return offset;
     }
 
-    private static int ReadU8(FileStream fs, long at)
+    /// <summary>Fills <paramref name="buffer"/> from the file at <paramref name="at"/> (a positional read, which leaves no position behind).</summary>
+    private static void ReadAt(SafeFileHandle fs, long at, Span<byte> buffer)
     {
-        fs.Position = at;
-        return fs.ReadByte();
+        while (!buffer.IsEmpty)
+        {
+            int got = RandomAccess.Read(fs, buffer, at);
+            if (got <= 0) throw new EndOfStreamException("the file ends inside a box");
+            buffer = buffer[got..];
+            at += got;
+        }
     }
 
-    private static long ReadU32(FileStream fs, long at)
+    private static int ReadU8(SafeFileHandle fs, long at)
+    {
+        Span<byte> b = stackalloc byte[1];
+        ReadAt(fs, at, b);
+        return b[0];
+    }
+
+    private static long ReadU32(SafeFileHandle fs, long at)
     {
         Span<byte> b = stackalloc byte[4];
-        fs.Position = at;
-        fs.ReadExactly(b);
+        ReadAt(fs, at, b);
         return BinaryPrimitives.ReadUInt32BigEndian(b);
     }
 
-    private static long ReadI64(FileStream fs, long at)
+    private static long ReadI64(SafeFileHandle fs, long at)
     {
         Span<byte> b = stackalloc byte[8];
-        fs.Position = at;
-        fs.ReadExactly(b);
+        ReadAt(fs, at, b);
         return BinaryPrimitives.ReadInt64BigEndian(b);
     }
 
     /// <summary>The boxes directly inside [from, to): type, payload range and where the box itself starts (its size field; the type follows it). Stops at the first malformed header.</summary>
-    private static List<(string type, long start, long end, long box)> Boxes(FileStream fs, long from, long to)
+    private static List<(string type, long start, long end, long box)> Boxes(SafeFileHandle fs, long from, long to)
     {
         var list = new List<(string, long, long, long)>();
         Span<byte> h = stackalloc byte[16];
         for (long o = from; o + 8 <= to;)
         {
-            fs.Position = o;
-            fs.ReadExactly(h.Slice(0, 8));
+            ReadAt(fs, o, h.Slice(0, 8));
             long size = BinaryPrimitives.ReadUInt32BigEndian(h);
             int hdr = 8;
             if (size == 1)
             {
                 if (o + 16 > to) break;
-                fs.ReadExactly(h.Slice(8, 8));
+                ReadAt(fs, o + 8, h.Slice(8, 8));
                 size = (long)BinaryPrimitives.ReadUInt64BigEndian(h.Slice(8));
                 hdr = 16;
             }

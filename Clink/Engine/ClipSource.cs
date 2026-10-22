@@ -6,6 +6,8 @@ using Windows.Win32;
 using Windows.Win32.Foundation;
 using Windows.Win32.Media.MediaFoundation;
 using Windows.Win32.System.Com;
+using Windows.Win32.System.Com.StructuredStorage;
+using Windows.Win32.System.Variant;
 using Clink.Native;
 
 namespace Clink.Engine;
@@ -40,9 +42,10 @@ internal enum EditListHandling
 }
 
 /// <summary>The result of the timeline self-check (<see cref="ClipSource.Timeline"/>).</summary>
-/// <param name="Passed">True: through <see cref="ClipSource"/> every track of the probe clip starts at 0 and has its frames where they are. False:
-/// it does not, so tracks cannot be put on one timeline. Null: the check could not run (Media Foundation or its AAC encoder is not
-/// there), which is not a reason to distrust anything.</param>
+/// <param name="Passed">True: through <see cref="ClipSource"/> every track of the probe clip starts at 0, has its frames where they are and
+/// is found again by a seek. False: the read was made and the numbers are not those, so tracks cannot be put on one timeline. Null: the
+/// check could not run (Media Foundation or its AAC encoder is not there, a read failed or ended early, it did not finish), which is not
+/// a reason to distrust anything and is not remembered: the next ask makes the check again.</param>
 /// <param name="MediaFoundation">What Media Foundation's own reader makes of the same file.</param>
 /// <param name="Detail">The timestamps that were read through <see cref="ClipSource"/>, or why the check could not run.</param>
 /// <param name="OwnReading">The timestamps Media Foundation's own reader handed out (empty when it was not asked).</param>
@@ -60,19 +63,21 @@ internal sealed record TimelineCheck(bool? Passed, EditListHandling MediaFoundat
 /// by its offset twice. So, for a file Clink wrote, the reader reads the file through an <see cref="EditListFreeStream"/> in which every
 /// audio trak's 'edts' box reads as a 'free' box: Media Foundation then has no audio edit list to apply or to ignore, and every stream
 /// comes out from its first sample at 0 on every Windows. The video trak's edit list (one edit from media time 0) is left alone, and a
-/// file another application wrote is opened as Media Foundation does it. The reader is for compressed samples and decoded audio alike.
+/// file another application wrote is opened as Media Foundation does it. A Clink clip that cannot be read that way is not read at all,
+/// unless Media Foundation is known to ignore the edit lists on this Windows (its own reader then stands in, and that is logged). The
+/// reader is for compressed samples and decoded audio alike.
 /// </summary>
 internal static unsafe class ClipSource
 {
     private const uint AllStreams = 0xFFFFFFFE;
-    private static bool s_fallbackLogged;
 
     /// <summary>Set by the tests only (see <see cref="IClipSourceHook"/>).</summary>
     internal static IClipSourceHook? Hook { get; set; }
 
     /// <summary>
     /// Opens a reader on the clip <paramref name="path"/>: its audio edit lists are hidden from Media Foundation when it is a file Clink
-    /// wrote that has any, and every stream then starts at 0.
+    /// wrote that has any, and every stream then starts at 0. A clip that cannot be read that way is not read at all, unless Media
+    /// Foundation is known to ignore the edit lists on this Windows (see <see cref="OpenHidden"/>).
     /// </summary>
     /// <param name="attrs">The reader's attributes, or null.</param>
     /// <param name="owner">The stream the reader reads the file through, null for a plain reader. <b>Dispose it after releasing the reader</b>:
@@ -87,76 +92,100 @@ internal static unsafe class ClipSource
         var hook = Hook;
         owner = null;
         IMFSourceReader* reader = null;
-        if (hideEditLists && (hook?.HideEditLists(path) ?? true))
-        {
-            var edits = Trimmer.ReadClipTracks(path)?.AudioEditBoxes;
-            if (edits is { Length: > 0 })
-            {
-                try { reader = OpenHidden(path, attrs, edits, out owner); }
-                catch (Exception ex)
-                {
-                    // Never worse than before: the clip opens through Media Foundation's own reader. The timeline self-check reads through
-                    // this method, so on a Windows where that reader moves the tracks it says so, and nothing is mixed.
-                    owner = null;
-                    reader = null;
-                    if (!s_fallbackLogged)
-                    {
-                        s_fallbackLogged = true;
-                        Log.Warn($"media: {Path.GetFileName(path)} could not be read with its audio edit lists hidden ({ex.Message}); Media Foundation's own reader is used");
-                    }
-                }
-            }
-        }
+        if (hideEditLists && (hook?.HideEditLists(path) ?? true)) reader = OpenHidden(path, attrs, out owner);
         bool hidden = reader != null;
         if (reader == null) PInvoke.MFCreateSourceReaderFromURL(path, attrs, &reader).Check("MFCreateSourceReaderFromURL");
         return hook != null ? hook.Wrap(path, reader, hidden, ref owner) : reader;
     }
 
-    private static IMFSourceReader* OpenHidden(string path, IMFAttributes* attrs, long[] editBoxes, out IDisposable? owner)
+    /// <summary>
+    /// The reader on <paramref name="path"/> with the audio edit lists hidden, or null for Media Foundation's own reader where that is as
+    /// good: the file has no audio edit list to hide (it is not one Clink wrote, or there is none in it), it is not there (Media Foundation
+    /// says so in its own words), or it could not be read with them hidden and Media Foundation ignores the edit lists on this Windows,
+    /// so its own reader hands the tracks out from 0 as well (that is logged, every time). Anywhere else a clip that cannot be read with
+    /// its edit lists hidden throws: Media Foundation's own reader would put every track where its edit list says, Clink would put it
+    /// there a second time and the clip would look right, being marked as aligned.
+    /// </summary>
+    private static IMFSourceReader* OpenHidden(string path, IMFAttributes* attrs, out IDisposable? owner)
     {
-        var stream = new EditListFreeStream(path, editBoxes);
+        owner = null;
+        EditListFreeStream? stream = null;
         try
         {
-            // The stream is a COM object for as long as Media Foundation holds a reference to it (the byte stream, which the reader's
-            // source holds): the identity pointer is released once the byte stream has taken its own.
-            nint identity = ClinkComWrappers.Instance.GetOrCreateComInterfaceForObject(stream, CreateComInterfaceFlags.None);
-            Guid iid = IStream.IID_Guid;
-            int hr = Marshal.QueryInterface(identity, in iid, out nint comStream);
-            Marshal.Release(identity);
-            Marshal.ThrowExceptionForHR(hr);
-            IMFByteStream* bytes;
-            try { PInvoke.MFCreateMFByteStreamOnStream((IStream*)comStream, &bytes).Check("MFCreateMFByteStreamOnStream"); }
-            finally { Marshal.Release(comStream); }
-            try
+            stream = new EditListFreeStream(path);   // the one open of the file: what is parsed here is what is served
+            var edits = stream.ReadTracks()?.AudioEditBoxes;
+            if (edits is not { Length: > 0 })
             {
-                // Without a file name to go by, Media Foundation is told what the bytes are.
-                Guid iidAttributes = IMFAttributes.IID_Guid;
-                IMFAttributes* byteAttributes;
-                if (((IUnknown*)bytes)->QueryInterface(&iidAttributes, (void**)&byteAttributes).Succeeded)
-                {
-                    Guid contentType = PInvoke.MF_BYTESTREAM_CONTENT_TYPE;
-                    fixed (char* mp4 = "video/mp4") byteAttributes->SetString(&contentType, mp4);
-                    byteAttributes->Release();
-                }
-                IMFSourceReader* reader;
-                PInvoke.MFCreateSourceReaderFromByteStream(bytes, attrs, &reader).Check("MFCreateSourceReaderFromByteStream");
-                owner = stream;
-                return reader;
+                stream.Dispose();
+                return null;
             }
-            finally { bytes->Release(); }
+            stream.Hide(edits);
+            var reader = ReaderOn(stream, attrs);
+            owner = stream;
+            return reader;
         }
-        catch
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
         {
-            stream.Dispose();
+            stream?.Dispose();
+            return null;
+        }
+        catch (Exception ex)
+        {
+            stream?.Dispose();
+            owner = null;
+            string name = Path.GetFileName(path);
+            if (MediaFoundationIgnoresEditLists())
+            {
+                Log.Warn($"media: {name} could not be read with its audio edit lists hidden ({ex.Message}); Media Foundation's own reader is used, which ignores them on this Windows");
+                return null;
+            }
+            Log.Warn($"media: {name} could not be read with its audio edit lists hidden ({ex.Message}), and Media Foundation's own reader is not known to ignore them on this Windows: the clip is not read");
             throw;
         }
+    }
+
+    /// <summary>A source reader on the stream: it is a COM object for as long as Media Foundation holds a reference to it.</summary>
+    private static IMFSourceReader* ReaderOn(EditListFreeStream stream, IMFAttributes* attrs)
+    {
+        // The identity pointer is released once the byte stream (which the reader's source holds) has taken its own reference.
+        nint identity = ClinkComWrappers.Instance.GetOrCreateComInterfaceForObject(stream, CreateComInterfaceFlags.None);
+        Guid iid = IStream.IID_Guid;
+        int hr = Marshal.QueryInterface(identity, in iid, out nint comStream);
+        Marshal.Release(identity);
+        Marshal.ThrowExceptionForHR(hr);
+        IMFByteStream* bytes;
+        try { PInvoke.MFCreateMFByteStreamOnStream((IStream*)comStream, &bytes).Check("MFCreateMFByteStreamOnStream"); }
+        finally { Marshal.Release(comStream); }
+        try
+        {
+            // Without a file name to go by, Media Foundation is told what the bytes are.
+            Guid iidAttributes = IMFAttributes.IID_Guid;
+            IMFAttributes* byteAttributes;
+            if (((IUnknown*)bytes)->QueryInterface(&iidAttributes, (void**)&byteAttributes).Succeeded)
+            {
+                Guid contentType = PInvoke.MF_BYTESTREAM_CONTENT_TYPE;
+                fixed (char* mp4 = "video/mp4") byteAttributes->SetString(&contentType, mp4);
+                byteAttributes->Release();
+            }
+            IMFSourceReader* reader;
+            PInvoke.MFCreateSourceReaderFromByteStream(bytes, attrs, &reader).Check("MFCreateSourceReaderFromByteStream");
+            return reader;
+        }
+        finally { bytes->Release(); }
     }
 
     // ------------------------------------------------------------------ the timeline self-check
 
     private const int Samples = 3;
+    /// <summary>Where the check seeks to, 100 ns: inside the second frame of a track (213,333 to 426,667 units), so that a seek that is moved by the Mix's 10 ms early start or by the Game's 25 ms late one lands in another frame.</summary>
+    private const long SeekTo = 380_000;
+    private const long SeekFinds = 213_333;
     private static readonly object s_gate = new();
     private static TimelineCheck? s_check;
+    private static int s_handling = -1;   // what the check found Media Foundation's own reader to do (an EditListHandling), -1 while it is not known
+    private static int s_probes;          // numbers the probe files, so that a check that overran and one that follows it never meet on one
+    private static string? s_lastCouldNotRun;   // why the last check could not run (under s_gate), so that the log says it once
+    [ThreadStatic] private static bool t_checking;   // this thread is the check's own
 
     /// <summary>Test seam: true or false stands in for the self-check's verdict, null lets the check decide.</summary>
     internal static bool? TrustOverride { get; set; }
@@ -171,21 +200,44 @@ internal static unsafe class ClipSource
     /// <summary>
     /// The timeline self-check, once per process: a small probe clip whose two audio tracks start 10 ms before the clip origin (one
     /// edit with a media time) and 25 ms after it (an empty edit), the two forms the muxer writes, is read through <see cref="Open(string, IMFAttributes*, out IDisposable?)"/>.
-    /// Both tracks must hand out their frames from 0, one 1024-sample frame (213,333 units, 100 ns) apart. The same file is then read through
-    /// Media Foundation's own reader and what it does with the edit lists is logged. It never throws.
+    /// Both tracks must hand out their frames from 0, one 1024-sample frame (213,333 units, 100 ns) apart, and a seek into the second frame
+    /// must find that frame. The same file is also read through Media Foundation's own reader and what it does with the edit lists is
+    /// logged. It never throws. Only a read that was made has a verdict worth remembering: a check that could not run (or did not
+    /// finish, or whose read ended early) is made again the next time it is asked for.
     /// </summary>
     internal static TimelineCheck Timeline
     {
         get
         {
-            lock (s_gate) return s_check ??= RunTimelineCheck();
+            lock (s_gate)
+            {
+                if (s_check != null) return s_check;
+                var check = RunTimelineCheck();
+                if (check.Passed != null) s_check = check;
+                return check;
+            }
         }
     }
 
-    /// <summary>Forgets the check, so the next <see cref="Timeline"/> runs it again (for the tests).</summary>
+    /// <summary>Forgets the check (and what it found Media Foundation to do), so the next <see cref="Timeline"/> runs it again (for the tests).</summary>
     internal static void ResetTimelineCheck()
     {
-        lock (s_gate) s_check = null;
+        lock (s_gate)
+        {
+            s_check = null;
+            Volatile.Write(ref s_handling, -1);
+        }
+    }
+
+    /// <summary>
+    /// Media Foundation's own reader hands the tracks of a Clink clip out from 0 on this Windows (the check found it so, or finds it so
+    /// now): a clip that cannot be read with its edit lists hidden reads the same without. The check's own thread cannot ask the check.
+    /// </summary>
+    private static bool MediaFoundationIgnoresEditLists()
+    {
+        int known = Volatile.Read(ref s_handling);
+        if (known < 0 && !t_checking) known = (int)Timeline.MediaFoundation;
+        return known == (int)EditListHandling.Ignores;
     }
 
     private static TimelineCheck RunTimelineCheck()
@@ -206,38 +258,58 @@ internal static unsafe class ClipSource
             EditListHandling.Other => $"Media Foundation reads the probe clip in a way Clink does not know ({check.OwnReading})",
             _ => "Media Foundation's treatment of MP4 audio edit lists is not known",
         };
+        if (check.Passed == null)
+        {
+            // Made again at every ask while it cannot run: said once for as long as it is the same thing that stops it.
+            if (check.Detail != s_lastCouldNotRun)
+                Log.Warn($"media: the timeline self-check could not run ({check.Detail}); clips are taken as they are, and it is made again when it is next asked for [{windows}]");
+            s_lastCouldNotRun = check.Detail;
+            return check;
+        }
+        s_lastCouldNotRun = null;
         if (check.Passed == false) Log.Warn($"media: {how}; Clink reads its clips without them, but the timeline self-check FAILED ({check.Detail}): sources are kept out of All audio and no trim is marked as aligned [{windows}]");
-        else if (check.Passed == null) Log.Warn($"media: the timeline self-check could not run ({check.Detail}); clips are taken as they are [{windows}]");
         else Log.Info($"media: {how}; Clink reads its clips without them [{windows}]");
         return check;
     }
 
     private static TimelineCheck CheckProbe()
     {
-        string probe = Path.Combine(Path.GetTempPath(), $"clink-timeline-probe-{Environment.ProcessId}.mp4");
+        t_checking = true;
+        string probe = Path.Combine(Path.GetTempPath(), $"clink-timeline-probe-{Environment.ProcessId}-{Interlocked.Increment(ref s_probes)}.mp4");
+        var handling = EditListHandling.Unknown;
+        string own = "";
         try
         {
             Mf.EnsureStarted();
             DeleteProbe(probe);   // the muxer never overwrites
             TimelineProbe.Write(probe);
-            var through = FirstTimestamps(probe, hideEditLists: true);
-            bool passed = through.Length == 2 && Is(through[0], 0, 213_333, 426_667) && Is(through[1], 0, 213_333, 426_667);
-            var handling = EditListHandling.Unknown;
-            string own = "";
+            // What Media Foundation does by itself comes first: Open asks for it when a clip cannot be read with its edit lists hidden.
             try
             {
-                var plain = FirstTimestamps(probe, hideEditLists: false);
+                var plain = ReadProbe(probe, hideEditLists: false, seek: false).First;
                 handling = Classify(plain);
                 own = Show(plain);
+                if (handling != EditListHandling.Unknown) Volatile.Write(ref s_handling, (int)handling);
             }
             catch (Exception ex) { Log.Warn($"media: the probe clip could not be read by Media Foundation itself: {ex.Message}"); }
-            return new TimelineCheck(passed, handling, Show(through) + (passed ? "" : " (expected 0 213333 426667 for both)"), own);
+            // Through ClipSource. A read that fails or ends early throws: that is a check that could not run. Only a read that was made
+            // and handed out other numbers fails the check.
+            var through = ReadProbe(probe, hideEditLists: true, seek: true);
+            bool passed = through.First.Length == 2 && Is(through.First[0], 0, 213_333, 426_667) && Is(through.First[1], 0, 213_333, 426_667)
+                && Math.Abs(through.Seeked[0] - SeekFinds) <= 1 && Math.Abs(through.Seeked[1] - SeekFinds) <= 1;
+            string detail = $"{Show(through.First)}; after a seek to {SeekTo}: {Show(through.Seeked)}"
+                + (passed ? "" : $" (expected 0 213333 426667 for both, and {SeekFinds} after the seek)");
+            return new TimelineCheck(passed, handling, detail, own);
         }
         catch (Exception ex)
         {
-            return new TimelineCheck(null, EditListHandling.Unknown, ex.Message);
+            return new TimelineCheck(null, handling, ex.Message, own);
         }
-        finally { DeleteProbe(probe); }
+        finally
+        {
+            t_checking = false;
+            DeleteProbe(probe);
+        }
     }
 
     private static void DeleteProbe(string probe)
@@ -248,8 +320,15 @@ internal static unsafe class ClipSource
         }
     }
 
-    /// <summary>The first few compressed timestamps (100 ns) of each audio stream of a clip, in file order, as <see cref="Open(string, IMFAttributes*, out IDisposable?, bool)"/> reads it.</summary>
-    private static long[][] FirstTimestamps(string path, bool hideEditLists)
+    /// <param name="First">The first few compressed timestamps (100 ns) of each audio stream, in file order.</param>
+    /// <param name="Seeked">The timestamp of the first frame of each audio stream after a seek to <see cref="SeekTo"/> (when it was asked for).</param>
+    private readonly record struct ProbeReading(long[][] First, long[] Seeked);
+
+    /// <summary>
+    /// The probe clip as <see cref="Open(string, IMFAttributes*, out IDisposable?, bool)"/> reads it. Throws when a read fails or the
+    /// stream ends before what was asked for.
+    /// </summary>
+    private static ProbeReading ReadProbe(string path, bool hideEditLists, bool seek)
     {
         List<uint> streams;
         IMFSourceReader* lister = Open(path, null, out var listerOwner, hideEditLists);
@@ -260,7 +339,8 @@ internal static unsafe class ClipSource
             listerOwner?.Dispose();
         }
         // A reader of its own for each stream, as every reader of Clink has (a reader does not hand out a second stream after the first was deselected).
-        var all = new long[streams.Count][];
+        var first = new long[streams.Count][];
+        var seeked = new long[seek ? streams.Count : 0];
         for (int n = 0; n < streams.Count; n++)
         {
             IMFSourceReader* reader = Open(path, null, out var owner, hideEditLists);
@@ -268,21 +348,17 @@ internal static unsafe class ClipSource
             {
                 reader->SetStreamSelection(AllStreams, false);
                 reader->SetStreamSelection(streams[n], true).Check("SetStreamSelection");
-                var times = new List<long>();
-                while (times.Count < Samples)
+                first[n] = new long[Samples];
+                for (int k = 0; k < Samples; k++) first[n][k] = NextTimestamp(reader, streams[n]);
+                if (seek)
                 {
-                    uint idx, flags; long ts; IMFSample* sample;
-                    reader->ReadSample(streams[n], 0, &idx, &flags, &ts, &sample).Check("ReadSample");
-                    if ((flags & (uint)(MF_SOURCE_READER_FLAG.MF_SOURCE_READERF_ENDOFSTREAM | MF_SOURCE_READER_FLAG.MF_SOURCE_READERF_ERROR)) != 0)
-                    {
-                        if (sample != null) sample->Release();
-                        break;
-                    }
-                    if (sample == null) continue;
-                    times.Add(ts);
-                    sample->Release();
+                    PROPVARIANT position = default;
+                    position.vt = VARENUM.VT_I8;
+                    position.hVal = SeekTo;
+                    Guid timeFormat = Guid.Empty;
+                    reader->SetCurrentPosition(&timeFormat, &position).Check("SetCurrentPosition");
+                    seeked[n] = NextTimestamp(reader, streams[n]);
                 }
-                all[n] = times.ToArray();
             }
             finally
             {
@@ -290,12 +366,35 @@ internal static unsafe class ClipSource
                 owner?.Dispose();
             }
         }
-        return all;
+        return new ProbeReading(first, seeked);
+    }
+
+    /// <summary>The timestamp of the next sample of <paramref name="stream"/>.</summary>
+    private static long NextTimestamp(IMFSourceReader* reader, uint stream)
+    {
+        for (int empty = 0; empty < 100; empty++)
+        {
+            uint idx, flags; long ts; IMFSample* sample;
+            reader->ReadSample(stream, 0, &idx, &flags, &ts, &sample).Check("ReadSample");
+            if ((flags & (uint)(MF_SOURCE_READER_FLAG.MF_SOURCE_READERF_ENDOFSTREAM | MF_SOURCE_READER_FLAG.MF_SOURCE_READERF_ERROR)) != 0)
+            {
+                if (sample != null) sample->Release();
+                throw new InvalidOperationException("the probe clip ended early or could not be read");
+            }
+            if (sample == null) continue;
+            sample->Release();
+            return ts;
+        }
+        throw new InvalidOperationException("the probe clip handed out no sample");
     }
 
     /// <summary>"Mix 0 213333 426667 / Game 0 213333 426667".</summary>
     private static string Show(long[][] timestamps)
         => string.Join(" / ", timestamps.Select((t, i) => $"{(i == 0 ? "Mix" : "Game")} {string.Join(" ", t)}"));
+
+    /// <summary>"Mix 213333 / Game 213333".</summary>
+    private static string Show(long[] timestamps)
+        => string.Join(" / ", timestamps.Select((t, i) => $"{(i == 0 ? "Mix" : "Game")} {t}"));
 
     /// <summary>The first timestamps are these, give or take one unit (a frame is 213,333.33 units long).</summary>
     private static bool Is(long[] got, params long[] want)
@@ -332,8 +431,10 @@ internal static unsafe class ClipSource
 
 /// <summary>
 /// A clip file as an IStream (read only) in which the type of every audio trak's 'edts' box reads as 'free': an MPEG-4 file whose
-/// audio tracks have no edit list. Its COM side is <see cref="ClinkComWrappers"/>; Media Foundation calls it from its own threads
-/// through <c>MFCreateMFByteStreamOnStream</c>, so every call takes the lock. <see cref="Dispose"/> closes the file; a call after that fails.
+/// audio tracks have no edit list. The file is opened once, here; <see cref="ReadTracks"/> parses it through the same handle that
+/// serves it, so the offsets to hide (<see cref="Hide"/>) are those of the very bytes read later, whatever happens to the name
+/// meanwhile. Its COM side is <see cref="ClinkComWrappers"/>; Media Foundation calls it from its own threads through
+/// <c>MFCreateMFByteStreamOnStream</c>, so every call takes the lock. <see cref="Dispose"/> closes the file; a call after that fails.
 /// </summary>
 internal sealed unsafe class EditListFreeStream : IStream.Interface, IDisposable
 {
@@ -345,25 +446,44 @@ internal sealed unsafe class EditListFreeStream : IStream.Interface, IDisposable
     private static readonly HRESULT COR_E_OBJECTDISPOSED = (HRESULT)unchecked((int)0x80131622);
 
     private readonly object _gate = new();
-    private readonly long[] _patch;
+    private readonly string _name;
     private readonly long _length;
+    private long[] _patch = Array.Empty<long>();
     private SafeFileHandle? _file;
     private long _pos;
 
-    /// <param name="path">The clip.</param>
-    /// <param name="typeOffsets">The file offsets of the four type bytes that read as 'free' (<see cref="ClipTracks.AudioEditBoxes"/>).</param>
-    public EditListFreeStream(string path, long[] typeOffsets)
+    /// <summary>Opens the clip, with nothing hidden yet.</summary>
+    public EditListFreeStream(string path)
     {
+        _name = Path.GetFileName(path);
         // As Media Foundation's own reader opens a file: others may read it, rename it or delete it, nobody may write to it, and the
         // cache is left to do its own read-ahead (a RandomAccess hint would switch it off, which a clip on a share would feel in every read).
         _file = File.OpenHandle(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete, FileOptions.None);
-        _patch = (long[])typeOffsets.Clone();
         try { _length = RandomAccess.GetLength(_file); }
         catch { _file.Dispose(); throw; }
     }
 
+    /// <param name="typeOffsets">The file offsets of the four type bytes that read as 'free' (<see cref="ClipTracks.AudioEditBoxes"/>).</param>
+    public EditListFreeStream(string path, long[] typeOffsets) : this(path) => Hide(typeOffsets);
+
     /// <summary>The file's length.</summary>
     public long Length => _length;
+
+    /// <summary>
+    /// The audio tracks of the clip this stream serves, parsed from its own handle (<see cref="Trimmer.ReadClipTracks(SafeFileHandle, string)"/>;
+    /// reads at their own offsets, so the position of the stream is not touched). Null: not a file Clink wrote, or not one that can be parsed.
+    /// </summary>
+    public ClipTracks? ReadTracks()
+    {
+        lock (_gate)
+            return _file == null ? null : Trimmer.ReadClipTracks(_file, _name);
+    }
+
+    /// <summary>From now on the four bytes at each of these file offsets read as 'free'.</summary>
+    public void Hide(long[] typeOffsets)
+    {
+        lock (_gate) _patch = (long[])typeOffsets.Clone();
+    }
 
     public HRESULT Read(void* pv, uint cb, uint* pcbRead)
     {

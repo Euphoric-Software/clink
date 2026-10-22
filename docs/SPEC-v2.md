@@ -393,15 +393,21 @@ What the app does since v0.2.5. Where this section and §§1, 3, 6, 9 and 10 dif
   - The tracks of a Clink file start at different instants (an edit list per track). Media Foundation applies those edit
     lists on Windows Server 2025 (GitHub's windows-latest) and ignores them on Windows 11, so a reader that took every
     stream to start at 0 and added the offset itself moved a track twice there. Clink therefore reads a clip's audio
-    through `Engine/ClipSource.cs`: an `IStream` of the file (`ClinkComWrappers`, opened `FileShare.Read | Delete`) in which
-    every audio trak's `edts` box reads as `free`, so every stream starts at 0 on every Windows; `Trimmer.ReadAudioTracks`
-    reads each track's start offset and the player and the renderer apply it. A self-check once per process
+    through `Engine/ClipSource.cs`: an `IStream` of the file (`ClinkComWrappers`, opened once with `FileShare.Read | Delete`
+    and parsed through that same handle) in which every audio trak's `edts` box reads as `free`, so every stream starts at 0
+    on every Windows; `Trimmer.ReadAudioTracks` reads each track's start offset and the player and the renderer apply it. A
+    clip that cannot be read that way is not read through Media Foundation's own reader unless that is known to ignore the
+    edit lists on this Windows (every such fallback is logged): anywhere else the open throws. A self-check once per process
     (`ClipSource.Timeline`, `Engine/TimelineProbe.cs`: a probe clip with tracks at -480 and +1200 samples has to read 0,
-    213333, 426667) logs whether Media Foundation itself applies or ignores the edit lists; if it fails (none is known to) the
-    clip is `ClipAlignment.Untrusted`: every source is left out of All audio, `Trimmer.Trim` refuses a rebuild or delta
-    plan, no trim gets the `clk1` mark, and the editor says *This Windows reads clips differently: sources cannot be changed
-    inside All audio*. The unit tests also run under an emulation of the Server behaviour (`CLINK_EMULATE_ELST=1`). Mixing
-    tracks, and above all taking a source out of the baked Mix by adding it at a negative volume, needs them in step to the
+    213333, 426667, and a seek into the second frame has to find 213333) logs whether Media Foundation itself applies or
+    ignores the edit lists. A check that could not run (no encoder, a read that failed or ended early, no answer in 30 s) is
+    not remembered and is made again when it is next asked for; only a read that was made and gave other numbers fails it
+    (none is known to). The clip is then `ClipAlignment.Untrusted`: every source is left out of All audio, `Trimmer.Trim`
+    refuses a rebuild or delta plan, and the editor says *This Windows reads clips differently: sources cannot be changed
+    inside All audio*. Plain cuts and single-track volume changes still work there, but are written without the `clk1`
+    mark, so a later run on a Windows that passes recalibrates them (by correlation, below) before a source is taken out of
+    their Mix. The unit tests also run under an emulation of the Server behaviour (`CLINK_EMULATE_ELST=1`). Mixing tracks,
+    and above all taking a source out of the baked Mix by adding it at a negative volume, needs them in step to the
     sample (a few hundred samples off and the game came out louder), so:
     - A recording of this version places each audio track to the sample (the Mix's sources relative to the Mix, as the
       engine mixed them); a file with a track that starts a number of samples late that is not a whole millisecond counts
@@ -576,7 +582,9 @@ What the app does since v0.2.5. Where this section and §§1, 3, 6, 9 and 10 dif
     app's own paths) moves every audio timestamp and seek by the track's offset. `1` leaves the readers that have their
     edit lists hidden alone, so the whole suite has to pass with it too (no audio is read any other way); `nohide` also
     stops `ClipSource` hiding them and takes the self-check out, which is Clink as it was, and fails the twelve audio
-    tests the CI run did. It assumes the real Media Foundation ignores the edit lists.
+    tests the CI run did (and the tests of the hiding and of the check). It is armed only by `App.OnStartup`'s branches of
+    `--unittest`, `--trim <args>` and `--probe <args>` (`EditListEmulation.StartFromEnvironment`, which checks the command
+    line again): a normal start, `--dev` included, never loads it. It assumes the real Media Foundation ignores the edit lists.
 - Hidden `Clink.exe --dev [folder] [--dev-hotkeys] [--dev-record] [--dev-token]` (also `--dev=<folder>`) starts a second
   Clink next to the real one: its own data folder (default `%TEMP%\clink-dev`), its own single-instance mutex and control
   pipe (named from a hash of the folder, `.dev.` and eight hex digits, so `--clip` and `--show` only ever reach that

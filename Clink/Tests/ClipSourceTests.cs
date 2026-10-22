@@ -269,7 +269,7 @@ internal static unsafe class ClipSourceTests
     }
 
     [UnitTest]
-    public static void A_clip_somebody_is_writing_to_is_opened_as_Media_Foundation_would_and_not_half_hidden()
+    public static void A_clip_that_cannot_be_hidden_is_read_plainly_only_where_Media_Foundation_ignores_the_edit_lists()
     {
         using var dir = new TempDir();
         string clip = dir.File("busy.mp4");
@@ -277,21 +277,109 @@ internal static unsafe class ClipSourceTests
         {
             SyntheticClip.WriteSame(clip, 2, Apart, out _);
             var edits = Trimmer.ReadClipTracks(clip)!.AudioEditBoxes;
+            // The stream opens the file as Media Foundation's own reader does, which refuses a file that somebody may write to: a clip
+            // that cannot be read with its audio edit lists hidden.
             using var writer = new FileStream(clip, FileMode.Open, FileAccess.Write, FileShare.Read);
-            // The stream opens the file as Media Foundation's own reader does, which refuses a file that somebody may write to.
             Check.Throws<IOException>(() => new EditListFreeStream(clip, edits).Dispose(), "no stream on a clip that is being written");
-            // ClipSource then falls back on Media Foundation's own reader: it opens the clip, or says why it cannot, as ever.
-            try
+
+            // Where Media Foundation's own reader moves the tracks (here: the emulation) a clip like that is not read at all. Reading it
+            // through that reader would put every track where its edit list says, and Clink's own offsets on top.
+            using (EditListEmulation.Apply())
             {
-                IMFSourceReader* reader = ClipSource.Open(clip, null, out var owner);
-                try { if (!EditListEmulation.Active) Check.Null(owner, "Media Foundation's own reader, with nothing hidden"); }
-                finally
+                Check.NotEqual(EditListHandling.Ignores, ClipSource.Timeline.MediaFoundation, "the emulated Windows applies the edit lists");
+                var refused = Check.Throws<IOException>(() =>
                 {
+                    IMFSourceReader* reader = ClipSource.Open(clip, null, out var owner);
                     reader->Release();
                     owner?.Dispose();
+                }, "refused, not read through a reader that moves the tracks");
+                Check.NotNull(refused);
+            }
+
+            // On the Windows at hand the same follows from what Media Foundation does with the edit lists: where it ignores them its
+            // own reader reads the clip as well as the hidden one would (it may still refuse it in its own words), anywhere else the
+            // clip is refused as above.
+            var handling = ClipSource.Timeline.MediaFoundation;
+            IMFSourceReader* plain = null;
+            IDisposable? owned = null;
+            Exception? failure = null;
+            try { plain = ClipSource.Open(clip, null, out owned); }
+            catch (Exception ex) { failure = ex; }
+            try
+            {
+                if (handling == EditListHandling.Ignores)
+                {
+                    Check.False(failure is IOException, "Media Foundation ignores the edit lists here, so its own reader stands in for the hidden one");
+                    if (plain != null && !EditListEmulation.Active) Check.Null(owned, "and nothing is hidden in what it hands out");
+                }
+                else
+                {
+                    Check.True(failure is IOException, $"Media Foundation does not ignore the edit lists here, so the clip is refused (got {failure?.GetType().Name ?? "a reader"})");
+                    Check.True(plain == null, "and no reader is handed out");
                 }
             }
-            catch (COMException) { }
+            finally
+            {
+                if (plain != null) plain->Release();
+                owned?.Dispose();
+            }
+        });
+    }
+
+    [UnitTest]
+    public static void A_clip_that_is_not_there_is_reported_in_Media_Foundations_words_as_before()
+    {
+        using var dir = new TempDir();
+        OnMta(() =>
+        {
+            // Nothing to hide and nothing to open: the stream has no file, so the reader is Media Foundation's own, which says so.
+            var ex = Check.Throws<COMException>(() =>
+            {
+                IMFSourceReader* reader = ClipSource.Open(dir.File("missing.mp4"), null, out var owner);
+                reader->Release();
+                owner?.Dispose();
+            });
+            Check.Contains(ex.Message, "MFCreateSourceReaderFromURL");
+            Check.Throws<COMException>(() => Trimmer.AudioStreamsOf(dir.File("also missing.mp4")));
+            Check.Throws<COMException>(() => Trimmer.Trim(dir.File("missing.mp4"), dir.File("out.mp4"), 0, 1, null));
+            Check.False(File.Exists(dir.File("out.mp4")), "nothing was written");
+        });
+    }
+
+    [UnitTest]
+    public static void The_stream_parses_the_file_it_serves_and_not_the_one_that_took_its_name()
+    {
+        using var dir = new TempDir();
+        string clip = dir.File("clip.mp4"), other = dir.File("other.mp4"), aside = dir.File("aside.mp4");
+        OnMta(() =>
+        {
+            SyntheticClip.WriteSame(clip, 2, Apart, out _);   // five tracks
+            SyntheticClip.WriteSame(other, 2, new (string, int, float)[] { ("Mix", 0, 1), ("Game", 480, 1) }, out _);   // two, somewhere else
+            var ours = Trimmer.ReadClipTracks(clip)!.AudioEditBoxes;
+            var theirs = Trimmer.ReadClipTracks(other)!.AudioEditBoxes;
+            Check.Equal(5, ours.Length);
+            Check.Equal(2, theirs.Length);
+
+            var stream = new EditListFreeStream(clip);   // the one open of the file
+            var file = File.ReadAllBytes(clip);
+            File.Move(clip, aside);                       // what a trim that replaces its clip does: the name is another file's from now on
+            File.Move(other, clip);
+            var parsed = stream.ReadTracks();
+            Check.NotNull(parsed, "the file that is open parses");
+            Check.Equal(ours, parsed!.AudioEditBoxes, "the offsets are those of the file that is open, not of the one that has its name now");
+            Check.Equal(theirs, Trimmer.ReadClipTracks(clip)!.AudioEditBoxes, "(the name leads to the other file)");
+            stream.Hide(parsed.AudioEditBoxes);
+
+            // And what is served is the open file, patched where that file has its audio edit boxes.
+            var expected = (byte[])file.Clone();
+            foreach (long at in ours) Encoding.ASCII.GetBytes("free").CopyTo(expected, at);
+            IStream* com = AsComStream(stream);
+            try { Check.True(ReadAt(com, 0, file.Length + 10).SequenceEqual(expected), "it serves the old file's bytes with its own edit boxes hidden"); }
+            finally
+            {
+                com->Release();
+                stream.Dispose();
+            }
         });
     }
 
@@ -317,11 +405,164 @@ internal static unsafe class ClipSourceTests
                 Check.True(check.Passed == true, $"every track of the probe clip starts at 0 and is read in whole frames ({check.Detail})");
                 Check.True(check.Trusted && ClipSource.TimelineTrusted, "so clips are put on one timeline here");
                 Check.True(ReferenceEquals(check, ClipSource.Timeline), "and the check is made once");
-                Check.False(File.Exists(Path.Combine(Path.GetTempPath(), $"clink-timeline-probe-{Environment.ProcessId}.mp4")), "the probe clip is deleted again");
+                Check.Equal(0, Directory.GetFiles(Path.GetTempPath(), $"clink-timeline-probe-{Environment.ProcessId}-*").Length, "the probe clip is deleted again");
                 Check.NotEqual(EditListHandling.Unknown, check.MediaFoundation, "Media Foundation's own reading of the probe was classified");
+                Check.Contains(check.Detail, "after a seek to 380000: Mix 213333 / Game 213333", "a seek into the second frame finds it, on both tracks");
             }
             finally { ClipSource.TrustOverride = before; }
         });
+    }
+
+    [UnitTest]
+    public static void A_self_check_that_could_not_run_is_not_remembered_and_is_made_again()
+    {
+        OnMta(() =>
+        {
+            var before = ClipSource.TrustOverride;
+            ClipSource.TrustOverride = null;
+            string? tmp = Environment.GetEnvironmentVariable("TMP"), temp = Environment.GetEnvironmentVariable("TEMP");
+            try
+            {
+                // No place for the probe clip to be written to: the check cannot run, which is no reason to distrust anything...
+                string nowhere = Path.Combine(Path.GetTempPath(), "clink-nowhere-" + Guid.NewGuid().ToString("N"), "temp");
+                ClipSource.ResetTimelineCheck();
+                Environment.SetEnvironmentVariable("TMP", nowhere);
+                Environment.SetEnvironmentVariable("TEMP", nowhere);
+                TimelineCheck first;
+                try { first = ClipSource.Timeline; }
+                finally
+                {
+                    Environment.SetEnvironmentVariable("TMP", tmp);
+                    Environment.SetEnvironmentVariable("TEMP", temp);
+                }
+                Check.True(first.Passed == null, $"the probe could not be written, so the check could not run ({first.Detail})");
+                Check.True(first.Trusted, "and it trusts, as it did before there was a check");
+                // ... and it is not kept as a verdict: asked again, the check is made again.
+                var second = ClipSource.Timeline;
+                Check.True(second.Passed == true, $"asked again it ran, and passed ({second.Detail})");
+                Check.False(ReferenceEquals(first, second));
+                Check.True(ReferenceEquals(second, ClipSource.Timeline), "and a verdict that was made is kept");
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("TMP", tmp);
+                Environment.SetEnvironmentVariable("TEMP", temp);
+                ClipSource.TrustOverride = before;
+            }
+        });
+    }
+
+    [UnitTest]
+    public static void A_read_that_ends_early_is_a_check_that_could_not_run_and_not_a_failed_one()
+    {
+        OnMta(() =>
+        {
+            var before = ClipSource.TrustOverride;
+            ClipSource.TrustOverride = null;
+            try
+            {
+                // A Media Foundation whose audio streams end before their first sample: nothing was measured, so nothing is distrusted.
+                using (EditListEmulation.Apply(evenWhenHidden: true, endsEarly: true))
+                {
+                    var check = ClipSource.Timeline;
+                    Console.WriteLine($"  (the self-check under {EditListEmulation.Describe}: {check.Detail})");
+                    Check.True(check.Passed == null, $"a read that ended early is not a failed check ({check.Detail})");
+                    Check.True(check.Trusted && ClipSource.TimelineTrusted, "so clips are put on one timeline as before");
+                    Check.False(ReferenceEquals(check, ClipSource.Timeline), "and it is made again when it is next asked for");
+                }
+                Check.True(ClipSource.Timeline.Passed == true, "the emulation is gone, and the check passes");
+            }
+            finally
+            {
+                ClipSource.TrustOverride = before;
+                ClipSource.ResetTimelineCheck();
+            }
+        });
+    }
+
+    [UnitTest]
+    public static void A_seek_that_lands_in_another_frame_fails_the_self_check_though_the_reads_are_right()
+    {
+        OnMta(() =>
+        {
+            var before = ClipSource.TrustOverride;
+            ClipSource.TrustOverride = null;
+            try
+            {
+                // A Media Foundation that reads the tracks from 0 but takes a seek on the timeline their edit lists make: the Mix (10 ms early)
+                // and the Game (25 ms late) each land in a frame that is not the one that was asked for.
+                using (EditListEmulation.Apply(evenWhenHidden: true, movesReads: false))
+                {
+                    var check = ClipSource.Timeline;
+                    Console.WriteLine($"  (the self-check under {EditListEmulation.Describe}: {check.Detail})");
+                    Check.True(check.Passed == false, "a seek that finds another frame fails the check");
+                    Check.False(ClipSource.TimelineTrusted);
+                    Check.Contains(check.Detail, "Game 0 213333", "the reads themselves were as expected");
+                }
+                Check.True(ClipSource.Timeline.Passed == true, "the emulation is gone, and the check passes");
+            }
+            finally
+            {
+                ClipSource.TrustOverride = before;
+                ClipSource.ResetTimelineCheck();
+            }
+        });
+    }
+
+    [UnitTest]
+    public static void The_emulation_is_armed_only_by_the_command_lines_of_test_runs_and_headless_modes()
+    {
+        string? variable = Environment.GetEnvironmentVariable(EditListEmulation.Variable);
+        var hook = ClipSource.Hook;
+        var trust = ClipSource.TrustOverride;
+        try
+        {
+            Environment.SetEnvironmentVariable(EditListEmulation.Variable, "1");
+            // Whatever starts the normal app (or a command for the running one), with the variable set: never armed. --trim and --probe
+            // alone are one of those, as App.OnStartup takes them.
+            var normal = new[]
+            {
+                new string[0], new[] { "--show" }, new[] { "--minimized" }, new[] { "--clip" }, new[] { "--no-update" }, new[] { "--share-last" }, new[] { "--trim-last" },
+                new[] { "--dev" }, new[] { "--dev", @"C:\clink-dev" }, new[] { "--dev", @"C:\clink-dev", "--dev-record", "--dev-hotkeys" }, new[] { "--trim" }, new[] { "--probe" },
+                new[] { "--selftest" }, new[] { "--after-pid", "123" }, new[] { "--apply-update", "Clink.exe", "123" }, new[] { @"C:\clips\a.mp4" },
+            };
+            foreach (var args in normal)
+            {
+                ClipSource.Hook = null;
+                Check.False(EditListEmulation.IsHeadlessRun(args), $"[{string.Join(' ', args)}] is a normal start");
+                Check.False(EditListEmulation.StartFromEnvironment(args), $"[{string.Join(' ', args)}] arms nothing");
+                Check.Null(ClipSource.Hook, $"[{string.Join(' ', args)}] leaves the readers alone");
+            }
+            // The runs that may emulate: a test run, and --trim and --probe with their arguments.
+            var headless = new[]
+            {
+                new[] { "--unittest" }, new[] { "--unittest", "ClipSource" }, new[] { "--trim", "in.mp4", "out.mp4", "0", "5" }, new[] { "--probe", "clip.mp4" }, new[] { "--PROBE", "clip.mp4", "--levels" },
+            };
+            foreach (var args in headless)
+            {
+                ClipSource.Hook = null;
+                Check.True(EditListEmulation.StartFromEnvironment(args), $"[{string.Join(' ', args)}] arms it");
+                Check.True(EditListEmulation.Active);
+            }
+            // The two modes, and a variable that says neither.
+            ClipSource.Hook = null;
+            Environment.SetEnvironmentVariable(EditListEmulation.Variable, "nohide");
+            Check.True(EditListEmulation.StartFromEnvironment(new[] { "--unittest" }));
+            Check.Equal(true, ClipSource.TrustOverride, "without the hiding there is no check either");
+            foreach (string? value in new string?[] { null, "", "0", "yes", "true" })
+            {
+                ClipSource.Hook = null;
+                Environment.SetEnvironmentVariable(EditListEmulation.Variable, value);
+                Check.False(EditListEmulation.StartFromEnvironment(new[] { "--unittest" }), $"CLINK_EMULATE_ELST={value ?? "(unset)"} arms nothing");
+            }
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(EditListEmulation.Variable, variable);
+            ClipSource.Hook = hook;
+            ClipSource.TrustOverride = trust;
+            ClipSource.ResetTimelineCheck();
+        }
     }
 
     /// <summary>

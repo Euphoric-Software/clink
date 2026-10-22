@@ -282,7 +282,6 @@ internal sealed unsafe class ClipPlayer : IDisposable
         Muted = Array.Empty<bool>();
         try
         {
-            var audioIdx = new List<uint>();
             uint videoIdx = uint.MaxValue;
             int nw = 0, nh = 0;
             for (uint i = 0; ; i++)
@@ -300,12 +299,13 @@ internal sealed unsafe class ClipPlayer : IDisposable
                     uint num = (uint)(rate >> 32), den = (uint)(rate & 0xFFFFFFFF);
                     if (num > 0 && den > 0 && den < num) _frameDuration = (double)den / num;
                 }
-                else if (major == PInvoke.MFMediaType_Audio) audioIdx.Add(i);
                 t->Release();
             }
             if (videoIdx == uint.MaxValue) throw new InvalidOperationException("No video stream in file");
-            // Track i is the file's i-th audio track (the mix first), the same numbering the trimmer's mix uses.
-            Engine.Trimmer.AudioInFileOrder(audioIdx, videoIdx);
+            // Track i is the file's i-th audio track (the mix first), the same numbering the trimmer's mix uses. The stream numbers are
+            // those of the readers the audio is read with (Engine.ClipSource, with the audio edit lists hidden), not of the video's own
+            // reader above: nothing here depends on the two numbering the streams alike.
+            var audioIdx = Engine.Trimmer.AudioStreamsOf(path);
             // The tracks' names and places from the file's edit lists; a clip an older Clink trimmed has its sources checked against
             // the Mix first (a moment, here on the thread that opens the player), so what is mixed below is lined up.
             var align = Engine.ClipAlignment.Read(path);
