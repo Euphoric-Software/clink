@@ -17,7 +17,8 @@ namespace Clink.Services;
 /// wait for the UI thread (a clipboard retry, a GC, the first toast being built). A hook that once took longer than
 /// LowLevelHooksTimeout is dropped by Windows without a word, so it is put back after unlock / resume and once a minute.
 /// A key swallowed while Alt is held (Alt+C, the default) would leave the program in front with a lone Alt press and release,
-/// which opens its menu bar: <see cref="MaskAlt"/> puts a dummy key in between.
+/// which opens its menu bar: <see cref="MaskAlt"/> puts a dummy key in between (never while the detected game is in front).
+/// What the hook does with each key is decided by <see cref="Decide"/>, which touches no state.
 /// </summary>
 internal static unsafe class Hotkeys
 {
@@ -25,9 +26,12 @@ internal static unsafe class Hotkeys
     private const int VK_TAB = 0x09, VK_RETURN = 0x0D, VK_SPACE = 0x20, VK_ESCAPE = 0x1B, VK_F4 = 0x73, VK_DELETE = 0x2E;
     private const int VK_CANCEL = 0x03, VK_PAUSE = 0x13, VK_SCROLL = 0x91;
     private const uint WM_QUIT = 0x0012, WM_REHOOK = 0x8000 + 0x4B;   // WM_APP + n to the hook thread: re-install (wParam 1: forget held keys too)
-    private const byte VK_MASK = 0xE8;          // "unassigned": no program does anything with it (AutoHotkey's default MenuMaskKey)
+    private const byte VK_MASK = 0xE8;          // "unassigned": no program does anything with it (AutoHotkey's default MenuMaskKey). Reserved: never a hotkey, never taken by a capture
     private const uint KEYEVENTF_KEYUP = 0x0002;
     private const uint MaskTag = 0x4B4E4C43;    // "CLNK": the dwExtraInfo of the dummy key, so the hook lets its own key through
+
+    private static readonly Func<bool> s_gameInFront = GameInFront;   // what Decide asks, without a delegate per key
+    private static bool s_maskFailed;            // MaskAlt could not send its key: said once
 
     private static HHOOK s_hook;                 // hook thread only
     private static Thread? s_thread;
@@ -86,10 +90,13 @@ internal static unsafe class Hotkeys
     /// <summary>Forgets every half-seen key (after a desktop switch nothing we tracked can be trusted).</summary>
     public static void Reset() => Array.Clear(s_swallowed);
 
-    /// <summary>Replaces the bindings (after the list in settings changed). Entries without a key are skipped.</summary>
+    /// <summary>Replaces the bindings (after the list in settings changed). Entries without a key are skipped, and so is key code E8 (reserved: <see cref="Decide"/> lets it through).</summary>
     public static void Rebind(IReadOnlyList<HotkeyAction> actions)
     {
         var list = actions.Where(a => a?.Keys != null && a.Keys.Vk > 0).ToArray();
+        foreach (var reserved in list.Where(a => a.Keys.Vk == VK_MASK))
+            Log.Warn($"hotkeys: {reserved.Keys} cannot be a hotkey (key code E8 is reserved for the menu mask); it is ignored");
+        list = list.Where(a => a.Keys.Vk != VK_MASK).ToArray();
         // Only the first binding of a combo ever fires (Match): say so for a list with repeats (a hand-edited settings file).
         foreach (var g in list.GroupBy(a => (a.Keys.Vk, a.Keys.Ctrl, a.Keys.Alt, a.Keys.Shift, a.Keys.Win)).Where(g => g.Count() > 1))
             Log.Warn($"hotkeys: {g.First().Keys} is bound {g.Count()} times; only the first ({g.First().Action}) fires");
@@ -197,6 +204,7 @@ internal static unsafe class Hotkeys
     /// <summary>
     /// A key swallowed while Alt is held but Ctrl is not needs <see cref="MaskAlt"/>: the program in front sees Alt go down and up
     /// with nothing in between, and Windows opens its menu bar (File Edit View …) for that. With Ctrl held it does not.
+    /// <see cref="Decide"/> also keeps it from a game (see there).
     /// </summary>
     internal static bool NeedsMenuMask(bool ctrl, bool alt) => alt && !ctrl;
 
@@ -204,13 +212,20 @@ internal static unsafe class Hotkeys
     /// Puts a dummy key press (vk E8, tagged with <see cref="MaskTag"/> so the hook passes it on) between the Alt press the program
     /// has seen and the Alt release it will see, so it takes the pair for an Alt chord and leaves its menu bar alone. This is what
     /// AutoHotkey's MenuMaskKey does. Called from the hook for the key it is about to swallow; the injected events come back
-    /// through <see cref="HookProc"/> at once (same thread) and go straight on.
+    /// through <see cref="HookProc"/> at once (same thread) and go straight on. It never throws: the key being eaten must not
+    /// depend on it (a program may then open its menu bar, nothing worse).
     /// </summary>
-    private static void MaskAlt(bool ctrl, bool alt)
+    private static void MaskAlt()
     {
-        if (!NeedsMenuMask(ctrl, alt)) return;
-        KeybdEvent(VK_MASK, 0, 0, MaskTag);
-        KeybdEvent(VK_MASK, 0, KEYEVENTF_KEYUP, MaskTag);
+        try
+        {
+            KeybdEvent(VK_MASK, 0, 0, MaskTag);
+            KeybdEvent(VK_MASK, 0, KEYEVENTF_KEYUP, MaskTag);
+        }
+        catch (Exception ex)
+        {
+            if (!s_maskFailed) { s_maskFailed = true; Log.Warn("hotkeys: the menu mask key could not be sent: " + ex.Message); }
+        }
     }
 
     // ------------------------------------------------------------------ matching
@@ -223,9 +238,10 @@ internal static unsafe class Hotkeys
     private static bool IsTypingKey(int vk) =>
         vk is >= 0x30 and <= 0x39 or >= 0x41 and <= 0x5A or >= 0xBA and <= 0xC0 or >= 0xDB and <= 0xDE or 0x08 or VK_DELETE or >= 0x25 and <= 0x28;
 
-    /// <summary>A key the capture must not take: it belongs to the shell / window manager, or it is a bare editing or typing key.</summary>
+    /// <summary>A key the capture must not take: it belongs to the shell / window manager, it is a bare editing or typing key, or it is key code E8 (the menu mask's: ours, AutoHotkey's).</summary>
     private static bool IsReservedForCapture(int vk, bool ctrl, bool alt, bool shift, bool win)
     {
+        if (vk == VK_MASK) return true;
         if (win) return true;
         if (alt && vk is VK_TAB or VK_ESCAPE or VK_F4) return true;
         if (ctrl && vk == VK_ESCAPE) return true;
@@ -235,6 +251,61 @@ internal static unsafe class Hotkeys
         return false;
     }
 
+    // ------------------------------------------------------------------ what the hook does with a key (pure: HotkeyHookTests)
+
+    /// <summary>What <see cref="Decide"/> says to do with one key event.</summary>
+    internal enum KeyVerdict
+    {
+        /// <summary>Not ours: on to the next hook and the program. A modifier, a key nothing is bound to, a key the capture will not take, the dummy key of <see cref="MaskAlt"/>, key code E8.</summary>
+        Pass,
+        /// <summary>A bare letter, digit or editing key while a capture is armed: the UI is told why it is not taken, and the key goes on.</summary>
+        Refuse,
+        /// <summary>The auto-repeat of a key whose first press was eaten: eaten again. Nothing fires again and nothing is injected again.</summary>
+        EatRepeat,
+        /// <summary>The release of a key whose press was eaten: eaten, and the key is forgotten.</summary>
+        EatRelease,
+        /// <summary>The first press of a key the armed capture takes: eaten, the capture reports it.</summary>
+        Capture,
+        /// <summary>The first press of a key a binding is on: eaten, the binding's action runs.</summary>
+        Fire,
+    }
+
+    /// <summary>
+    /// One key event and what <see cref="Decide"/> looks at: <c>Vk</c> is the key (ScrollLock / Pause told apart from the Ctrl+Break the
+    /// system reports for them), <c>Raw</c> the code as reported, the modifiers are the live ones (only read for a first press),
+    /// <c>Marked</c> is <see cref="MaskAlt"/>'s own dummy key and <c>Swallowed</c> says its press was eaten earlier.
+    /// </summary>
+    internal readonly record struct KeyInput(int Vk, int Raw, bool Down, bool Ctrl, bool Alt, bool Shift, bool Win, bool Marked, bool Swallowed);
+
+    /// <summary>The verdict, the binding that fires (<see cref="KeyVerdict.Fire"/>) and whether the eaten key gets <see cref="MaskAlt"/> (<see cref="KeyVerdict.Capture"/> / <see cref="KeyVerdict.Fire"/> only).</summary>
+    internal readonly record struct KeyDecision(KeyVerdict Verdict, HotkeyAction? Binding = null, bool Mask = false);
+
+    /// <summary>
+    /// What the hook does with a key event. It touches no state, so the whole policy is tested as it is (<c>HotkeyHookTests</c>):
+    /// <list type="bullet">
+    /// <item>The dummy key of <see cref="MaskAlt"/> and key code E8 (AutoHotkey's own menu-mask key) are never a hotkey, never taken by a capture and never eaten; modifiers and codes outside 1..255 go on too.</item>
+    /// <item>A release is eaten only when its press was; the auto-repeat of an eaten press is eaten again and fires nothing and masks nothing a second time. A game that saw a key go down must see it come up.</item>
+    /// <item>A first press: with a capture armed it takes the key unless the system owns the combo or it is a bare typing key; otherwise the first binding that matches (<see cref="Match"/>) fires.</item>
+    /// <item>A key that is eaten while Alt is held and Ctrl is not gets the menu mask, except while the detected game is in front: nothing synthetic goes to a game (anti-cheat), which handles the lone Alt itself.</item>
+    /// </list>
+    /// </summary>
+    internal static KeyDecision Decide(KeyInput k, bool captureArmed, IReadOnlyList<HotkeyAction> actions, Func<bool> gameInFront)
+    {
+        if (k.Marked || k.Vk == VK_MASK || k.Vk <= 0 || k.Vk >= 256 || IsModifier(k.Vk)) return new(KeyVerdict.Pass);
+        if (!k.Down) return new(k.Swallowed ? KeyVerdict.EatRelease : KeyVerdict.Pass);
+        if (k.Swallowed) return new(KeyVerdict.EatRepeat);
+        if (captureArmed)
+        {
+            if (IsReservedForCapture(k.Vk, k.Ctrl, k.Alt, k.Shift, k.Win))
+                return new(!k.Ctrl && !k.Alt && !k.Win && IsTypingKey(k.Vk) ? KeyVerdict.Refuse : KeyVerdict.Pass);
+            return new(KeyVerdict.Capture, null, WantsMask(k, gameInFront));
+        }
+        var binding = Match(actions, k.Vk, k.Raw, k.Ctrl, k.Alt, k.Shift, k.Win, gameInFront);
+        return binding == null ? new(KeyVerdict.Pass) : new(KeyVerdict.Fire, binding, WantsMask(k, gameInFront));
+    }
+
+    private static bool WantsMask(KeyInput k, Func<bool> gameInFront) => NeedsMenuMask(k.Ctrl, k.Alt) && !gameInFront();
+
     [UnmanagedCallersOnly(CallConvs = new[] { typeof(System.Runtime.CompilerServices.CallConvStdcall) })]
     private static LRESULT HookProc(int code, WPARAM wParam, LPARAM lParam)
     {
@@ -243,55 +314,52 @@ internal static unsafe class Hotkeys
             try
             {
                 var ks = (KBDLLHOOKSTRUCT*)lParam.Value;
-                if (ks->dwExtraInfo == MaskTag) return PInvoke.CallNextHookEx(s_hook, code, wParam, lParam);   // MaskAlt's own dummy key: never a hotkey, never held back
                 uint msg = (uint)wParam.Value;
                 bool down = msg == PInvoke.WM_KEYDOWN || msg == PInvoke.WM_SYSKEYDOWN;
                 int vk = (int)ks->vkCode, raw = vk;
                 // Ctrl turns ScrollLock (scan 46) and Pause (E0 46) into VK_CANCEL. Handled as the key itself: a ScrollLock binding
                 // still fires in the game while crouch (Ctrl) is held, and a key-up that comes after Ctrl was let go still finds its key-down.
                 if (vk == VK_CANCEL && ks->scanCode == 0x46) vk = (ks->flags & KBDLLHOOKSTRUCT_FLAGS.LLKHF_EXTENDED) != 0 ? VK_PAUSE : VK_SCROLL;
-                if (vk > 0 && vk < 256 && !IsModifier(vk))
+                bool marked = ks->dwExtraInfo == MaskTag;   // MaskAlt's own dummy key
+                bool tracked = vk > 0 && vk < 256;
+                bool swallowed = tracked && s_swallowed[vk];
+                // Live modifier state: the modifiers' own events were processed before this one arrived. Only a first press needs it
+                // (a release, a repeat and a modifier are decided without).
+                bool ctrl = false, alt = false, shift = false, win = false;
+                if (down && tracked && !marked && !swallowed && !IsModifier(vk))
                 {
-                    if (!down)
-                    {
+                    ctrl = IsDown(VK_CONTROL); alt = IsDown(VK_MENU); shift = IsDown(VK_SHIFT); win = IsDown(VK_LWIN) || IsDown(VK_RWIN);
+                }
+                var capture = s_capture;
+                var decision = Decide(new KeyInput(vk, raw, down, ctrl, alt, shift, win, marked, swallowed), capture != null, s_actions, s_gameInFront);
+                switch (decision.Verdict)
+                {
+                    case KeyVerdict.EatRelease:
                         // Only a key-up whose key-down we ate is eaten: anything else the game saw go down must see come up.
-                        if (s_swallowed[vk]) { s_swallowed[vk] = false; return (LRESULT)1; }
-                    }
-                    else
-                    {
+                        s_swallowed[vk] = false;
+                        return (LRESULT)1;
+                    case KeyVerdict.EatRepeat:
                         // A held key whose first down we ate keeps being eaten while it auto-repeats (even if a modifier was let
                         // go meanwhile): the game never saw it go down, so it must not see a repeat either. Nothing re-fires.
-                        if (s_swallowed[vk]) return (LRESULT)1;
-                        // Live modifier state: the modifiers' own events were processed before this one arrived.
-                        bool ctrl = IsDown(VK_CONTROL), alt = IsDown(VK_MENU), shift = IsDown(VK_SHIFT), win = IsDown(VK_LWIN) || IsDown(VK_RWIN);
-                        var capture = s_capture;
-                        if (capture != null)
+                        return (LRESULT)1;
+                    case KeyVerdict.Refuse:
+                        capture?.OnRefused?.Invoke();
+                        break;
+                    case KeyVerdict.Capture:
+                        // The UI may cancel or replace the capture right now: only the one we read is answered.
+                        if (capture != null && Interlocked.CompareExchange(ref s_capture, null, capture) == capture)
                         {
-                            if (!IsReservedForCapture(vk, ctrl, alt, shift, win))
-                            {
-                                // The UI may cancel or replace the capture right now: only the one we read is answered.
-                                if (Interlocked.CompareExchange(ref s_capture, null, capture) == capture)
-                                {
-                                    s_swallowed[vk] = true;
-                                    MaskAlt(ctrl, alt);
-                                    capture.OnKeys(vk, ctrl, alt, shift, win);
-                                    return (LRESULT)1;
-                                }
-                            }
-                            else if (!ctrl && !alt && !win && IsTypingKey(vk)) capture.OnRefused?.Invoke();
+                            if (decision.Mask) MaskAlt();
+                            capture.OnKeys(vk, ctrl, alt, shift, win);
+                            s_swallowed[vk] = true;   // last: should anything above throw, the key goes on and its release is not eaten
+                            return (LRESULT)1;
                         }
-                        else
-                        {
-                            var match = Match(vk, raw, ctrl, alt, shift, win);
-                            if (match != null)
-                            {
-                                s_swallowed[vk] = true;
-                                MaskAlt(ctrl, alt);
-                                s_onPressed?.Invoke(match);
-                                return (LRESULT)1; // swallow so the game doesn't see it
-                            }
-                        }
-                    }
+                        break;
+                    case KeyVerdict.Fire:
+                        if (decision.Mask) MaskAlt();
+                        s_onPressed?.Invoke(decision.Binding!);
+                        s_swallowed[vk] = true;   // last, as above
+                        return (LRESULT)1; // swallow so the game doesn't see it
                 }
             }
             catch { }
@@ -306,10 +374,9 @@ internal static unsafe class Hotkeys
     /// chord or a combo the system owns (Alt+F4 with F4 bound). <paramref name="raw"/> is the key code as reported, for a
     /// binding saved as Ctrl+Break before ScrollLock / Pause were told apart.
     /// </summary>
-    private static HotkeyAction? Match(int vk, int raw, bool ctrl, bool alt, bool shift, bool win)
+    private static HotkeyAction? Match(IReadOnlyList<HotkeyAction> actions, int vk, int raw, bool ctrl, bool alt, bool shift, bool win, Func<bool> gameInFront)
     {
-        var actions = s_actions;
-        for (int i = 0; i < actions.Length; i++)
+        for (int i = 0; i < actions.Count; i++)
         {
             var k = actions[i].Keys;
             if ((vk == k.Vk || raw == k.Vk) && ctrl == k.Ctrl && alt == k.Alt && shift == k.Shift && win == k.Win) return actions[i];
@@ -317,7 +384,7 @@ internal static unsafe class Hotkeys
         if (IsReservedForCapture(vk, ctrl, alt, shift, win)) return null;
         HotkeyAction? best = null;
         int bestMods = -1;
-        for (int i = 0; i < actions.Length; i++)
+        for (int i = 0; i < actions.Count; i++)
         {
             var k = actions[i].Keys;
             if (vk != k.Vk || win != k.Win || (k.Ctrl && !ctrl) || (k.Alt && !alt) || (k.Shift && !shift)) continue;
@@ -325,7 +392,7 @@ internal static unsafe class Hotkeys
             if (mods > bestMods) { best = actions[i]; bestMods = mods; }
         }
         // On the desktop the key goes to the program in front: Ctrl+F9 in an IDE, Shift+Insert in a terminal, Ctrl+Break.
-        return best != null && GameInFront() ? best : null;
+        return best != null && gameInFront() ? best : null;
     }
 
     /// <summary>A window of the detected game has the focus (two calls that never wait on another thread: safe in the hook). Any thread.</summary>
