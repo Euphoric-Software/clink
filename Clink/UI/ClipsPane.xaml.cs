@@ -306,9 +306,11 @@ public partial class ClipsPane : UserControl
             row.IsProblem = false;
             return;
         }
-        // Refused by Copium's limits, or failed and why (Copium's answer, the network); the tooltip has all of it.
+        // Refused by Copium's limits, or failed and why (Copium's answer, the network); the tooltip has all of it. The rare "could not
+        // open the share window" (no token) is no upload failure: it is said as it is.
         row.Status = ok ? "Link copied to clipboard"
-            : App.ShareRefusal ?? (App.ShareError is string why ? "Upload failed: " + why : "Upload failed");
+            : App.ShareRefusal ?? (App.LastShareOutcome == ShareOutcome.WindowFailed ? AppController.ShareWindowFailedText
+                : App.ShareError is string why ? "Upload failed: " + why : "Upload failed");
         row.IsProblem = !ok;
         row.Refresh();
         if (ok)
