@@ -24,24 +24,30 @@ namespace Clink.Tests;
 /// every Clink clip) is left alone: Media Foundation has no audio edit list to apply. The whole suite has to pass this way, which shows
 /// that no audio is read any other way.</item>
 /// <item><c>evenWhenHidden</c> moves the tracks of those readers too: a Windows whose media reader moves the tracks in a way that hiding
-/// the edit lists does not stop, for the timeline self-check to fail on.</item>
+/// the edit lists does not stop, for the timeline self-check to fail on. <c>movesReads</c> and <c>movesSeeks</c> say which of the two is
+/// moved, and <c>endsEarly</c> has the audio streams end before their first sample (a reader that gives up).</item>
 /// <item><c>hideEditLists: false</c> is Clink without <see cref="ClipSource"/>, whose readers see the edit lists: with it the twelve audio
 /// tests of that CI run fail again.</item>
 /// </list>
 /// The environment variable CLINK_EMULATE_ELST turns it on for a whole run, of the unit tests or of the headless --trim and --probe:
-/// <c>1</c> is the first case, <c>nohide</c> the third (and takes the timeline self-check out, as Clink had none then). It assumes the
-/// real Media Foundation ignores the edit lists (this PC's does): on one that applies them the readers would be moved twice.
+/// <c>1</c> is the first case, <c>nohide</c> the third (and takes the timeline self-check out, as Clink had none then). It is armed by
+/// <see cref="StartFromEnvironment"/>, which <c>App.OnStartup</c> calls in exactly the branches of --unittest, --trim and --probe, so a
+/// normal start (and --dev) never does. It assumes the real Media Foundation ignores the edit lists (this PC's does): on one that applies
+/// them the readers would be moved twice.
 /// </summary>
 internal sealed unsafe class EditListEmulation : IClipSourceHook
 {
     internal const string Variable = "CLINK_EMULATE_ELST";
 
-    private readonly bool _hide, _evenWhenHidden;
+    private readonly bool _hide, _evenWhenHidden, _movesReads, _movesSeeks, _endsEarly;
 
-    private EditListEmulation(bool hide, bool evenWhenHidden)
+    private EditListEmulation(bool hide, bool evenWhenHidden, bool movesReads, bool movesSeeks, bool endsEarly)
     {
         _hide = hide;
         _evenWhenHidden = evenWhenHidden;
+        _movesReads = movesReads;
+        _movesSeeks = movesSeeks;
+        _endsEarly = endsEarly;
     }
 
     /// <summary>Whether CLINK_EMULATE_ELST asked for the emulation of this run ("1" or "nohide").</summary>
@@ -58,32 +64,54 @@ internal sealed unsafe class EditListEmulation : IClipSourceHook
     internal static bool Active => ClipSource.Hook is EditListEmulation;
 
     /// <summary>What the emulation is doing, for a test's report.</summary>
-    internal static string Describe => ClipSource.Hook is EditListEmulation e
-        ? $"emulating a Media Foundation that applies the audio edit lists{(e._hide ? "" : ", with Clink not hiding them")}{(e._evenWhenHidden ? ", hidden or not" : "")}"
-        : "no emulation";
-
-    [ModuleInitializer]
-    internal static void StartFromEnvironment()
+    internal static string Describe
     {
-        // Only a test run or a headless mode (checking a clip without a window) ever emulates: the app itself does not, whatever its environment says.
-        var args = Environment.GetCommandLineArgs();
-        if (args.Length < 2 || !(args[1].Equals("--unittest", StringComparison.OrdinalIgnoreCase) || args[1].Equals("--trim", StringComparison.OrdinalIgnoreCase)
-            || args[1].Equals("--probe", StringComparison.OrdinalIgnoreCase))) return;
+        get
+        {
+            if (ClipSource.Hook is not EditListEmulation e) return "no emulation";
+            string how = "emulating a Media Foundation that applies the audio edit lists";
+            if (!e._hide) how += ", with Clink not hiding them";
+            if (e._evenWhenHidden) how += ", hidden or not";
+            if (!e._movesReads) how += ", its seeks only";
+            if (!e._movesSeeks) how += ", its reads only";
+            if (e._endsEarly) how += ", its streams ending early";
+            return how;
+        }
+    }
+
+    /// <summary>
+    /// The command line of a test run or of a headless mode, as <c>App.OnStartup</c> takes them: <c>--unittest</c>, and <c>--trim</c> or
+    /// <c>--probe</c> with at least one argument (alone they start the normal app). Nothing else may emulate.
+    /// </summary>
+    internal static bool IsHeadlessRun(string[] args)
+        => args.Length > 0 && (args[0].Equals("--unittest", StringComparison.OrdinalIgnoreCase)
+            || (args.Length > 1 && (args[0].Equals("--trim", StringComparison.OrdinalIgnoreCase) || args[0].Equals("--probe", StringComparison.OrdinalIgnoreCase))));
+
+    /// <summary>
+    /// Arms the emulation when CLINK_EMULATE_ELST asks for it and <paramref name="args"/> (the command line without the program) is that
+    /// of a test run or of a headless mode (<see cref="IsHeadlessRun"/>): <c>App.OnStartup</c> calls it in those three branches and
+    /// nowhere else, and it checks again, so that no other start (the normal app, --dev, a command for the running Clink) can ever be armed.
+    /// </summary>
+    /// <returns>Whether the emulation was armed.</returns>
+    internal static bool StartFromEnvironment(string[] args)
+    {
+        if (!IsHeadlessRun(args)) return false;
         string? mode = FromEnvironment;
-        if (mode == null) return;
-        ClipSource.Hook = new EditListEmulation(hide: mode != "nohide", evenWhenHidden: false);
+        if (mode == null) return false;
+        ClipSource.Hook = new EditListEmulation(hide: mode != "nohide", evenWhenHidden: false, movesReads: true, movesSeeks: true, endsEarly: false);
         // "nohide" is Clink as it was before ClipSource: nothing hides the edit lists, and nothing checks the timeline either.
         if (mode == "nohide") ClipSource.TrustOverride = true;
+        return true;
     }
 
     /// <summary>
     /// Turns the emulation on until the returned scope is disposed (then what was there before is back). The timeline self-check is
     /// forgotten on the way in and out, so that it runs under it and nothing of it is left behind.
     /// </summary>
-    internal static IDisposable Apply(bool hideEditLists = true, bool evenWhenHidden = false)
+    internal static IDisposable Apply(bool hideEditLists = true, bool evenWhenHidden = false, bool movesReads = true, bool movesSeeks = true, bool endsEarly = false)
     {
         var before = ClipSource.Hook;
-        ClipSource.Hook = new EditListEmulation(hideEditLists, evenWhenHidden);
+        ClipSource.Hook = new EditListEmulation(hideEditLists, evenWhenHidden, movesReads, movesSeeks, endsEarly);
         ClipSource.ResetTimelineCheck();
         return new Scope(() =>
         {
@@ -122,7 +150,7 @@ internal sealed unsafe class EditListEmulation : IClipSourceHook
     {
         if (editListsHidden && !_evenWhenHidden) return reader;   // Media Foundation has no audio edit list to apply
         EmulatedReader emulated;
-        try { emulated = new EmulatedReader(path, reader); }
+        try { emulated = new EmulatedReader(path, reader, _movesReads, _movesSeeks, _endsEarly); }
         catch
         {
             reader->Release();
@@ -163,11 +191,15 @@ internal sealed unsafe class EditListEmulation : IClipSourceHook
     {
         private static readonly HRESULT Disposed = (HRESULT)unchecked((int)0x80131622);   // COR_E_OBJECTDISPOSED
         private IMFSourceReader* _inner;
+        private readonly bool _movesReads, _movesSeeks, _endsEarly;
         private readonly Dictionary<uint, long> _offset = new();   // the reader's stream number of each audio track -> where it starts on the clip's timeline, 100 ns
 
-        public EmulatedReader(string path, IMFSourceReader* inner)
+        public EmulatedReader(string path, IMFSourceReader* inner, bool movesReads, bool movesSeeks, bool endsEarly)
         {
             _inner = inner;
+            _movesReads = movesReads;
+            _movesSeeks = movesSeeks;
+            _endsEarly = endsEarly;
             var tracks = Trimmer.ReadClipTracks(path);
             var streams = Trimmer.AudioStreamsOf(inner);
             if (tracks != null && tracks.Audio.Length == streams.Count)
@@ -212,18 +244,27 @@ internal sealed unsafe class EditListEmulation : IClipSourceHook
             if (_inner == null) return Disposed;
             PROPVARIANT position = *varPosition;
             // A time on the moved timeline is where the stream's own time is that much earlier.
-            if (position.vt == VARENUM.VT_I8) position.hVal = Math.Max(0, position.hVal - SelectedOffset());
+            if (_movesSeeks && position.vt == VARENUM.VT_I8) position.hVal = Math.Max(0, position.hVal - SelectedOffset());
             return _inner->SetCurrentPosition(guidTimeFormat, &position);
         }
 
         public HRESULT ReadSample(uint dwStreamIndex, uint dwControlFlags, uint* pdwActualStreamIndex, uint* pdwStreamFlags, long* pllTimestamp, IMFSample** ppSample)
         {
             if (_inner == null) return Disposed;
+            if (_endsEarly && _offset.ContainsKey(dwStreamIndex))
+            {
+                // The stream ends before it has begun (a reader that gives up on the clip).
+                if (pdwActualStreamIndex != null) *pdwActualStreamIndex = dwStreamIndex;
+                if (pdwStreamFlags != null) *pdwStreamFlags = (uint)MF_SOURCE_READER_FLAG.MF_SOURCE_READERF_ENDOFSTREAM;
+                if (pllTimestamp != null) *pllTimestamp = 0;
+                if (ppSample != null) *ppSample = null;
+                return default;
+            }
             uint actual, flags;
             long time;
             IMFSample* sample = null;
             HRESULT hr = _inner->ReadSample(dwStreamIndex, dwControlFlags, &actual, &flags, &time, &sample);
-            if (hr.Succeeded && sample != null && _offset.TryGetValue(actual, out long offset)) time = Math.Max(0, time + offset);
+            if (_movesReads && hr.Succeeded && sample != null && _offset.TryGetValue(actual, out long offset)) time = Math.Max(0, time + offset);
             if (pdwActualStreamIndex != null) *pdwActualStreamIndex = actual;
             if (pdwStreamFlags != null) *pdwStreamFlags = flags;
             if (pllTimestamp != null) *pllTimestamp = time;
