@@ -368,6 +368,74 @@ internal static class SettingsTests
     }
 
     [UnitTest]
+    public static void A_cleared_main_stays_the_main_when_another_full_replay_row_has_keys()
+    {
+        // v0.2.4's Add hotkey made Seconds-0 rows, so [F9 clip 0, Shift+F9 clip 0] is common. Clearing the main saves
+        // [unset clip 0, Shift+F9 clip 0] in schema 3; the next load must not read Shift+F9 as the main and push the cleared row down.
+        using var dir = new TempDir();
+        string json = $$"""{ "SchemaVersion": 3, "Hotkey": { "Vk": 120 }, "Hotkeys": {{HotkeysJson((0, "", "clip", 0), (120, "shift", "clip", 0))}} }""";
+        var s = LoadFrom(dir, json);
+        Check.Equal(new[] { "unset clip 0", "Shift+F9 clip 0" }, Rows(s), "unchanged: the cleared row is still the main");
+        Check.False(s.MainHotkeyAssigned);
+        Check.False(s.MainHotkeyNeedsSetup);
+        Check.False(s.Migrated, "nothing was changed, so nothing is saved");
+        Check.Equal("F9", s.Hotkey.ToString(), "an unset main leaves the v1 field alone");
+
+        // and it stays so: saved and loaded again, and a second pass over the same list
+        s.Save();
+        var again = Settings.Load();
+        Check.Equal(new[] { "unset clip 0", "Shift+F9 clip 0" }, Rows(again));
+        Check.False(again.Migrated);
+        again.EnsureHotkeyModel();
+        Check.Equal(new[] { "unset clip 0", "Shift+F9 clip 0" }, Rows(again));
+        Check.False(again.MainHotkeyAssigned || again.MainHotkeyNeedsSetup);
+
+        // a main that has keys keeps leading too, with another full-replay row below it
+        var keyed = LoadFrom(dir, $$"""{ "SchemaVersion": 3, "Hotkey": { "Vk": 120 }, "Hotkeys": {{HotkeysJson((120, "", "clip", 0), (120, "shift", "clip", 0), (0, "", "clip", 0))}} }""");
+        Check.Equal(new[] { "F9 clip 0", "Shift+F9 clip 0", "unset clip 0" }, Rows(keyed));
+        Check.False(keyed.Migrated);
+
+        // a later row with keys is also left alone behind a cleared main when there are several, and other actions come along unchanged
+        var several = LoadFrom(dir, $$"""{ "SchemaVersion": 3, "Hotkey": { "Vk": 120 }, "Hotkeys": {{HotkeysJson((0, "", "clip", 0), (121, "", "pause", 0), (120, "shift", "clip", 0), (122, "", "clip", 0))}} }""");
+        Check.Equal(new[] { "unset clip 0", "F10 pause 0", "Shift+F9 clip 0", "F11 clip 0" }, Rows(several));
+        Check.False(several.Migrated);
+    }
+
+    [UnitTest]
+    public static void In_a_v0_2_file_the_same_list_still_promotes_the_row_that_has_keys()
+    {
+        // Without a SchemaVersion (v0.2.4) the unset row is the "Default" one that Add hotkey made and never gave keys: not a choice
+        using var dir = new TempDir();
+        var s = LoadFrom(dir, $$"""{ "Hotkey": { "Vk": 120 }, "Hotkeys": {{HotkeysJson((0, "", "clip", 0), (120, "shift", "clip", 0))}} }""");
+        Check.Equal(new[] { "Shift+F9 clip 0", "unset clip 0" }, Rows(s));
+        Check.False(s.MainHotkeyAssigned);
+        Check.False(s.MainHotkeyNeedsSetup);
+        Check.True(s.Migrated);
+
+        // a SchemaVersion of 2 says the same
+        var two = LoadFrom(dir, $$"""{ "SchemaVersion": 2, "Hotkeys": {{HotkeysJson((0, "", "clip", 0), (120, "shift", "clip", 0))}} }""");
+        Check.Equal(new[] { "Shift+F9 clip 0", "unset clip 0" }, Rows(two));
+
+        // and once the list has been put in shape, a second pass over the same object leaves it as it is
+        s.EnsureHotkeyModel();
+        Check.Equal(new[] { "Shift+F9 clip 0", "unset clip 0" }, Rows(s));
+    }
+
+    [UnitTest]
+    public static void In_a_v3_file_only_a_full_replay_clip_in_front_counts_as_the_main()
+    {
+        // row 0 is a shorter clip here, so it is not the main: the first full-replay row that has keys leads, as ever
+        using var dir = new TempDir();
+        var s = LoadFrom(dir, $$"""{ "SchemaVersion": 3, "Hotkeys": {{HotkeysJson((120, "shift", "clip", 30), (120, "", "clip", 0), (0, "", "clip", 0))}} }""");
+        Check.Equal(new[] { "F9 clip 0", "Shift+F9 clip 30", "unset clip 0" }, Rows(s));
+        Check.False(s.MainHotkeyAssigned);
+
+        // a pause in front is no main either
+        var pause = LoadFrom(dir, $$"""{ "SchemaVersion": 3, "Hotkeys": {{HotkeysJson((121, "", "pause", 0), (0, "", "clip", 0), (120, "", "clip", 0))}} }""");
+        Check.Equal(new[] { "F9 clip 0", "F10 pause 0", "unset clip 0" }, Rows(pause));
+    }
+
+    [UnitTest]
     public static void The_main_is_always_a_plain_full_replay_clip_and_odd_rows_are_repaired()
     {
         using var dir = new TempDir();
