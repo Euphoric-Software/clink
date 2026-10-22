@@ -65,6 +65,26 @@ internal static class MixPlan
     public static bool FeedsMix(TrackRole[] r, int index) => index > 0 && index < r.Length && r[index] is TrackRole.Game or TrackRole.Mic or TrackRole.Voice && CanRemix(r);
 
     /// <summary>
+    /// The same roles with the given tracks standing alone: a source that cannot be lined up with the Mix (a clip trimmed by an older
+    /// Clink, see <see cref="ClipAlignment"/>) must not be added to or taken out of it. The Mix stays the Mix; with no source left
+    /// nothing is rebuilt.
+    /// </summary>
+    public static TrackRole[] WithoutTracks(TrackRole[] r, IEnumerable<int> indexes)
+    {
+        var copy = (TrackRole[])r.Clone();
+        foreach (int i in indexes)
+            if (i > 0 && i < copy.Length && copy[i] is TrackRole.Game or TrackRole.Mic or TrackRole.Voice) copy[i] = TrackRole.Other;
+        return copy;
+    }
+
+    /// <summary>
+    /// True when <see cref="PreviewGains"/> for this state is a Mix put together from the sources (a rebuilt or corrected All audio)
+    /// and not one track at its own volume: that sum is limited with the recording's soft knee, a single track with the plain clip.
+    /// </summary>
+    public static bool PreviewIsRemix(TrackRole[] r, bool[] include, float[] gain, int listen)
+        => listen >= 0 && listen < r.Length && Included(include, listen) && r[listen] == TrackRole.Mix && CanRemix(r) && !Untouched(Sources(r), gain);
+
+    /// <summary>
     /// The player's gain for each track while <paramref name="listen"/> is the one being auditioned (0 = silent; delta mode uses
     /// negative gains). A track that is not in the file (<paramref name="include"/> false) cannot be listened to. Listening to any
     /// track but All audio plays that track at its own volume; listening to All audio of a remixable file plays the sources

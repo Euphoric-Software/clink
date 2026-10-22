@@ -15,15 +15,18 @@ internal static class ClipWriter
 {
     /// <summary>H.264 / HEVC only (kept for callers that still think in terms of a bool).</summary>
     public static string[] Write(string path, IEnumerable<VideoSample> video, bool hevc, int width, int height, byte[]? sequenceHeader,
-        List<(AudioTrackDesc desc, List<AacFrame> frames)> audio, long origin100ns, uint fps)
-        => Write(path, video, hevc ? "hevc" : "h264", width, height, sequenceHeader, audio, origin100ns, fps);
+        List<(AudioTrackDesc desc, List<AacFrame> frames)> audio, long origin100ns, uint fps, bool aligned = true)
+        => Write(path, video, hevc ? "hevc" : "h264", width, height, sequenceHeader, audio, origin100ns, fps, aligned);
 
     /// <param name="video">Video samples in order, starting on a keyframe. Each sample's <see cref="VideoSample.Data"/> is released once written.</param>
     /// <param name="codec">"h264" | "hevc" | "av1" (experimental). Video samples are Annex B access units for H.264/HEVC, temporal units for AV1.</param>
     /// <param name="sequenceHeader">Encoder-provided parameter sets (Annex B) or AV1 Sequence Header OBU; may be null when the samples carry them in-band.</param>
+    /// <param name="aligned">The audio frames' timestamps are true positions on the clip's timeline (a recording; a trim that kept each
+    /// track's offset): the file says so (<see cref="Mp4Muxer.AlignedBrand"/>) and the Mix's sources are placed exactly against it. False for
+    /// a trim of a file whose own offsets could not be trusted.</param>
     /// <returns>Names of the audio tracks written, in file order (a track with no frames is left out of the file).</returns>
     public static string[] Write(string path, IEnumerable<VideoSample> video, string codec, int width, int height, byte[]? sequenceHeader,
-        List<(AudioTrackDesc desc, List<AacFrame> frames)> audio, long origin100ns, uint fps)
+        List<(AudioTrackDesc desc, List<AacFrame> frames)> audio, long origin100ns, uint fps, bool aligned = true)
     {
         bool av1 = codec == "av1", hevc = codec == "hevc";
         var ps = new ParameterSets();
@@ -68,7 +71,7 @@ internal static class ClipWriter
                         Width = width,
                         Height = height,
                         CodecConfig = av1 ? Av1.BuildAv1C(seqObu!) : hevc ? Nal.BuildHvcC(ps.Vps!, ps.Sps!, ps.Pps!) : Nal.BuildAvcC(ps.Sps!, ps.Pps!),
-                    }, audio.Select(a => a.desc), origin100ns);
+                    }, audio.Select(a => a.desc), origin100ns, aligned);
                     if (pending != null)
                     {
                         foreach (var p in pending) WriteSample(mux, audio, ai, p.pts, p.key, p.data);

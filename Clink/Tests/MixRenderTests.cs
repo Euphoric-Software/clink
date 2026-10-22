@@ -1,4 +1,5 @@
 using System.IO;
+using System.Runtime.InteropServices;
 using Windows.Win32;
 using Windows.Win32.Foundation;
 using Windows.Win32.Media.MediaFoundation;
@@ -11,30 +12,37 @@ namespace Clink.Tests;
 
 /// <summary>
 /// The trim export of "All audio" end to end: a synthetic five-track clip made by the recording code (every source is a pure tone and
-/// some noise of its own, the Mix is their sum), trimmed through <see cref="Trimmer"/> with the plan <see cref="MixPlan"/> makes,
-/// then decoded and measured tone by tone. Needs the Windows AAC encoder and decoder (Media Foundation), like the editor does.
+/// some noise of its own, the Mix is their sum, the sources started at different moments), trimmed through <see cref="Trimmer"/> with
+/// the plan <see cref="MixPlan"/> makes, then decoded and measured tone by tone. Needs the Windows AAC encoder and decoder
+/// (Media Foundation), like the editor does; a machine without them skips these tests (and says so), unless CLINK_TESTS_NO_SKIP=1.
 /// </summary>
 internal static class MixRenderTests
 {
     private static readonly string[] Names = { "Mix", "Game", "Mic", "Voice", "Desktop" };
     private static readonly float[] Unity = { 1, 1, 1, 1, 1 };
 
-    private static bool? s_hasAac;
+    private static string? s_whyNoAac;
+    private static bool s_checkedAac;
 
     /// <summary>
-    /// Media Foundation wants an MTA thread, like the editor's Task.Run; the test runner itself is on the UI thread. A machine
-    /// without the Windows AAC encoder (a stripped-down server image) cannot make the clips: the test says so and passes.
+    /// Media Foundation wants an MTA thread, like the editor's Task.Run; the test runner itself is on the UI thread. A machine that
+    /// cannot make the clips at all (see <see cref="SkipReason"/>) skips the test; anything else that goes wrong fails it.
     /// </summary>
-    private static void OnMta(Action body)
+    internal static void OnMta(Action body)
     {
         Exception? failure = null;
-        bool skipped = false;
+        string? skip = null;
         var t = new Thread(() =>
         {
             try
             {
-                s_hasAac ??= HasAacEncoder();
-                if (s_hasAac == false) skipped = true; else body();
+                if (!s_checkedAac)
+                {
+                    s_whyNoAac = WhyNoAac();
+                    s_checkedAac = true;
+                }
+                if (s_whyNoAac != null) skip = s_whyNoAac;
+                else body();
             }
             catch (Exception ex) { failure = ex; }
         });
@@ -42,21 +50,38 @@ internal static class MixRenderTests
         t.Start();
         t.Join();
         if (failure != null) throw new TestFailure(failure is TestFailure ? failure.Message : failure.ToString());
-        if (skipped) Console.WriteLine("  (skipped: this machine has no Media Foundation AAC encoder)");
+        if (skip != null) Check.Skip(skip);
     }
 
-    private static bool HasAacEncoder()
+    /// <summary>Why this machine cannot make the clips: null when it can. Anything but the two cases of <see cref="SkipReason"/> is thrown, and fails the test.</summary>
+    private static string? WhyNoAac()
     {
         try
         {
             Mf.EnsureStarted();
             using var enc = new AacEncoder();
-            return true;
+            return null;
         }
-        catch (Exception) { return false; }
+        catch (Exception ex) when (SkipReason(ex) is { } why) { return why; }
     }
 
-    private static TrackMix[] PlanFor(string[] names, float[] gain, bool[]? include = null)
+    /// <summary>
+    /// The only two reasons to skip: Media Foundation is not there (an N edition of Windows without the media pack) or its AAC encoder
+    /// class is not registered (a stripped-down image). Any other failure of the encoder is a bug or a broken machine, and fails.
+    /// </summary>
+    internal static string? SkipReason(Exception ex)
+    {
+        const int ClassNotRegistered = unchecked((int)0x80040154);   // REGDB_E_CLASSNOTREG
+        return ex switch
+        {
+            DllNotFoundException or EntryPointNotFoundException => "Media Foundation is not installed on this machine",
+            COMException c when c.HResult == ClassNotRegistered => "the Media Foundation AAC encoder is not registered on this machine",
+            COMException c when c.Message.StartsWith("MFStartup", StringComparison.Ordinal) => "Media Foundation cannot start on this machine",
+            _ => null,
+        };
+    }
+
+    internal static TrackMix[] PlanFor(string[] names, float[] gain, bool[]? include = null)
     {
         var roles = MixPlan.Roles(names, names.Length);
         return MixPlan.Export(roles, include ?? Enumerable.Repeat(true, names.Length).ToArray(), gain);
@@ -69,6 +94,19 @@ internal static class MixRenderTests
     private const double Present = .07, Absent = .02;   // what counts as "at its level" and as "not there", as a share of the recorded level
 
     [UnitTest]
+    public static void A_missing_encoder_or_media_foundation_is_a_skip_and_nothing_else_is()
+    {
+        Check.NotNull(SkipReason(new COMException("CoCreateInstance(AAC encoder) failed", unchecked((int)0x80040154))), "class not registered");
+        Check.NotNull(SkipReason(new COMException("MFStartup failed: 0xC00D36FA", unchecked((int)0xC00D36FA))), "Media Foundation cannot start");
+        Check.NotNull(SkipReason(new DllNotFoundException("mfplat.dll")), "no Media Foundation library");
+        Check.NotNull(SkipReason(new EntryPointNotFoundException("MFStartup")), "no Media Foundation entry point");
+        Check.Null(SkipReason(new COMException("access denied", unchecked((int)0x80070005))), "another COM failure is a failure");
+        Check.Null(SkipReason(new COMException("CoCreateInstance(AAC encoder) failed", unchecked((int)0x80004005))), "so is an unspecified one");
+        Check.Null(SkipReason(new InvalidOperationException("the encoder blew up")), "and any other exception");
+        Check.Null(SkipReason(new NullReferenceException()), "even a bug in the test");
+    }
+
+    [UnitTest]
     public static void The_synthetic_clip_holds_one_tone_per_source_and_their_sum_in_the_Mix()
     {
         using var dir = new TempDir();
@@ -78,6 +116,10 @@ internal static class MixRenderTests
             var written = SyntheticClip.Write(clip, 6);
             Check.Equal(Names, written);
             Check.Equal(Names, Trimmer.ReadAudioTrackNames(clip)!);
+            Check.True(Trimmer.ReadClipTracks(clip)!.Marked, "a recording says its edit lists are true");
+            // The sources started at different moments, not on one frame grid: their places differ below a frame, as a recording's do.
+            var phases = Trimmer.ReadAudioTracks(clip)!.Select(t => (int)(((t.StartFrames % 1024) + 1024) % 1024)).ToArray();
+            Check.Equal(5, phases.Distinct().Count(), $"five different places inside a frame ({string.Join(", ", phases)})");
             var mix = TestAudio.Decode(clip, 0);
             ExpectTone(mix, SyntheticClip.GameHz, 1, Present, "Mix");
             ExpectTone(mix, SyntheticClip.MicHz, 1, Present, "Mix");
@@ -177,10 +219,9 @@ internal static class MixRenderTests
             ExpectTone(mix, SyntheticClip.GameHz, 0, .03, "baked mix minus the game");
             ExpectTone(mix, SyntheticClip.MicHz, 1, Present, "baked mix minus the game");
             ExpectTone(mix, SyntheticClip.VoiceHz, 1, Present, "the voice, which has no track of its own, stays");
-            // The game's noise is gone too, which it only is when the two tracks were lined up to the sample.
-            // The output starts at the clip's second 1: its second 2 is second 3 of the recorded game track.
-            var game = TestAudio.Decode(clip, 1);
-            double residue = TestAudio.Correlation(mix, game, 48000, 2 * 48000, 3 * 48000, 3000);
+            // The game's noise is gone too, which it only is when the two tracks were lined up to the sample. Both on the clip's
+            // timeline: the output starts at the clip's second 1.
+            double residue = TestAudio.Correlation(TestAudio.Timeline(output, 0), TestAudio.Timeline(clip, 1), 48000, 2 * 48000, 3 * 48000, 2);
             double trace = TestAudio.Amplitude(mix, 48000, SyntheticClip.GameHz) / SyntheticClip.Level;
             Console.WriteLine($"  (what is left of the game in the baked mix minus the game: its tone at {trace:P1} of what it was ({20 * Math.Log10(Math.Max(trace, 1e-6)):0.0} dB), noise correlation {residue:0.000})");
             Check.True(residue < .15, $"the game's noise is cancelled out (correlation {residue:0.000})");
@@ -200,6 +241,7 @@ internal static class MixRenderTests
             Trimmer.Trim(clip, output, 1, 5, Names, plan);
             for (int i = 0; i < 5; i++)
                 Check.True(TestAudio.IsSlice(TestAudio.Frames(clip, i), TestAudio.Frames(output, i)), $"track {i + 1} is copied, not encoded again");
+            Check.True(Trimmer.ReadClipTracks(output)!.Marked, "and the cut says its edit lists are true, as the recording did");
         });
     }
 
@@ -215,14 +257,13 @@ internal static class MixRenderTests
             var plan = PlanFor(Names, Unity);
             plan[0] = new TrackMix(true, 1f, new[] { new MixInput(1, 1f), new MixInput(2, 1f), new MixInput(3, 1f) });
             Trimmer.Trim(clip, output, 1, 5, Names, plan);
-            var baked = TestAudio.Decode(clip, 0);
-            var rebuilt = TestAudio.Decode(output, 0);
-            // The baked Mix starts 384 samples before the clip (its edit list skips them); the output starts at the keyframe at 1.0 s.
-            int bakedAt = 2 * 48000 + 384, rebuiltAt = 48000;
-            int lag = TestAudio.BestLag(baked, bakedAt, rebuilt, rebuiltAt, 48000, 3000);
-            double match = TestAudio.Correlation(baked, rebuilt, 48000, bakedAt, rebuiltAt, 0);
+            // Both on the clip's timeline: the output starts at the clip's second 1, so its second 1 is the recording's second 2.
+            var baked = TestAudio.Timeline(clip, 0);
+            var rebuilt = TestAudio.Timeline(output, 0);
+            int lag = TestAudio.BestLag(baked, 2 * 48000, rebuilt, 48000, 48000, 3000);
+            double match = TestAudio.Correlation(baked, rebuilt, 48000, 2 * 48000, 48000, 0);
             Console.WriteLine($"  (rebuilt All audio vs the baked one: lag {lag} samples, correlation {match:0.000})");
-            Check.True(Math.Abs(lag) <= 2, $"the rebuilt mix is in time with the baked one (lag {lag})");
+            Check.True(Math.Abs(lag) <= 1, $"the rebuilt mix is in time with the baked one to the sample (lag {lag})");
             Check.True(match > .95, $"and sounds like it (correlation {match:0.000})");
             foreach (double hz in new[] { SyntheticClip.GameHz, SyntheticClip.MicHz, SyntheticClip.VoiceHz }) ExpectTone(rebuilt, hz, 1, Present, "rebuilt All audio");
         });
@@ -273,37 +314,68 @@ internal static class MixRenderTests
         OnMta(() =>
         {
             SyntheticClip.Write(clip, 6);
-            // Desktop is nobody's source: its volume applies to its own track and the Mix stays a copy.
-            var plan = PlanFor(Names, new float[] { 1, 1, 1, 1, .5f });
-            Check.Null(plan[0].Sum);
+            // Game alone at half volume (a plan of the trimmer's own, not the editor's): the Game track is rendered again, the Mix and
+            // the rest are copied. The Game started at a different moment of the frame grid than the Mix, so a render that put its
+            // sound where the file's first frame lies would be a few hundred samples off the copied Mix, which holds the same game.
+            var plan = PlanFor(Names, Unity);
+            plan[1] = new TrackMix(true, .5f);
             Trimmer.Trim(clip, output, 1, 5, Names, plan);
-            var desktop = TestAudio.Decode(output, 4);
-            ExpectTone(desktop, SyntheticClip.DesktopHz, .5, Present, "Desktop at 50%");
+            ExpectTone(TestAudio.Decode(output, 1), SyntheticClip.GameHz, .5, Present, "Game at 50%");
             Check.True(TestAudio.IsSlice(TestAudio.Frames(clip, 0), TestAudio.Frames(output, 0)), "the Mix is copied");
-            int lag = TestAudio.BestLag(TestAudio.Decode(clip, 4), 2 * 48000, desktop, 48000, 48000, 3000);
-            Console.WriteLine($"  (rendered Desktop vs the recorded one: lag {lag} samples)");
-            Check.True(Math.Abs(lag) <= 2, $"the render adds no delay (lag {lag})");
+            var mix = TestAudio.Timeline(output, 0);
+            var game = TestAudio.Timeline(output, 1);
+            int lag = TestAudio.BestLag(mix, 48000, game, 48000, 48000, 3000);
+            double match = TestAudio.Correlation(mix, game, 48000, 48000, 48000, 0);
+            Console.WriteLine($"  (rendered Game vs the copied Mix in the same file: lag {lag} samples, correlation {match:0.000})");
+            Check.True(Math.Abs(lag) <= 1, $"the render adds no delay against the copied tracks (lag {lag})");
+            // Against the Voice and Mic copies too: nothing in common with the Game, so their best lag proves nothing; the Mix is the check.
+            Check.True(match > .3, $"and the game is in the Mix at that lag (correlation {match:0.000})");
         });
     }
 
     [UnitTest]
-    public static void Tracks_that_started_apart_are_lined_up_by_their_edit_lists()
+    public static void Tracks_that_started_apart_are_lined_up_by_their_edit_lists_to_the_sample()
     {
         using var dir = new TempDir();
         string clip = dir.File("apart.mp4");
         OnMta(() =>
         {
-            // Three tracks: one starts 10 ms before the clip origin (its first frames are skipped), one on it, one 25 ms after it.
-            SyntheticClip.WriteTones(clip, 3, new[] { ("Mix", 440.0, -.010), ("Game", 880.0, 0.0), ("Voice", 1320.0, .025) }, out var firstFrames);
+            // Five tracks that carry one sound: one starts 10 ms before the clip origin (its first samples are skipped), one a few
+            // samples before it, one on it, one 0.4 ms after it and one 25 ms after it.
+            var starts = new (string, int, float)[] { ("Mix", -480, 1), ("Game", 0, 1), ("Mic", 19, 1), ("Voice", -37, 1), ("Desktop", 1200, 1) };
+            SyntheticClip.WriteSame(clip, 3, starts, out var firstFrames);
             var tracks = Trimmer.ReadAudioTracks(clip)!;
-            Check.Equal(new[] { "Mix", "Game", "Voice" }, tracks.Select(t => t.Name).ToArray());
-            Console.WriteLine($"  (first frames at {string.Join(", ", firstFrames)} (100 ns); read back {string.Join(", ", tracks.Select(t => t.StartOffset))})");
-            // The skipped part is whole samples; the late start is stored in milliseconds.
-            Check.Near(firstFrames[0], tracks[0].StartOffset, 10, "starts before the origin");
-            Check.Near(firstFrames[1], tracks[1].StartOffset, 10, "starts on the origin");
-            Check.Near(firstFrames[2], tracks[2].StartOffset, 10_000, "starts after the origin");
-            Check.True(tracks[0].StartOffset < -50_000 && tracks[2].StartOffset > 100_000, "the early one is negative, the late one positive");
+            Check.Equal(new[] { "Mix", "Game", "Mic", "Voice", "Desktop" }, tracks.Select(t => t.Name).ToArray());
+            Console.WriteLine($"  (first frames at {string.Join(", ", firstFrames)} (100 ns); read back {string.Join(", ", tracks.Select(t => t.StartFrames))} frames)");
+            Check.Equal(new long[] { -480, 0, 19, -37, 1200 }, tracks.Select(t => t.StartFrames).ToArray(), "every track starts where it was put, to the sample");
+            for (int i = 0; i < tracks.Length; i++) Check.Near(firstFrames[i], tracks[i].StartOffset, 10, $"{tracks[i].Name}: 100 ns");
+            // And the sound is where the places say: every track agrees with the first one on the clip's timeline.
+            var timeline = Enumerable.Range(0, tracks.Length).Select(i => TestAudio.Timeline(clip, i)).ToArray();
+            for (int i = 1; i < tracks.Length; i++)
+            {
+                int lag = TestAudio.BestLag(timeline[1], 40000, timeline[i], 40000, 30000, 4);
+                Check.Equal(0, lag, $"{tracks[i].Name} is in line with Game");
+            }
             Check.Null(Trimmer.ReadAudioTracks(dir.File("missing.mp4")));
+        });
+    }
+
+    [UnitTest]
+    public static void A_late_start_is_stored_to_the_sample_and_not_to_the_millisecond()
+    {
+        using var dir = new TempDir();
+        string clip = dir.File("late.mp4");
+        OnMta(() =>
+        {
+            // 19 samples is the 0.4 ms of the review: a millisecond-wide edit list rounded it to 0. The others sit on both sides of a
+            // millisecond (48 samples) and of the frame.
+            int[] late = { 1, 19, 47, 48, 49, 95, 480, 1023, 1024, 1200 };
+            var tracks = new List<(string, int, float)> { ("Mix", 0, 1) };
+            for (int i = 0; i < late.Length; i++) tracks.Add(($"Late {late[i]}", late[i], 1));
+            SyntheticClip.WriteSame(clip, 3, tracks.ToArray(), out _);
+            var read = Trimmer.ReadAudioTracks(clip)!;
+            Check.Equal(0L, read[0].StartFrames, "the Mix starts on the origin");
+            for (int i = 0; i < late.Length; i++) Check.Equal((long)late[i], read[i + 1].StartFrames, $"a track {late[i]} samples after the origin ({late[i] / 48.0:0.000} ms)");
         });
     }
 
@@ -314,22 +386,52 @@ internal static class MixRenderTests
         string clip = dir.File("apart.mp4");
         OnMta(() =>
         {
-            SyntheticClip.WriteTones(clip, 3, new[] { ("Mix", 440.0, -.010), ("Game", 880.0, 0.0), ("Voice", 1320.0, .025) }, out _);
+            SyntheticClip.WriteSame(clip, 3, new (string, int, float)[] { ("Mix", -480, 1), ("Game", 0, 1), ("Voice", 1200, 1) }, out _);
             var tracks = Trimmer.ReadAudioTracks(clip)!;
             foreach (int track in new[] { 0, 2 })
             {
                 uint stream = TestAudio.StreamOf(clip, track);
-                using var reader = new Trimmer.PcmTrackReader(clip, stream, tracks[track].StartOffset, 0, 3 * 10_000_000L);
+                using var reader = new Trimmer.PcmTrackReader(clip, stream, tracks[track].StartFrames, 0, 3 * 48000L);
                 var block = new float[2 * Trimmer.PcmTrackReader.Block];
                 var first = new List<float>();
                 while (first.Count < 4096 && reader.ReadBlock(block) > 0) for (int i = 0; i < block.Length; i += 2) first.Add(block[i]);
-                // The start of the track: silence up to its offset (25 ms = 1200 samples for the late one), then the tone (which
+                // The start of the track: silence up to its offset (25 ms = 1200 samples for the late one), then the sound (which
                 // fades in over the first AAC frame, as every decoded stream does).
                 int silent = 0;
                 while (silent < first.Count && Math.Abs(first[silent]) < 1e-4) silent++;
                 Console.WriteLine($"  (track {track + 1}: {silent} silent samples at the start)");
                 if (track == 2) Check.True(silent >= 1150 && silent < 1200 + 1024 + 256, $"the late track starts 1200 samples in (silent for {silent})");
                 else Check.True(silent < 300, $"the early track has its sound from the clip origin on (silent for {silent})");
+            }
+        });
+    }
+
+    [UnitTest]
+    public static void The_track_reader_hands_out_each_track_as_the_decoder_has_it_on_the_timeline()
+    {
+        using var dir = new TempDir();
+        string clip = dir.File("apart.mp4");
+        OnMta(() =>
+        {
+            var starts = new (string, int, float)[] { ("Mix", -480, 1), ("Game", 0, 1), ("Mic", 19, 1), ("Voice", -37, 1), ("Desktop", 1200, 1) };
+            SyntheticClip.WriteSame(clip, 4, starts, out _);
+            var offsets = TestAudio.Offsets(clip);
+            for (int track = 0; track < starts.Length; track++)
+            {
+                var expected = TestAudio.Timeline(clip, track);
+                // From the clip origin, and from the middle of the clip (a seek, and a first packet that starts before the block does).
+                foreach (long origin in new long[] { 0, 30000 + track * 17 })
+                {
+                    using var reader = new Trimmer.PcmTrackReader(clip, TestAudio.StreamOf(clip, track), offsets[track], origin, 4 * 48000L);
+                    var block = new float[2 * Trimmer.PcmTrackReader.Block];
+                    var got = new List<float>();
+                    while (got.Count < 20000 && reader.ReadBlock(block) > 0) for (int i = 0; i < Trimmer.PcmTrackReader.Block; i++) got.Add(block[i * 2]);
+                    Check.True(got.Count >= 20000, $"{starts[track].Item1}: enough sound ({got.Count})");
+                    // (After a seek the decoder has no packet before the first to overlap with, so its first two packets are not exact.)
+                    double worst = 0;
+                    for (int i = origin == 0 ? 0 : 2048; i < 20000; i++) worst = Math.Max(worst, Math.Abs(got[i] - (origin + i < expected.Length ? expected[origin + i] : 0f)));
+                    Check.True(worst < 1e-6, $"{starts[track].Item1} from frame {origin}: sample for sample what the decoder has on the timeline (worst difference {worst})");
+                }
             }
         });
     }
@@ -353,7 +455,8 @@ internal static class MixRenderTests
     /// <summary>
     /// Not a test: with CLINK_FIXTURE_DIR and CLINK_FIXTURE_SECONDS set it writes a long synthetic five-track clip there
     /// (five-tracks-&lt;seconds&gt;s.mp4; CLINK_FIXTURE_LEVEL, default 0.2, sets the peak of its tones and CLINK_FIXTURE_HZ=g,m,v,d their
-    /// frequencies) for measuring
+    /// frequencies; CLINK_FIXTURE_NOVOICE=1 leaves the Voice track out, CLINK_FIXTURE_UNMARKED=1 writes the file the way a Clink before
+    /// the mark did, CLINK_FIXTURE_NOISE and CLINK_FIXTURE_GAMELAG: see below) for measuring
     /// `Clink.exe --trim ... --gain Game=0` on a long clip, which needs a process of its own to read the memory peak from.
     /// </summary>
     [UnitTest]
@@ -368,6 +471,11 @@ internal static class MixRenderTests
         // from the clip origin (negative: before it), for looking at how tracks that started apart play.
         double[]? starts = Environment.GetEnvironmentVariable("CLINK_FIXTURE_STARTS")?.Split(',').Select(s => double.Parse(s, System.Globalization.CultureInfo.InvariantCulture)).ToArray();
         if (starts != null && starts.Length != 3) throw new TestFailure("CLINK_FIXTURE_STARTS is three start times: mix, game, voice");
+        bool noVoice = Environment.GetEnvironmentVariable("CLINK_FIXTURE_NOVOICE") == "1", unmarked = Environment.GetEnvironmentVariable("CLINK_FIXTURE_UNMARKED") == "1";
+        // CLINK_FIXTURE_NOISE=6 makes the sources mostly noise (a tone alone cannot be lined up with the Mix by correlation);
+        // CLINK_FIXTURE_GAMELAG=400 writes the Game track's frames that many samples late, as a trim by an older Clink did.
+        double noise = double.TryParse(Environment.GetEnvironmentVariable("CLINK_FIXTURE_NOISE"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double ns) ? ns : 1;
+        long gameLag = long.TryParse(Environment.GetEnvironmentVariable("CLINK_FIXTURE_GAMELAG"), out long gl) ? gl : 0;
         Directory.CreateDirectory(dir);
         string path = Path.Combine(dir, starts != null ? $"tones-{seconds}s.mp4" : $"five-tracks-{seconds}s.mp4");
         OnMta(() =>
@@ -375,7 +483,7 @@ internal static class MixRenderTests
             var sw = System.Diagnostics.Stopwatch.StartNew();
             File.Delete(path);   // the muxer never overwrites
             if (starts != null) SyntheticClip.WriteTones(path, seconds, new[] { ("Mix", 440.0, starts[0]), ("Game", 880.0, starts[1]), ("Voice", 1320.0, starts[2]) }, out _, level);
-            else SyntheticClip.Write(path, seconds, level: level, hz: tones);
+            else SyntheticClip.Write(path, seconds, voiceTrack: !noVoice, level: level, hz: tones, noiseScale: noise, stampLag: new long[] { gameLag, 0, 0, 0 }, aligned: !unmarked);
             Console.WriteLine($"  (wrote {path}: {new FileInfo(path).Length / 1_048_576.0:0.0} MB in {sw.Elapsed.TotalSeconds:0.0} s)");
         });
     }
@@ -384,8 +492,10 @@ internal static class MixRenderTests
 /// <summary>
 /// A five-track clip the way the recording writes one: <see cref="AudioTrack"/> encodes the sources and mixes the Mix from them, and
 /// <see cref="ClipWriter"/> muxes. Every source is a pure tone (Game 440 Hz, Mic 880 Hz, Voice 1320 Hz, Desktop 220 Hz) and a little
-/// noise of its own, so what a track holds can be measured and two tracks can be lined up by correlation. The video is a gray 16x16
-/// picture, once a second, which nothing here decodes.
+/// noise of its own, so what a track holds can be measured and two tracks can be lined up by correlation. The recording has been
+/// running for a second when the clip starts and its sources began at different moments, so the tracks' frame grids sit differently
+/// against the clip's start, as in a real recording (all of them starting on the origin hid every alignment mistake). The video is a
+/// gray 16x16 picture, once a second, which nothing here decodes.
 /// </summary>
 internal static unsafe class SyntheticClip
 {
@@ -394,6 +504,10 @@ internal static unsafe class SyntheticClip
     public const float Level = .2f;                                 // peak of every tone; the three sources plus noise stay under the Mix's soft clip (0.8)
     private const float Noise = .08f;                               // peak-to-peak of the white noise on every source
     private const long Origin = 1_000_000_000;                     // an arbitrary clock reading, as a recording has
+    private const long PreRoll = 10_000_000;                       // the capture started a second before the clip does
+
+    /// <summary>When the capture of Game, Mic, Voice and Desktop began after the capture clock started, seconds: none on the sample grid of another, none on a frame.</summary>
+    public static readonly double[] DefaultDelays = { 0.0, 0.00371, 0.00793, 0.01181 };
 
     // Annex B: SPS (baseline, 16x16), PPS, and an IDR slice with one I_PCM macroblock of mid-gray.
     private static readonly byte[] Idr = BuildIdr();
@@ -422,10 +536,17 @@ internal static unsafe class SyntheticClip
     /// <param name="level">Peak of every tone (the noise follows); the tests measure against <see cref="Level"/>.</param>
     /// <param name="hz">The tones of Game, Mic, Voice and Desktop; the defaults are the constants above (a clip made to be played and
     /// recorded back picks tones far above what music has energy in, so they can be told from it).</param>
+    /// <param name="delays">When each of Game, Mic, Voice and Desktop began, seconds after the capture clock (<see cref="DefaultDelays"/>).</param>
+    /// <param name="noiseScale">The noise of every source as a multiple of the usual (0 = none); a source that is mostly noise can be lined up with the Mix by correlation, a pure tone cannot.</param>
+    /// <param name="stampLag">Frames to add to the timestamps of Game, Mic, Voice and Desktop when the clip is muxed: a recording whose tracks were written with the wrong places (what a trim by a Clink before the mark did).</param>
+    /// <param name="aligned">False writes the file without the mark, as a Clink before it did.</param>
+    /// <param name="wave">The shape of source <c>s</c> (0 Game, 1 Mic, 2 Voice, 3 Desktop) at sample <c>n</c> of the second, -1..1 (before <paramref name="level"/>); a sine of <paramref name="hz"/> by default.</param>
     /// <returns>The names of the tracks written, in file order.</returns>
-    public static string[] Write(string path, double seconds, bool voiceTrack = true, float level = Level, double[]? hz = null)
+    public static string[] Write(string path, double seconds, bool voiceTrack = true, float level = Level, double[]? hz = null,
+        double[]? delays = null, double noiseScale = 1, long[]? stampLag = null, bool aligned = true, Func<int, long, float>? wave = null)
     {
         hz ??= new[] { GameHz, MicHz, VoiceHz, DesktopHz };
+        delays ??= DefaultDelays;
         Mf.EnsureStarted();
         var game = new AudioTrack("Game");
         var mic = new AudioTrack("Mic");
@@ -438,18 +559,22 @@ internal static unsafe class SyntheticClip
             var tones = new (AudioTrack track, double hz)[] { (game, hz[0]), (mic, hz[1]), (voice, hz[2]), (desktop, hz[3]) };
             var seeds = new uint[] { 0x9E3779B9, 0x85EBCA6B, 0xC2B2AE35, 0x27D4EB2F };   // one noise sequence per source
             var packet = new float[PacketFrames * 2];
-            long packets = (long)Math.Ceiling((seconds + 1) * 50);   // a second more than the clip, so the mix has caught up with its end
+            long start = Origin - PreRoll;
+            long packets = (long)Math.Ceiling((seconds + 2) * 50);   // the second before the clip, the clip, and a second more so the mix has caught up with its end
             for (long p = 0; p < packets; p++)
             {
-                long qpc = Origin + p * 200_000;
+                long tick = start + p * 200_000;
                 for (int s = 0; s < tones.Length; s++)
                 {
                     var (track, toneHz) = tones[s];
+                    long qpc = tick + (long)Math.Round(delays[s] * 10_000_000);
                     for (int i = 0; i < PacketFrames; i++)
                     {
                         seeds[s] = seeds[s] * 1664525u + 1013904223u;   // LCG
-                        float noise = ((seeds[s] >> 8) / (float)(1 << 24) - .5f) * Noise * (level / Level);
-                        float v = level * (float)Math.Sin(2 * Math.PI * toneHz * ((p * PacketFrames + i) % Rate) / Rate) + noise;
+                        float noise = ((seeds[s] >> 8) / (float)(1 << 24) - .5f) * Noise * (level / Level) * (float)noiseScale;
+                        long n = (p * PacketFrames + i) % Rate;
+                        float tone = wave != null ? wave(s, n) : (float)Math.Sin(2 * Math.PI * toneHz * n / Rate);
+                        float v = level * tone + noise;
                         packet[i * 2] = v; packet[i * 2 + 1] = v;
                     }
                     fixed (float* f = packet) track.OnPacket(f, PacketFrames, qpc, false);
@@ -457,7 +582,7 @@ internal static unsafe class SyntheticClip
                 if (p % 5 == 4)
                 {
                     // The engine's audio loop every 100 ms: sources first, then the mix up to 300 ms behind now.
-                    long until = qpc + 200_000 - 3_000_000;
+                    long until = tick + 200_000 - 3_000_000;
                     foreach (var t in all) t.PadSilenceTo(until);
                     foreach (var t in all) t.MixUpTo(until);
                 }
@@ -468,10 +593,16 @@ internal static unsafe class SyntheticClip
             foreach (var t in all)
             {
                 if (t == voice && !voiceTrack) continue;
-                audio.Add((new AudioTrackDesc { Name = t.Name, AudioSpecificConfig = t.AudioSpecificConfig, Bitrate = t.Bitrate, SampleRate = Rate, Channels = 2 },
-                    t.Snapshot(Origin, end)));
+                var frames = t.Snapshot(Origin, end);
+                int source = Array.IndexOf(tones.Select(x => x.track).ToArray(), t);
+                if (stampLag != null && source >= 0 && stampLag[source] != 0)
+                {
+                    long units = (long)Math.Round(stampLag[source] * 10_000_000.0 / Rate);
+                    frames = frames.Select(f => new AacFrame(f.Pts + units, f.Data)).ToList();
+                }
+                audio.Add((new AudioTrackDesc { Name = t.Name, AudioSpecificConfig = t.AudioSpecificConfig, Bitrate = t.Bitrate, SampleRate = Rate, Channels = 2 }, frames));
             }
-            return ClipWriter.Write(path, Video(seconds), "h264", 16, 16, null, audio, Origin, 0);
+            return ClipWriter.Write(path, Video(seconds), "h264", 16, 16, null, audio, Origin, 0, aligned);
         }
         finally { foreach (var t in all) t.Dispose(); }
     }
@@ -513,6 +644,65 @@ internal static unsafe class SyntheticClip
         firstFrames = firsts.ToArray();
         return ClipWriter.Write(path, Video(seconds), "h264", 16, 16, null, audio, Origin, 0);
     }
+
+    /// <summary>
+    /// The sound of <see cref="Signal"/>: a function of the sample's place on the clip's timeline.
+    /// </summary>
+    public static float Signal(long m)
+    {
+        uint h = unchecked((uint)m * 2654435761u);
+        h ^= h >> 15; h = unchecked(h * 2246822519u); h ^= h >> 13; h = unchecked(h * 3266489917u); h ^= h >> 16;   // an integer hash: white noise that depends on nothing but m
+        float noise = h / (float)uint.MaxValue * 2 - 1;
+        return .2f * (float)Math.Sin(2 * Math.PI * 440 * (((m % Rate) + Rate) % Rate) / Rate) + .15f * noise;
+    }
+
+    /// <summary>
+    /// A clip of tracks that carry one and the same sound (<see cref="Signal"/> of the sample's place on the clip's timeline), each from
+    /// its own sample <c>start</c> (negative: before the clip origin, so the muxer skips that much of it) at its own <c>gain</c>: whatever
+    /// is done to the clip, two tracks that are in line have the same sound at the same index of their timelines, and the lag
+    /// between them says how far a track was moved. The tracks' places lie between the frames of one another's grids.
+    /// </summary>
+    /// <param name="jitter">Samples by which every second frame's timestamp is late (the jitter a stream with imprecise timestamps has).</param>
+    /// <param name="firstFrames">Where each track's first frame starts relative to the origin, 100 ns.</param>
+    public static string[] WriteSame(string path, double seconds, (string name, int start, float gain)[] tracks, out long[] firstFrames, int jitter = 0, bool aligned = true)
+    {
+        Mf.EnsureStarted();
+        var audio = new List<(AudioTrackDesc desc, List<AacFrame> frames)>();
+        var firsts = new List<long>();
+        long end = Origin + (long)(seconds * 10_000_000);
+        double unit = 10_000_000.0 / Rate;
+        foreach (var (name, start, gain) in tracks)
+        {
+            using var enc = new AacEncoder(Rate, 2, 24000);
+            var frames = new List<AacFrame>();
+            long first = Origin + (long)Math.Round(start * unit);
+            var pcm = new byte[AacEncoder.FrameSamples * 4];
+            int k = 0;
+            for (int input = 0; first + (long)Math.Round(input * AacEncoder.FrameSamples * unit) <= end; input++)
+            {
+                for (int i = 0; i < AacEncoder.FrameSamples; i++)
+                {
+                    short s = (short)Math.Round(gain * Signal(start + (long)input * AacEncoder.FrameSamples + i) * 32767);
+                    pcm[i * 4] = pcm[i * 4 + 2] = (byte)s;
+                    pcm[i * 4 + 1] = pcm[i * 4 + 3] = (byte)(s >> 8);
+                }
+                // The frames are stamped by their number, exactly; the encoder's own timestamps are not needed.
+                enc.Encode(pcm, first + (long)Math.Round(input * AacEncoder.FrameSamples * unit), (_, data) => frames.Add(new AacFrame(first + (long)Math.Round(k++ * AacEncoder.FrameSamples * unit), data)));
+            }
+            // The muxer's snapshot rule: whole frames that end after the origin.
+            long block = (long)Math.Round(AacEncoder.FrameSamples * unit);
+            frames = frames.Where(f => f.Pts + block > Origin).ToList();
+            firsts.Add(frames[0].Pts - Origin);
+            if (jitter != 0)
+            {
+                long late = (long)Math.Round(jitter * unit);
+                frames = frames.Select((f, i) => i % 2 == 1 ? new AacFrame(f.Pts + late, f.Data) : f).ToList();
+            }
+            audio.Add((new AudioTrackDesc { Name = name, AudioSpecificConfig = enc.AudioSpecificConfig, Bitrate = enc.BytesPerSecond * 8, SampleRate = Rate, Channels = 2 }, frames));
+        }
+        firstFrames = firsts.ToArray();
+        return ClipWriter.Write(path, Video(seconds), "h264", 16, 16, null, audio, Origin, 0, aligned);
+    }
 }
 
 /// <summary>Reads the audio of a clip back for the tests: decoded to floats on the file's timeline, or as the compressed frames.</summary>
@@ -521,6 +711,9 @@ internal static unsafe class TestAudio
     private const uint AllStreams = 0xFFFFFFFE;
 
     public static int TrackCount(string path) => Trimmer.AudioStreamsOf(path).Count;
+
+    /// <summary>Where each audio track's first sample sits on the clip's timeline, in frames (its edit list).</summary>
+    public static long[] Offsets(string path) => Trimmer.ReadAudioTracks(path)!.Select(t => t.StartFrames).ToArray();
 
     /// <summary>The reader's stream number of audio track <paramref name="track"/> (file order).</summary>
     public static uint StreamOf(string path, int track) => Trimmer.AudioStreamsOf(path)[track];
@@ -583,6 +776,52 @@ internal static unsafe class TestAudio
         finally { reader->Release(); }
     }
 
+    /// <summary>
+    /// The left channel of the track on the clip's timeline: index 0 is the clip origin, a track that starts late has silence in front
+    /// of it and one that started early has lost what lies before the origin (the track's edit list applied, to the sample).
+    /// </summary>
+    public static float[] Timeline(string path, int track)
+    {
+        var x = Decode(path, track);
+        long offset = Trimmer.ReadAudioTracks(path)![track].StartFrames;
+        if (offset >= 0)
+        {
+            var y = new float[offset + x.Length];
+            Array.Copy(x, 0, y, offset, x.Length);
+            return y;
+        }
+        int skip = (int)Math.Min(-offset, x.Length);
+        var z = new float[x.Length - skip];
+        Array.Copy(x, skip, z, 0, z.Length);
+        return z;
+    }
+
+    /// <summary>The timestamps (100 ns) of the compressed frames of audio track <paramref name="track"/>, as the file stores them.</summary>
+    public static List<long> Timestamps(string path, int track)
+    {
+        uint stream = StreamOf(path, track);
+        IMFSourceReader* reader = Open(path, stream, decoded: false);
+        try
+        {
+            var times = new List<long>();
+            while (true)
+            {
+                uint idx, flags; long ts; IMFSample* sample;
+                reader->ReadSample(stream, 0, &idx, &flags, &ts, &sample).Check("ReadSample");
+                if ((flags & (uint)(MF_SOURCE_READER_FLAG.MF_SOURCE_READERF_ENDOFSTREAM | MF_SOURCE_READER_FLAG.MF_SOURCE_READERF_ERROR)) != 0)
+                {
+                    if (sample != null) sample->Release();
+                    break;
+                }
+                if (sample == null) continue;
+                times.Add(ts);
+                sample->Release();
+            }
+            return times;
+        }
+        finally { reader->Release(); }
+    }
+
     /// <summary>The compressed AAC frames of audio track <paramref name="track"/>, as stored.</summary>
     public static List<byte[]> Frames(string path, int track)
     {
@@ -638,12 +877,16 @@ internal static unsafe class TestAudio
         return 2 * Math.Sqrt(re * re + im * im) / n;
     }
 
-    public static double Rms(float[] x)
+    public static double Rms(float[] x) => Rms(x, 0, x.Length);
+
+    /// <summary>RMS of <paramref name="length"/> samples from <paramref name="start"/> (what lies beyond the end counts as nothing).</summary>
+    public static double Rms(float[] x, int start, int length)
     {
-        if (x.Length == 0) return 0;
+        int n = Math.Min(length, x.Length - start);
+        if (n <= 0) return 0;
         double sum = 0;
-        foreach (float v in x) sum += (double)v * v;
-        return Math.Sqrt(sum / x.Length);
+        for (int i = 0; i < n; i++) sum += (double)x[start + i] * x[start + i];
+        return Math.Sqrt(sum / n);
     }
 
     public static double Seconds(float[] x) => x.Length / 48000.0;
