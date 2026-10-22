@@ -846,7 +846,8 @@ internal static class ArchiveTests
             Check.False(ArchiveService.IsLink(new FileInfo(plain)), "a plain file is not");
         }
 
-        // A clip that is a symbolic link, when this process may make one (Developer Mode or elevated): left alone.
+        // A clip that is a symbolic link, when this process may make one (Developer Mode or elevated): left alone. The link was made a
+        // moment ago, so its own timestamps are new, whatever the file behind it says: it is refused as a link, not counted as too new.
         using var rig = new Rig();
         using var elsewhere = new TempDir();
         string target = elsewhere.File("real.mp4");
@@ -854,16 +855,84 @@ internal static class ArchiveTests
         File.WriteAllBytes(target, bytes);
         File.SetLastWriteTimeUtc(target, DateTime.UtcNow.AddMinutes(-60));
         string link = rig.Clips.File("linked.mp4");
-        try { File.CreateSymbolicLink(link, target); }
-        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException) { return; }   // no right to make symbolic links here (they need Developer Mode or an elevated process): nothing to check
+        if (!TryMakeSymbolicLink(link, target)) return;
         File.SetCreationTime(link, DateTime.Now.AddDays(-2));
         rig.Load();
         var r = rig.Run(ArchiveScope.All);
         Check.Equal(0, r.Moved, "moved");
         Check.Equal(1, r.Failed, "failed: a link is not archived");
+        Check.Equal(0, r.TooNew, "and not counted as too new either, though the link itself is new");
         Check.Contains(r.Problem, "link");
         Check.True(File.ReadAllBytes(target).AsSpan().SequenceEqual(bytes), "the file behind the link is intact");
         Check.True(File.Exists(link), "and so is the link");
+    }
+
+    /// <summary>
+    /// A symbolic link at <paramref name="link"/> to <paramref name="target"/>, or false when this process may not make one (that takes
+    /// Developer Mode or an elevated process): then the test says so on its way out, so that a run that checked nothing does not look as
+    /// if it had. CI is elevated, so it makes the links.
+    /// </summary>
+    private static bool TryMakeSymbolicLink(string link, string target)
+    {
+        try
+        {
+            File.CreateSymbolicLink(link, target);
+            return true;
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+        {
+            string why = ex.Message;
+            int path = why.IndexOf(" : '", StringComparison.Ordinal);   // the message names the file, which says nothing here
+            if (path > 0) why = why[..path];
+            Console.WriteLine($"  (no symbolic link could be made here: {why.TrimEnd('.', ' ')}. Making one takes Developer Mode or an elevated process, so the run over a symbolic link is not checked on this machine; the junction test beside it is, and so is any machine that can make links, as the CI runner can)");
+            return false;
+        }
+    }
+
+    [UnitTest]
+    public static void A_back_dated_link_is_refused_too()
+    {
+        using var rig = new Rig();
+        using var elsewhere = new TempDir();
+        string target = elsewhere.File("real.mp4");
+        var bytes = RandomBytes(100 * 1024, 12);
+        File.WriteAllBytes(target, bytes);
+        string link = rig.Clips.File("linked.mp4");
+        if (!TryMakeSymbolicLink(link, target)) return;
+        File.SetLastWriteTimeUtc(link, DateTime.UtcNow.AddMinutes(-60));   // the link's own time: old enough for the age rule
+        rig.Load();
+        var r = rig.Run(ArchiveScope.All);
+        Check.Equal(0, r.Moved, "moved"); Check.Equal(1, r.Failed, "failed: a link is not archived, however old"); Check.Equal(0, r.TooNew, "too new");
+        Check.Contains(r.Problem, "link");
+        Check.True(File.ReadAllBytes(target).AsSpan().SequenceEqual(bytes), "the file behind the link is intact");
+        Check.True(File.Exists(link), "and so is the link");
+    }
+
+    [UnitTest]
+    public static void A_link_is_refused_before_its_age_is_looked_at_a_junction_shows_it_on_every_machine()
+    {
+        // A junction needs no privilege, and a run looks at it as at a symbolic link: its attributes and timestamps are its own.
+        using var folder = new TempDir();
+        using var links = new TempDir();
+        string junction = links.File("clip-link");
+        Check.True(TryMakeJunction(junction, folder.Path), "mklink /J made no junction");
+        try
+        {
+            var now = DateTime.UtcNow;
+            var fresh = new FileInfo(junction);
+            Check.True(now - fresh.LastWriteTimeUtc < TimeSpan.FromSeconds(30), "a link made a moment ago looks new: the age rule alone would call it too new");
+            Check.Equal(ArchiveService.FileVerdict.Link, ArchiveService.Judge(fresh, now), "but a link is refused as a link first");
+            Directory.SetLastWriteTimeUtc(junction, now.AddMinutes(-60));   // the junction's own time, as for a symbolic link
+            Check.Equal(ArchiveService.FileVerdict.Link, ArchiveService.Judge(new FileInfo(junction), now), "and whatever its age");
+
+            // A file is judged by its age: just written is too new, written an hour ago is for moving.
+            string plain = folder.File("plain.mp4");
+            File.WriteAllBytes(plain, new byte[10]);
+            Check.Equal(ArchiveService.FileVerdict.TooNew, ArchiveService.Judge(new FileInfo(plain), DateTime.UtcNow), "a file written a moment ago");
+            File.SetLastWriteTimeUtc(plain, now.AddMinutes(-60));
+            Check.Equal(ArchiveService.FileVerdict.Movable, ArchiveService.Judge(new FileInfo(plain), now), "a file written an hour ago");
+        }
+        finally { Directory.Delete(junction); }
     }
 
     // ------------------------------------------------------------------ 6. the copy left by an earlier run

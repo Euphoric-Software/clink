@@ -69,13 +69,35 @@ internal static unsafe class ComUtil
 
 /// <summary>
 /// ComWrappers implementation so managed objects can be handed to native code as COM callbacks
-/// (currently: IActivateAudioInterfaceCompletionHandler for process-loopback WASAPI activation).
+/// (IActivateAudioInterfaceCompletionHandler for process-loopback WASAPI activation; IStream for the clip file
+/// Media Foundation reads through <c>Engine.ClipSource</c>).
 /// </summary>
 internal sealed unsafe class ClinkComWrappers : ComWrappers
 {
     public static readonly ClinkComWrappers Instance = new();
 
     private static readonly ComInterfaceEntry* s_activateEntries = BuildActivateEntries();
+    private static readonly ComInterfaceEntry* s_streamEntries = BuildStreamEntries();
+
+    /// <summary>
+    /// IStream, ISequentialStream (the first two methods of IStream's vtable are its: one vtable serves both) and IAgileObject (Media
+    /// Foundation calls the stream from its own work-queue threads, in no apartment of ours).
+    /// </summary>
+    private static ComInterfaceEntry* BuildStreamEntries()
+    {
+        var vtbl = (IStream.Vtbl*)RuntimeHelpers.AllocateTypeAssociatedMemory(typeof(ClinkComWrappers), sizeof(IStream.Vtbl));
+        ComHelpers.PopulateIUnknown<IStream>((IUnknown.Vtbl*)vtbl);
+        IStream.PopulateVTable(vtbl);
+
+        var agile = (IUnknown.Vtbl*)RuntimeHelpers.AllocateTypeAssociatedMemory(typeof(ClinkComWrappers), sizeof(IUnknown.Vtbl));
+        ComHelpers.PopulateIUnknown<IAgileObject>(agile);
+
+        var entries = (ComInterfaceEntry*)RuntimeHelpers.AllocateTypeAssociatedMemory(typeof(ClinkComWrappers), sizeof(ComInterfaceEntry) * 3);
+        entries[0] = new ComInterfaceEntry { IID = IStream.IID_Guid, Vtable = (nint)vtbl };
+        entries[1] = new ComInterfaceEntry { IID = ISequentialStream.IID_Guid, Vtable = (nint)vtbl };
+        entries[2] = new ComInterfaceEntry { IID = IAgileObject.IID_Guid, Vtable = (nint)agile };
+        return entries;
+    }
 
     private static ComInterfaceEntry* BuildActivateEntries()
     {
@@ -99,6 +121,11 @@ internal sealed unsafe class ClinkComWrappers : ComWrappers
         {
             count = 2;
             return s_activateEntries;
+        }
+        if (obj is IStream.Interface)
+        {
+            count = 3;
+            return s_streamEntries;
         }
         throw new NotSupportedException($"No COM vtable for {obj.GetType()}");
     }

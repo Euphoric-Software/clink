@@ -303,7 +303,9 @@ What the app does since v0.2.5. Where this section and §§1, 3, 6, 9 and 10 dif
   3. A stale copy that an earlier run left is cleaned up only when it is certainly not the clip itself; a copy an earlier
      run made is adopted rather than copied again, and a different file of the same name in the archive is never
      overwritten (the copy gets a new name). A clip that is a symbolic link is left alone (a handle delete would take the
-     file behind the link).
+     file behind the link). That is judged before the 30-second age rule (`ArchiveService.Judge`, by the manual run and
+     the automatic pass alike): a link's timestamps are the link's own, so one made a moment ago is refused as a link and
+     not counted as too new.
 
   The delete and the library update are one step under the library's lock (`ClipLibrary.MoveToArchive`): it finds the
   entry as the library holds it now (a reload may have replaced the one the move began with), runs the delete, points the
@@ -388,8 +390,23 @@ What the app does since v0.2.5. Where this section and §§1, 3, 6, 9 and 10 dif
     decides only whether its own track is saved; its slider always shapes All audio. Desktop and any other track stand
     alone: Desktop is never part of All audio. A clip whose names are not Clink's (a v0.1.0 clip's *All audio*, other
     tools' files) behaves as before. The Mix row is labelled *All audio (mix)* (the file keeps the name `Mix`).
-  - The tracks of a Clink file start at different instants (an edit list per track), which Media Foundation ignores, so
-    `Trimmer.ReadAudioTracks` reads each track's start offset and the player and the renderer apply it. Mixing tracks,
+  - The tracks of a Clink file start at different instants (an edit list per track). Media Foundation applies those edit
+    lists on Windows Server 2025 (GitHub's windows-latest) and ignores them on Windows 11, so a reader that took every
+    stream to start at 0 and added the offset itself moved a track twice there. Clink therefore reads a clip's audio
+    through `Engine/ClipSource.cs`: an `IStream` of the file (`ClinkComWrappers`, opened once with `FileShare.Read | Delete`
+    and parsed through that same handle) in which every audio trak's `edts` box reads as `free`, so every stream starts at 0
+    on every Windows; `Trimmer.ReadAudioTracks` reads each track's start offset and the player and the renderer apply it. A
+    clip that cannot be read that way is not read through Media Foundation's own reader unless that is known to ignore the
+    edit lists on this Windows (every such fallback is logged): anywhere else the open throws. A self-check once per process
+    (`ClipSource.Timeline`, `Engine/TimelineProbe.cs`: a probe clip with tracks at -480 and +1200 samples has to read 0,
+    213333, 426667, and a seek into the second frame has to find 213333) logs whether Media Foundation itself applies or
+    ignores the edit lists. A check that could not run (no encoder, a read that failed or ended early, no answer in 30 s) is
+    not remembered and is made again when it is next asked for; only a read that was made and gave other numbers fails it
+    (none is known to). The clip is then `ClipAlignment.Untrusted`: every source is left out of All audio, `Trimmer.Trim`
+    refuses a rebuild or delta plan, and the editor says *This Windows reads clips differently: sources cannot be changed
+    inside All audio*. Plain cuts and single-track volume changes still work there, but are written without the `clk1`
+    mark, so a later run on a Windows that passes recalibrates them (by correlation, below) before a source is taken out of
+    their Mix. The unit tests also run under an emulation of the Server behaviour (`CLINK_EMULATE_ELST=1`). Mixing tracks,
     and above all taking a source out of the baked Mix by adding it at a negative volume, needs them in step to the
     sample (a few hundred samples off and the game came out louder), so:
     - A recording of this version places each audio track to the sample (the Mix's sources relative to the Mix, as the
@@ -420,7 +437,8 @@ What the app does since v0.2.5. Where this section and §§1, 3, 6, 9 and 10 dif
       source) is cut by its true time, which can move its first and last frame by one.
 - Command line (hidden, for checking without a window): `Clink.exe --trim <in> <out> <start> <end> [--gain Name=value]...
   [--drop Name]...` builds the plan the editor would, the alignment note included (a value is 0.5 or 50%); `Clink.exe
-  --probe <file> --levels` prints the RMS and peak of each audio track.
+  --probe <file> --levels` prints the RMS and peak of each audio track (and the timing report lists a Clink clip's audio a
+  second time, as `ClipSource` reads it, under the lines of Media Foundation's own reading).
 
 ### 11.8 Themes and the App tab
 
@@ -545,16 +563,28 @@ What the app does since v0.2.5. Where this section and §§1, 3, 6, 9 and 10 dif
     **`CLINK_TESTS_NO_SKIP=1`** is set: it turns every skip into a failure (*skipped (…), and CLINK_TESTS_NO_SKIP=1
     says nothing may be*), which is how a machine that is meant to have everything runs them. The tests that need a
     junction (`mklink /J`, which needs no privilege) print a `SKIP` line of their own, and pass without checking, when
-    none can be made.
+    none can be made. The archive tests over a symbolic link (which takes Developer Mode or an elevated process, as on
+    CI's runner) say why they checked nothing when this process may not make one; the junction test beside them checks
+    the order of the link and age rules on every machine.
   - **Nothing real is touched.** It never touches `%APPDATA%\Clink`, the single-instance mutex or the pipe:
     `Settings.DirOverride`, `ClipLibrary.IndexPathOverride`, the updates folder, the "real" settings folder
     (`Settings.RealDirOverride`) and the folder that holds other apps' packages (`SettingsImport.PackagesRoot`) point at a
     scratch folder for the whole run, and these, the `--dev` state, frozen saves, the import state and the redirect
     findings are put back before and after every test.
   - `Clink.exe` is a GUI-subsystem exe: from PowerShell, `Start-Process .\Clink.exe --unittest -Wait -PassThru
-    -NoNewWindow` shows the output and returns the exit code. CI does exactly that after the Release build (`build.yml`:
-    the step fails the job on a non-zero exit code; `CLINK_TESTS_NO_SKIP` is not set there, because a hosted runner may
-    lack the AAC encoder).
+    -NoNewWindow` shows the output and returns the exit code. CI does exactly that after the Release build (`build.yml`,
+    which first logs the runner's Windows build and the file versions of `mfplat.dll`, `mfmp4srcsnk.dll` and
+    `msauddecmft.dll`: the step fails the job on a non-zero exit code and sets `CLINK_TESTS_NO_SKIP=1`, because the runner
+    image has the AAC encoder and a skip there would mean the audio tests had gone quiet).
+  - **`CLINK_EMULATE_ELST`** (`1`, or `nohide`) makes this machine's Media Foundation behave like Windows Server 2025's
+    (GitHub's windows-latest), which applies the audio edit lists of an MP4 where Windows 11 ignores them: a decorator of the
+    reader `ClipSource` hands out (`Tests/EditListEmulation.cs`, installed through `ClipSource.Hook`, nothing of it in the
+    app's own paths) moves every audio timestamp and seek by the track's offset. `1` leaves the readers that have their
+    edit lists hidden alone, so the whole suite has to pass with it too (no audio is read any other way); `nohide` also
+    stops `ClipSource` hiding them and takes the self-check out, which is Clink as it was, and fails the twelve audio
+    tests the CI run did (and the tests of the hiding and of the check). It is armed only by `App.OnStartup`'s branches of
+    `--unittest`, `--trim <args>` and `--probe <args>` (`EditListEmulation.StartFromEnvironment`, which checks the command
+    line again): a normal start, `--dev` included, never loads it. It assumes the real Media Foundation ignores the edit lists.
 - Hidden `Clink.exe --dev [folder] [--dev-hotkeys] [--dev-record] [--dev-token]` (also `--dev=<folder>`) starts a second
   Clink next to the real one: its own data folder (default `%TEMP%\clink-dev`), its own single-instance mutex and control
   pipe (named from a hash of the folder, `.dev.` and eight hex digits, so `--clip` and `--show` only ever reach that

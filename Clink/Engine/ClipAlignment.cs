@@ -14,6 +14,9 @@ namespace Clink.Engine;
 /// how the tracks were placed against each other) is checked: a Mix that can only be corrected, not rebuilt, has each of its
 /// sources lined up with it by cross-correlation (<see cref="TrackAlignment"/>), and a source whose lag cannot be found clearly
 /// is left out (<see cref="Unlined"/>): the sliders of that source then only change its own track.</item>
+/// <item>On a Windows whose Media Foundation hands a clip's tracks out at times Clink cannot put on one timeline (the timeline self-check
+/// of <see cref="ClipSource"/> failed; none is known) nothing is measured or vouched for, whatever the file says: every source stands
+/// alone (<see cref="Untrusted"/>).</item>
 /// </list>
 /// </summary>
 internal sealed class ClipAlignment
@@ -22,6 +25,9 @@ internal sealed class ClipAlignment
 
     /// <summary>What the editor says (and a trim refuses with) when a source cannot be lined up with the Mix.</summary>
     public const string OlderClinkNote = "Recorded or trimmed by an older Clink: sources cannot be changed inside All audio";
+
+    /// <summary>What the editor says (and a trim refuses with) when this Windows reads the tracks of a clip at other times than Clink expects (<see cref="Untrusted"/>).</summary>
+    public const string UntrustedNote = "This Windows reads clips differently: sources cannot be changed inside All audio";
 
     /// <summary>The audio tracks' names in file order; empty for a file Clink did not write (nothing is known about it).</summary>
     public string[] Names { get; init; } = Array.Empty<string>();
@@ -33,6 +39,13 @@ internal sealed class ClipAlignment
     public bool Calibrated { get; init; }
     /// <summary>Source tracks (indexes in file order) that could not be lined up with the Mix: they must not be added to or taken out of it.</summary>
     public int[] Unlined { get; init; } = Array.Empty<int>();
+
+    /// <summary>
+    /// This Windows failed the timeline self-check (<see cref="ClipSource.Timeline"/>): its Media Foundation hands the tracks of a clip
+    /// out at times Clink cannot put on one timeline, so nothing here is measured or vouched for. Every source is in
+    /// <see cref="Unlined"/>, the file's mark is not believed and <see cref="Aligned"/> is false; a trim refuses to rebuild or correct the Mix.
+    /// </summary>
+    public bool Untrusted { get; init; }
 
     /// <summary>A trim of this file may say its edit lists are true: they were, or its sources were lined up and all of them could be.</summary>
     public bool Aligned => Marked || (Calibrated && Unlined.Length == 0);
@@ -57,10 +70,27 @@ internal sealed class ClipAlignment
             ticks = fi.LastWriteTimeUtc.Ticks;
         }
         catch (Exception) { return new ClipAlignment(); }
+        // Nothing is measured, cached or vouched for on a Windows whose reading of clips did not pass the self-check (which runs the first
+        // time it is asked, here).
+        if (!ClipSource.TimelineTrusted) return Distrust(path);
         if (s_cache.TryGetValue(path, out var hit) && hit.Size == size && hit.Ticks == ticks) return hit.Value;
         var value = Compute(path);
         if (value.Calibrated || value.Unlined.Length == 0) s_cache[path] = (size, ticks, value);   // a check that could not run is tried again next time
         return value;
+    }
+
+    /// <summary>
+    /// The alignment of a clip on a Windows that failed the timeline self-check: the file's names and places as it says them, every
+    /// source standing alone (the sliders of Game, Mic and Voice change only their own tracks), no mark, no measuring.
+    /// </summary>
+    private static ClipAlignment Distrust(string path)
+    {
+        var file = Trimmer.ReadClipTracks(path);
+        if (file == null) return new ClipAlignment();   // not a Clink file: its tracks stand on their own anyway
+        string[] names = file.Audio.Select(t => t.Name).ToArray();
+        var roles = MixPlan.Roles(names, names.Length);
+        var sources = Enumerable.Range(1, Math.Max(0, roles.Length - 1)).Where(i => roles[i] is TrackRole.Game or TrackRole.Mic or TrackRole.Voice).ToArray();
+        return new ClipAlignment { Names = names, OffsetFrames = file.Audio.Select(t => t.StartFrames).ToArray(), Untrusted = true, Unlined = sources };
     }
 
     private static ClipAlignment Compute(string path)

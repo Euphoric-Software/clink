@@ -40,7 +40,7 @@ internal static class TrimCli
         var align = ClipAlignment.Read(src);
         if (align.Unlined.Length > 0)
         {
-            Console.WriteLine($"  {ClipAlignment.OlderClinkNote} ({string.Join(", ", align.Unlined.Select(i => names[i]))}: their volumes only change their own tracks)");
+            Console.WriteLine($"  {(align.Untrusted ? ClipAlignment.UntrustedNote : ClipAlignment.OlderClinkNote)} ({string.Join(", ", align.Unlined.Select(i => names[i]))}: their volumes only change their own tracks)");
             roles = MixPlan.WithoutTracks(roles, align.Unlined);
         }
         var mix = MixPlan.Export(roles, include, gain);

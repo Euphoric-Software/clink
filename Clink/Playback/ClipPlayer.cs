@@ -39,11 +39,14 @@ internal sealed unsafe class ClipPlayer : IDisposable
     private sealed class AudioTrackState
     {
         public IMFSourceReader* Reader;
+        /// <summary>The stream the reader reads the clip through (<see cref="Engine.ClipSource"/>; null for a plain reader): disposed after the reader is released, which closes the file.</summary>
+        public IDisposable? Owner;
         public uint Stream;
         /// <summary>
         /// Where the stream's first sample sits on the clip timeline, 48 kHz frames (its edit list, with the lag a check against the
         /// Mix found for an older clip: negative when the file starts the track before the clip origin, positive after). The
-        /// stream's own timestamps start at 0 whatever the file says.
+        /// stream's own timestamps start at 0 whatever the file says: the audio edit lists are hidden from Media Foundation
+        /// (<see cref="Engine.ClipSource"/>), which on some Windows applies them.
         /// </summary>
         public long OffsetFrames;
         public bool Eos;
@@ -279,7 +282,6 @@ internal sealed unsafe class ClipPlayer : IDisposable
         Muted = Array.Empty<bool>();
         try
         {
-            var audioIdx = new List<uint>();
             uint videoIdx = uint.MaxValue;
             int nw = 0, nh = 0;
             for (uint i = 0; ; i++)
@@ -297,12 +299,13 @@ internal sealed unsafe class ClipPlayer : IDisposable
                     uint num = (uint)(rate >> 32), den = (uint)(rate & 0xFFFFFFFF);
                     if (num > 0 && den > 0 && den < num) _frameDuration = (double)den / num;
                 }
-                else if (major == PInvoke.MFMediaType_Audio) audioIdx.Add(i);
                 t->Release();
             }
             if (videoIdx == uint.MaxValue) throw new InvalidOperationException("No video stream in file");
-            // Track i is the file's i-th audio track (the mix first), the same numbering the trimmer's mix uses.
-            Engine.Trimmer.AudioInFileOrder(audioIdx, videoIdx);
+            // Track i is the file's i-th audio track (the mix first), the same numbering the trimmer's mix uses. The stream numbers are
+            // those of the readers the audio is read with (Engine.ClipSource, with the audio edit lists hidden), not of the video's own
+            // reader above: nothing here depends on the two numbering the streams alike.
+            var audioIdx = Engine.Trimmer.AudioStreamsOf(path);
             // The tracks' names and places from the file's edit lists; a clip an older Clink trimmed has its sources checked against
             // the Mix first (a moment, here on the thread that opens the player), so what is mixed below is lined up.
             var align = Engine.ClipAlignment.Read(path);
@@ -338,9 +341,8 @@ internal sealed unsafe class ClipPlayer : IDisposable
             Muted = new bool[_tracks.Length];
             foreach (var ts in _tracks)
             {
-                IMFSourceReader* ar;
-                PInvoke.MFCreateSourceReaderFromURL(path, null, &ar).Check("MFCreateSourceReaderFromURL(audio)");
-                ts.Reader = ar; // owned by ReleaseAll from here on
+                IMFSourceReader* ar = Engine.ClipSource.Open(path, null, out ts.Owner);
+                ts.Reader = ar; // owned (with its stream) by ReleaseAll from here on
                 ar->SetStreamSelection(AllStreams, false);
                 ar->SetStreamSelection(ts.Stream, true).Check("SetStreamSelection(audio)");
                 ConfigureAudio(ts);
@@ -920,6 +922,7 @@ internal sealed unsafe class ClipPlayer : IDisposable
         foreach (var t in _tracks)
         {
             try { ComUtil.Release(ref t.Reader); } catch (Exception ex) { Log.Warn("Preview audio reader release: " + ex.Message); }
+            try { t.Owner?.Dispose(); t.Owner = null; } catch (Exception ex) { Log.Warn("Preview audio stream close: " + ex.Message); }   // after the reader: that closes the file
         }
         try { ComUtil.Release(ref _video); } catch (Exception ex) { Log.Warn("Preview video reader release: " + ex.Message); }
         lock (_queueLock) { _queue.Clear(); _pool.Clear(); }

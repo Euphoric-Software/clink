@@ -43,13 +43,30 @@ jobs:
         shell: pwsh
         run: dotnet build Clink/Clink.csproj -c Release
 
+      # The Windows build and the Media Foundation files of this runner image, for the log: windows-latest is
+      # Windows Server 2025, whose Media Foundation applies the audio edit lists of an MP4 where Windows 11's
+      # ignores them (Clink reads its clips with them hidden, see Engine/ClipSource.cs), so when a test here
+      # behaves differently from one on a PC, this says what the image was.
+      - name: Windows and Media Foundation versions
+        shell: pwsh
+        run: |
+          $cv = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
+          "OS: $([Environment]::OSVersion.VersionString); $($cv.ProductName) $($cv.DisplayVersion), build $($cv.CurrentBuild).$($cv.UBR)"
+          foreach ($dll in 'mfplat.dll', 'mfmp4srcsnk.dll', 'msauddecmft.dll') {
+            $file = Join-Path $env:windir "System32\$dll"
+            if (Test-Path $file) { "$dll $((Get-Item $file).VersionInfo.FileVersionRaw)" } else { "$dll not found" }
+          }
+
       # Clink.exe is a GUI-subsystem exe: Start-Process -Wait -PassThru -NoNewWindow
-      # is what shows its output and gives its exit code. CLINK_TESTS_NO_SKIP is left
-      # unset on purpose: the audio mix render tests skip (they do not fail) on a
-      # runner that has no AAC encoder.
+      # is what shows its output and gives its exit code. CLINK_TESTS_NO_SKIP=1 makes a
+      # skipped test a failure: the audio tests skip when Media Foundation or its AAC
+      # encoder is missing, and this image has both, so a skip here would mean that an
+      # image change had switched the audio tests off while the job stayed green.
       - name: Unit tests
         shell: pwsh
         timeout-minutes: 10
+        env:
+          CLINK_TESTS_NO_SKIP: '1'
         run: |
           $exe = Get-ChildItem -Path Clink/bin/Release -Filter Clink.exe -Recurse | Select-Object -First 1
           if (-not $exe) { throw 'Clink.exe was not found under Clink/bin/Release' }

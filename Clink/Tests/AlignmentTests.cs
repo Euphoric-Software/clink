@@ -52,17 +52,18 @@ internal static class AlignmentTests
     }
 
     [UnitTest]
-    public static void Media_Foundation_hands_every_track_out_from_its_first_sample_whatever_its_edit_list_says()
+    public static void Every_track_is_read_from_its_first_sample_whatever_its_edit_list_says()
     {
         using var dir = new TempDir();
         string clip = dir.File("starts.mp4");
         OnMta(() =>
         {
-            // Everything the readers do (the trimmer, the player, the check against the Mix) takes a stream's first sample to be at
-            // the track's offset. That holds while the edit lists are of the two forms the muxer writes: one edit that skips the start of
-            // the media, or an empty edit and then the media from its start. Media Foundation drops the start of the media when an edit
-            // after an empty one has a media time (a late start made up of a whole number of milliseconds and a skip of the rest):
-            // the timestamps of the track's later packets come out early by the skip, and the track plays that many samples short.
+            // Clink's own reader (TestAudio reads as the trimmer, the player and the check against the Mix do, through ClipSource): every
+            // audio stream's first sample is at 0 and the track's offset puts it where it belongs, on every Windows. Media Foundation does not
+            // hand the tracks out that way by itself. Windows Server 2025 applies the edit lists; Windows 11 ignores them, but drops the
+            // start of the media when an edit after an empty one has a media time (a late start made up of a whole number of milliseconds
+            // and a skip of the rest): the timestamps of the track's later packets come out early by the skip, and the track plays that many
+            // samples short. So Clink hides the audio edit lists from Media Foundation (ClipSource), whatever forms the muxer writes them in.
             int[] starts = { -2000, -480, -37, 0, 1, 19, 47, 48, 49, 95, 480, 1023, 1024, 1200 };
             var tracks = starts.Select(s => ($"T{s}", s, 1f)).ToArray();
             SyntheticClip.WriteSame(clip, 3, tracks, out _);
