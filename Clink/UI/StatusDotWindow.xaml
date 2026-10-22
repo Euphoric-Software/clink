@@ -4,5 +4,5 @@
         Title="Clink status" Width="12" Height="12"
         WindowStyle="None" ResizeMode="NoResize" AllowsTransparency="True" Background="Transparent"
         Topmost="True" ShowInTaskbar="False" ShowActivated="False" Focusable="False" IsHitTestVisible="False">
-    <Ellipse x:Name="Dot" Fill="{StaticResource Muted}" Stroke="#80000000" StrokeThickness="1" />
+    <Ellipse x:Name="Dot" Fill="{DynamicResource Muted}" Stroke="#80000000" StrokeThickness="1" />
 </Window>

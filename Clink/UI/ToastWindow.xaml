@@ -3,8 +3,8 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Clink" Width="330" SizeToContent="Height"
         WindowStyle="None" ResizeMode="NoResize" AllowsTransparency="True" Background="Transparent"
-        Topmost="True" ShowInTaskbar="False" ShowActivated="False" FontFamily="Segoe UI">
-    <Border Background="{StaticResource Panel}" CornerRadius="10" BorderBrush="{StaticResource Border}" BorderThickness="1" Padding="14,12">
+        Topmost="True" ShowInTaskbar="False" ShowActivated="False" FontFamily="{StaticResource UiFont}">
+    <Border Background="{DynamicResource Panel}" CornerRadius="10" BorderBrush="{DynamicResource Border}" BorderThickness="1" Padding="14,12">
         <Grid>
             <Grid.RowDefinitions>
                 <RowDefinition />
@@ -13,8 +13,8 @@
             </Grid.RowDefinitions>
             <Grid>
                 <StackPanel Orientation="Horizontal" Margin="0,0,24,0">
-                    <Ellipse x:Name="Dot" Width="8" Height="8" Fill="{StaticResource Good}" VerticalAlignment="Center" />
-                    <TextBlock x:Name="TitleText" Text="Clip saved" FontWeight="SemiBold" Margin="8,0,0,0" />
+                    <Ellipse x:Name="Dot" Width="8" Height="8" Fill="{DynamicResource Good}" VerticalAlignment="Center" />
+                    <TextBlock x:Name="TitleText" Style="{StaticResource Display}" FontSize="13" Text="Clip saved" Margin="8,0,0,0" />
                 </StackPanel>
                 <Button Style="{StaticResource IconButton}" Content="✕" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,-6,-8,0" Click="Close_Click" />
             </Grid>

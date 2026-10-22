@@ -3,12 +3,12 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Share clip" Width="480" SizeToContent="Height"
         WindowStyle="None" ResizeMode="NoResize" AllowsTransparency="True" Background="Transparent"
-        WindowStartupLocation="CenterScreen" Topmost="True" FontFamily="Segoe UI" PreviewKeyDown="Window_PreviewKeyDown">
+        WindowStartupLocation="CenterScreen" Topmost="True" FontFamily="{StaticResource UiFont}" PreviewKeyDown="Window_PreviewKeyDown">
     <!-- Every colour in this file is a DynamicResource: the window follows a theme change while it is open. -->
     <Border Background="{DynamicResource Bg}" CornerRadius="10" BorderBrush="{DynamicResource Border}" BorderThickness="1">
         <StackPanel>
             <Grid Height="42" MouseLeftButtonDown="Header_MouseLeftButtonDown" Background="Transparent">
-                <TextBlock Text="Share clip" FontWeight="SemiBold" FontSize="14" Margin="16,0,0,0" VerticalAlignment="Center" />
+                <TextBlock Style="{StaticResource Display}" Text="Share clip" Margin="16,0,0,0" VerticalAlignment="Center" />
                 <Button Style="{StaticResource IconButton}" Content="✕" HorizontalAlignment="Right" Margin="0,0,8,0" Click="Close_Click" ToolTip="Close (Esc)" />
             </Grid>
 

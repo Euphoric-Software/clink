@@ -152,8 +152,11 @@ public partial class ShareWindow : Window
         HintText.SetResourceReference(TextBlock.ForegroundProperty, "Warn");
     }
 
-    /// <summary>The line under the card; <paramref name="brush"/> is a palette key (a DynamicResource reference, so it follows the theme).</summary>
-    private void SetStatus(string? text, string brush = "Accent")
+    /// <summary>
+    /// The line under the card; <paramref name="brush"/> is a palette key (a DynamicResource reference, so it follows the theme).
+    /// Accent2 by default, not Accent: the accent as text measures under 4.5:1 on the light theme for Cyan and Orange.
+    /// </summary>
+    private void SetStatus(string? text, string brush = "Accent2")
     {
         StatusText.Text = text ?? "";
         StatusText.SetResourceReference(TextBlock.ForegroundProperty, brush);

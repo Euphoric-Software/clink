@@ -7,15 +7,16 @@
         <!-- icons after the title: cloud = shared, scissors = trim, PC = local only, drive = archived -->
         <DataTemplate x:Key="Icons">
             <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="6,0,0,0">
-                <TextBlock Style="{StaticResource Glyph}" Text="&#xE753;" Foreground="{StaticResource Accent}" Margin="0,1,5,0" ToolTip="Shared to Copium" Visibility="{Binding IsShared, Converter={StaticResource Vis}}" />
+                <TextBlock Style="{StaticResource Glyph}" Text="&#xE753;" Foreground="{DynamicResource Accent}" Margin="0,1,5,0" ToolTip="Shared to Copium" Visibility="{Binding IsShared, Converter={StaticResource Vis}}" />
                 <TextBlock Style="{StaticResource Glyph}" Text="&#xE8C6;" Margin="0,1,5,0" ToolTip="Trimmed clip" Visibility="{Binding IsTrim, Converter={StaticResource Vis}}" />
                 <TextBlock Style="{StaticResource Glyph}" Text="&#xE977;" Margin="0,1,5,0" ToolTip="Local only (not shared, not archived)" Visibility="{Binding IsLocalOnly, Converter={StaticResource Vis}}" />
                 <TextBlock Style="{StaticResource Glyph}" Text="&#xEDA2;" Margin="0,1,5,0" ToolTip="{Binding ArchiveTip}" Visibility="{Binding IsArchived, Converter={StaticResource Vis}}" />
             </StackPanel>
         </DataTemplate>
 
+        <!-- Accent2, not Accent: the accent as text measures under 4.5:1 on the light theme for Cyan and Orange; Accent2 reads on both -->
         <Style x:Key="StatusText" TargetType="TextBlock" BasedOn="{StaticResource MutedText}">
-            <Setter Property="Foreground" Value="{StaticResource Accent}" />
+            <Setter Property="Foreground" Value="{DynamicResource Accent2}" />
             <Setter Property="TextTrimming" Value="CharacterEllipsis" />
             <Setter Property="TextWrapping" Value="NoWrap" />
             <Setter Property="ToolTip" Value="{Binding Status}" />
@@ -24,7 +25,7 @@
                     <Setter Property="Visibility" Value="Collapsed" />
                 </DataTrigger>
                 <DataTrigger Binding="{Binding IsProblem}" Value="True">
-                    <Setter Property="Foreground" Value="{StaticResource Warn}" />
+                    <Setter Property="Foreground" Value="{DynamicResource Warn}" />
                 </DataTrigger>
             </Style.Triggers>
         </Style>
@@ -71,7 +72,7 @@
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
-                    <Border Width="88" Height="50" CornerRadius="4" Background="{StaticResource Panel3}" Cursor="Hand" MouseLeftButtonUp="Thumb_Click" ToolTip="Play">
+                    <Border Width="88" Height="50" CornerRadius="4" Background="{DynamicResource Panel3}" Cursor="Hand" MouseLeftButtonUp="Thumb_Click" ToolTip="Play">
                         <Border.Clip>
                             <RectangleGeometry Rect="0,0,88,50" RadiusX="4" RadiusY="4" />
                         </Border.Clip>
@@ -120,7 +121,7 @@
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
-                    <Border Width="88" Height="50" CornerRadius="4" Background="{StaticResource Panel3}" Cursor="Hand" MouseLeftButtonUp="Thumb_Click" ToolTip="Play"
+                    <Border Width="88" Height="50" CornerRadius="4" Background="{DynamicResource Panel3}" Cursor="Hand" MouseLeftButtonUp="Thumb_Click" ToolTip="Play"
                             Visibility="{Binding HasLocalFile, Converter={StaticResource Vis}}">
                         <Border.Clip>
                             <RectangleGeometry Rect="0,0,88,50" RadiusX="4" RadiusY="4" />
@@ -134,7 +135,7 @@
                         </DockPanel>
                         <TextBlock Text="{Binding CloudMeta}" Style="{StaticResource MutedText}" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap" />
                         <Button Style="{StaticResource LinkButton}" Click="CopyLink_Click" Padding="0,1" HorizontalAlignment="Left" FontSize="12" ToolTip="Click to copy the link">
-                            <TextBlock Text="{Binding Link}" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap" Foreground="{StaticResource Accent}" />
+                            <TextBlock Text="{Binding Link}" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap" Foreground="{DynamicResource Accent2}" />
                         </Button>
                         <TextBlock Text="{Binding Status}" Style="{StaticResource StatusText}" />
                     </StackPanel>
