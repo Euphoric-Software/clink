@@ -36,6 +36,7 @@ public partial class App : System.Windows.Application
             // so this is safe next to a running Clink. They run on this (the UI) thread, one after the other.
             Log.Init(Path.Combine(Path.GetTempPath(), "clink-unittest"), Log.CliFile);
             AttachParentConsole();
+            Tests.EditListEmulation.StartFromEnvironment(args);   // CLINK_EMULATE_ELST: only here, in --trim and in --probe (it checks the command line too)
             int failed;
             try { failed = Tests.TestRunner.Run(args); }
             catch (Exception ex) { Log.Error("[unittest] the runner crashed", ex); Console.WriteLine(ex); failed = 1; }
@@ -60,6 +61,7 @@ public partial class App : System.Windows.Application
         {
             Log.Init(Settings.Dir, Log.CliFile);
             AttachParentConsole();
+            Tests.EditListEmulation.StartFromEnvironment(args);
             int code = 0;
             var t = new Thread(() =>
             {
@@ -96,6 +98,7 @@ public partial class App : System.Windows.Application
             // Clink.exe --trim <in> <out> <startSec> <endSec> [--gain Name=volume]... [--drop Name]...  (see Engine/TrimCli.cs)
             Log.Init(Settings.Dir, Log.CliFile);
             AttachParentConsole();
+            Tests.EditListEmulation.StartFromEnvironment(args);
             int code = 0;
             var t = new Thread(() =>
             {

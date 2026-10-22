@@ -509,20 +509,8 @@ internal static unsafe class SyntheticClip
     /// <summary>When the capture of Game, Mic, Voice and Desktop began after the capture clock started, seconds: none on the sample grid of another, none on a frame.</summary>
     public static readonly double[] DefaultDelays = { 0.0, 0.00371, 0.00793, 0.01181 };
 
-    // Annex B: SPS (baseline, 16x16), PPS, and an IDR slice with one I_PCM macroblock of mid-gray.
-    private static readonly byte[] Idr = BuildIdr();
-
-    private static byte[] BuildIdr()
-    {
-        var au = new List<byte>();
-        byte[] sc = { 0, 0, 0, 1 };
-        au.AddRange(sc); au.AddRange(new byte[] { 0x67, 0x42, 0xC0, 0x0A, 0xDA, 0x79 });
-        au.AddRange(sc); au.AddRange(new byte[] { 0x68, 0xCE, 0x38, 0x80 });
-        au.AddRange(sc); au.AddRange(new byte[] { 0x65, 0x88, 0x84, 0x86, 0x80 });
-        au.AddRange(Enumerable.Repeat((byte)0x80, 384));    // 256 luma + 2 x 64 chroma samples
-        au.Add(0x80);                                        // rbsp trailing bits
-        return au.ToArray();
-    }
+    // Annex B: SPS (baseline, 16x16), PPS, and an IDR slice with one I_PCM macroblock of mid-gray (the picture of the timeline probe too).
+    private static readonly byte[] Idr = TimelineProbe.Idr;
 
     private static List<VideoSample> Video(double seconds)
     {
@@ -718,36 +706,48 @@ internal static unsafe class TestAudio
     /// <summary>The reader's stream number of audio track <paramref name="track"/> (file order).</summary>
     public static uint StreamOf(string path, int track) => Trimmer.AudioStreamsOf(path)[track];
 
-    private static IMFSourceReader* Open(string path, uint stream, bool decoded)
+    /// <summary>
+    /// A reader on one audio stream, opened as Clink opens a clip (<see cref="ClipSource"/>: every stream starts at 0 on every Windows).
+    /// <paramref name="owner"/> is disposed after the reader is released. <paramref name="hideEditLists"/> false is Media Foundation's own reader.
+    /// </summary>
+    private static IMFSourceReader* Open(string path, uint stream, bool decoded, out IDisposable? owner, bool hideEditLists = true)
     {
-        IMFSourceReader* reader;
-        PInvoke.MFCreateSourceReaderFromURL(path, null, &reader).Check("MFCreateSourceReaderFromURL");
-        reader->SetStreamSelection(AllStreams, false);
-        reader->SetStreamSelection(stream, true);
-        if (decoded)
+        IMFSourceReader* reader = ClipSource.Open(path, null, out owner, hideEditLists);
+        try
         {
-            IMFMediaType* want = Mf.CreateMediaType();
-            var a = (IMFAttributes*)want;
-            Mf.SetGuid(a, PInvoke.MF_MT_MAJOR_TYPE, PInvoke.MFMediaType_Audio);
-            Mf.SetGuid(a, PInvoke.MF_MT_SUBTYPE, PInvoke.MFAudioFormat_Float);
-            Mf.SetU32(a, PInvoke.MF_MT_AUDIO_BITS_PER_SAMPLE, 32);
-            Mf.SetU32(a, PInvoke.MF_MT_AUDIO_SAMPLES_PER_SECOND, 48000);
-            Mf.SetU32(a, PInvoke.MF_MT_AUDIO_NUM_CHANNELS, 2);
-            Mf.SetU32(a, PInvoke.MF_MT_AUDIO_BLOCK_ALIGNMENT, 8);
-            Mf.SetU32(a, PInvoke.MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 48000 * 8);
-            Mf.SetU32(a, PInvoke.MF_MT_ALL_SAMPLES_INDEPENDENT, 1);
-            HRESULT hr = reader->SetCurrentMediaType(stream, null, want);
-            want->Release();
-            hr.Check("SetCurrentMediaType(float)");
+            reader->SetStreamSelection(AllStreams, false);
+            reader->SetStreamSelection(stream, true);
+            if (decoded)
+            {
+                IMFMediaType* want = Mf.CreateMediaType();
+                var a = (IMFAttributes*)want;
+                Mf.SetGuid(a, PInvoke.MF_MT_MAJOR_TYPE, PInvoke.MFMediaType_Audio);
+                Mf.SetGuid(a, PInvoke.MF_MT_SUBTYPE, PInvoke.MFAudioFormat_Float);
+                Mf.SetU32(a, PInvoke.MF_MT_AUDIO_BITS_PER_SAMPLE, 32);
+                Mf.SetU32(a, PInvoke.MF_MT_AUDIO_SAMPLES_PER_SECOND, 48000);
+                Mf.SetU32(a, PInvoke.MF_MT_AUDIO_NUM_CHANNELS, 2);
+                Mf.SetU32(a, PInvoke.MF_MT_AUDIO_BLOCK_ALIGNMENT, 8);
+                Mf.SetU32(a, PInvoke.MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 48000 * 8);
+                Mf.SetU32(a, PInvoke.MF_MT_ALL_SAMPLES_INDEPENDENT, 1);
+                HRESULT hr = reader->SetCurrentMediaType(stream, null, want);
+                want->Release();
+                hr.Check("SetCurrentMediaType(float)");
+            }
+            return reader;
         }
-        return reader;
+        catch
+        {
+            reader->Release();
+            owner?.Dispose();
+            throw;
+        }
     }
 
     /// <summary>The left channel of audio track <paramref name="track"/> (file order) at 48 kHz, each packet at its own timestamp (the track's own, from 0: the edit list is not applied).</summary>
-    public static float[] Decode(string path, int track)
+    public static float[] Decode(string path, int track, bool hideEditLists = true)
     {
         uint stream = StreamOf(path, track);
-        IMFSourceReader* reader = Open(path, stream, decoded: true);
+        IMFSourceReader* reader = Open(path, stream, decoded: true, out var owner, hideEditLists);
         try
         {
             var left = new List<float>();
@@ -773,7 +773,11 @@ internal static unsafe class TestAudio
             }
             return left.ToArray();
         }
-        finally { reader->Release(); }
+        finally
+        {
+            reader->Release();
+            owner?.Dispose();
+        }
     }
 
     /// <summary>
@@ -797,10 +801,10 @@ internal static unsafe class TestAudio
     }
 
     /// <summary>The timestamps (100 ns) of the compressed frames of audio track <paramref name="track"/>, as the file stores them.</summary>
-    public static List<long> Timestamps(string path, int track)
+    public static List<long> Timestamps(string path, int track, bool hideEditLists = true)
     {
         uint stream = StreamOf(path, track);
-        IMFSourceReader* reader = Open(path, stream, decoded: false);
+        IMFSourceReader* reader = Open(path, stream, decoded: false, out var owner, hideEditLists);
         try
         {
             var times = new List<long>();
@@ -819,14 +823,18 @@ internal static unsafe class TestAudio
             }
             return times;
         }
-        finally { reader->Release(); }
+        finally
+        {
+            reader->Release();
+            owner?.Dispose();
+        }
     }
 
     /// <summary>The compressed AAC frames of audio track <paramref name="track"/>, as stored.</summary>
-    public static List<byte[]> Frames(string path, int track)
+    public static List<byte[]> Frames(string path, int track, bool hideEditLists = true)
     {
         uint stream = StreamOf(path, track);
-        IMFSourceReader* reader = Open(path, stream, decoded: false);
+        IMFSourceReader* reader = Open(path, stream, decoded: false, out var owner, hideEditLists);
         try
         {
             var frames = new List<byte[]>();
@@ -845,7 +853,11 @@ internal static unsafe class TestAudio
             }
             return frames;
         }
-        finally { reader->Release(); }
+        finally
+        {
+            reader->Release();
+            owner?.Dispose();
+        }
     }
 
     /// <summary>True when <paramref name="part"/> is a run of whole frames taken out of <paramref name="whole"/>, byte for byte (a trim of a copied track).</summary>

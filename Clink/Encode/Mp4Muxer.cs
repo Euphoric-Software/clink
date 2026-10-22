@@ -145,8 +145,9 @@ internal sealed class Mp4Muxer : IDisposable
         // that starts a number of samples after the origin that is not a whole number of milliseconds would be off by up to one, so a
         // file with such a track counts in 1/48000 s instead and the empty edit is exactly as long as the track starts late. Any
         // other file is written as ever. (The rest of a millisecond cannot be made up with a media time after the empty edit: Media
-        // Foundation's MPEG-4 source then drops that many samples from the start of the track, where it ignores the media time of a
-        // single edit, and the readers rely on every track coming out of it from its first sample.)
+        // Foundation's MPEG-4 source on Windows 11 then drops that many samples from the start of the track, where it ignores the
+        // media time of a single edit. Clink's own readers do not depend on any of that: they read a clip with its audio edit lists
+        // hidden from Media Foundation, see ClipSource. Other players see the edit lists, so they are written as exactly as they can be.)
         int movieTimescale = _audio.Any(a => _starts.TryGetValue(a, out long s) && s > 0 && a.Timescale == FineTimescale && s % (FineTimescale / 1000) != 0) ? FineTimescale : 1000;
 
         // Fix the last sample duration of each track (needed for stts) and compute durations.
@@ -320,9 +321,9 @@ internal sealed class Mp4Muxer : IDisposable
         if (!t.IsVideo && t.Timescale == FineTimescale && _starts.TryGetValue(t, out long startSamples))
         {
             // Audio, to the sample. A track that starts before the origin skips that many samples of its media (one edit, whose media
-            // time Media Foundation ignores: it hands the track out from its first sample, which is what the readers expect). One that
-            // starts after it gets an empty edit exactly as long as it starts late, then its media from the start: a media time of 0,
-            // never the rest of a millisecond (see Finish).
+            // time Windows 11's Media Foundation ignores and Windows Server 2025's applies: Clink's readers hide the edit list from it
+            // and put the track where its offset says, see ClipSource). One that starts after it gets an empty edit exactly as long as it
+            // starts late, then its media from the start: a media time of 0, never the rest of a millisecond (see Finish).
             if (startSamples > 0)
             {
                 elst.U32(2);
