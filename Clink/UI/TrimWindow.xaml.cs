@@ -473,22 +473,24 @@ public partial class TrimWindow : Window
                 StatusText.Text = "Uploading…";
                 var progress = new Progress<double>(p => StatusText.Text = $"Uploading… {p:P0}");
                 bool ok = await app.ShareAsync(result, progress);
-                if (!ok)
+                if (!ok && app.LastShareOutcome != ShareOutcome.FileShareOpened)
                 {
                     // Not uploaded, but the trim itself is saved: stay open with the reason instead of flashing "Upload failed" and
-                    // closing on a reason only the footer knows. Over Copium's free limit the selection can be tightened and saved
+                    // closing on a reason only the footer knows. Over Copium's limit the selection can be tightened and saved
                     // again; any other failure is retried from the clip list (saving here again would only trim another copy).
                     if (app.ShareRefusal is string refusal)
                     {
                         string why = refusal.Length > 1 ? char.ToLowerInvariant(refusal[0]) + refusal[1..] : refusal;
-                        StatusText.Text = $"Saved {Path.GetFileName(result.Path)}, not uploaded: {why} - tighten the selection, or tick 'I have Copium+' if you do";
+                        string tick = app.Settings.CopiumPlus ? "" : ", or tick 'I have Copium+' if you do";
+                        StatusText.Text = $"Saved {Path.GetFileName(result.Path)}, not uploaded: {why} - tighten the selection{tick}";
                         SaveButton.IsEnabled = SaveShareButton.IsEnabled = true;
                     }
                     else StatusText.Text = $"Saved {Path.GetFileName(result.Path)}, not uploaded: {app.ShareError ?? "upload failed"} - share it from the clip list to try again";
                     await RestoreEditorAsync(replaced);
                     return;
                 }
-                StatusText.Text = "Uploaded, link copied";
+                // No Copium token: the share window opened with the saved clip, which is the result. Close like a success.
+                StatusText.Text = ok ? "Uploaded, link copied" : $"Saved {Path.GetFileName(result.Path)}: drag it from the share window";
             }
             await Task.Delay(replaceProblem != null ? 3000 : 1200);
             Close();

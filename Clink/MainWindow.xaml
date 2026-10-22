@@ -273,9 +273,9 @@
                                             <Button Style="{StaticResource LinkButton}" Content="Get a token" Click="CopiumSite_Click" Margin="8,0,0,0" FontSize="12" />
                                         </StackPanel>
                                         <CheckBox x:Name="CopiumPlusCheck" Content="I have Copium+ (bigger uploads)" Margin="2,10,0,0" Checked="CopiumPlusChanged" Unchecked="CopiumPlusChanged"
-                                                  ToolTip="Without Copium+ an upload may be at most 200 MB and 10 min long; Share refuses bigger clips unless this is ticked" />
+                                                  ToolTip="Copium free uploads may be at most 200 MB and 10 min long, Copium Plus uploads 2 GB and 60 min. Share checks a clip against the limits of the account you tick here and refuses a bigger one" />
                                         <TextBlock Style="{StaticResource Hint}" Margin="2,6,0,0"
-                                                   Text="Share uploads the clip and copies the link. By default the link is the raw video file (plays inline in Discord, no embed card) unless you turn on custom embeds on copium.pics. Free uploads are limited to 200 MB and 10 min; the Copium size target under Capture keeps clips under that." />
+                                                   Text="Share uploads the clip and copies the link. By default the link is the raw video file (plays inline in Discord, no embed card) unless you turn on custom embeds on copium.pics. Copium free uploads are limited to 200 MB and 10 min, Copium Plus to 2 GB and 60 min; the size targets under Capture keep clips under those. Without a token, Share opens a window you can drag the clip from (into Discord, a browser or a folder)." />
                                     </StackPanel>
                                 </Border>
 

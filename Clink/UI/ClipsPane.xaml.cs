@@ -13,7 +13,7 @@ using Clink.Services;
 namespace Clink.UI;
 
 /// <summary>
-/// The clips pane (docs/SPEC-v2.md §1): Local (every local file, with shared / trim / local-only / archived icons), Cloud
+/// The clips pane (docs/SPEC-v2.md §1): Local (every local file, with shared / trim / local-only / archived icons), Shared
 /// (everything shared, listed by link even after the local file is gone) and Trimmed (local files made by the trim editor).
 /// Rows come from <see cref="AppController.Library"/>; thumbnails and file checks run on a worker so an offline archive never
 /// stalls the window. Share works here; Trim asks the window (<see cref="TrimRequested"/>) so the editor gets the right owner.
@@ -23,7 +23,7 @@ public partial class ClipsPane : UserControl
     /// <summary>An archive folder that did not answer is not asked again for this long (each try can block for the SMB timeout).</summary>
     private static readonly TimeSpan OfflineRetry = TimeSpan.FromSeconds(30);
 
-    private readonly ObservableCollection<ClipRow> _local = new(), _cloud = new(), _trim = new();
+    private readonly ObservableCollection<ClipRow> _local = new(), _shared = new(), _trim = new();
     private readonly Dictionary<ClipEntry, ClipRow> _rows = new(ReferenceEqualityComparer.Instance);
     private readonly ConcurrentDictionary<string, DateTime> _offlineDirs = new(StringComparer.OrdinalIgnoreCase);
     private int _refreshGen;
@@ -32,7 +32,7 @@ public partial class ClipsPane : UserControl
     {
         InitializeComponent();
         LocalList.ItemsSource = _local;
-        CloudList.ItemsSource = _cloud;
+        SharedList.ItemsSource = _shared;
         TrimList.ItemsSource = _trim;
         // Shown (window back from the tray, Clips tab opened, layout switched): re-read, so files deleted meanwhile drop out and an
         // archive that is back gets looked at again. Hidden: the thumbnail worker stops; nothing is extracted while a game runs.
@@ -55,7 +55,7 @@ public partial class ClipsPane : UserControl
         var entries = App.Library.Entries;
         var keep = new HashSet<ClipEntry>(ReferenceEqualityComparer.Instance);
         var local = new List<ClipRow>();
-        var cloud = new List<ClipRow>();
+        var shared = new List<ClipRow>();
         var trim = new List<ClipRow>();
         foreach (var e in entries)
         {
@@ -70,20 +70,20 @@ public partial class ClipsPane : UserControl
             bool hasFile = e.IsArchived ? !row.DeletedFromArchive : exists;
             if (hasFile) local.Add(row);
             if (hasFile && e.IsTrim) trim.Add(row);
-            if (e.IsShared) cloud.Add(row);
+            if (e.IsShared) shared.Add(row);
         }
         foreach (var gone in _rows.Keys.Where(k => !keep.Contains(k)).ToList()) _rows.Remove(gone);
         Replace(_local, local);
-        Replace(_cloud, cloud);
+        Replace(_shared, shared);
         Replace(_trim, trim);
         NoLocalText.Visibility = _local.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        NoCloudText.Visibility = _cloud.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        NoSharedText.Visibility = _shared.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         NoTrimText.Visibility = _trim.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         LocalTab.Header = _local.Count > 0 ? $"Local ({_local.Count})" : "Local";
-        CloudTab.Header = _cloud.Count > 0 ? $"Cloud ({_cloud.Count})" : "Cloud";
+        SharedTab.Header = _shared.Count > 0 ? $"Shared ({_shared.Count})" : "Shared";
         TrimTab.Header = _trim.Count > 0 ? $"Trimmed ({_trim.Count})" : "Trimmed";
         // Only listed rows, in list order (newest first), and only while the pane is on screen (IsVisibleChanged refreshes on show).
-        if (IsVisible) LoadThumbnails(_local.Concat(_cloud).Concat(_trim).Distinct().Where(r => !r.Checked).ToList());
+        if (IsVisible) LoadThumbnails(_local.Concat(_shared).Concat(_trim).Distinct().Where(r => !r.Checked).ToList());
     }
 
     /// <summary>
@@ -193,7 +193,7 @@ public partial class ClipsPane : UserControl
         if (row.DeletedFromArchive && !e.IsShared && ReferenceEquals(App.Library.Find(path), e))
         {
             // The archive answered and the file is not in it (deleted on the NAS): drop it from the index, the rule Load applies to
-            // a deleted local file. A shared one stays: the Cloud tab lists it by its link.
+            // a deleted local file. A shared one stays: the Shared tab lists it by its link.
             Log.Info($"clips: {path} is no longer in the archive, removed from the library");
             App.Library.Remove(e);
             return false;
@@ -249,7 +249,7 @@ public partial class ClipsPane : UserControl
         {
             row.SetProblem(ClipRow.LocalDeleted);
             App.Say(e.FileName + " is gone (deleted or moved outside Clink)");
-            Refresh();   // leaves Local / Trimmed (a shared clip stays in Cloud, marked "local file deleted")
+            Refresh();   // leaves Local / Trimmed (a shared clip stays in Shared, marked "local file deleted")
         }
         return false;
     }
@@ -296,16 +296,21 @@ public partial class ClipsPane : UserControl
         var progress = new Progress<double>(p => { row.Progress = p; row.Status = $"Uploading… {p:P0}"; });
         bool ok = await App.ShareAsync(row.Entry, progress);
         row.IsUploading = false;
-        // Refused by Copium's free limits, no token yet (nothing was tried), or failed and why (Copium's answer, the network);
-        // the tooltip has all of it.
+        if (!ok && App.LastShareOutcome == ShareOutcome.FileShareOpened)
+        {
+            // No Copium token: the share window opened with this clip's file to drag. Nothing failed, so no status line (not amber).
+            row.Status = null;
+            row.IsProblem = false;
+            return;
+        }
+        // Refused by Copium's limits, or failed and why (Copium's answer, the network); the tooltip has all of it.
         row.Status = ok ? "Link copied to clipboard"
-            : App.ShareRefusal ?? (string.IsNullOrWhiteSpace(App.Settings.CopiumToken) ? "Add your Copium token first (Clip tab)"
-                : App.ShareError is string why ? "Upload failed: " + why : "Upload failed");
+            : App.ShareRefusal ?? (App.ShareError is string why ? "Upload failed: " + why : "Upload failed");
         row.IsProblem = !ok;
         row.Refresh();
         if (ok)
         {
-            Refresh();   // the entry is now shared: it joins the Cloud tab and gets the cloud icon
+            Refresh();   // the entry is now shared: it joins the Shared tab and gets the cloud icon
             _ = Task.Delay(4000).ContinueWith(_ => Dispatcher.BeginInvoke(() => { if (row.Status?.StartsWith("Link") == true) row.Status = null; }));
         }
     }
@@ -368,7 +373,7 @@ public partial class ClipsPane : UserControl
     }
 }
 
-/// <summary>One library entry as a row in the clips lists (shared by the Local, Cloud and Trimmed tabs).</summary>
+/// <summary>One library entry as a row in the clips lists (shared by the Local, Shared and Trimmed tabs).</summary>
 internal sealed class ClipRow : INotifyPropertyChanged
 {
     // Status lines about the file itself (cleared once the file is there again; an upload status is left alone).
@@ -393,7 +398,7 @@ internal sealed class ClipRow : INotifyPropertyChanged
             return $"{Entry.Created:MMM d, HH:mm} · {dur}{Capabilities.FormatBytes(Entry.Size)}";
         }
     }
-    /// <summary>Cloud tab: date, size and where the local copy is (or that it is gone).</summary>
+    /// <summary>Shared tab: date, size and where the local copy is (or that it is gone).</summary>
     public string CloudMeta
     {
         get
