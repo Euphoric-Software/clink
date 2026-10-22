@@ -48,8 +48,21 @@ internal sealed class ClipLibrary
     /// <summary>Where the index lives; set by test harnesses so they never touch the real clips.json.</summary>
     internal static string? IndexPathOverride { get; set; }
     private static readonly JsonSerializerOptions s_json = new() { WriteIndented = true };
+    private bool _savesFrozen;
 
     public event Action? Changed;
+
+    /// <summary>
+    /// From now on this library writes nothing to the index (the entries still change in memory). Waits for a write that is
+    /// under way first, so when it returns clips.json will not be written by this process again: a restart that has just merged
+    /// another copy's clips into it (<c>SettingsImport</c>) is not undone by a clip saved, shared or archived a moment later.
+    /// </summary>
+    public void FreezeSaves() { lock (_gate) _savesFrozen = true; }
+
+    /// <summary>Undoes <see cref="FreezeSaves"/> (a restart that did not happen).</summary>
+    public void ThawSaves() { lock (_gate) _savesFrozen = false; }
+
+    internal bool SavesFrozen { get { lock (_gate) return _savesFrozen; } }
 
     public void Load(string clipsFolder)
     {
@@ -153,6 +166,7 @@ internal sealed class ClipLibrary
 
     private void SaveLocked()
     {
+        if (_savesFrozen) return;
         try
         {
             Directory.CreateDirectory(System.IO.Path.GetDirectoryName(IndexPath) ?? Settings.Dir);

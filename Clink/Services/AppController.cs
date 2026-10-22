@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.IO.Pipes;
 using System.Windows;
@@ -177,11 +178,67 @@ internal sealed class AppController : IDisposable
         : args.Any(a => a.Equals("--share-last", StringComparison.OrdinalIgnoreCase)) ? "share"
         : null;
 
-    /// <summary>Gives up the single-instance mutex so a replacement process can start (used when handing over to an update).</summary>
+    /// <summary>
+    /// Gives up the single-instance mutex so a replacement process can take it (a restart, an update, or this process on its way
+    /// out): released first, then closed. A mutex that is only closed stays owned by the thread that took it until that thread ends,
+    /// and a process waiting for it would find it abandoned, or wait for nothing.
+    /// </summary>
     public static void ReleaseSingleInstance()
     {
-        try { s_mutex?.Dispose(); } catch { }
+        var mutex = s_mutex;
         s_mutex = null;
+        if (mutex == null) return;
+        try { mutex.ReleaseMutex(); } catch (Exception) { }   // not ours to release (another thread owns it, an elevated Clink holds the real one)
+        try { mutex.Dispose(); } catch (Exception) { }
+    }
+
+    // ------------------------------------------------------------------ a Clink that restarts itself
+
+    private const string AfterPidSwitch = "--after-pid";
+
+    /// <summary>The pid after the hidden <c>--after-pid</c> switch: the Clink that started this one by restarting itself. Null when there is none, or it is not a number.</summary>
+    internal static int? AfterPid(IEnumerable<string> args)
+    {
+        var list = args.ToList();
+        for (int i = 0; i + 1 < list.Count; i++)
+            if (list[i].Equals(AfterPidSwitch, StringComparison.OrdinalIgnoreCase))
+                return int.TryParse(list[i + 1], NumberStyles.None, CultureInfo.InvariantCulture, out int pid) && pid > 0 ? pid : null;
+        return null;
+    }
+
+    /// <summary>
+    /// Waits up to <paramref name="limit"/> for process <paramref name="pid"/> to be gone. True when it is (or never was there, or is
+    /// this process, or cannot be waited for: do not hold the start up for that), false when it was still running at the end.
+    /// A restarted Clink does this before it takes the mutex and opens the log, so it never runs next to the one it replaces,
+    /// which may still be writing the files the restart changed. Never throws.
+    /// </summary>
+    internal static bool WaitForExit(int pid, TimeSpan limit)
+    {
+        if (pid == Environment.ProcessId) return true;
+        try
+        {
+            using var process = Process.GetProcessById(pid);
+            return process.WaitForExit(limit);
+        }
+        catch (Exception) { return true; }   // no such process any more, or no right to wait for it
+    }
+
+    /// <summary>The hidden switch a restart gives the new Clink: wait for this process to be gone first (see <see cref="WaitForExit"/>).</summary>
+    internal static string[] AfterPidArguments() => new[] { AfterPidSwitch, Environment.ProcessId.ToString(CultureInfo.InvariantCulture) };
+
+    /// <summary>The command line without any <c>--after-pid &lt;pid&gt;</c>: a restart of a restarted Clink waits for itself, not for the one before.</summary>
+    private static IEnumerable<string> WithoutAfterPid(IEnumerable<string> args)
+    {
+        var list = args.ToList();
+        for (int i = 0; i < list.Count; i++)
+        {
+            if (list[i].Equals(AfterPidSwitch, StringComparison.OrdinalIgnoreCase))
+            {
+                if (i + 1 < list.Count && int.TryParse(list[i + 1], NumberStyles.None, CultureInfo.InvariantCulture, out _)) i++;
+                continue;
+            }
+            yield return list[i];
+        }
     }
 
     public static void SendCommand(string cmd)
@@ -245,11 +302,21 @@ internal sealed class AppController : IDisposable
 
     // ------------------------------------------------------------------ lifecycle
 
+    /// <summary>
+    /// A --dev instance does not record unless asked to (--dev-record): it would capture, encode and put toasts over the game the
+    /// person running the test is playing. Paused is a state the tray, the window and the hotkeys already know how to leave. The
+    /// first thing <see cref="Start"/> does, before anything is hooked, drawn or started.
+    /// </summary>
+    internal void ApplyStartPause()
+    {
+        if (!StartsPaused) return;
+        IsPaused = true;
+        Log.Info("dev: paused, nothing is recorded (--dev-record records)");
+    }
+
     public void Start()
     {
-        // A --dev instance does not record unless asked to (--dev-record): it would capture, encode and put toasts over the game the
-        // person running the test is playing. Paused is a state the tray, the window and the hotkeys already know how to leave.
-        if (StartsPaused) { IsPaused = true; Log.Info("dev: paused, nothing is recorded (--dev-record records)"); }
+        ApplyStartPause();
         Monitors = Native.Monitors.Enumerate();
         Library.Load(Settings.ClipsFolder);
         MigrateHotkeys();
@@ -281,6 +348,9 @@ internal sealed class AppController : IDisposable
         // worth offering (the tray item, below).
         if (AppDataRedirect.Notice is string redirected) Say(redirected);
         if (Settings.ImportedFrom is { } taken) Say($"Imported the settings Clink saved while started from inside {taken.FriendlyName} ({taken.SavedLocalText})");
+        // Settings were imported (now, or by the Clink that restarted into this one) but the clip lists could not be merged: said once,
+        // and every later start tries the merge again.
+        if (SettingsImport.TakeClipsNotice() is string clipsNotice) { Say(clipsNotice); ShowBalloon("Clink", clipsNotice); }
         SettingsImport.PendingChanged += OnImportPending;
         if (CanOfferImport) _ = SettingsImport.Scan(Settings);
         RaiseStateChanged();
@@ -289,10 +359,9 @@ internal sealed class AppController : IDisposable
     /// <summary>
     /// Another copy's settings are looked for by a real Clink with settings of its own (a fresh one has already taken the newest copy
     /// over) that is not itself inside a packaged app; a <c>--dev</c> instance looks only where <c>--packages-root</c> says, so a
-    /// test never offers (or accepts) the settings of the person whose machine it runs on.
+    /// test never offers (or accepts) the settings of the person whose machine it runs on (<see cref="SettingsImport.CanOffer"/>).
     /// </summary>
-    private bool CanOfferImport =>
-        AppDataRedirect.Package == null && Settings.LoadedFromFile && Settings.ImportedFrom == null && (!IsDev || SettingsImport.PackagesRoot != null);
+    internal bool CanOfferImport => SettingsImport.CanOffer(Settings, IsDev);
 
     /// <summary>Once a second on the UI thread: game detection, the game-only start/stop rules, and a StateChanged for the stats line.</summary>
     private void Tick()
@@ -314,7 +383,7 @@ internal sealed class AppController : IDisposable
         // after a start that stopped without an error, 30 s / 30 s / 1 min / 2 min while starts keep failing; after a GPU reset
         // (driver crash / TDR, Engine.DeviceLost) a third of that, so recording resumes on a fresh device as soon as the driver
         // is back. StartEngine raises one notice per failure streak (NotifyProblem).
-        bool wanted = !IsPaused && (!GameOnly || _gamePid != 0);
+        bool wanted = !IsPaused && !_restarting && (!GameOnly || _gamePid != 0);
         int failedWait = Engine.DeviceLost ? 10 : 30;
         var backoff = TimeSpan.FromSeconds(Engine.Error == null ? 10 : failedWait << Math.Clamp(_startFailures - 1, 0, 2));
         if (wanted && !Engine.IsRunning && !_starting && now - _lastStartAt > backoff)
@@ -440,10 +509,9 @@ internal sealed class AppController : IDisposable
         try
         {
             Log.Info($"update: installing v{Updater.PendingVersion} from {pending}");
-            // Come back the way we are now: visible if the window is open, otherwise in the tray (and as the same --dev instance, if it is one).
-            var comeBackAs = new List<string> { MainWindowVisible ? "--show" : "--minimized" };
-            comeBackAs.AddRange(DevSwitches());
-            Updater.LaunchApply(pending, Environment.ProcessPath!, comeBackAs);
+            // Come back the way we are now: visible if the window is open, otherwise in the tray (and as the same --dev instance, if
+            // it is one), and only once this process is gone.
+            Updater.LaunchApply(pending, Environment.ProcessPath!, UpdateRestartArguments(MainWindowVisible));
         }
         catch (Exception ex)
         {
@@ -452,6 +520,18 @@ internal sealed class AppController : IDisposable
             return;
         }
         Quit();
+    }
+
+    /// <summary>
+    /// What the Clink an update installs is started with: the window shown or in the tray as it is now, the same --dev instance if
+    /// this is one, and <c>--after-pid</c> with this process, so it takes the mutex and the log only once this one has ended.
+    /// </summary>
+    internal static List<string> UpdateRestartArguments(bool windowVisible)
+    {
+        var args = new List<string> { windowVisible ? "--show" : "--minimized" };
+        args.AddRange(DevSwitches());
+        args.AddRange(AfterPidArguments());
+        return args;
     }
 
     // ------------------------------------------------------------------ settings saved by another copy of Clink
@@ -488,11 +568,11 @@ internal sealed class AppController : IDisposable
     private void AskToImport()
     {
         var copy = SettingsImport.Pending;
-        if (copy == null) return;
+        if (copy == null || _importInProgress) return;
         string what = copy.Differences.Count > 0 ? string.Join(", ", copy.Differences) : "a few settings";
         string text = $"Clink also has settings saved {copy.SavedLocalText} by a copy of Clink that was started from inside {copy.FriendlyName}.\n\n"
             + $"They differ from yours in: {what}.\n\n"
-            + "Import them? Your current settings are kept as settings.pre-import.json, and Clink restarts.\n\n"
+            + "Import them? Your current settings are kept as settings.pre-import.json (or the next free settings.pre-import.N.json), and Clink restarts.\n\n"
             + "Yes: import and restart.\nNo: keep mine and stop asking about this copy.\nCancel: decide later.";
         var owner = System.Windows.Application.Current?.MainWindow is { IsVisible: true } w ? w : null;
         var answer = owner != null
@@ -502,67 +582,145 @@ internal sealed class AppController : IDisposable
         else if (answer == MessageBoxResult.No) SettingsImport.Decline(Settings, copy);
     }
 
+    private static readonly TimeSpan RecorderStopLimit = TimeSpan.FromSeconds(10);   // how long a restart waits for a recorder that is in the middle of starting
+
+    private bool _importInProgress;   // an import has begun and has not failed: a second one is refused, the tray item is off
+    private bool _restarting;         // a restart is under way: no clip is saved and the recorder is not started again
+
+    /// <summary>An import is under way (it ends with this process, or with a message saying why not): the tray item is off and a second import is refused.</summary>
+    internal bool ImportInProgress => _importInProgress;
+
+    /// <summary>Starts the process a restart hands over to. The unit tests replace it with one that starts nothing.</summary>
+    internal Action<ProcessStartInfo> StartProcess { get; set; } = psi => Process.Start(psi)?.Dispose();
+
+    /// <summary>What ends this process once its replacement is running (null: <see cref="Quit"/>). The unit tests replace it.</summary>
+    internal Action? ExitForRestart { get; set; }
+
+    /// <summary>The command line this process was started with, as a restart starts the next one from it (null: the real one). The unit tests replace it.</summary>
+    internal IReadOnlyList<string>? CommandLine { get; set; }
+
     /// <summary>
     /// Takes over the settings (and the clip links) another copy of Clink saved in a packaged app's private AppData and restarts
-    /// Clink to use them. Saves are frozen first, so no save that is still pending (the window's timer, the updater) can put the
-    /// old settings back; what is replaced is kept as settings.pre-import.json. If the import fails nothing is changed and Clink
-    /// carries on. UI thread (any other is marshalled).
+    /// Clink to use them. In this order: a second import is refused from now on; saving a clip and starting the recorder are off;
+    /// settings and clip index saves are frozen, so nothing this process still has pending (the window's timer, the updater, a clip
+    /// being saved or shared) can put the old files back; the recorder and the archive are stopped; the import is made
+    /// (<see cref="SettingsImport.Import"/>; what it replaces is kept beside it); and only then the new Clink is started, which waits
+    /// for this process to be gone (<see cref="RestartClink"/>). If the import fails nothing is changed and Clink carries on. If the
+    /// new Clink cannot be started either, saves are thawed and the recorder and archive go on, and the settings this Clink is running
+    /// with are written back over the imported ones (so what is saved is what runs, not a trap for the next save) and the import is
+    /// offered again; the user is told. UI thread (any other is marshalled).
     /// </summary>
     public void ImportForeignSettings(ForeignSettings copy)
     {
         if (!_ui.CheckAccess()) { _ui.BeginInvoke(() => ImportForeignSettings(copy)); return; }
-        Settings.FreezeSaves();
+        if (_importInProgress)
+        {
+            Log.Info("import: one is under way already: this request is refused");
+            Say("An import is already under way");
+            return;
+        }
+        _importInProgress = true;
+        if (_importItem != null) _importItem.Enabled = false;
+        bool wasRecording = Engine.IsRunning;
+        ImportResult result;
         try
         {
-            Archive.Stop();   // it updates the clip index as it moves clips: nothing may write that file while it is merged
-            SettingsImport.Import(copy);
+            StopForRestart();
+            result = SettingsImport.Import(copy);
         }
         catch (Exception ex)
         {
-            Settings.ThawSaves();
-            try { Archive.Start(); } catch { }
             Log.Error("import: failed", ex);
-            Say("Could not import those settings: " + ex.Message);
+            ContinueAfterFailedRestart(wasRecording);
+            string why = "Could not import those settings: " + ex.Message;
+            Say(why);
+            ShowBalloon("Clink", why);
             return;
         }
-        Say($"Imported the settings saved {copy.SavedLocalText}: restarting Clink");
-        RestartClink();
+        Say(result.ClipsNotice ?? $"Imported the settings saved {copy.SavedLocalText}: restarting Clink");
+        if (RestartClink(out string? error)) return;
+
+        ContinueAfterFailedRestart(wasRecording);
+        SettingsImport.ForgetPendingClipMerge();
+        Settings.Save();
+        SettingsImport.Offer(copy);   // at once: whoever called (the App tab's banner) looks at Pending as soon as this returns
+        string text = $"Clink could not restart itself ({error}), so the import was not applied: your settings are as they were";
+        Say(text);
+        ShowBalloon("Clink", text);
     }
 
     /// <summary>
-    /// Starts Clink again (<c>--show</c> and the same options, so a <c>--dev</c> instance comes back as that instance) and quits this
-    /// one. The single-instance mutex is given up first so the new process can take it. If the new one cannot be started this one
-    /// takes the mutex back and carries on (with saves still frozen when an import has happened: restart by hand).
+    /// Everything a restart must not have going on behind it: no clip is saved and the recorder is not started again (until
+    /// <see cref="ContinueAfterFailedRestart"/>), settings and clip index saves are frozen, the recorder is stopped, and so is the
+    /// archive (it moves clips and updates the index). A clip that is being saved at this moment keeps its file, which the next start
+    /// finds in the clips folder, but its index entry is not written. Nothing here throws.
     /// </summary>
-    internal void RestartClink()
+    private void StopForRestart()
     {
+        _restarting = true;
+        Settings.FreezeSaves();
+        Library.FreezeSaves();
+        Interlocked.Increment(ref _startGen);   // a recorder start that has not begun is cancelled
+        _starting = false;
         try
         {
-            ReleaseSingleInstance();
-            var psi = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = false };
-            foreach (string a in RestartArguments(Environment.GetCommandLineArgs().Skip(1))) psi.ArgumentList.Add(a);
-            Process.Start(psi)?.Dispose();
+            if (_engineGate.Wait(RecorderStopLimit)) { try { Engine.Stop(); } finally { _engineGate.Release(); } }
+            else Log.Warn("restart: the recorder was still starting; it is left to the shutdown");
         }
+        catch (Exception ex) { Log.Warn("restart: could not stop the recorder: " + ex.Message); }
+        try { Archive.Stop(); } catch (Exception ex) { Log.Warn("restart: could not stop the archive: " + ex.Message); }
+    }
+
+    /// <summary>The restart did not happen: saves are thawed, the archive runs again, the recorder too if it was recording, the tray item is back.</summary>
+    private void ContinueAfterFailedRestart(bool restartRecorder)
+    {
+        Settings.ThawSaves();
+        Library.ThawSaves();
+        _restarting = false;
+        try { Archive.Start(); } catch (Exception ex) { Log.Warn("restart: could not start the archive again: " + ex.Message); }
+        if (restartRecorder) StartEngine();
+        _importInProgress = false;
+        if (_importItem != null) _importItem.Enabled = true;
+        RaiseStateChanged();
+    }
+
+    /// <summary>
+    /// Starts Clink again (<c>--show</c> and the same options, so a <c>--dev</c> instance comes back as that instance, and
+    /// <c>--after-pid</c> with this process) and ends this one. The new Clink waits for this process to be gone (at most 10 s) before it
+    /// takes the single-instance mutex or opens the log, so the two never run side by side; this one gives the mutex up as soon as the
+    /// new one is started, so that if this process hangs on the way out the new Clink still gets it when its wait is over. False, and
+    /// <paramref name="error"/> says why, when the new process could not be started: nothing has been given up then.
+    /// </summary>
+    internal bool RestartClink(out string? error)
+    {
+        error = null;
+        var psi = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = false };
+        foreach (string a in RestartArguments(CommandLine ?? Environment.GetCommandLineArgs().Skip(1))) psi.ArgumentList.Add(a);
+        foreach (string a in AfterPidArguments()) psi.ArgumentList.Add(a);
+        try { StartProcess(psi); }
         catch (Exception ex)
         {
             Log.Error("restart: could not start Clink again", ex);
-            try { s_mutex = new Mutex(true, MutexName, out _); } catch { }
-            Say("Clink could not restart itself (" + ex.Message + "): quit and start it again to use the imported settings");
-            return;
+            error = ex.Message;
+            return false;
         }
-        Quit();
+        Log.Info("restart: the new Clink is started (" + string.Join(' ', psi.ArgumentList) + "); this one ends");
+        ReleaseSingleInstance();
+        (ExitForRestart ?? Quit)();
+        return true;
     }
 
     /// <summary>
-    /// The command line of the restarted Clink: this one's, without what only makes sense once (a command, --minimized, --no-update),
-    /// with <c>--show</c>; and, for a <c>--dev</c> instance, its dev switches written out the same way every time (<see cref="DevSwitches"/>,
-    /// whichever form it was started with, without the one-start <c>--dev-accept-import</c>). A restart that lost <c>--dev</c> would be a
-    /// normal start: it takes the real Clink's mutex, or forwards a command to it.
+    /// The command line of the restarted Clink: this one's, without what only makes sense once (a command, --minimized, --no-update,
+    /// the <c>--after-pid</c> this one was given), with <c>--show</c>; and, for a <c>--dev</c> instance, its dev switches written out
+    /// the same way every time (<see cref="DevSwitches"/>, whichever form it was started with, without the one-start
+    /// <c>--dev-accept-import</c>). A restart that lost <c>--dev</c> would be a normal start: it takes the real Clink's mutex, or
+    /// forwards a command to it. <see cref="RestartClink"/> adds its own <c>--after-pid</c>.
     /// </summary>
     internal static List<string> RestartArguments(IEnumerable<string> args)
     {
         var once = new[] { "--clip", "--trim-last", "--share-last", "--minimized", "--no-update" };
-        var kept = DevOptions.WithoutSwitches(args).Where(a => !once.Contains(a, StringComparer.OrdinalIgnoreCase)).ToList();
+        var kept = WithoutAfterPid(DevOptions.WithoutSwitches(args)).Where(a => !once.Contains(a, StringComparer.OrdinalIgnoreCase)).ToList();
         if (!kept.Contains("--show", StringComparer.OrdinalIgnoreCase)) kept.Add("--show");
         kept.AddRange(DevSwitches());
         return kept;
@@ -644,7 +802,7 @@ internal sealed class AppController : IDisposable
     /// </summary>
     public void StartEngine()
     {
-        if (IsPaused) return;
+        if (IsPaused || _restarting) return;   // a restart is under way: the recorder was stopped for it and stays stopped
         if (GameOnly && _gamePid == 0)
         {
             if (Engine.IsRunning) StopEngine();
@@ -819,11 +977,12 @@ internal sealed class AppController : IDisposable
     /// <param name="seconds">Replay length to save; null = the replay-length slider (<see cref="Settings.BufferSeconds"/>).</param>
     public async void ClipNow(int? seconds = null)
     {
-        if (!Engine.IsRunning)
+        if (_restarting || !Engine.IsRunning)
         {
             bool waiting = !IsPaused && GameOnly && _gamePid == 0;
             // A recorder that failed to start says why: "yet" would promise a start that may never come.
-            string why = IsPaused ? "Recording is paused"
+            string why = _restarting ? "Clink is restarting"
+                : IsPaused ? "Recording is paused"
                 : waiting ? "Not recording: waiting for a game"
                 : Engine.Error is string err && !_starting ? "Recording failed: " + err
                 : "Not recording yet";

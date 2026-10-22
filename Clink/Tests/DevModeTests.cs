@@ -74,7 +74,7 @@ internal static class DevModeTests
         Check.Contains(Problem("--dev=" + real), "real");
         Check.Contains(Problem("--dev", real.ToUpperInvariant() + @"\"), "real");
         Check.Contains(Problem("--dev", real.Replace('\\', '/')), "real");
-        Check.Contains(Problem("--dev", Path.Combine(real, "..", "Clink")), "real", "spelled another way");
+        Check.Contains(Problem("--dev", Path.Combine(real, "..", Path.GetFileName(real))), "real", "spelled another way");
         // beside it, or inside it, is a folder of its own
         Check.Equal(real + "-dev", DevOptions.Parse(new[] { "--dev", real + "-dev" })!.Folder);
         Check.Equal(Path.Combine(real, "dev"), DevOptions.Parse(new[] { "--dev", Path.Combine(real, "dev") })!.Folder);
@@ -383,6 +383,7 @@ internal static class DevModeTests
         ClipLibrary.IndexPathOverride = @"C:\leftover\clips.json";
         Updater.UpdatesDirOverride = @"C:\leftover\updates";
         SettingsImport.PackagesRoot = @"C:\leftover\Packages";
+        Settings.RealDirOverride = @"C:\leftover\RealClink";
         Settings.FreezeSaves();
     }
 
@@ -395,7 +396,23 @@ internal static class DevModeTests
         Check.False(Settings.DirOverride!.Contains("leftover"));
         Check.False(ClipLibrary.IndexPathOverride!.Contains("leftover"));
         Check.False(Updater.UpdatesDirOverride!.Contains("leftover"));
-        Check.Null(SettingsImport.PackagesRoot);
+        Check.False(SettingsImport.PackagesRoot!.Contains("leftover"));
         Check.False(Settings.SavesFrozen);
+        Check.False(Settings.RealDir.Contains("leftover"));
+    }
+
+    [UnitTest]
+    public static void The_runner_points_the_other_apps_packages_and_the_real_Clink_at_scratch_folders()
+    {
+        // A test that forgets to set a packages root cannot read the packages of whoever runs it, nor the real settings.json.
+        string temp = Path.Combine(Path.GetTempPath(), "clink-unittest");
+        string realPackages = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Packages");
+        Check.NotNull(SettingsImport.PackagesRoot);
+        Check.True(SettingsImport.PackagesRoot!.StartsWith(temp, StringComparison.OrdinalIgnoreCase), SettingsImport.PackagesRoot);
+        Check.NotEqual(realPackages, SettingsImport.PackagesRoot);
+        Check.Equal(0, SettingsImport.FindForeignCopies().Count, "nothing is there");
+        Check.NotNull(Settings.RealDirOverride);
+        Check.True(Settings.RealDir.StartsWith(temp, StringComparison.OrdinalIgnoreCase), Settings.RealDir);
+        Check.NotEqual(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Clink"), Settings.RealDir);
     }
 }
