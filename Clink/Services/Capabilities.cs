@@ -20,6 +20,13 @@ internal sealed record CodecInfo(string Id, string Name, string Description, boo
     public bool Experimental => Id == "av1";
 }
 
+/// <summary>One size target for the Capture tab's combo: a limit a clip is made to fit (a Discord upload size, a Copium account).</summary>
+/// <param name="Id">The Settings.SizeTarget value: "none" | "discord10" | "discord50" | "copium200" | "discord500" | "copiumplus".</param>
+/// <param name="Name">What the combo shows ("Copium (200 MB, 10 min)").</param>
+/// <param name="Bytes">The size limit in bytes (decimal units, like the services' own), 0 = no limit.</param>
+/// <param name="MaxSeconds">The longest clip the service takes, 0 = no length limit.</param>
+internal sealed record SizeTargetInfo(string Id, string Name, long Bytes, int MaxSeconds);
+
 /// <summary>
 /// What this machine can do (hardware encoders, RAM) and the size arithmetic the Capture tab shows: per-minute / per-clip
 /// estimates, Copium / Discord size targets, ring-buffer RAM. Codecs are probed once, lazily, through MFTEnumEx.
@@ -35,8 +42,15 @@ internal static unsafe class Capabilities
     /// </summary>
     public const long CopiumFreeBytes = 200_000_000;
     public const int CopiumFreeSeconds = 600;
+    /// <summary>Copium Plus's limits per upload (the "copiumplus" size target): 2 GB and 60 minutes, decimal like the free ones.</summary>
+    public const long CopiumPlusBytes = 2_000_000_000;
+    public const int CopiumPlusSeconds = 3600;
     /// <summary>Appended to the size-target note when the replay length is 10 min or more (a full 10:00 clip runs a moment over); the UI shows it in Warn colour.</summary>
     public const string CopiumLengthNote = " - Copium free uploads are limited to 10 min: trim a full-length clip before sharing it, or shorten the replay length";
+    /// <summary>The same for the Copium Plus target, from a replay length of 60 min up.</summary>
+    public const string CopiumPlusLengthNote = " - Copium Plus uploads are limited to 60 min: trim a full-length clip before sharing it, or shorten the replay length";
+    // What every length note has in common, and so what IsWarningNote looks for besides "does not fit".
+    private const string LengthLimitMarker = " uploads are limited to ";
     /// <summary>Each enabled audio track is AAC at this rate.</summary>
     public const int AudioKbps = 192;
     /// <summary>Bitrate range a size target may pick (the engine runs anything ≥ 0.1 Mbps; below 0.5 the picture is unusable).</summary>
@@ -252,57 +266,98 @@ internal static unsafe class Capabilities
     /// <summary>The most the ring may take (half of physical RAM); the engine clamps to this and the UI warns above it.</summary>
     public static long MaxRingBytes() => RingStore.MaxBytes();
 
-    /// <summary>Byte limit of a size target, or 0 for "none" / unknown. Copium and Discord limits are decimal MB (10 MB = 10 000 000 bytes), the safe reading.</summary>
-    public static long SizeTargetBytes(string? target) => (target ?? "").Trim().ToLowerInvariant() switch
+    // The size targets in the order the combo lists them. Copium and Discord limits are decimal MB (10 MB = 10 000 000 bytes), the safe reading.
+    private static readonly SizeTargetInfo[] s_sizeTargets =
     {
-        "copium200" => CopiumFreeBytes,
-        "discord10" => 10_000_000,
-        "discord50" => 50_000_000,
-        "discord500" => 500_000_000,
-        _ => 0,
+        new("none", "None", 0, 0),
+        new("discord10", "Discord (10 MB)", 10_000_000, 0),
+        new("discord50", "Discord Nitro Basic (50 MB)", 50_000_000, 0),
+        new("copium200", "Copium (200 MB, 10 min)", CopiumFreeBytes, CopiumFreeSeconds),   // the id stays: settings files and older versions know it
+        new("discord500", "Discord Nitro (500 MB)", 500_000_000, 0),
+        new("copiumplus", "Copium Plus (2 GB, 60 min)", CopiumPlusBytes, CopiumPlusSeconds),
     };
 
-    public static string SizeTargetName(string? target) => (target ?? "").Trim().ToLowerInvariant() switch
-    {
-        "copium200" => "Copium (200 MB, 10 min)",
-        "discord10" => "Discord (10 MB)",
-        "discord50" => "Discord Nitro Basic (50 MB)",
-        "discord500" => "Discord Nitro (500 MB)",
-        _ => "None",
-    };
+    /// <summary>Every size target, in the order the Capture tab's combo shows them (the first one is "none").</summary>
+    public static IReadOnlyList<SizeTargetInfo> SizeTargets => s_sizeTargets;
 
-    /// <summary>The "copium200" target: the only one that also limits the clip length (10 min).</summary>
-    public static bool IsCopiumTarget(string? target) => string.Equals((target ?? "").Trim(), "copium200", StringComparison.OrdinalIgnoreCase);
+    /// <summary>The size target with this id (any case, surrounding spaces ignored); null or an unknown id is "none", like an unreadable setting always was.</summary>
+    public static SizeTargetInfo SizeTargetFor(string? id)
+    {
+        string key = (id ?? "").Trim();
+        foreach (var t in s_sizeTargets)
+            if (string.Equals(t.Id, key, StringComparison.OrdinalIgnoreCase)) return t;
+        return s_sizeTargets[0];
+    }
+
+    /// <summary>Byte limit of a size target, or 0 for "none" / unknown.</summary>
+    public static long SizeTargetBytes(string? target) => SizeTargetFor(target).Bytes;
+
+    public static string SizeTargetName(string? target) => SizeTargetFor(target).Name;
 
     /// <summary>
-    /// The clip length a size target makes fit: the replay length, except that the Copium target never fits more than its
-    /// 10 min, because a longer clip cannot be uploaded at any bitrate (it has to be trimmed to 10 min first, and that trim is
-    /// what must fit the 200 MB); fitting the whole replay would only throttle every clip, the short hotkey ones included.
+    /// What Copium accepts per upload: <c>Bytes</c> and <c>Seconds</c>, and a <c>Label</c> that completes "Over …" in a refusal:
+    /// "Copium's free limit (200 MB / 10 min)" without Copium+, "Copium Plus's limit (2 GB / 60 min)" with it.
     /// </summary>
-    public static int FitSeconds(string? target, int seconds) => IsCopiumTarget(target) ? Math.Min(seconds, CopiumFreeSeconds) : seconds;
+    public static (long Bytes, int Seconds, string Label) CopiumLimits(bool plus) => plus
+        ? (CopiumPlusBytes, CopiumPlusSeconds, $"Copium Plus's limit ({FormatBytes(CopiumPlusBytes)} / {CopiumPlusSeconds / 60} min)")
+        : (CopiumFreeBytes, CopiumFreeSeconds, $"Copium's free limit ({FormatBytes(CopiumFreeBytes)} / {CopiumFreeSeconds / 60} min)");
+
+    /// <summary>One of the Copium targets ("copium200", "copiumplus"): both limit the clip length as well as its size.</summary>
+    public static bool IsCopiumTarget(string? target) => SizeTargetFor(target).Id is "copium200" or "copiumplus";
+
+    /// <summary>
+    /// The clip length a size target makes fit: the replay length, except that a target with a length limit (Copium's 10 min,
+    /// Copium Plus's 60) never fits more than that, because a longer clip cannot be uploaded at any bitrate (it has to be trimmed
+    /// first, and that trim is what must fit the size); fitting the whole replay would only throttle every clip, the short hotkey
+    /// ones included.
+    /// </summary>
+    public static int FitSeconds(string? target, int seconds)
+    {
+        int max = SizeTargetFor(target).MaxSeconds;
+        return max > 0 ? Math.Min(seconds, max) : seconds;
+    }
+
+    /// <summary>
+    /// True for a size-target note the UI shows in Warn colour: no bitrate makes the clip fit ("does not fit"), or the replay
+    /// length reaches the target's length limit ("… uploads are limited to 10 min …"), which no bitrate fixes either.
+    /// </summary>
+    public static bool IsWarningNote(string? note) =>
+        note != null && (note.Contains("does not fit", StringComparison.Ordinal) || note.Contains(LengthLimitMarker, StringComparison.Ordinal));
+
+    /// <summary>The note a target with a length limit appends once the replay is at or over it (a full clip is then over the limit); "" below it or without a limit.</summary>
+    private static string LengthNote(SizeTargetInfo target, int seconds)
+    {
+        if (target.MaxSeconds <= 0 || seconds < target.MaxSeconds) return "";
+        string note = target.Id == "copium200" ? CopiumLengthNote
+            : target.Id == "copiumplus" ? CopiumPlusLengthNote
+            : $" - {target.Name} uploads are limited to {target.MaxSeconds / 60} min: trim a full-length clip before sharing it, or shorten the replay length";
+        // A full-length clip starts on the keyframe before the cut, so it runs a moment past the replay length: exactly the limit is over too.
+        int min = target.MaxSeconds / 60;
+        return seconds > target.MaxSeconds ? note : note + $" (a {min}:00 replay saves a hair over {min} min)";
+    }
 
     /// <summary>
     /// The bitrate to encode at: the chosen Settings.BitrateMbps (and no note) without a size target; otherwise lowered (never
     /// raised) to the largest bitrate (0.5–200 Mbps, one decimal) at which a clip of <see cref="FitSeconds"/> (the replay
-    /// length, or 10 min for the Copium target) with <paramref name="audioTracks"/> stays under the limit with 5 % headroom,
-    /// plus a one-line note for the UI that says what happened (when even the minimum does not fit, the note says so). The fit
-    /// counts one keyframe interval more than that length, because a clip starts on the last keyframe at or before it and so
-    /// runs up to that much longer (a 2:00 replay saves ~2:01). The Copium target also appends <see cref="CopiumLengthNote"/>
-    /// from a replay length of 10 min up (a full clip is then over 10 min), which no bitrate can fix: the bitrate is then what a
-    /// 10 min trim needs, not one that squeezes the whole replay into 200 MB for nothing.
+    /// length, or the target's length limit when that is shorter) with <paramref name="audioTracks"/> stays under the limit with
+    /// 5 % headroom, plus a one-line note for the UI that says what happened (when even the minimum does not fit, the note says so).
+    /// The fit counts one keyframe interval more than that length, because a clip starts on the last keyframe at or before it and
+    /// so runs up to that much longer (a 2:00 replay saves ~2:01). A Copium target also appends its length note
+    /// (<see cref="CopiumLengthNote"/>, <see cref="CopiumPlusLengthNote"/>) from a replay length of 10 min (60 for Plus) up, a
+    /// full clip being over the limit then, which no bitrate can fix: the bitrate is then what a trim to the limit needs, not one
+    /// that squeezes the whole replay into the size for nothing. <see cref="IsWarningNote"/> tells which notes are warnings.
     /// </summary>
     public static (double bitrateMbps, string? note) ResolveBitrate(Settings s, int audioTracks, int seconds)
     {
         double chosen = Math.Max(MinTargetMbps, s.BitrateMbps);
-        long limit = SizeTargetBytes(s.SizeTarget);
+        var target = SizeTargetFor(s.SizeTarget);
+        long limit = target.Bytes;
         if (limit <= 0) return (chosen, null);
         seconds = Math.Max(1, seconds);
         int fit = FitSeconds(s.SizeTarget, seconds);
         double cap = BitrateMbpsFor((long)(limit * TargetHeadroom), audioTracks, fit + Math.Clamp(s.KeyframeSeconds, 0.25f, 5f));   // the engine's GOP clamp
         string len = FormatDuration(fit), lim = FormatBytes(limit);
-        // A full-length clip starts on the keyframe before the cut, so it runs a moment past the replay length: 10:00 is over too.
-        string tail = !IsCopiumTarget(s.SizeTarget) || seconds < CopiumFreeSeconds ? ""
-            : seconds > CopiumFreeSeconds ? CopiumLengthNote : CopiumLengthNote + " (a 10:00 replay saves a hair over 10 min)";
+        string tail = LengthNote(target, seconds);
         if (cap < MinTargetMbps)
             return (MinTargetMbps, $"a {len} clip does not fit in {lim} even at {MinTargetMbps:0.#} Mbps; shorten the replay length{tail}");
         cap = Math.Min(MaxTargetMbps, Math.Floor(cap * 10) / 10);
