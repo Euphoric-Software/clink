@@ -28,6 +28,17 @@ internal sealed class ClipEntry
     [JsonIgnore] public bool Exists => File.Exists(Path);
 }
 
+/// <summary>How <see cref="ClipLibrary.MoveToArchive"/> ended.</summary>
+internal enum ArchiveMove
+{
+    /// <summary>The local file is deleted and the entry points at the archive.</summary>
+    Moved,
+    /// <summary>The clip left the library meanwhile: nothing was deleted or changed.</summary>
+    NotInLibrary,
+    /// <summary>The delete did not happen (the caller says why): nothing was changed.</summary>
+    NotDeleted,
+}
+
 /// <summary>Index of clips (sidecar JSON next to the settings) merged with whatever is in the clips folder.</summary>
 internal sealed class ClipLibrary
 {
@@ -112,6 +123,33 @@ internal sealed class ClipLibrary
         lock (_gate) { _entries.Remove(e); SaveLocked(); }
         Changed?.Invoke();
     }
+
+    /// <summary>
+    /// The last step of an archive move, with the library locked so that a reload (<see cref="Load"/>) cannot run between the
+    /// delete and the save and drop the entry of a clip whose local file is already gone: finds the entry for the clip that was at
+    /// <paramref name="localPath"/> now (the snapshot the move began with may have been replaced by a reload), runs
+    /// <paramref name="deleteLocal"/> and, when that returns true, points the entry (and the trims cut from it) at
+    /// <paramref name="archivePath"/>, stamps it archived and saves. Nothing is deleted, and nothing changes, when the clip is no
+    /// longer in the library or the delete does not happen. <paramref name="deleteLocal"/> runs under the lock: keep it short.
+    /// </summary>
+    public ArchiveMove MoveToArchive(ClipEntry snapshot, string localPath, string archivePath, Func<bool> deleteLocal)
+    {
+        lock (_gate)
+        {
+            var live = _entries.FirstOrDefault(e => SamePath(e.Path, snapshot.Path)) ?? _entries.FirstOrDefault(e => SamePath(e.Path, localPath));
+            if (live == null) return ArchiveMove.NotInLibrary;
+            if (!deleteLocal()) return ArchiveMove.NotDeleted;
+            live.Path = archivePath;
+            live.ArchivedAt = DateTime.Now;
+            foreach (var other in _entries)
+                if (!ReferenceEquals(other, live) && SamePath(other.SourcePath, localPath)) other.SourcePath = archivePath;
+            SaveLocked();
+        }
+        Changed?.Invoke();
+        return ArchiveMove.Moved;
+    }
+
+    private static bool SamePath(string? a, string? b) => a != null && b != null && string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
 
     private void SaveLocked()
     {
