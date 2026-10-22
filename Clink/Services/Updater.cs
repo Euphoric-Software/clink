@@ -79,15 +79,27 @@ internal sealed class Updater : IDisposable
         var current = GetCurrentSemVer();
         CurrentVersion = current.Version;
         CurrentPrerelease = current.Prerelease;
+        // The window shows this in the Updates card ("Last check failed: updates are off in dev mode"), as the status of a --dev instance.
+        if (AppController.IsDev) { LastError = DevModeNote.ToLowerInvariant(); CheckFailed = true; }
     }
 
-    public static string UpdatesDir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Clink", "updates");
+    /// <summary>Where updates are downloaded instead of <c>%LOCALAPPDATA%\Clink\updates</c> (the real Clink's, shared by every Clink exe on the machine): set by the unit tests, null otherwise.</summary>
+    internal static string? UpdatesDirOverride { get; set; }
+    public static string UpdatesDir => UpdatesDirOverride ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Clink", "updates");
 
-    /// <summary>"owner/repo" to check, from settings or the UpdateRepo assembly metadata; null = updates disabled.</summary>
+    /// <summary>What a --dev instance says when asked to look for, download or install an update.</summary>
+    public const string DevModeNote = "Updates are off in dev mode";
+
+    /// <summary>
+    /// "owner/repo" to check, from settings or the UpdateRepo assembly metadata; null = updates disabled. Always null in a
+    /// <c>--dev</c> instance: it would download into the real Clink's updates folder, delete the other exes there (the real Clink's
+    /// pending update among them), and restart as a normal Clink.
+    /// </summary>
     public string? Repo
     {
         get
         {
+            if (AppController.IsDev) return null;
             string? repo = SettingsRepo ?? AssemblyRepo?.Trim().Trim('/');
             return string.IsNullOrWhiteSpace(repo) ? null : repo;
         }
@@ -117,6 +129,7 @@ internal sealed class Updater : IDisposable
     /// <summary>Logs once at startup where updates come from, so a redirected settings.json is visible in the log.</summary>
     public void LogSource()
     {
+        if (AppController.IsDev) { Log.Info("updater: off in a --dev instance"); return; }
         string? repo = Repo;
         if (repo == null) { Log.Info("updater: no UpdateRepo configured, updates disabled"); return; }
         string builtIn = string.IsNullOrWhiteSpace(AssemblyRepo) ? "none" : AssemblyRepo.Trim().Trim('/');
@@ -292,6 +305,7 @@ internal sealed class Updater : IDisposable
     /// </summary>
     public async Task<string> DownloadAsync(UpdateInfo info, IProgress<double>? progress, CancellationToken ct)
     {
+        if (AppController.IsDev) throw new InvalidOperationException(DevModeNote);
         Directory.CreateDirectory(UpdatesDir);
         string final = FileFor(info.Version);
         string partial = final + ".partial";
@@ -552,6 +566,7 @@ internal sealed class Updater : IDisposable
     /// </summary>
     public static void LaunchApply(string newExePath, string targetExePath, IEnumerable<string> restartArgs)
     {
+        if (AppController.IsDev) throw new InvalidOperationException(DevModeNote);
         var psi = new ProcessStartInfo(newExePath)
         {
             UseShellExecute = false,
@@ -745,6 +760,7 @@ internal sealed class Updater : IDisposable
     /// <summary>Manual check (also downloads when auto-update is on, and retries a download whose install failed). Never throws; null = nothing newer or the check failed (see <see cref="LastError"/>).</summary>
     public async Task<UpdateInfo?> CheckNowAsync()
     {
+        if (AppController.IsDev) { LastError = DevModeNote.ToLowerInvariant(); CheckFailed = true; return null; }   // nothing is looked for, downloaded or deleted
         try { return await CheckAndMaybeDownloadAsync(_cts.Token, manual: true).ConfigureAwait(false); }
         catch (Exception ex) { Log.Warn("updater: manual check failed: " + ex.Message); LastError = ex.Message; return null; }
     }
@@ -833,6 +849,7 @@ internal sealed class Updater : IDisposable
     /// </summary>
     private void CleanupInstalled()
     {
+        if (AppController.IsDev) return;   // the folder is the real Clink's, and what it deletes there is its pending update
         try
         {
             string? self = Environment.ProcessPath;

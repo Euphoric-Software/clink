@@ -114,6 +114,9 @@ internal sealed class Toasts
 
     private static TimeSpan Duration(ToastSetting s) => TimeSpan.FromSeconds(Math.Clamp(s.Seconds, 1, 30));
 
+    /// <summary>The title a toast shows: a toast of a <c>--dev</c> instance says so ("Clip saved (dev)"), so nobody takes it for the real Clink's.</summary>
+    internal static string TitleFor(string title) => AppController.IsDev ? title + " (dev)" : title;
+
     private static string ClipSubtitle(ClipEntry e)
     {
         string game = string.IsNullOrEmpty(e.Game) ? "" : e.Game + " · ";
@@ -199,7 +202,7 @@ public partial class ToastWindow : Window
         Link = link;
         _duration = duration;
         _preview = preview;
-        TitleText.Text = title;
+        TitleText.Text = Toasts.TitleFor(title);
         Subtitle.Text = subtitle;
         Subtitle.ToolTip = subtitle;
         Dot.Fill = TryFindResource(kind switch { "shared" or "info" => "Accent", "recording" => "Danger", "problem" => "Warn", "paused" => "Muted", _ => "Good" }) as Brush ?? Brushes.LimeGreen;
