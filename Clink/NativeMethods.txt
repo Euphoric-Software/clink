@@ -360,3 +360,11 @@ GetAsyncKeyState
 GetProcessTimes
 GetFileInformationByHandle
 BY_HANDLE_FILE_INFORMATION
+
+// ---- clip source: a clip read through an IStream of Clink's own, so Media Foundation never sees its audio edit lists (Engine/ClipSource.cs) ----
+IStream
+IMFByteStream
+MFCreateMFByteStreamOnStream
+MFCreateSourceReaderFromByteStream
+MF_BYTESTREAM_CONTENT_TYPE
+STGTY

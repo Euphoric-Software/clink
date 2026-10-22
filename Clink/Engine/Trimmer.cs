@@ -40,7 +40,9 @@ internal readonly record struct AudioTrackInfo(string Name, long StartOffset)
 /// <summary>The audio tracks of a file Clink wrote (see <see cref="Trimmer.ReadClipTracks"/>).</summary>
 /// <param name="Marked">The file says its edit lists are alignment-true (<see cref="Mp4Muxer.AlignedBrand"/>).</param>
 /// <param name="Audio">The audio tracks in file order.</param>
-internal sealed record ClipTracks(bool Marked, AudioTrackInfo[] Audio);
+/// <param name="AudioEditBoxes">The file offset of the four type bytes ('edts') of every audio trak's edit box: what <see cref="ClipSource"/>
+/// makes read as 'free'. The video trak's edit list (one edit from media time 0, the same on every Windows) is not among them.</param>
+internal sealed record ClipTracks(bool Marked, AudioTrackInfo[] Audio, long[] AudioEditBoxes);
 
 /// <summary>
 /// Trims an MP4 made by Clink: copies compressed samples in [start, end] into a new file without re-encoding.
@@ -86,8 +88,9 @@ internal static unsafe class Trimmer
         long start = (long)Math.Round(startSec * 10_000_000), end = (long)Math.Round(endSec * 10_000_000);
         if (end <= start) throw new ArgumentException("End must be after start");
 
-        IMFSourceReader* reader;
-        PInvoke.MFCreateSourceReaderFromURL(src, null, &reader).Check("MFCreateSourceReaderFromURL");
+        // Read with the audio edit lists hidden from Media Foundation (ClipSource), so every audio stream comes out from its first
+        // sample at 0 whatever the Windows; the track offsets are put back here.
+        IMFSourceReader* reader = ClipSource.Open(src, null, out var srcOwner);
         try
         {
             // Discover streams (native/compressed types).
@@ -137,6 +140,9 @@ internal static unsafe class Trimmer
                     reader->SetStreamSelection(i, false); // dropped from the export
                     continue;
                 }
+                // On a Windows whose media reader failed the timeline self-check (ClipSource) no track can be put against another:
+                // nothing is rebuilt or corrected from sources, whatever the plan says (a single track at another volume is still fine).
+                if (m.Sum != null && align.Untrusted) throw new InvalidOperationException(ClipAlignment.UntrustedNote);
                 // A source that could not be lined up with the Mix is neither added to it nor taken out of it (the editor offers no
                 // such slider; this is for a plan made by anything else).
                 if (m.Sum != null && m.Sum.Any(s => s.Track == 0) && m.Sum.Any(s => Array.IndexOf(align.Unlined, s.Track) >= 0))
@@ -192,10 +198,10 @@ internal static unsafe class Trimmer
                 if (sample == null) continue;
                 try
                 {
-                    // An audio frame is stamped with where it sits on the clip's timeline: the stream's own time (Media Foundation
-                    // starts every track at 0, whatever the edit list says) plus the track's offset, so the tracks keep their places
-                    // against each other. The cut keeps what the frame-by-frame rule always kept, measured in the stream's own time
-                    // from an offset of 0 up (a track that starts before the origin keeps its frames just as it did).
+                    // An audio frame is stamped with where it sits on the clip's timeline: the stream's own time (ClipSource hides the
+                    // audio edit lists from Media Foundation, so every track starts at 0 on every Windows) plus the track's offset, so
+                    // the tracks keep their places against each other. The cut keeps what the frame-by-frame rule always kept, measured
+                    // in the stream's own time from an offset of 0 up (a track that starts before the origin keeps its frames just as it did).
                     uint streamIdx = idx;   // a copy: idx has its address taken above, which a lambda may not capture
                     int track = streamIdx == (uint)videoIndex ? -1 : audioStreams.FindIndex(s => s.Stream == streamIdx);
                     long shift = track >= 0 ? audioStreams[track].Shift : 0;
@@ -237,8 +243,8 @@ internal static unsafe class Trimmer
             }
             if (video.Count == 0 || !video[0].Keyframe) throw new InvalidOperationException("Could not find a keyframe before the start time");
 
-            // The clip starts exactly on the keyframe at/before the requested start (Media Foundation players ignore
-            // edit lists, so we don't rely on them for video). Audio is cut to the same instant.
+            // The clip starts exactly on the keyframe at/before the requested start (a player may ignore edit lists, so the video
+            // does not rely on one). Audio is cut to the same instant.
             long origin = video[0].Pts;
             var tracks = new List<(AudioTrackDesc desc, List<AacFrame> frames)>();
             for (int i = 0; i < audioStreams.Count; i++)
@@ -263,7 +269,11 @@ internal static unsafe class Trimmer
             // tracks are in their true places when the one it was cut from did, or when its sources were lined up with the Mix here.
             return ClipWriter.Write(dst, video, hevc, w, h, seqHeader, tracks, origin, 0, placed && align.Aligned);
         }
-        finally { reader->Release(); }
+        finally
+        {
+            reader->Release();
+            srcOwner?.Dispose();   // after the reader: that closes the clip file
+        }
     }
 
     /// <summary>
@@ -280,25 +290,31 @@ internal static unsafe class Trimmer
     internal static List<uint> AudioStreamsOf(string path)
     {
         Mf.EnsureStarted();
-        IMFSourceReader* reader;
-        PInvoke.MFCreateSourceReaderFromURL(path, null, &reader).Check("MFCreateSourceReaderFromURL");
-        try
+        IMFSourceReader* reader = ClipSource.Open(path, null, out var owner);
+        try { return AudioStreamsOf(reader); }
+        finally
         {
-            var audio = new List<uint>();
-            uint video = uint.MaxValue;
-            for (uint i = 0; ; i++)
-            {
-                IMFMediaType* t;
-                if (reader->GetNativeMediaType(i, 0, &t).Failed) break;
-                Guid major = Mf.GetGuid((IMFAttributes*)t, PInvoke.MF_MT_MAJOR_TYPE);
-                t->Release();
-                if (major == PInvoke.MFMediaType_Video && video == uint.MaxValue) video = i;
-                else if (major == PInvoke.MFMediaType_Audio) audio.Add(i);
-            }
-            AudioInFileOrder(audio, video);
-            return audio;
+            reader->Release();
+            owner?.Dispose();
         }
-        finally { reader->Release(); }
+    }
+
+    /// <summary><see cref="AudioStreamsOf(string)"/> of a reader that is already open.</summary>
+    internal static List<uint> AudioStreamsOf(IMFSourceReader* reader)
+    {
+        var audio = new List<uint>();
+        uint video = uint.MaxValue;
+        for (uint i = 0; ; i++)
+        {
+            IMFMediaType* t;
+            if (reader->GetNativeMediaType(i, 0, &t).Failed) break;
+            Guid major = Mf.GetGuid((IMFAttributes*)t, PInvoke.MF_MT_MAJOR_TYPE);
+            t->Release();
+            if (major == PInvoke.MFMediaType_Video && video == uint.MaxValue) video = i;
+            else if (major == PInvoke.MFMediaType_Audio) audio.Add(i);
+        }
+        AudioInFileOrder(audio, video);
+        return audio;
     }
 
     /// <summary>
@@ -310,10 +326,11 @@ internal static unsafe class Trimmer
 
     /// <summary>
     /// The audio tracks as the file itself has them, in file order: the 'hdlr' names (see <see cref="ReadAudioTrackNames"/>) and
-    /// where each track's first sample sits on the clip's timeline, from its edit list. Media Foundation hands every track's
-    /// samples out from 0 and does not apply the edit list, but Clink's muxer starts a track before the clip origin (a negative
-    /// offset: the first frames are skipped) or after it (a positive one), so tracks that are mixed together must be moved by
-    /// these offsets to line up. Null when the file cannot be parsed or was not written by Clink.
+    /// where each track's first sample sits on the clip's timeline, from its edit list. Clink reads its clips with the audio edit
+    /// lists hidden from Media Foundation (<see cref="ClipSource"/>), so every track's samples come out from 0 on every Windows;
+    /// but Clink's muxer starts a track before the clip origin (a negative offset: the first frames are skipped) or after it (a
+    /// positive one), so tracks that are mixed together must be moved by these offsets to line up. Null when the file cannot be
+    /// parsed or was not written by Clink.
     /// </summary>
     internal static AudioTrackInfo[]? ReadAudioTracks(string path) => ReadClipTracks(path)?.Audio;
 
@@ -345,6 +362,7 @@ internal static unsafe class Trimmer
             var mvhd = moovBoxes.FirstOrDefault(b => b.type == "mvhd");
             long movieScale = mvhd.type == null ? 1000 : ReadU32(fs, mvhd.start + (ReadU8(fs, mvhd.start) == 1 ? 20 : 12));
             var tracks = new List<AudioTrackInfo>();
+            var editBoxes = new List<long>();
             bool clink = false;
             foreach (var trak in moovBoxes.Where(b => b.type == "trak").ToList())
             {
@@ -362,11 +380,15 @@ internal static unsafe class Trimmer
                 int z = Array.IndexOf(buf, (byte)0, 24);
                 string name = Encoding.UTF8.GetString(buf, 24, (z < 0 ? buf.Length : z) - 24).Trim();
                 if (type == "vide") clink |= name == "Video";
-                else if (type == "soun") tracks.Add(new AudioTrackInfo(name, StartOffset(fs, parts, mdiaParts, movieScale)));
+                else if (type == "soun")
+                {
+                    tracks.Add(new AudioTrackInfo(name, StartOffset(fs, parts, mdiaParts, movieScale)));
+                    foreach (var edts in parts.Where(b => b.type == "edts")) editBoxes.Add(edts.box + 4);   // past the size field: the type
+                }
             }
             // Only Clink's muxer names the video trak exactly "Video". Other writers use generic names (ffmpeg/OBS:
             // VideoHandler, SoundHandler on every track) or Pascal strings, so their files fall back to Audio 1, Audio 2…
-            return clink ? new ClipTracks(marked, tracks.ToArray()) : null;
+            return clink ? new ClipTracks(marked, tracks.ToArray(), editBoxes.ToArray()) : null;
         }
         catch (Exception ex)
         {
@@ -379,7 +401,7 @@ internal static unsafe class Trimmer
     /// Where the track's first sample sits on the movie's timeline, in 100 ns: an empty edit in front of the media delays it, and a
     /// media time on the first real edit is the part of the media before the clip origin, which is skipped. 0 without an edit list.
     /// </summary>
-    private static long StartOffset(FileStream fs, List<(string type, long start, long end)> trak, List<(string type, long start, long end)> mdia, long movieScale)
+    private static long StartOffset(FileStream fs, List<(string type, long start, long end, long box)> trak, List<(string type, long start, long end, long box)> mdia, long movieScale)
     {
         var edts = trak.FirstOrDefault(b => b.type == "edts");
         var mdhd = mdia.FirstOrDefault(b => b.type == "mdhd");
@@ -425,10 +447,10 @@ internal static unsafe class Trimmer
         return BinaryPrimitives.ReadInt64BigEndian(b);
     }
 
-    /// <summary>The boxes directly inside [from, to): type and payload range. Stops at the first malformed header.</summary>
-    private static List<(string type, long start, long end)> Boxes(FileStream fs, long from, long to)
+    /// <summary>The boxes directly inside [from, to): type, payload range and where the box itself starts (its size field; the type follows it). Stops at the first malformed header.</summary>
+    private static List<(string type, long start, long end, long box)> Boxes(FileStream fs, long from, long to)
     {
-        var list = new List<(string, long, long)>();
+        var list = new List<(string, long, long, long)>();
         Span<byte> h = stackalloc byte[16];
         for (long o = from; o + 8 <= to;)
         {
@@ -445,7 +467,7 @@ internal static unsafe class Trimmer
             }
             else if (size == 0) size = to - o;
             if (size < hdr || size > to - o) break;
-            list.Add((Encoding.ASCII.GetString(h.Slice(4, 4)), o + hdr, o + size));
+            list.Add((Encoding.ASCII.GetString(h.Slice(4, 4)), o + hdr, o + size, o));
             o += size;
         }
         return list;
@@ -543,8 +565,9 @@ internal static unsafe class Trimmer
     /// the one before it ended, early or late, just follows it: that is jitter in the timestamps and not a hole or a repeat, and
     /// dropping or inserting frames for it would put a click into the sound. The first packet is placed to the frame, so a stream that
     /// starts a few samples after the origin starts that many samples in.
-    /// The stream's own timestamps start at 0 whatever the file says; the track's offset (<see cref="ReadAudioTracks"/>) puts it
-    /// on the clip's timeline, so readers of tracks that were recorded together line up to the sample.
+    /// The stream's own timestamps start at 0 whatever the file says (the reader is opened through <see cref="ClipSource"/>, which
+    /// hides the audio edit lists from Media Foundation); the track's offset (<see cref="ReadAudioTracks"/>) puts it on the clip's
+    /// timeline, so readers of tracks that were recorded together line up to the sample.
     /// </summary>
     internal sealed class PcmTrackReader : IDisposable
     {
@@ -552,6 +575,7 @@ internal static unsafe class Trimmer
         /// <summary>Timestamps this many frames (1 ms) off where the packet before ended are jitter.</summary>
         private const int Jitter = 48;
         private IMFSourceReader* _reader;
+        private IDisposable? _owner;                        // the stream the reader reads the clip through: closed after the reader is released
         private readonly uint _stream;
         private readonly long _offset, _end;                // frames
         private long _next;                                 // the timeline frame (48 kHz) the next decoded frame lands on
@@ -570,8 +594,7 @@ internal static unsafe class Trimmer
             _stream = stream;
             _offset = offsetFrames;
             _end = endFrame;
-            IMFSourceReader* reader;
-            PInvoke.MFCreateSourceReaderFromURL(src, null, &reader).Check("MFCreateSourceReaderFromURL(audio)");
+            IMFSourceReader* reader = ClipSource.Open(src, null, out _owner);
             _reader = reader;
             try
             {
@@ -689,6 +712,8 @@ internal static unsafe class Trimmer
         public void Dispose()
         {
             ComUtil.Release(ref _reader);
+            _owner?.Dispose();   // after the reader: that closes the clip file
+            _owner = null;
         }
     }
 

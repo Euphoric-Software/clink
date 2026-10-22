@@ -21,11 +21,14 @@ internal static unsafe class MediaProbe
     private const uint MediaSource = 0xFFFFFFFF;
     private const uint FirstVideo = 0xFFFFFFFC;
 
-    public static (long duration100ns, List<ProbeStream> streams) Probe(string path)
+    /// <summary>Media Foundation's own reader (what it does with the audio edit lists of the file is its own business).</summary>
+    public static (long duration100ns, List<ProbeStream> streams) Probe(string path) => Probe(path, hideEditLists: false);
+
+    /// <param name="hideEditLists">True reads as Clink does (<see cref="ClipSource"/>: a Clink clip's audio edit lists are hidden from Media Foundation).</param>
+    public static (long duration100ns, List<ProbeStream> streams) Probe(string path, bool hideEditLists)
     {
         Mf.EnsureStarted();
-        IMFSourceReader* reader;
-        PInvoke.MFCreateSourceReaderFromURL(path, null, &reader).Check("MFCreateSourceReaderFromURL");
+        IMFSourceReader* reader = ClipSource.Open(path, null, out var owner, hideEditLists);
         try
         {
             var streams = new List<ProbeStream>();
@@ -87,7 +90,11 @@ internal static unsafe class MediaProbe
             foreach (var kv in acc.OrderBy(k => k.Key)) streams.Add(kv.Value.s);
             return (duration, streams);
         }
-        finally { reader->Release(); }
+        finally
+        {
+            reader->Release();
+            owner?.Dispose();
+        }
     }
 
     /// <summary>Decodes the video frame nearest <paramref name="at100ns"/> to BGRA bytes (top-down).</summary>
@@ -165,13 +172,26 @@ internal static unsafe class MediaProbe
         var (dur, streams) = Probe(path);
         var sb = new StringBuilder();
         sb.AppendLine($"{Path.GetFileName(path)}: duration {dur / 10_000_000.0:0.000}s, {new FileInfo(path).Length / 1_048_576.0:0.0} MB");
-        foreach (var s in streams)
+        foreach (var s in streams) sb.AppendLine(Line(s));
+        // A Clink clip is read by Clink with its audio edit lists hidden from Media Foundation, which applies them on some Windows and
+        // ignores them on others (see ClipSource): the audio as Clink gets it, for comparing with what Media Foundation itself did.
+        try
         {
-            string kind = s.IsVideo ? $"video {s.Subtype} {s.Width}x{s.Height}" : $"audio {s.Subtype} {s.Channels}ch {s.SampleRate}Hz";
-            sb.AppendLine($"  #{s.Index} {kind}: {s.Count} samples, first={s.FirstTs / 10_000.0:0.0}ms last={s.LastTs / 10_000.0:0.0}ms " +
-                          $"delta {s.MinDelta / 10_000.0:0.00}..{s.MaxDelta / 10_000.0:0.00}ms{(s.IsVideo ? $", {s.Keyframes} keyframes" : "")}, {s.Bytes / 1024} KB, outOfOrder={s.OutOfOrder}");
+            if (Trimmer.ReadClipTracks(path) is { AudioEditBoxes.Length: > 0 })
+            {
+                sb.AppendLine("  as Clink reads it (the audio edit lists hidden from Media Foundation):");
+                foreach (var s in Probe(path, hideEditLists: true).streams.Where(s => !s.IsVideo)) sb.AppendLine(Line(s));
+            }
         }
+        catch (Exception ex) { sb.AppendLine($"  (it could not be read that way: {ex.Message})"); }
         return sb.ToString();
+    }
+
+    private static string Line(ProbeStream s)
+    {
+        string kind = s.IsVideo ? $"video {s.Subtype} {s.Width}x{s.Height}" : $"audio {s.Subtype} {s.Channels}ch {s.SampleRate}Hz";
+        return $"  #{s.Index} {kind}: {s.Count} samples, first={s.FirstTs / 10_000.0:0.0}ms last={s.LastTs / 10_000.0:0.0}ms " +
+               $"delta {s.MinDelta / 10_000.0:0.00}..{s.MaxDelta / 10_000.0:0.00}ms{(s.IsVideo ? $", {s.Keyframes} keyframes" : "")}, {s.Bytes / 1024} KB, outOfOrder={s.OutOfOrder}";
     }
 
     /// <summary>
