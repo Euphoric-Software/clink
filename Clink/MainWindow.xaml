@@ -112,8 +112,18 @@
                                             </Grid.ColumnDefinitions>
                                             <TextBlock Style="{StaticResource MutedText}" Text="Size target" VerticalAlignment="Center" Margin="2,0,0,0" />
                                             <ComboBox x:Name="SizeTargetCombo" Grid.Column="1" Margin="10,0,0,0" SelectionChanged="SizeTargetChanged"
-                                                      ToolTip="Lowers the bitrate when needed so a clip of the replay length fits the limit (audio tracks counted); never raises it. None = always the bitrate above" />
+                                                      ToolTip="Lowers the bitrate when needed so a clip of the replay length fits the limit (audio tracks counted); never raises it. None = always the bitrate above. Copium and Copium Plus also limit how long a clip may be, and picking Copium Plus ticks &quot;I have Copium+&quot;" />
                                         </Grid>
+                                        <TextBlock Style="{StaticResource FieldLabel}" Text="Replay length" Margin="2,12,0,3" />
+                                        <ui:ReplayLengthSlider x:Name="ReplaySlider" Margin="0,2,0,0" />
+                                        <!-- The one place size and RAM are shown (§10): per minute · per clip of this length ("per hour" at 1 h), the RAM the
+                                             buffer takes (Danger over half of it), and what the size target did (Warn when no bitrate can make the clip fit).
+                                             UpdateEstimates() rewrites all three on every resolution / FPS / bitrate / codec / audio-track / length change. -->
+                                        <StackPanel x:Name="ReadoutBlock" Margin="2,4,0,0">
+                                            <TextBlock x:Name="EstimateText" Style="{StaticResource MutedText}" Text="" />
+                                            <TextBlock x:Name="RamText" Style="{StaticResource MutedText}" Margin="0,3,0,0" Text="" />
+                                            <TextBlock x:Name="SizeNote" Style="{StaticResource Hint}" Margin="0,3,0,0" Text="" Visibility="Collapsed" />
+                                        </StackPanel>
                                         <CheckBox x:Name="CursorCheck" Content="Capture cursor" Margin="2,12,0,0" Checked="QualityChanged" Unchecked="QualityChanged" ToolTip="Record the mouse pointer too" />
                                     </StackPanel>
                                 </Border>
@@ -221,21 +231,6 @@
                                             <ComboBox x:Name="RunningAppsCombo" Grid.Column="2" Margin="6,0,0,0" MinWidth="150" MaxWidth="190" DropDownOpened="RunningAppsCombo_DropDownOpened" DropDownClosed="RunningAppsCombo_DropDownClosed" SelectionChanged="RunningAppsCombo_SelectionChanged"
                                                       ItemContainerStyle="{StaticResource ChoiceItem}" ItemTemplate="{StaticResource SourceLabel}" ToolTip="Pick one of the apps running right now" />
                                         </Grid>
-                                    </StackPanel>
-                                </Border>
-
-                                <TextBlock Style="{StaticResource H}" Text="REPLAY LENGTH" Margin="0,14,0,6" />
-                                <Border Style="{StaticResource Card}">
-                                    <StackPanel>
-                                        <ui:ReplayLengthSlider x:Name="ReplaySlider" Margin="0,2,0,0" />
-                                        <!-- The one place size and RAM are shown (§10): per minute · per clip of this length ("per hour" at 1 h), the RAM the
-                                             buffer takes (Danger over half of it), and what the size target did (Warn when no bitrate can make the clip fit).
-                                             UpdateEstimates() rewrites all three on every resolution / FPS / bitrate / codec / audio-track / length change. -->
-                                        <StackPanel x:Name="ReadoutBlock" Margin="2,4,0,0">
-                                            <TextBlock x:Name="EstimateText" Style="{StaticResource MutedText}" Text="" />
-                                            <TextBlock x:Name="RamText" Style="{StaticResource MutedText}" Margin="0,3,0,0" Text="" />
-                                            <TextBlock x:Name="SizeNote" Style="{StaticResource Hint}" Margin="0,3,0,0" Text="" Visibility="Collapsed" />
-                                        </StackPanel>
                                     </StackPanel>
                                 </Border>
 
