@@ -4,7 +4,7 @@
         xmlns:ui="clr-namespace:Clink.UI"
         Title="Clink" Width="470" Height="780" MinWidth="470" MinHeight="700"
         WindowStyle="None" ResizeMode="CanResizeWithGrip" AllowsTransparency="True" Background="Transparent"
-        WindowStartupLocation="CenterScreen" ShowInTaskbar="True" FontFamily="Segoe UI" TextOptions.TextFormattingMode="Display">
+        WindowStartupLocation="CenterScreen" ShowInTaskbar="True" FontFamily="{StaticResource UiFont}" TextOptions.TextFormattingMode="Display">
     <Window.Resources>
         <!-- long device names / window titles get an ellipsis in the closed box; the dropdown shows them in full -->
         <DataTemplate x:Key="SourceLabel">
@@ -22,12 +22,12 @@
             <Setter Property="Margin" Value="10,0,8,0" />
         </Style>
     </Window.Resources>
-    <Border Background="{StaticResource Bg}" CornerRadius="10" BorderBrush="{StaticResource Border}" BorderThickness="1">
+    <Border Background="{DynamicResource Bg}" CornerRadius="10" BorderBrush="{DynamicResource Border}" BorderThickness="1">
         <DockPanel>
             <!-- header / drag area -->
             <Grid DockPanel.Dock="Top" Height="44" MouseLeftButtonDown="Header_MouseLeftButtonDown" Background="Transparent">
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="16,0,80,0">
-                    <Ellipse x:Name="StatusDot" Width="9" Height="9" Fill="{StaticResource Muted}" VerticalAlignment="Center" />
+                    <Ellipse x:Name="StatusDot" Width="9" Height="9" Fill="{DynamicResource Muted}" VerticalAlignment="Center" />
                     <TextBlock Text="Clink" FontWeight="Bold" FontSize="15" Margin="9,0,0,0" VerticalAlignment="Center" />
                     <TextBlock x:Name="StatusText" Style="{StaticResource MutedText}" Margin="10,1,0,0" VerticalAlignment="Center" Text="Starting…" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
                 </StackPanel>
@@ -38,7 +38,7 @@
             </Grid>
 
             <!-- footer -->
-            <Border DockPanel.Dock="Bottom" Padding="16,8,20,8" BorderBrush="{StaticResource Border}" BorderThickness="0,1,0,0">
+            <Border DockPanel.Dock="Bottom" Padding="16,8,20,8" BorderBrush="{DynamicResource Border}" BorderThickness="0,1,0,0">
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
@@ -131,9 +131,9 @@
 
                                 <!-- Shown until the pointer rests on the audio group below or an audio option changes (Settings.AudioSetupSeen); then never again -->
                                 <Border x:Name="AudioSetupBanner" Margin="0,14,0,0" Padding="10,8" CornerRadius="8" BorderThickness="1"
-                                        BorderBrush="{StaticResource Warn}" Background="{StaticResource WarnTint}">
+                                        BorderBrush="{DynamicResource Warn}" Background="{DynamicResource WarnTint}">
                                     <StackPanel>
-                                        <TextBlock Text="Set up your audio" FontWeight="Bold" Foreground="{StaticResource Warn}" />
+                                        <TextBlock Text="Set up your audio" FontWeight="Bold" Foreground="{DynamicResource Warn}" />
                                         <TextBlock Margin="0,3,0,0" FontSize="12"
                                                    Text="Check which app is the game, which mic you talk into and where voice chat comes from. Hover or change any option below to dismiss this." />
                                     </StackPanel>
@@ -249,8 +249,8 @@
                         </ScrollViewer>
                     </TabItem>
 
-                    <!-- ===================================================== Clip -->
-                    <TabItem Header="Clip">
+                    <!-- ===================================================== Clips (the Copium and Storage settings; the list of clips is the Library) -->
+                    <TabItem Header="Clips">
                         <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,0,4,0">
                             <StackPanel Margin="0,0,0,4">
                                 <TextBlock Style="{StaticResource H}" Text="COPIUM" Margin="0,10,0,6" />
@@ -391,6 +391,25 @@
                                         <TextBlock Style="{StaticResource Hint}" Margin="2,6,0,0" Text="A 12 px click-through dot: green = recording, amber = waiting for a game, red = error, grey = paused." />
                                     </StackPanel>
                                 </Border>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </TabItem>
+
+                    <!-- ===================================================== App (how Clink looks, how it updates, where it keeps its settings) -->
+                    <TabItem Header="App">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,0,4,0">
+                            <StackPanel Margin="0,0,0,4">
+                                <TextBlock Style="{StaticResource H}" Text="APPEARANCE" Margin="0,10,0,6" />
+                                <Border Style="{StaticResource Card}">
+                                    <StackPanel>
+                                        <!-- The choices are built in code from ThemeManager.Themes / Accents (MainWindow.BuildAppearanceChoices), so the ids and labels live in one place -->
+                                        <TextBlock Style="{StaticResource FieldLabel}" Text="Theme" />
+                                        <StackPanel x:Name="ThemeChoices" Orientation="Horizontal" />
+                                        <TextBlock Style="{StaticResource FieldLabel}" Text="Accent" Margin="2,12,0,3" />
+                                        <StackPanel x:Name="AccentChoices" Orientation="Horizontal" />
+                                        <TextBlock Style="{StaticResource Hint}" Margin="2,8,0,0" Text="The accent colours buttons, toggles, sliders and the selected tab." />
+                                    </StackPanel>
+                                </Border>
 
                                 <TextBlock Style="{StaticResource H}" Text="UPDATES" Margin="0,14,0,6" />
                                 <Border Style="{StaticResource Card}">
@@ -404,15 +423,43 @@
                                             <Button x:Name="CheckUpdateButton" Style="{StaticResource LinkButton}" Content="Check now" FontSize="12" Margin="8,0,0,0" Click="CheckUpdate_Click" />
                                             <Button x:Name="UpdateNowButton" Style="{StaticResource AccentButton}" Content="Update" Padding="10,3" Margin="8,0,0,0" Click="Update_Click" Visibility="Collapsed" ToolTip="Restart Clink to install the downloaded update" />
                                         </StackPanel>
-                                        <TextBlock x:Name="UpdateProblemText" Style="{StaticResource Hint}" Foreground="{StaticResource Warn}" Margin="2,6,0,0" Text="" Visibility="Collapsed" />
+                                        <TextBlock x:Name="UpdateProblemText" Style="{StaticResource Hint}" Foreground="{DynamicResource Warn}" Margin="2,6,0,0" Text="" Visibility="Collapsed" />
+                                    </StackPanel>
+                                </Border>
+
+                                <TextBlock Style="{StaticResource H}" Text="SETTINGS" Margin="0,14,0,6" />
+                                <Border Style="{StaticResource Card}">
+                                    <StackPanel>
+                                        <TextBlock x:Name="SettingsDirText" Style="{StaticResource MutedText}" Margin="2,0,0,0" Text="" />
+                                        <Button x:Name="SettingsFolderButton" Style="{StaticResource LinkButton}" Content="Open folder" FontSize="12" HorizontalAlignment="Left" Margin="0,4,0,0"
+                                                Click="SettingsFolder_Click" ToolTip="Open the folder that holds settings.json, the clip index and the log in Explorer" />
+                                        <!-- Clink was started from inside a packaged app (the Claude desktop app): Windows keeps a private copy of AppData for it (AppDataRedirect) -->
+                                        <Border x:Name="RedirectBanner" Margin="0,10,0,0" Padding="10,8" CornerRadius="8" BorderThickness="1" Visibility="Collapsed"
+                                                BorderBrush="{DynamicResource Warn}" Background="{DynamicResource WarnTint}">
+                                            <TextBlock x:Name="RedirectText" FontSize="12" Text="" />
+                                        </Border>
+                                        <!-- Another copy of Clink saved settings of its own (SettingsImport.Pending): take them over, or turn that copy down for good -->
+                                        <Border x:Name="ImportBanner" Margin="0,10,0,0" Padding="10,8" CornerRadius="8" BorderThickness="1" Visibility="Collapsed"
+                                                BorderBrush="{DynamicResource Warn}" Background="{DynamicResource WarnTint}">
+                                            <StackPanel>
+                                                <TextBlock x:Name="ImportText" FontSize="12" Text="" />
+                                                <TextBlock Style="{StaticResource Hint}" Margin="0,4,0,0" Text="Using them restarts Clink; your current settings are kept as settings.pre-import.json." />
+                                                <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                                    <Button x:Name="ImportUseButton" Style="{StaticResource AccentButton}" Content="Use those settings" Padding="10,4" Click="ImportUse_Click"
+                                                            ToolTip="Take over the settings that copy saved and restart Clink" />
+                                                    <Button x:Name="ImportDismissButton" Content="Dismiss" Padding="10,4" Margin="8,0,0,0" Click="ImportDismiss_Click"
+                                                            ToolTip="Keep these settings and stop asking about that copy" />
+                                                </StackPanel>
+                                            </StackPanel>
+                                        </Border>
                                     </StackPanel>
                                 </Border>
                             </StackPanel>
                         </ScrollViewer>
                     </TabItem>
 
-                    <!-- ===================================================== Clips (narrow layout only; the pane moves to the right column when wide) -->
-                    <TabItem x:Name="ClipsTab" Header="Clips">
+                    <!-- ===================================================== Library (the clips pane when the window is narrow; the pane moves to the right column when wide) -->
+                    <TabItem x:Name="ClipsTab" Header="Library">
                         <ui:ClipsPane x:Name="Clips" Margin="0,8,0,0" />
                     </TabItem>
                 </TabControl>

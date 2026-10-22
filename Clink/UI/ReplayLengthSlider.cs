@@ -39,6 +39,10 @@ internal sealed class ReplayLengthSlider : FrameworkElement
         Height = ControlHeight;
         Cursor = Cursors.Hand;
         ToolTip = "Drag, or use ← → (PageUp / PageDown for bigger steps)";
+        // Everything is drawn in OnRender with the brushes of the moment: a theme change draws it again. The Capture tab is unloaded
+        // while another tab is showing (the App tab, where the theme is changed), so it also draws again whenever it is loaded.
+        Loaded += (_, _) => { ThemeManager.ThemeChanged -= InvalidateVisual; ThemeManager.ThemeChanged += InvalidateVisual; InvalidateVisual(); };
+        Unloaded += (_, _) => ThemeManager.ThemeChanged -= InvalidateVisual;
     }
 
     /// <summary>Replay length in seconds.</summary>
@@ -158,6 +162,7 @@ internal sealed class ReplayLengthSlider : FrameworkElement
     protected override Size MeasureOverride(Size availableSize) =>
         new(double.IsInfinity(availableSize.Width) ? 300 : availableSize.Width, ControlHeight);
 
+    // The fallbacks are the Dark / Cyan palette (UI/Palette.xaml), for a control that is drawn where the application's resources are not.
     private Brush Res(string key, Color fallback) => TryFindResource(key) as Brush ?? new SolidColorBrush(fallback);
 
     protected override void OnRender(DrawingContext dc)
@@ -168,16 +173,19 @@ internal sealed class ReplayLengthSlider : FrameworkElement
         // Hit-test surface (the whole control, including the label), so a click anywhere on the row moves the thumb.
         dc.DrawRectangle(Brushes.Transparent, null, new Rect(0, 0, w, h));
 
-        var track = Res("Panel3", Color.FromRgb(0x32, 0x37, 0x40));
-        var zone = Res("AccentDim", Color.FromRgb(0x2B, 0x7D, 0x96));
-        var fg = Res("Fg", Colors.White);
-        var muted = Res("Muted", Colors.Gray);
-        var accent = Res("Accent", Colors.DeepSkyBlue);
-        var danger = Res("Danger", Colors.OrangeRed);
+        var track = Res("Panel3", Color.FromRgb(0x2E, 0x36, 0x45));
+        var zone = Res("AccentDim", Color.FromRgb(0x1B, 0x6F, 0x84));
+        var fg = Res("Fg", Color.FromRgb(0xEA, 0xF2, 0xFF));
+        var muted = Res("Muted", Color.FromRgb(0x8A, 0x94, 0xA6));
+        var accent = Res("Accent", Color.FromRgb(0x22, 0xD3, 0xEE));
+        var accent2 = Res("Accent2", Color.FromRgb(0x3B, 0x82, 0xF6));   // the "ideal" caption: text, so Accent2 (the accent as text does not read on the light theme)
+        var danger = Res("Danger", Color.FromRgb(0xF2, 0x6B, 0x6B));
+        var overLimit = Res("DangerTint", Color.FromArgb(0x70, 0xF2, 0x6B, 0x6B));
         double left = TrackLeft, right = TrackRight;
         double ppd = VisualTreeHelper.GetDpi(this).PixelsPerDip;
-        var face = new Typeface(new FontFamily("Segoe UI"), FontStyles.Normal, FontWeights.Normal, FontStretches.Normal);
-        var bold = new Typeface(new FontFamily("Segoe UI"), FontStyles.Normal, FontWeights.SemiBold, FontStretches.Normal);
+        var family = TryFindResource("UiFont") as FontFamily ?? new FontFamily("Segoe UI");
+        var face = new Typeface(family, FontStyles.Normal, FontWeights.Normal, FontStretches.Normal);
+        var bold = new Typeface(family, FontStyles.Normal, FontWeights.SemiBold, FontStretches.Normal);
 
         // track, the ideal zone on top, and the part the RAM limit cuts off
         dc.DrawRoundedRectangle(track, null, new Rect(left, TrackY - TrackHeight / 2, right - left, TrackHeight), 2, 2);
@@ -186,9 +194,9 @@ internal sealed class ReplayLengthSlider : FrameworkElement
         if (_limit < Maximum)
         {
             double xl = XOf(_limit);
-            dc.DrawRectangle(new SolidColorBrush(Color.FromArgb(0x70, 0xF2, 0x6B, 0x6B)), null, new Rect(xl, TrackY - TrackHeight / 2, Math.Max(0, right - xl), TrackHeight));
+            dc.DrawRectangle(overLimit, null, new Rect(xl, TrackY - TrackHeight / 2, Math.Max(0, right - xl), TrackHeight));
         }
-        var ideal = new FormattedText("ideal", CultureInfo.CurrentCulture, FlowDirection.LeftToRight, face, 10, accent, ppd);
+        var ideal = new FormattedText("ideal", CultureInfo.CurrentCulture, FlowDirection.LeftToRight, face, 10, accent2, ppd);
         dc.DrawText(ideal, new Point((zl + zr) / 2 - ideal.Width / 2, TrackY - TrackHeight / 2 - 4 - ideal.Height));
 
         // ticks + labels

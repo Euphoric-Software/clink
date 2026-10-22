@@ -202,6 +202,9 @@ public partial class App : System.Windows.Application
             }
         }
 
+        // The theme and accent the user chose, before any window exists: a window takes its brushes from the palette when it loads.
+        UI.ThemeManager.Apply(settings.Theme, settings.Accent);
+
         _controller = new AppController(settings, updater);
         var main = new MainWindow();
         if (dev != null) main.Title = "Clink (dev)";
