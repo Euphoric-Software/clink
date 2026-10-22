@@ -30,8 +30,20 @@ internal sealed class AppController : IDisposable
     public static bool IsDev => InstanceSuffix.Length > 0;
     /// <summary><c>--dev-hotkeys</c>: a dev instance binds its hotkeys too (its hook then swallows those combos system-wide while it runs).</summary>
     public static bool DevHotkeys { get; set; }
+    /// <summary>Hidden <c>--dev-accept-import</c> (test aid): a dev instance imports the other copy's settings the moment one is offered, as if the tray item had been clicked and confirmed.</summary>
+    public static bool DevAcceptImport { get; set; }
+    /// <summary><c>--dev-token</c>: a dev instance keeps the Copium token its settings hold (otherwise it has none).</summary>
+    public static bool DevToken { get; set; }
+    /// <summary><c>--dev-record</c>: a dev instance records. Without it, it starts paused: recording next to the user's game is not what a test run is for.</summary>
+    public static bool DevRecord { get; set; }
+    /// <summary>A dev instance that was not asked to record (<c>--dev-record</c>) starts paused.</summary>
+    internal static bool StartsPaused => IsDev && !DevRecord;
     public static string PipeName => "Clink.Control" + InstanceSuffix;
-    private static string MutexName => "Clink.SingleInstance.6F1B" + InstanceSuffix;
+    internal static string MutexName => "Clink.SingleInstance.6F1B" + InstanceSuffix;
+
+    /// <summary>The switches that make a restarted process this same dev instance (see <see cref="DevOptions.Switches"/>); none for a normal run.</summary>
+    internal static List<string> DevSwitches() =>
+        IsDev ? DevOptions.Switches(Settings.Dir, DevHotkeys, DevRecord, DevToken, SettingsImport.PackagesRoot) : new List<string>();
     private static readonly TimeSpan GameExitGrace = TimeSpan.FromSeconds(5);   // keep recording this long after the game's process is gone
 
     public static AppController Instance { get; private set; } = null!;
@@ -103,7 +115,7 @@ internal sealed class AppController : IDisposable
     private readonly CancellationTokenSource _cts = new();
     private readonly SemaphoreSlim _engineGate = new(1, 1);   // Engine.Start / Stop are not thread-safe against each other
     private System.Windows.Forms.NotifyIcon? _tray;
-    private System.Windows.Forms.ToolStripMenuItem? _statusItem, _clipItem, _pauseItem, _updateItem;
+    private System.Windows.Forms.ToolStripMenuItem? _statusItem, _clipItem, _pauseItem, _updateItem, _importItem;
     private DispatcherTimer? _timer;
     private StatusDotWindow? _dot;
     private static Mutex? s_mutex;
@@ -125,6 +137,7 @@ internal sealed class AppController : IDisposable
     private int _detecting;
     private string _trayText = "";
     private string? _hotkeyNotice;          // said once at start when the main hotkey was claimed for Alt+C or left unset (MigrateHotkeys)
+    private bool _importOffered, _importAccepted;   // another copy's settings were offered in a balloon (once per start); --dev-accept-import has acted
 
     public AppController(Settings settings, Updater updater)
     {
@@ -228,6 +241,9 @@ internal sealed class AppController : IDisposable
 
     public void Start()
     {
+        // A --dev instance does not record unless asked to (--dev-record): it would capture, encode and put toasts over the game the
+        // person running the test is playing. Paused is a state the tray, the window and the hotkeys already know how to leave.
+        if (StartsPaused) { IsPaused = true; Log.Info("dev: paused, nothing is recorded (--dev-record records)"); }
         Monitors = Native.Monitors.Enumerate();
         Library.Load(Settings.ClipsFolder);
         MigrateHotkeys();
@@ -250,11 +266,27 @@ internal sealed class AppController : IDisposable
         if (!IsDev) Updater.StartBackgroundChecks();   // a --dev instance never contacts GitHub
         // A downloaded update was skipped at startup (install failed earlier, read-only folder, elevated): tell the user, once per start.
         if (Updater.InstallProblem is string problem) { Say(problem); ShowBalloon("Clink update not installed", problem); }
-        if (Settings.LoadProblem is string unread) { Say(unread); ShowBalloon("Clink settings not loaded", unread); }   // a hand edit of settings.json that does not parse
+        // A hand edit of settings.json that does not parse, or has values that do not make sense (those keep their defaults).
+        if (Settings.LoadProblem is string unread) { Say(unread); ShowBalloon(Settings.FileWasSkipped ? "Clink settings not loaded" : "Clink settings partly read", unread); }
         // The footer line of MigrateHotkeys is easy to miss when Clink starts in the tray; this is a hotkey it just claimed or left unset.
         if (_hotkeyNotice is string hotkeyNotice) ShowBalloon("Clink hotkey", hotkeyNotice);
+        // Where the settings live. A Clink started from inside a packaged app (the Claude desktop app) sees that app's private copy of
+        // AppData, so says so; a real one took another copy's settings over on a first start (App.RunNormal), or looks for a copy
+        // worth offering (the tray item, below).
+        if (AppDataRedirect.Notice is string redirected) Say(redirected);
+        if (Settings.ImportedFrom is { } taken) Say($"Imported the settings Clink saved while started from inside {taken.FriendlyName} ({taken.SavedLocalText})");
+        SettingsImport.PendingChanged += OnImportPending;
+        if (CanOfferImport) _ = SettingsImport.Scan(Settings);
         RaiseStateChanged();
     }
+
+    /// <summary>
+    /// Another copy's settings are looked for by a real Clink with settings of its own (a fresh one has already taken the newest copy
+    /// over) that is not itself inside a packaged app; a <c>--dev</c> instance looks only where <c>--packages-root</c> says, so a
+    /// test never offers (or accepts) the settings of the person whose machine it runs on.
+    /// </summary>
+    private bool CanOfferImport =>
+        AppDataRedirect.Package == null && Settings.LoadedFromFile && Settings.ImportedFrom == null && (!IsDev || SettingsImport.PackagesRoot != null);
 
     /// <summary>Once a second on the UI thread: game detection, the game-only start/stop rules, and a StateChanged for the stats line.</summary>
     private void Tick()
@@ -393,6 +425,7 @@ internal sealed class AppController : IDisposable
     /// <summary>Installs the downloaded update now: hands over to the new exe and quits.</summary>
     public void UpdateNow()
     {
+        if (IsDev) { Say(Updater.DevModeNote); return; }   // the updates folder is the real Clink's, and the new process would not be this dev instance
         string? pending = Updater.PendingPath;
         if (pending == null || !File.Exists(pending)) { Say("No update downloaded yet"); return; }
         string? problem = Updater.InstallProblemFor(Environment.ProcessPath ?? "");
@@ -400,8 +433,10 @@ internal sealed class AppController : IDisposable
         try
         {
             Log.Info($"update: installing v{Updater.PendingVersion} from {pending}");
-            // Come back the way we are now: visible if the window is open, otherwise in the tray.
-            Updater.LaunchApply(pending, Environment.ProcessPath!, new[] { MainWindowVisible ? "--show" : "--minimized" });
+            // Come back the way we are now: visible if the window is open, otherwise in the tray (and as the same --dev instance, if it is one).
+            var comeBackAs = new List<string> { MainWindowVisible ? "--show" : "--minimized" };
+            comeBackAs.AddRange(DevSwitches());
+            Updater.LaunchApply(pending, Environment.ProcessPath!, comeBackAs);
         }
         catch (Exception ex)
         {
@@ -410,6 +445,120 @@ internal sealed class AppController : IDisposable
             return;
         }
         Quit();
+    }
+
+    // ------------------------------------------------------------------ settings saved by another copy of Clink
+
+    /// <summary>
+    /// <see cref="SettingsImport"/> found (or lost) a copy of the settings, saved inside a packaged app's private AppData, that differs
+    /// from these: the tray menu gets (or loses) "Import settings saved … (Claude copy)…", and the first time per start one balloon
+    /// says so. UI thread.
+    /// </summary>
+    private void OnImportPending()
+    {
+        if (!_ui.CheckAccess()) { _ui.BeginInvoke(OnImportPending); return; }
+        var copy = SettingsImport.Pending;
+        if (_importItem != null)
+        {
+            _importItem.Visible = copy != null;
+            if (copy != null) _importItem.Text = $"Import settings saved {copy.SavedLocalText} ({copy.FriendlyName} copy)…";
+        }
+        if (copy == null) return;
+        if (!_importOffered)
+        {
+            _importOffered = true;
+            ShowBalloon("Clink", "Settings from another copy of Clink found: right-click the tray icon to import");
+        }
+        if (IsDev && DevAcceptImport && !_importAccepted)
+        {
+            _importAccepted = true;
+            Log.Info("import: --dev-accept-import, importing now");
+            ImportForeignSettings(copy);
+        }
+    }
+
+    /// <summary>The tray item: says what the other copy would change and asks. Yes imports and restarts, No turns that copy down for good, Cancel leaves it for later.</summary>
+    private void AskToImport()
+    {
+        var copy = SettingsImport.Pending;
+        if (copy == null) return;
+        string what = copy.Differences.Count > 0 ? string.Join(", ", copy.Differences) : "a few settings";
+        string text = $"Clink also has settings saved {copy.SavedLocalText} by a copy of Clink that was started from inside {copy.FriendlyName}.\n\n"
+            + $"They differ from yours in: {what}.\n\n"
+            + "Import them? Your current settings are kept as settings.pre-import.json, and Clink restarts.\n\n"
+            + "Yes: import and restart.\nNo: keep mine and stop asking about this copy.\nCancel: decide later.";
+        var owner = System.Windows.Application.Current?.MainWindow is { IsVisible: true } w ? w : null;
+        var answer = owner != null
+            ? MessageBox.Show(owner, text, "Clink", MessageBoxButton.YesNoCancel, MessageBoxImage.Question)
+            : MessageBox.Show(text, "Clink", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+        if (answer == MessageBoxResult.Yes) ImportForeignSettings(copy);
+        else if (answer == MessageBoxResult.No) SettingsImport.Decline(Settings, copy);
+    }
+
+    /// <summary>
+    /// Takes over the settings (and the clip links) another copy of Clink saved in a packaged app's private AppData and restarts
+    /// Clink to use them. Saves are frozen first, so no save that is still pending (the window's timer, the updater) can put the
+    /// old settings back; what is replaced is kept as settings.pre-import.json. If the import fails nothing is changed and Clink
+    /// carries on. UI thread (any other is marshalled).
+    /// </summary>
+    public void ImportForeignSettings(ForeignSettings copy)
+    {
+        if (!_ui.CheckAccess()) { _ui.BeginInvoke(() => ImportForeignSettings(copy)); return; }
+        Settings.FreezeSaves();
+        try
+        {
+            Archive.Stop();   // it updates the clip index as it moves clips: nothing may write that file while it is merged
+            SettingsImport.Import(copy);
+        }
+        catch (Exception ex)
+        {
+            Settings.ThawSaves();
+            try { Archive.Start(); } catch { }
+            Log.Error("import: failed", ex);
+            Say("Could not import those settings: " + ex.Message);
+            return;
+        }
+        Say($"Imported the settings saved {copy.SavedLocalText}: restarting Clink");
+        RestartClink();
+    }
+
+    /// <summary>
+    /// Starts Clink again (<c>--show</c> and the same options, so a <c>--dev</c> instance comes back as that instance) and quits this
+    /// one. The single-instance mutex is given up first so the new process can take it. If the new one cannot be started this one
+    /// takes the mutex back and carries on (with saves still frozen when an import has happened: restart by hand).
+    /// </summary>
+    internal void RestartClink()
+    {
+        try
+        {
+            ReleaseSingleInstance();
+            var psi = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = false };
+            foreach (string a in RestartArguments(Environment.GetCommandLineArgs().Skip(1))) psi.ArgumentList.Add(a);
+            Process.Start(psi)?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            Log.Error("restart: could not start Clink again", ex);
+            try { s_mutex = new Mutex(true, MutexName, out _); } catch { }
+            Say("Clink could not restart itself (" + ex.Message + "): quit and start it again to use the imported settings");
+            return;
+        }
+        Quit();
+    }
+
+    /// <summary>
+    /// The command line of the restarted Clink: this one's, without what only makes sense once (a command, --minimized, --no-update),
+    /// with <c>--show</c>; and, for a <c>--dev</c> instance, its dev switches written out the same way every time (<see cref="DevSwitches"/>,
+    /// whichever form it was started with, without the one-start <c>--dev-accept-import</c>). A restart that lost <c>--dev</c> would be a
+    /// normal start: it takes the real Clink's mutex, or forwards a command to it.
+    /// </summary>
+    internal static List<string> RestartArguments(IEnumerable<string> args)
+    {
+        var once = new[] { "--clip", "--trim-last", "--share-last", "--minimized", "--no-update" };
+        var kept = DevOptions.WithoutSwitches(args).Where(a => !once.Contains(a, StringComparer.OrdinalIgnoreCase)).ToList();
+        if (!kept.Contains("--show", StringComparer.OrdinalIgnoreCase)) kept.Add("--show");
+        kept.AddRange(DevSwitches());
+        return kept;
     }
 
     private void OnDisplayChanged(object? sender, EventArgs e)
@@ -990,11 +1139,13 @@ internal sealed class AppController : IDisposable
             menu.Items.Add(_clipItem);
             menu.Items.Add("Share last clip", null, (_, _) => _ui.BeginInvoke(ShareLast));
             menu.Items.Add("Show Clink", null, (_, _) => ShowRequested?.Invoke());
-            _pauseItem = new System.Windows.Forms.ToolStripMenuItem("Pause recording", null, (_, _) => TogglePause());
+            _pauseItem = new System.Windows.Forms.ToolStripMenuItem(IsPaused ? "Resume recording" : "Pause recording", null, (_, _) => TogglePause());
             menu.Items.Add(_pauseItem);
             menu.Items.Add("Open clips folder", null, (_, _) => OpenFolder());
             _updateItem = new System.Windows.Forms.ToolStripMenuItem("Update Clink", null, (_, _) => UpdateNow()) { Visible = false };
             menu.Items.Add(_updateItem);
+            _importItem = new System.Windows.Forms.ToolStripMenuItem("Import settings…", null, (_, _) => _ui.BeginInvoke(AskToImport)) { Visible = false };
+            menu.Items.Add(_importItem);
             menu.Items.Add(new System.Windows.Forms.ToolStripSeparator());
             menu.Items.Add("Quit", null, (_, _) => Quit());
             _tray = new System.Windows.Forms.NotifyIcon
@@ -1049,6 +1200,7 @@ internal sealed class AppController : IDisposable
         Log.Info("Quitting");
         _cts.Cancel();
         _timer?.Stop();
+        SettingsImport.PendingChanged -= OnImportPending;
         SystemEvents.DisplaySettingsChanged -= OnDisplayChanged;
         SystemEvents.PowerModeChanged -= OnPowerModeChanged;
         try { Hotkeys.Uninstall(); } catch { }
