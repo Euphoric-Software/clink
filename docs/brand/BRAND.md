@@ -1,19 +1,19 @@
 # Clink brand reference
 
-One page with everything needed to make something that looks like Clink: which logo file to use where, the colours, the fonts, the words and the interface language. The artwork the app ships is in `Clink/Assets/`; the copies in this folder are for the README and the docs.
+One page with everything needed to make something that looks like Clink: which logo file to use where, the colours, the fonts, the words and the interface language. The logo artwork is in this folder: vector masters (SVG) with PNG renders. The app's own icon is `Clink/Assets/clink.ico`, which `tools/make-icon.ps1` builds from the icon SVGs.
 
 ## Logo system
 
-| Variant | Use | File |
+| Variant | Use | Files (in this folder unless a path is given) |
 | --- | --- | --- |
-| Primary logo (icon + "Clink" wordmark) | Hero, headers, marketing. Made for dark backgrounds | `wordmark-dark.png` (here and in `Clink/Assets/`) |
-| Icon only | Compact use | `icon-256.png` (here and in `Clink/Assets/`, which also has `icon-64.png` and `icon-32.png`) |
-| Monochrome | Light backgrounds and print | `wordmark-light.png`: the wordmark with its white parts (the letters and the dot in the C) in Midnight `#0A0E14`; the cyan ring stays cyan |
-| App icon | Desktop, taskbar, launchers | `Clink/Assets/clink.ico` (16, 20, 24, 32, 40, 48, 64, 128 and 256 px) |
+| Primary logo (the wordmark: the ring C with its dot, then "link") | Hero, headers, marketing. Made for dark backgrounds | `clink-wordmark-on-dark.svg`: the vector master; the ring is cyan, the letters and the dot in the C are `#FCFCFC`. PNG renders: `clink-wordmark-on-dark-1200.png` (1200 x 446 px) and `clink-wordmark-on-dark@2x.png` (215 x 80 px, the 2x export for a 40 px tall logo) |
+| Icon only | Compact use | `clink-icon.svg`: the vector master (a `#111111` rounded square with the cyan ring and a `#FCFCFC` dot); `clink-icon-512.png`: its transparent 512 px render. For the smallest sizes there are pixel-hinted cuts: `clink-icon-16.svg`, `clink-icon-20.svg`, `clink-icon-24.svg` and `clink-icon-28.svg` |
+| Light-background logo | Light backgrounds and print | `clink-wordmark-on-light.svg`: the wordmark with its white parts (the letters and the dot in the C) in Midnight `#0A0E14`; the cyan ring stays cyan. PNG renders: `clink-wordmark-on-light-1200.png` (1200 x 446 px) and `clink-wordmark-on-light@2x.png` (215 x 80 px) |
+| App icon | Desktop, taskbar, launchers | `Clink/Assets/clink.ico`: 20 frames (16, 20, 24, 28, 30, 32, 36, 40, 42, 48, 54, 56, 60, 64, 72, 80, 84, 96, 128 and 256 px), the sizes Windows asks for at 100 to 250 % display scaling. Generated from the icon SVGs by `tools/make-icon.ps1` |
 
-Which asset where: `wordmark-dark.png` on Midnight, Slate or any other dark background; `wordmark-light.png` on white and light backgrounds and in print; `icon-256.png` (or the 64 / 32 px versions) where only the mark fits; `clink.ico` for the executable, the window, taskbar and tray icons.
+Which asset where: `clink-wordmark-on-dark.svg` on Midnight, Slate or any other dark background; `clink-wordmark-on-light.svg` on white and light backgrounds and in print; `clink-icon.svg` (or `clink-icon-512.png`) where only the mark fits, using the pixel-hinted `clink-icon-16.svg`, `clink-icon-20.svg`, `clink-icon-24.svg` or `clink-icon-28.svg` when it is drawn at exactly that size; `clink.ico` for the executable, the window, taskbar and tray icons. Use the SVGs wherever SVG is accepted and the PNGs only where a raster is needed: the 1200 px one where a large image is wanted, the `@2x` one (80 px tall) for a logo shown 40 px tall. `tools/make-icon.ps1` (Windows PowerShell 5.1, nothing else to install) rebuilds `clink.ico` and `clink-icon-512.png` from the icon SVGs, with the same bytes on every run.
 
-In the app: the main window's header shows the wordmark, and the executable, the main and trim windows and the tray icon carry the app icon. The README switches between the two wordmarks with a `<picture>` element (`prefers-color-scheme`).
+In the app: the main window's header shows the text "Clink", not the wordmark, because the wordmark's i-dot blurs at about 20 px. The executable (`<ApplicationIcon>` in `Clink/Clink.csproj`), the main, trim and share windows and the tray icon carry the app icon. `Clink/Services/AppIcons.cs` gives them the frame of exactly the size the shell draws (the small icon and the tray icon at 16 / 20 / 24 / 28 / 32 px, the taskbar button at 1.5 times that, at 100 / 125 / 150 / 175 / 200 % scaling) instead of letting the shell shrink a bigger one, so the tray shows the pixel-hinted cuts at 100 to 175 %. The README switches between the two wordmarks with a `<picture>` element (`prefers-color-scheme`): `clink-wordmark-on-dark.svg` for dark and `clink-wordmark-on-light.svg` for light.
 
 ## Colour palette
 
