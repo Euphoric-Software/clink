@@ -293,40 +293,42 @@
                                             <Button Grid.Column="1" Content="Browse…" Margin="6,0,0,0" Click="BrowseClips_Click" />
                                             <Button Grid.Column="2" Style="{StaticResource GlyphButton}" Content="&#xE8B7;" Margin="6,0,0,0" Click="Folder_Click" ToolTip="Open the folder" />
                                         </Grid>
-                                        <CheckBox x:Name="ArchiveCheck" Content="Archive older clips elsewhere (NAS share, drive or folder)" Margin="2,12,0,0" Checked="ArchiveChanged" Unchecked="ArchiveChanged"
-                                                  ToolTip="Clips move there in the background, slowly, after the rules below; the library keeps working from the archive path" />
-                                        <StackPanel x:Name="ArchivePanel" Margin="0,8,0,0">
-                                            <Grid>
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="*" />
-                                                    <ColumnDefinition Width="Auto" />
-                                                    <ColumnDefinition Width="Auto" />
-                                                </Grid.ColumnDefinitions>
-                                                <TextBox x:Name="ArchivePathBox" LostFocus="ArchivePathBox_LostFocus" KeyDown="PathBox_KeyDown" ToolTip="\\nas\clips, D:\Clips, … Sign in to a share once in Explorer; Clink never asks for credentials" />
-                                                <Button Grid.Column="1" Content="Browse…" Margin="6,0,0,0" Click="BrowseArchive_Click" />
-                                                <Button x:Name="ArchiveTestButton" Grid.Column="2" Content="Test" Margin="6,0,0,0" Click="ArchiveTest_Click" ToolTip="Reachable? Writable? Free space?" />
-                                            </Grid>
-                                            <!-- Each box stays on one line with its unit: the rule wraps between the two parts only. -->
-                                            <WrapPanel Margin="2,8,0,0">
-                                                <TextBlock Style="{StaticResource MutedText}" Text="Move clips older than" VerticalAlignment="Center" Margin="0,0,6,4" />
-                                                <StackPanel Orientation="Horizontal">
-                                                    <TextBox x:Name="ArchiveDaysBox" Width="46" Padding="6,4" TextAlignment="Center" Margin="0,0,6,4" LostFocus="ArchiveRulesChanged" KeyDown="PathBox_KeyDown" ToolTip="0 = off" />
-                                                    <TextBlock Style="{StaticResource MutedText}" Text="days, or when the local folder exceeds" VerticalAlignment="Center" Margin="0,0,6,4" />
-                                                </StackPanel>
-                                                <StackPanel Orientation="Horizontal">
-                                                    <TextBox x:Name="ArchiveGbBox" Width="54" Padding="6,4" TextAlignment="Center" Margin="0,0,6,4" LostFocus="ArchiveRulesChanged" KeyDown="PathBox_KeyDown" ToolTip="0 = off" />
-                                                    <TextBlock Style="{StaticResource MutedText}" Text="GB · whichever comes first" VerticalAlignment="Center" Margin="0,0,0,4" />
-                                                </StackPanel>
-                                            </WrapPanel>
-                                            <Grid Margin="2,6,0,0">
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="*" />
-                                                    <ColumnDefinition Width="Auto" />
-                                                </Grid.ColumnDefinitions>
-                                                <TextBlock x:Name="ArchiveStatus" Style="{StaticResource MutedText}" Text="Archive off" VerticalAlignment="Center" />
-                                                <Button x:Name="ArchiveNowButton" Grid.Column="1" Style="{StaticResource LinkButton}" Content="Archive now" FontSize="12" Margin="8,0,0,0" Click="ArchiveNow_Click" />
-                                            </Grid>
-                                        </StackPanel>
+                                        <!-- Where clips can be archived to: always available, whether or not the automatic moves are on. -->
+                                        <TextBlock Style="{StaticResource FieldLabel}" Margin="2,12,0,3" Text="Archive location (NAS share, drive or folder)" />
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBox x:Name="ArchivePathBox" LostFocus="ArchivePathBox_LostFocus" KeyDown="PathBox_KeyDown" ToolTip="\\nas\clips, D:\Clips, … Sign in to a share once in Explorer; Clink never asks for credentials" />
+                                            <Button Grid.Column="1" Content="Browse…" Margin="6,0,0,0" Click="BrowseArchive_Click" />
+                                            <Button x:Name="ArchiveTestButton" Grid.Column="2" Content="Test" Margin="6,0,0,0" Click="ArchiveTest_Click" ToolTip="Reachable? Writable? Free space?" />
+                                        </Grid>
+                                        <Grid Margin="2,6,0,0">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock x:Name="ArchiveStatus" Style="{StaticResource MutedText}" Text="Archive off" VerticalAlignment="Center" />
+                                            <Button x:Name="ArchiveNowButton" Grid.Column="1" Style="{StaticResource LinkButton}" Content="Archive now…" FontSize="12" Margin="8,0,0,0" Click="ArchiveNow_Click"
+                                                    IsEnabled="False" ToolTipService.ShowOnDisabled="True" ToolTip="Set an archive location first" />
+                                        </Grid>
+                                        <!-- The automatic part: the rules below apply only while this is ticked. -->
+                                        <CheckBox x:Name="ArchiveCheck" Content="Move clips there automatically" Margin="2,12,0,0" Checked="ArchiveChanged" Unchecked="ArchiveChanged"
+                                                  ToolTip="Clips move to the archive location in the background, slowly, by the rules below; the library keeps working from there. Archive now… moves clips by hand, whatever these rules say" />
+                                        <!-- Each box stays on one line with its unit: the rule wraps between the two parts only. -->
+                                        <WrapPanel x:Name="ArchiveRulesPanel" Margin="2,8,0,0">
+                                            <TextBlock Style="{StaticResource MutedText}" Text="Move clips older than" VerticalAlignment="Center" Margin="0,0,6,4" />
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBox x:Name="ArchiveDaysBox" Width="46" Padding="6,4" TextAlignment="Center" Margin="0,0,6,4" LostFocus="ArchiveRulesChanged" KeyDown="PathBox_KeyDown" ToolTip="0 = off" />
+                                                <TextBlock Style="{StaticResource MutedText}" Text="days, or when the local folder exceeds" VerticalAlignment="Center" Margin="0,0,6,4" />
+                                            </StackPanel>
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBox x:Name="ArchiveGbBox" Width="54" Padding="6,4" TextAlignment="Center" Margin="0,0,6,4" LostFocus="ArchiveRulesChanged" KeyDown="PathBox_KeyDown" ToolTip="0 = off" />
+                                                <TextBlock Style="{StaticResource MutedText}" Text="GB · whichever comes first" VerticalAlignment="Center" Margin="0,0,0,4" />
+                                            </StackPanel>
+                                        </WrapPanel>
                                     </StackPanel>
                                 </Border>
                             </StackPanel>

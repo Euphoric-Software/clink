@@ -1042,11 +1042,12 @@ public partial class MainWindow : Window
         catch (Exception ex) { _app.Say("Folder picker failed: " + ex.Message); return null; }
     }
 
+    /// <summary>The days / GB rules apply only to the automatic moves, so only they follow the switch; the location, Test and Archive now… are always there.</summary>
     private void UpdateArchiveEnabled()
     {
-        if (ArchivePanel == null || ArchiveCheck == null) return;
-        ArchivePanel.IsEnabled = ArchiveCheck.IsChecked == true;
-        ArchivePanel.Opacity = ArchiveCheck.IsChecked == true ? 1 : 0.55;
+        if (ArchiveRulesPanel == null || ArchiveCheck == null) return;
+        ArchiveRulesPanel.IsEnabled = ArchiveCheck.IsChecked == true;
+        ArchiveRulesPanel.Opacity = ArchiveCheck.IsChecked == true ? 1 : 0.55;
     }
 
     private void ArchiveChanged(object sender, RoutedEventArgs e)
@@ -1146,24 +1147,25 @@ public partial class MainWindow : Window
         finally { ArchiveTestButton.IsEnabled = true; }
     }
 
-    private async void ArchiveNow_Click(object sender, RoutedEventArgs e)
+    /// <summary>
+    /// "Archive now…": the dialog where the user picks what to move (what the rules pick, or every local clip) and watches it
+    /// happen. It needs a location, nothing else: not the automatic switch and not a rule.
+    /// </summary>
+    private void ArchiveNow_Click(object sender, RoutedEventArgs e)
     {
-        if (!_app.Settings.ArchiveEnabled || string.IsNullOrWhiteSpace(_app.Settings.ArchivePath)) { _app.Say("Turn the archive on and set its location first"); return; }
-        ArchiveNowButton.IsEnabled = false;
-        try
+        // A path typed into the box is taken (or refused) before the dialog opens, as Test does: the dialog must not move
+        // clips to the old saved path while the box showed another.
+        ArchivePathBox_LostFocus(sender, e);
+        if (_archiveRefusal is string refused)
         {
-            await _app.Archive.RunNowAsync();
-            if (_app.Archive.LastRunEligible == 0)
-            {
-                // The run looked and nothing is due: say why, or the button seems to do nothing.
-                var s = _app.Settings;
-                var why = new List<string>();
-                if (s.ArchiveAfterDays > 0) why.Add(s.ArchiveAfterDays == 1 ? "no clip is older than 1 day" : $"no clip is older than {s.ArchiveAfterDays} days");
-                if (s.ArchiveWhenLocalExceedsGB > 0) why.Add($"the clips folder is under {s.ArchiveWhenLocalExceedsGB.ToString("0.##", CultureInfo.InvariantCulture)} GB");
-                _app.Say("Nothing to archive yet" + (why.Count > 0 ? ": " + string.Join(" and ", why) : ""));
-            }
+            _archiveRefusal = null;
+            ArchiveStatus.Text = refused;
+            ArchiveStatus.SetResourceReference(TextBlock.ForegroundProperty, "Warn");
+            return;
         }
-        finally { ArchiveNowButton.IsEnabled = true; RefreshArchiveStatus(); }
+        if (string.IsNullOrWhiteSpace(_app.Settings.ArchivePath)) { _app.Say("Set an archive location first"); return; }
+        new ArchiveWindow(_app) { Owner = this }.ShowDialog();
+        RefreshArchiveStatus();
     }
 
     private bool _archiveReachable;
@@ -1179,6 +1181,10 @@ public partial class MainWindow : Window
         string t = ArchiveStatus.Text;
         bool problem = t.Contains("will retry") || t.Contains("unreachable") || t.Contains("denied") || t.Contains("no rule") || t.Contains("archive location");
         ArchiveStatus.Foreground = (Brush)FindResource(problem ? "Warn" : "Muted");
+        // Archive now… works with any location set, whether or not the automatic moves are on.
+        bool hasLocation = !string.IsNullOrWhiteSpace(_app.Settings.ArchivePath);
+        ArchiveNowButton.IsEnabled = hasLocation;
+        ArchiveNowButton.ToolTip = hasLocation ? "Choose which clips to move to the archive location now" : "Set an archive location first";
     }
 
     // ------------------------------------------------------------------ window chrome
