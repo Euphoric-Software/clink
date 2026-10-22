@@ -322,7 +322,8 @@ What the app does since v0.2.5. Where this section and §§1, 3, 6, 9 and 10 dif
 ### 11.6 Sharing without a token; Copium limits
 
 - **No token.** Share does not end in an error. It opens the **Share window**, a small borderless window, *Share clip*,
-  with the clip's file as a card: its thumbnail, name, *size · length* (*190 MB · 1:30*) and *Drag into Discord, a browser
+  with the clip's file as a card: its thumbnail, name, *size · length* (*190 MB · 1:30*; the length appears only when
+  it is known) and *Drag into Discord, a browser
   upload box or a folder*. Dragging the card is an ordinary file drag that allows **Copy only** (the data carries
   `Preferred DropEffect` = Copy), so Explorer copies the clip into the folder it is dropped on and the original stays in the
   library. *Copy file* puts the same file on the clipboard (Ctrl+V in Discord attaches it, in a folder copies it; Ctrl+C in
@@ -404,9 +405,9 @@ What the app does since v0.2.5. Where this section and §§1, 3, 6, 9 and 10 dif
       as lined up). A rebuilt Mix (all three sources) does not use the baked one, so there is nothing to line up. The
       result is cached per file (`Engine/ClipAlignment.cs`) and used by the player, the editor, Trim and `--trim`. A source
       that cannot be lined up stands alone (`MixPlan.WithoutTracks`): its slider changes only its own track, the editor
-      says *Trimmed by an older Clink: sources cannot be changed inside All audio* (and which volumes only change their
-      own track), and `Trimmer.Trim` refuses a plan that adds it to the Mix or takes it out. A trim of such a file writes
-      the lined-up places, and the mark only when every source was found.
+      says *Recorded or trimmed by an older Clink: sources cannot be changed inside All audio* (and which volumes only
+      change their own track), and `Trimmer.Trim` refuses a plan that adds it to the Mix or takes it out. A trim of such
+      a file writes the lined-up places, and the mark only when every source was found.
     - Rendered tracks are stamped at origin + round(k × 1024 / 48000 s) (`Trimmer.FramePts`), not k truncated frames (which
       drifted a sample per 13 s). `PcmTrackReader` treats a timestamp within 48 frames of where the packet before it ended
       the same in both directions, and places the first packet to the frame. A Mix put together from its sources
@@ -559,11 +560,11 @@ What the app does since v0.2.5. Where this section and §§1, 3, 6, 9 and 10 dif
   pipe (named from a hash of the folder, `.dev.` and eight hex digits, so `--clip` and `--show` only ever reach that
   instance), no updater, no Run-key writes, "Clink (dev)" in the title, tray and toasts, paused unless `--dev-record`, no
   hotkeys bound unless `--dev-hotkeys` (the hook is installed either way, so key capture in the editor works), and no Copium
-  token unless `--dev-token`. A fresh dev folder keeps its clips folder inside it, with automatic updates and run at startup
-  off; whatever its settings file says, every start and every import keeps the instance away from the real clips folder,
-  archive, updates and account (in memory; the log says what changed): a clips folder outside the dev folder becomes
-  `<folder>\clips`, an archive location outside it is switched off and forgotten. Every restart (an import, an update)
-  carries `--dev <folder>` and its flags.
+  token unless `--dev-token`. A fresh dev folder keeps its clips folder inside it, with automatic updates, run at startup
+  and the *Recording started* toast off; whatever its settings file says, every start and every import keeps the instance
+  away from the real clips folder, archive, updates and account (in memory; the log says what changed): a clips folder
+  outside the dev folder becomes `<folder>\clips`, an archive location outside it is switched off and forgotten. Every
+  restart (an import, an update) carries `--dev <folder>` and its flags.
   - **A mistake is an error, exit code 2, before anything starts**, never a normal start (which would take the real
     Clink's mutex or forward to it): an unknown `--dev*` switch, `--dev` twice, `--dev=` with nothing, a dev flag or
     `--packages-root` without `--dev`, a folder that is not a valid path, a `--packages-root` that is the real

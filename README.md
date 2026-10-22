@@ -153,7 +153,8 @@ clicking the version in the footer) checks by hand and opens the release page if
    just uses whatever Copium says to copy. A clip is uploaded once: pressing Share again (or the share hotkey) while
    it uploads waits for that upload. When an upload fails the toast and the clip row say why (*Copium rejected the
    token (…)*, *Copium is having trouble (HTTP 502), try again later*, *Can't reach Copium - check your connection*, …).
-   **Without a Copium token** Share does not fail: it opens the **Share window** with the clip's file. Drag the card into
+   **Without a Copium token** Share does not fail: it opens the **Share window** with the clip's file as a card (its
+   thumbnail, name and *size · length*; the length appears only when it is known). Drag the card into
    Discord, a browser upload box or an Explorer folder (the file is only ever copied, so the clip stays in your library),
    or press *Copy file* and paste with Ctrl+V; *Open folder* shows it in Explorer and *Set up Copium…* brings Clink's
    window forward (the footer says where the token goes: *Clips → Copium*). The window floats above other windows so it
@@ -175,10 +176,11 @@ clicking the version in the footer) checks by hand and opens the release page if
    turning Game or Mic down takes it out of the baked mix again, which can leave a faint trace of it (tick *Voice chat*
    under *Capture → Audio tracks* to keep it as a track). Taking a source out of the mix only cancels when the tracks
    are in step to the sample: a recording of this version and a trim of one keep every track's place exactly (the file
-   says so with a `clk1` brand in its `ftyp`), but a clip an older Clink trimmed lost how its tracks sat against each
-   other, so the editor lines each source up with the Mix by comparing them, and when it cannot be sure of one it says
-   *Trimmed by an older Clink: sources cannot be changed inside All audio*: that source's slider then changes only its own
-   track (`--trim` prints the same note and does the same). The in point snaps to a keyframe (every second by default) so
+   says so with a `clk1` brand in its `ftyp`), but every clip without that mark (recorded or trimmed before v0.2.5)
+   may not have kept how its tracks sat against each other, so the editor lines each source up with the Mix by
+   cross-correlation, and when it cannot find one it says *Recorded or trimmed by an older Clink: sources cannot be
+   changed inside All audio*: that source's slider then changes only its own track (`--trim` prints the same note and
+   does the same). The in point snaps to a keyframe (every second by default) so
    the cut is exact in every player, and the export copies the video without re-encoding. *Save trimmed* writes
    `<clip> (trim).mp4` next to the original (tick *Replace original* to replace the clip with the cut instead), or
    *Save & share*. The *Trim* button on a clip row, the toast's *Trim* and `--trim-last` open the editor directly; a
@@ -206,7 +208,7 @@ Copium Plus also ticks *I have Copium+*. The toast's button reads *Share* withou
   (the 30–90 s stretch is the sweet spot) with the one size/RAM readout right under it, recomputed on every resolution,
   FPS, bitrate, codec, size-target, audio-track or length change, and *Capture cursor*. The readout's figures are
   bitrate × audio tracks × length (resolution and codec decide how good a clip looks at that bitrate, not how big it is):
-  *≈ 156 MB per minute · ≈ 117 MB per 45 s clip* (20 Mbps, four tracks; at 1 h the clip figure becomes the per-hour
+  *≈ 154 MB per minute · ≈ 116 MB per 45 s clip* (20 Mbps, three tracks; at 1 h the clip figure becomes the per-hour
   figure), *≈ 132 MB of RAM for 45 s at 20 Mbps* (red above half of your RAM; the slider refuses lengths that could not
   be allocated at all) and what the size target did, in yellow when no bitrate can make the clip fit or when the replay
   length reaches the target's own limit (Copium's 10 minutes, Copium Plus's 60) - the target then fits a clip of that
@@ -470,10 +472,11 @@ command does not touch it); `--selftest` / `--probe` / `--trim` write `clink-cli
   its title, tray and toasts, no updater (the Updates card says *updates are off in dev mode*) and no Run-key writes.
   It starts **paused** (`--dev-record` records), binds **no hotkeys** (`--dev-hotkeys` binds them, and its keyboard hook
   then swallows those combos system-wide while it runs, so use other keys than the real Clink's) and has **no Copium
-  token** (`--dev-token` keeps the one its settings hold). Whatever its settings file says, a dev instance is kept away
-  from the real clips folder, archive, updates and account (it says what it changed in its log). Two more switches exist
-  for testing the settings import: `--packages-root <folder>` (a made-up `Packages` folder, the only place a dev instance
-  looks for another copy's settings; never the real one) and `--dev-accept-import` (import what is offered, once).
+  token** (`--dev-token` keeps the one its settings hold). A fresh dev folder also switches the *Recording started*
+  toast off. Whatever its settings file says, a dev instance is kept away from the real clips folder, archive, updates
+  and account (it says what it changed in its log). Two more switches exist for testing the settings import:
+  `--packages-root <folder>` (a made-up `Packages` folder, the only place a dev instance looks for another copy's
+  settings; never the real one) and `--dev-accept-import` (import what is offered, once).
   **`--dev` is the only safe way to run a second Clink.** A plain second `Clink.exe` does not start another copy: it
   hands its command (`--clip`, `--share-last`, `--trim-last`, or just *show*) to the Clink that is running and exits, so
   a test run that forgets `--dev` acts on your live session.

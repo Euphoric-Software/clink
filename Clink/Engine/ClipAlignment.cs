@@ -21,7 +21,7 @@ internal sealed class ClipAlignment
     public const int Rate = 48000;
 
     /// <summary>What the editor says (and a trim refuses with) when a source cannot be lined up with the Mix.</summary>
-    public const string OlderClinkNote = "Trimmed by an older Clink: sources cannot be changed inside All audio";
+    public const string OlderClinkNote = "Recorded or trimmed by an older Clink: sources cannot be changed inside All audio";
 
     /// <summary>The audio tracks' names in file order; empty for a file Clink did not write (nothing is known about it).</summary>
     public string[] Names { get; init; } = Array.Empty<string>();
