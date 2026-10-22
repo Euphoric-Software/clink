@@ -186,7 +186,12 @@ clicking the version in the footer) checks by hand and opens the release page if
    may not have kept how its tracks sat against each other, so the editor lines each source up with the Mix by
    cross-correlation, and when it cannot find one it says *Recorded or trimmed by an older Clink: sources cannot be
    changed inside All audio*: that source's slider then changes only its own track (`--trim` prints the same note and
-   does the same). The in point snaps to a keyframe (every second by default) so
+   does the same). Clink reads its clips with the audio tracks' edit lists hidden from Media Foundation (it applies
+   them on Windows Server 2025 and ignores them on Windows 11), so every track starts at 0 on every Windows and Clink
+   puts it where the file says; a check made once per run on a small probe clip (the log's `media:` line says what
+   Media Foundation does) makes sure that holds, and on a Windows where it does not the editor says *This Windows
+   reads clips differently: sources cannot be changed inside All audio*, no cut is marked `clk1` and All audio is not
+   rebuilt. The in point snaps to a keyframe (every second by default) so
    the cut is exact in every player, and the export copies the video without re-encoding. *Save trimmed* writes
    `<clip> (trim).mp4` next to the original (tick *Replace original* to replace the clip with the cut instead), or
    *Save & share*. The *Trim* button on a clip row, the toast's *Trim* and `--trim-last` open the editor directly; a
@@ -322,7 +327,8 @@ Two ways, no plugin needed:
 Other commands: `--show`, `--minimized` (start in the tray), `--no-update` (start without installing a downloaded
 update, handy for a debug build), `--selftest [seconds] [folder] [--codec h264|hevc|av1] [--quiet]` (records headless
 and writes a clip to that folder, the clips folder by default, and prints what it did),
-`--probe <file.mp4> [frame.png] [seconds] [--levels]` (stream timing report, optional decoded frame; `--levels` also
+`--probe <file.mp4> [frame.png] [seconds] [--levels]` (stream timing report, for a Clink clip with its audio as Media
+Foundation reads it and again as Clink does, with the edit lists hidden; optional decoded frame; `--levels` also
 prints the RMS and peak level of every audio track),
 `--trim <in> <out> <start> <end> [--gain Name=value]... [--drop Name]...` (the editor's cut without the window:
 `--gain Game=0.5` or `Game=50%` sets a track's volume the way its slider does, so Game, Mic and Voice shape All audio as
@@ -468,9 +474,11 @@ command does not touch it); `--selftest` / `--probe` / `--trim` write `clink-cli
   meant to have everything runs them so that nothing is skipped by accident. `--unittest` never touches
   `%APPDATA%\Clink`, the single-instance mutex or the control pipe, so it is safe next to a running Clink. `Clink.exe` is
   a GUI-subsystem exe: from PowerShell use `Start-Process .\Clink.exe '--unittest' -Wait -PassThru -NoNewWindow` to see
-  the output and get the exit code. CI does exactly that after the Release build ([`build.yml`](.github/workflows/build.yml))
-  and fails the job on a non-zero exit code. It leaves `CLINK_TESTS_NO_SKIP` unset, so a runner without the AAC encoder
-  skips the mix tests instead of failing.
+  the output and get the exit code. CI does exactly that after the Release build ([`build.yml`](.github/workflows/build.yml),
+  which first logs the runner's Windows build and Media Foundation file versions) and fails the job on a non-zero exit
+  code. It sets `CLINK_TESTS_NO_SKIP=1`: the runner image has the AAC encoder, so a skip there would mean the mix tests
+  had been switched off. `CLINK_EMULATE_ELST=1` runs the tests on a PC as on a Media Foundation that applies the audio edit
+  lists of an MP4, which is what the CI runner (Windows Server 2025) has (`Clink\Tests\EditListEmulation.cs`).
 * `Clink.exe --dev [folder] [--dev-hotkeys] [--dev-record] [--dev-token]` (hidden; `--dev=<folder>` works too) starts a
   **second Clink next to the real one**, for trying a build out. It has its own data folder (settings, clip index, log
   and clips; `%TEMP%\clink-dev` when no folder is given), its own single-instance mutex and control pipe (named from the

@@ -45,6 +45,7 @@ public partial class TrimWindow : Window
     private bool _settingMode;    // SetTrimMode is moving the switch: its Checked / Unchecked are not a click
     private TrackRole[] _roles = Array.Empty<TrackRole>();   // what each row's track is (Mix, Game…), from the names in the file
     private TrackRole[] _unlined = Array.Empty<TrackRole>(); // sources of an older clip that could not be lined up with the Mix: _roles has them standing alone
+    private bool _untrusted;                                  // ... because this Windows failed the timeline self-check (ClipSource), not because of the clip
     private long _openedAt;       // Environment.TickCount64 when the window first showed or was brought forward
 
     private sealed class TrackRow
@@ -134,6 +135,7 @@ public partial class TrimWindow : Window
             _rows.Clear();
             _roles = Array.Empty<TrackRole>();
             _unlined = Array.Empty<TrackRole>();
+            _untrusted = false;
             MixNote.Visibility = Visibility.Collapsed;
             _monitor = -1;
         }
@@ -220,6 +222,7 @@ public partial class TrimWindow : Window
         _monitor = -1;
         _roles = Array.Empty<TrackRole>();
         _unlined = Array.Empty<TrackRole>();
+        _untrusted = false;
         MixNote.Visibility = Visibility.Collapsed;
         if (player.TrackCount == 0)
         {
@@ -237,6 +240,7 @@ public partial class TrimWindow : Window
         var unlined = player.Alignment.Unlined;
         _roles = MixPlan.WithoutTracks(fileRoles, unlined);
         _unlined = unlined.Where(i => i > 0 && i < fileRoles.Length && _roles[i] != fileRoles[i]).Select(i => fileRoles[i]).ToArray();
+        _untrusted = player.Alignment.Untrusted;
         bool remix = MixPlan.CanRemix(_roles);
         for (int i = 0; i < player.TrackCount; i++)
         {
@@ -339,7 +343,7 @@ public partial class TrimWindow : Window
         if (_unlined.Length > 0)
         {
             bool few = _unlined.Length == 1;
-            older = $"{ClipAlignment.OlderClinkNote}. The {JoinNames(_unlined, "and")} volume{(few ? "" : "s")} only change{(few ? "s" : "")} {(few ? "its" : "their")} own track{(few ? "" : "s")}.";
+            older = $"{(_untrusted ? ClipAlignment.UntrustedNote : ClipAlignment.OlderClinkNote)}. The {JoinNames(_unlined, "and")} volume{(few ? "" : "s")} only change{(few ? "s" : "")} {(few ? "its" : "their")} own track{(few ? "" : "s")}.";
         }
         string? baked = null;
         if (missing.Length > 0)
