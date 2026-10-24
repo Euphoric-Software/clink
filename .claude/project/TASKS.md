@@ -10,3 +10,8 @@
 ## Blocked / needs user
 - Live app test not run because the user's installed Clink was running; run the manual test script in STATE.md.
 - Product decision pending: continuing a recording after an arbitrarily long sleep.
+
+## Dev Build channel follow-ups
+- [ ] Merge feature/dev-channel to main (user approval), then create `dev` branch and push it to trigger the first dev build
+- [ ] GUI-check the footer popup with a build using `-p:UpdateRepo=owner/repo`
+- [ ] Optional hardening: split release-dev.yml into a read-only build/test job and a separate publish job

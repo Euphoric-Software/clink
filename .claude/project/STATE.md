@@ -83,3 +83,7 @@ Step 4 done (commit 93af45d): AppController.Recording.cs + RecordingPolicy.cs, h
 
 ## Next action
 Run the manual test script; then Step 5 (see TASKS.md).
+## Dev Build channel (branch `feature/dev-channel`, commit 0eeca0a, from v0.3.0 / 7d26007)
+Done: ReleaseVersion, Updater channel logic (stable unchanged; dev lists releases), Settings.UseDevBuilds/PendingUpdateFrom, footer version popup, release-dev.yml, release.yml ignores v*-dev.* tags, 7 UpdaterChannel tests.
+Verified: Debug+Release forced rebuilds 0 warnings/0 errors; `--unittest` 381 passed/0 failed/0 skipped on both configs, also with CLINK_TESTS_NO_SKIP=1 and CLINK_EMULATE_ELST=1; two senior reviews (ship), findings fixed; GUI popup smoke passed once in an isolated `--dev` instance (disabled-controls state).
+NOT done: `dev` branch not created; nothing pushed; release-dev.yml never run on GitHub; popup enabled state not GUI-tested (needs a build with `-p:UpdateRepo=owner/repo`).
