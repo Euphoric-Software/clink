@@ -196,7 +196,7 @@ public partial class App : System.Windows.Application
         // machine, and a local/debug build must never be overwritten by a release download it did not make. A --dev instance
         // never installs anything.
         bool noUpdate = dev != null || args.Any(a => a.Equals("--no-update", StringComparison.OrdinalIgnoreCase));
-        if (updater.Repo != null && settings.AutoUpdate && !noUpdate && updater.TryGetPendingUpdate(out string pendingExe, out Version pendingVersion))
+        if (updater.Repo != null && settings.AutoUpdate && !noUpdate && updater.TryGetPendingUpdate(out string pendingExe, out ReleaseVersion pendingVersion))
         {
             Log.Info($"Installing downloaded update v{pendingVersion} from {pendingExe}");
             try

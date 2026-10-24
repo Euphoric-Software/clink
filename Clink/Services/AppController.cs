@@ -76,7 +76,7 @@ internal sealed partial class AppController : IDisposable
     /// <summary>A Copium upload token is saved: Share uploads. Without one it opens the share window (the file to drag) instead.</summary>
     public bool HasCopiumToken => !string.IsNullOrWhiteSpace(Settings.CopiumToken);
     /// <summary>Version of a downloaded update waiting to be installed, or null.</summary>
-    public Version? PendingVersion => Updater.PendingVersion;
+    public ReleaseVersion? PendingVersion => Updater.PendingVersion;
 
     /// <summary>Name of the detected game / custom app (process name), or null while none runs. Set by the 1 s detection poll in both recording modes.</summary>
     public string? CurrentGame { get; private set; }
@@ -178,6 +178,7 @@ internal sealed partial class AppController : IDisposable
         Archive = new ArchiveService(settings, Library);
         Updater.UpdateAvailable += info => _ui.BeginInvoke(() => OnUpdateAvailable(info));
         Updater.UpdateReady += version => _ui.BeginInvoke(() => OnUpdateReady(version));
+        Updater.PendingCleared += () => _ui.BeginInvoke(() => OnPendingCleared());
     }
 
     // ------------------------------------------------------------------ single instance
@@ -522,8 +523,9 @@ internal sealed partial class AppController : IDisposable
         Log.Info($"update: v{info.Version} ({info.Tag}) available{(Settings.AutoUpdate ? "" : " (auto-update is off)")}");
     }
 
-    private void OnUpdateReady(Version version)
+    private void OnUpdateReady(ReleaseVersion version)
     {
+        if (Updater.PendingVersion != version) return;   // cleared (or replaced) before this ran on the UI thread
         if (_updateItem != null) { _updateItem.Text = $"Update to v{version}"; _updateItem.Visible = true; }
         string? problem = Updater.InstallProblemFor(Environment.ProcessPath ?? "");
         string msg = problem == null
@@ -534,12 +536,27 @@ internal sealed partial class AppController : IDisposable
         UpdateStateChanged?.Invoke();
     }
 
+    /// <summary>The downloaded update was dropped (Dev Build switched): no "Update to v…" in the tray or the footer any more.</summary>
+    private void OnPendingCleared()
+    {
+        if (Updater.PendingVersion != null) return;   // a newer download became pending meanwhile; OnUpdateReady shows that one
+        if (_updateItem != null) _updateItem.Visible = false;
+        UpdateStateChanged?.Invoke();
+    }
+
     /// <summary>Installs the downloaded update now: hands over to the new exe and quits.</summary>
     public void UpdateNow()
     {
         if (IsDev) { Say(Updater.DevModeNote); return; }   // the updates folder is the real Clink's, and the new process would not be this dev instance
+        // A download made for the other channel (Dev Build switched since) is never installed; dropping it hides the button (PendingCleared).
+        if (Updater.PendingVersion is { } v && !Updater.ShouldInstall(v, Updater.Current, Settings.UseDevBuilds, allowLeaveDev: true))
+        {
+            Updater.DropStalePending();
+            Say($"v{v} was downloaded for the other update channel and is not installed - click the version in the footer to check again");
+            return;
+        }
         string? pending = Updater.PendingPath;
-        if (pending == null || !File.Exists(pending)) { Say("No update downloaded yet"); return; }
+        if (pending == null || Updater.PendingVersion == null || !File.Exists(pending)) { Say("No update downloaded yet"); return; }
         string? problem = Updater.InstallProblemFor(Environment.ProcessPath ?? "");
         if (problem != null) { Say($"Cannot install v{Updater.PendingVersion}: {problem}. Install it by hand from {Updater.UpdatesDir}"); return; }
         try

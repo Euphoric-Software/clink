@@ -10,11 +10,13 @@ using System.Text.RegularExpressions;
 
 namespace Clink.Services;
 
-/// <summary>A newer release found on GitHub. <see cref="ShaUrl"/> is never null: a release without <c>Clink.exe.sha256</c> is not offered.</summary>
-internal sealed record UpdateInfo(Version Version, string Tag, string ExeUrl, long ExeSize, string ShaUrl, string HtmlUrl, string Notes);
+/// <summary>A newer release (or, on the dev channel, dev build) found on GitHub. <see cref="ShaUrl"/> is never null: a release without <c>Clink.exe.sha256</c> is not offered.</summary>
+internal sealed record UpdateInfo(ReleaseVersion Version, string Tag, string ExeUrl, long ExeSize, string ShaUrl, string HtmlUrl, string Notes);
 
 /// <summary>
-/// Self-update from GitHub Releases. Polls <c>/releases/latest</c> for a newer <c>Clink.exe</c> asset, downloads and
+/// Self-update from GitHub Releases. Polls <c>/releases/latest</c> for a newer <c>Clink.exe</c> asset (or, with
+/// <see cref="Settings.UseDevBuilds"/>, the newest of the recent releases and the <c>X.Y.Z-dev.N</c> pre-releases published from the
+/// dev branch; <see cref="ShouldInstall(ReleaseVersion, ReleaseVersion, bool, bool)"/> says what counts as newer), downloads and
 /// verifies it into <c>%LOCALAPPDATA%\Clink\updates</c>, and swaps it over the running exe either on the next start
 /// (<see cref="TryGetPendingUpdate"/>) or right away (<see cref="LaunchApply"/>). The swap itself is done by the
 /// downloaded exe running with <c>--apply-update</c> (<see cref="RunApplyUpdate"/>), so the old file is never
@@ -44,21 +46,24 @@ internal sealed class Updater : IDisposable
     private readonly CancellationTokenSource _cts = new();
     private readonly SemaphoreSlim _gate = new(1, 1);        // one check/download at a time
     private readonly SemaphoreSlim _wake = new(0, 1);        // released by Wake(): cuts the background loop's wait short
-    private readonly Dictionary<Version, int> _attempts = new();
+    private readonly Dictionary<ReleaseVersion, int> _attempts = new();
+    private readonly object _pendingLock = new();            // PendingPath/PendingVersion: set by the check, dropped by the UI too
     private string? _lastDownloadError;
     private Task? _loop;
     private bool _loggedBadRepo;
 
     /// <summary>Version of the running exe, always three components (major.minor.build).</summary>
-    public Version CurrentVersion { get; }
-    /// <summary>Pre-release suffix of the running exe ("beta.1" for 0.2.0-beta.1), null for a release build.</summary>
-    public string? CurrentPrerelease { get; }
-    public bool IsPrerelease => CurrentPrerelease != null;
+    public Version CurrentVersion => Current.Number;
+    /// <summary>Version of the running exe including any pre-release suffix ("0.3.1-dev.57").</summary>
+    public ReleaseVersion Current { get; }
+    /// <summary>Pre-release suffix of the running exe ("beta.1" for 0.2.0-beta.1, "dev.57" for a dev build), null for a release build.</summary>
+    public string? CurrentPrerelease => Current.Prerelease;
+    public bool IsPrerelease => Current.IsPrerelease;
     /// <summary>"0.2.0" or "0.2.0-beta.1": what to show the user.</summary>
-    public string VersionDisplay => Format((CurrentVersion, CurrentPrerelease));
+    public string VersionDisplay => Current.ToString();
     /// <summary>Path of a downloaded, verified newer exe (null until <see cref="UpdateReady"/> fired).</summary>
     public string? PendingPath { get; private set; }
-    public Version? PendingVersion { get; private set; }
+    public ReleaseVersion? PendingVersion { get; private set; }
     /// <summary>Why the last check returned nothing or could not download what it found, or null if nothing went wrong.</summary>
     public string? LastError { get; private set; }
     /// <summary>True when <see cref="LastError"/> is about the check itself; false when the check worked and downloading or installing what it found did not.</summary>
@@ -71,14 +76,17 @@ internal sealed class Updater : IDisposable
     /// <summary>A newer release exists (raised on a background thread, before any download).</summary>
     public event Action<UpdateInfo>? UpdateAvailable;
     /// <summary>A newer exe is downloaded and verified (raised on a background thread).</summary>
-    public event Action<Version>? UpdateReady;
+    public event Action<ReleaseVersion>? UpdateReady;
+    /// <summary><see cref="PendingPath"/> was dropped because the channel or the running exe no longer wants it (raised on any thread).</summary>
+    public event Action? PendingCleared;
 
-    public Updater(Settings settings)
+    public Updater(Settings settings) : this(settings, GetCurrentSemVer()) { }
+
+    /// <summary>With the running version given (the unit tests pretend to be a particular build).</summary>
+    internal Updater(Settings settings, ReleaseVersion current)
     {
         _settings = settings;
-        var current = GetCurrentSemVer();
-        CurrentVersion = current.Version;
-        CurrentPrerelease = current.Prerelease;
+        Current = current;
         // The window shows this in the Updates card ("Last check failed: updates are off in dev mode"), as the status of a --dev instance.
         if (AppController.IsDev) { LastError = DevModeNote.ToLowerInvariant(); CheckFailed = true; }
     }
@@ -140,37 +148,40 @@ internal sealed class Updater : IDisposable
 
     // ------------------------------------------------------------------ versions
 
-    private static (Version Version, string? Prerelease) GetCurrentSemVer()
+    private static ReleaseVersion GetCurrentSemVer()
     {
         var asm = EntryAssembly;
         string? info = asm.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
-        return ParseSemVer(info) ?? (Normalize(asm.GetName().Version ?? new Version(0, 0, 0)), null);
+        var asmVersion = asm.GetName().Version ?? new Version(0, 0, 0);
+        return ReleaseVersion.Parse(info) ?? new ReleaseVersion(new Version(Math.Max(0, asmVersion.Major), Math.Max(0, asmVersion.Minor), Math.Max(0, asmVersion.Build)), null);
     }
 
-    /// <summary>"v1.2.3", "1.2.3+abc123" → (1.2.3, null); "1.2.3-beta.1+abc" → (1.2.3, "beta.1"); null if not a version.</summary>
-    private static (Version Version, string? Prerelease)? ParseSemVer(string? text)
+    /// <summary>
+    /// True if <paramref name="target"/> should replace the running <paramref name="current"/>. A dev build is never installed on
+    /// the stable channel. Otherwise anything newer wins (a release beats the dev builds of its own number, a dev build beats the
+    /// release before it). Leaving a dev build for an older release is a deliberate act: only with <paramref name="allowLeaveDev"/>
+    /// (a manual check, or a download that was verified earlier) does the stable channel go back to a release that sorts lower.
+    /// </summary>
+    internal static bool ShouldInstall(ReleaseVersion target, ReleaseVersion current, bool devChannel, bool allowLeaveDev)
     {
-        if (string.IsNullOrWhiteSpace(text)) return null;
-        string s = text.Trim();
-        if (s.Length > 1 && (s[0] == 'v' || s[0] == 'V')) s = s[1..];
-        int cut = s.IndexOfAny(new[] { '+', ' ' });
-        if (cut >= 0) s = s[..cut];
-        string? pre = null;
-        int dash = s.IndexOf('-');
-        if (dash >= 0) { pre = s[(dash + 1)..]; s = s[..dash]; if (pre.Length == 0) pre = null; }
-        return Version.TryParse(s, out var v) ? (Normalize(v), pre) : null;
+        if (!devChannel && target.IsDevBuild) return false;
+        if (target > current) return true;
+        return !devChannel && current.IsDevBuild && !target.IsPrerelease && allowLeaveDev;
     }
 
-    private static Version? ParseVersion(string? text) => ParseSemVer(text)?.Version;
+    /// <summary><see cref="ShouldInstall(ReleaseVersion, ReleaseVersion, bool, bool)"/> for the running exe and the channel chosen in settings.</summary>
+    private bool ShouldInstall(ReleaseVersion target, bool allowLeaveDev) => ShouldInstall(target, Current, _settings.UseDevBuilds, allowLeaveDev);
 
-    private static Version Normalize(Version v) => new(Math.Max(0, v.Major), Math.Max(0, v.Minor), Math.Max(0, v.Build));
+    /// <summary>
+    /// allowLeaveDev for what is found in the updates folder at startup (<see cref="TryGetPendingUpdate"/>, <see cref="CleanupInstalled"/>):
+    /// only a download this very exe made (from a manual check or a channel switch) may take a dev build back to an older release,
+    /// never one an older exe left behind (nor any other file than the recorded download).
+    /// </summary>
+    private bool LeaveDevAllowedAtStart(ReleaseVersion file) =>
+        string.Equals(_settings.PendingUpdateFrom, Current.ToString(), StringComparison.Ordinal)
+        && string.Equals(_settings.PendingUpdateVersion, file.ToString(), StringComparison.Ordinal);
 
-    private static string Format((Version Version, string? Prerelease) v) => v.Prerelease == null ? v.Version.ToString(3) : $"{v.Version.ToString(3)}-{v.Prerelease}";
-
-    /// <summary>True if a release numbered <paramref name="v"/> should replace the running exe. A release with the same number replaces a pre-release build of it.</summary>
-    private bool IsNewer(Version v) => v > CurrentVersion || (v == CurrentVersion && IsPrerelease);
-
-    private static string FileFor(Version v) => Path.Combine(UpdatesDir, $"Clink-{v.ToString(3)}.exe");
+    internal static string FileFor(ReleaseVersion v) => Path.Combine(UpdatesDir, $"Clink-{v}.exe");
 
     /// <summary>
     /// Written by <see cref="LaunchApply"/> before the hand-over (so an apply process that never finishes counts as failed) and by
@@ -195,33 +206,40 @@ internal sealed class Updater : IDisposable
         catch (Exception ex) { return $"cannot read {marker}: {ex.Message}"; }
     }
 
-    private static Version? VersionFromFile(string path)
+    /// <summary>Version in the name <c>Clink-{version}.exe</c> (the inverse of <see cref="FileFor"/>), or null.</summary>
+    internal static ReleaseVersion? VersionFromFile(string path)
     {
         string name = Path.GetFileNameWithoutExtension(path);
-        return name.StartsWith("Clink-", StringComparison.OrdinalIgnoreCase) ? ParseVersion(name[6..]) : null;
+        return name.StartsWith("Clink-", StringComparison.OrdinalIgnoreCase) ? ReleaseVersion.Parse(name[6..]) : null;
     }
 
     /// <summary>Version in an exe's version resource (ProductVersion = InformationalVersion, else FileVersion); null if unreadable.</summary>
-    private static (Version Version, string? Prerelease)? EmbeddedVersion(string path)
+    private static ReleaseVersion? EmbeddedVersion(string path)
     {
         try
         {
             var fvi = FileVersionInfo.GetVersionInfo(path);
-            return ParseSemVer(fvi.ProductVersion) ?? ParseSemVer(fvi.FileVersion);
+            return ReleaseVersion.Parse(fvi.ProductVersion) ?? ReleaseVersion.Parse(fvi.FileVersion);
         }
         catch { return null; }
     }
 
     // ------------------------------------------------------------------ check
 
-    /// <summary>Asks GitHub for the latest release. Returns info only if it is newer than the running version; never throws.</summary>
-    public async Task<UpdateInfo?> CheckAsync(CancellationToken ct)
+    /// <summary>
+    /// Asks GitHub for the latest release (stable channel) or the newest of the 30 most recent releases and dev builds
+    /// (<see cref="Settings.UseDevBuilds"/>). Returns info only if <see cref="ShouldInstall(ReleaseVersion, ReleaseVersion, bool, bool)"/>
+    /// accepts it; <paramref name="manual"/> allows going from a dev build back to an older release. Never throws.
+    /// </summary>
+    public async Task<UpdateInfo?> CheckAsync(CancellationToken ct, bool manual = false)
     {
         string? repo = Repo;
         if (repo == null) { LastError = "updates are not configured in this build"; CheckFailed = true; return null; }
+        bool dev = _settings.UseDevBuilds;   // one channel for the whole check, even if the box is ticked meanwhile
         try
         {
-            using var req = new HttpRequestMessage(HttpMethod.Get, $"https://api.github.com/repos/{repo}/releases/latest");
+            string url = dev ? $"https://api.github.com/repos/{repo}/releases?per_page=30" : $"https://api.github.com/repos/{repo}/releases/latest";
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
             AddHeaders(req);
             req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
             // The whole (small) answer is buffered inside SendAsync, so HttpClient.Timeout also covers a body that stalls.
@@ -233,10 +251,18 @@ internal sealed class Updater : IDisposable
                 Log.Warn($"updater: {LastError}: {Truncate(body)}");
                 return null;
             }
-            var info = ParseRelease(body, out string? problem);
+            string? problem;
+            var info = dev ? PickRelease(body, true, out problem) : ParseRelease(body, false, out problem);
             if (info == null) { LastError = problem ?? "latest release is unusable"; Log.Warn("updater: " + LastError); return null; }
             LastError = null;
-            if (!IsNewer(info.Version)) { Log.Info($"updater: up to date (latest {info.Tag}, running v{VersionDisplay})"); return null; }
+            if (!ShouldInstall(info.Version, Current, dev, allowLeaveDev: manual))
+            {
+                if (!dev && Current.IsDevBuild && info.Version < Current)
+                    Log.Info($"updater: running dev build v{Current}; latest release v{info.Version} is older — Check for updates switches back");
+                else
+                    Log.Info($"updater: up to date (latest {info.Tag}, running v{VersionDisplay})");
+                return null;
+            }
             Log.Info($"updater: v{info.Version} available ({info.ExeSize / 1024} KB) from github.com/{repo}");
             return info;
         }
@@ -263,17 +289,57 @@ internal sealed class Updater : IDisposable
         req.Headers.UserAgent.Add(new ProductInfoHeaderValue("Clink", CurrentVersion.ToString(3)));
     }
 
-    /// <summary>Latest release as an <see cref="UpdateInfo"/>, or null with <paramref name="problem"/> set (pre-release/draft: problem stays null).</summary>
-    private static UpdateInfo? ParseRelease(string json, out string? problem)
+    /// <summary>Answer of <c>/releases/latest</c> as an <see cref="UpdateInfo"/>, or null with <paramref name="problem"/> set (pre-release/draft: problem stays null).</summary>
+    internal static UpdateInfo? ParseRelease(string json, bool devChannel, out string? problem)
     {
         problem = null;
         using var doc = JsonDocument.Parse(json);
-        var root = doc.RootElement;
+        return ParseRelease(doc.RootElement, devChannel, out problem);
+    }
+
+    /// <summary>
+    /// The newest usable entry of a <c>/releases</c> list. GitHub lists by creation date, not by version, so the maximum is
+    /// computed. Drafts, beta pre-releases, dev-looking tags not flagged as pre-release and entries without both assets are skipped.
+    /// Null with <paramref name="problem"/> set when nothing is usable.
+    /// </summary>
+    internal static UpdateInfo? PickRelease(string listJson, bool devChannel, out string? problem)
+    {
+        problem = null;
+        using var doc = JsonDocument.Parse(listJson);
+        if (doc.RootElement.ValueKind != JsonValueKind.Array) { problem = "unexpected answer from GitHub"; return null; }
+        UpdateInfo? best = null;
+        string? lastProblem = null;   // e.g. a missing sha256 asset: says why nothing was usable
+        foreach (var entry in doc.RootElement.EnumerateArray())
+        {
+            if (entry.ValueKind != JsonValueKind.Object) continue;
+            var info = ParseRelease(entry, devChannel, out string? entryProblem);
+            if (entryProblem != null) lastProblem = entryProblem;
+            if (info != null && (best == null || info.Version > best.Version)) best = info;
+        }
+        if (best == null) problem = "no usable release or dev build found" + (lastProblem != null ? $" ({lastProblem})" : "");
+        return best;
+    }
+
+    /// <summary>
+    /// One release object as an <see cref="UpdateInfo"/>, or null (with <paramref name="problem"/> when that is worth telling the user).
+    /// Stable channel: pre-releases are refused. Dev channel: a plain X.Y.Z release or a pre-release tagged X.Y.Z-dev.N is accepted.
+    /// </summary>
+    internal static UpdateInfo? ParseRelease(JsonElement root, bool devChannel, out string? problem)
+    {
+        problem = null;
         if (root.ValueKind != JsonValueKind.Object) { problem = "unexpected answer from GitHub"; return null; }
-        if (Flag(root, "draft") || Flag(root, "prerelease")) return null;
+        if (Flag(root, "draft")) return null;
+        bool prerelease = Flag(root, "prerelease");
+        if (prerelease && !devChannel) return null;
         string tag = Str(root, "tag_name");
-        var version = ParseVersion(tag);
-        if (version == null) { problem = $"cannot parse release tag '{tag}'"; return null; }
+        var parsed = ReleaseVersion.Parse(tag);
+        if (parsed == null) { problem = $"cannot parse release tag '{tag}'"; return null; }
+        var version = parsed.Value;
+        if (devChannel)
+        {
+            // A dev build must be flagged pre-release (so /releases/latest and the stable channel never see it); a release must be a plain X.Y.Z.
+            if (prerelease ? !version.IsDevBuild : version.IsPrerelease) return null;
+        }
         string? exeUrl = null, shaUrl = null; long exeSize = 0;
         if (root.TryGetProperty("assets", out var assets) && assets.ValueKind == JsonValueKind.Array)
         {
@@ -355,8 +421,9 @@ internal sealed class Updater : IDisposable
             progress?.Report(1.0);
 
             File.Move(partial, final, overwrite: true);
-            _settings.PendingUpdateVersion = info.Version.ToString(3);
+            _settings.PendingUpdateVersion = info.Version.ToString();
             _settings.PendingUpdateSha256 = actual;
+            _settings.PendingUpdateFrom = Current.ToString();   // see LeaveDevAllowedAtStart()
             _settings.Save();
             TryDelete(FailedMarker(final));
             TryDelete(InstalledMarker(final));
@@ -410,26 +477,29 @@ internal sealed class Updater : IDisposable
 
     /// <summary>
     /// The exe must report the version its release promises; otherwise installing it would loop forever (the restarted exe
-    /// would still consider the same file newer than itself). Returns null if fine, otherwise why not.
+    /// would still consider the same file newer than itself). The pre-release suffix must match too ("0.3.1-dev.57" is not "0.3.1").
+    /// Returns null if fine, otherwise why not.
     /// </summary>
-    private static string? CheckEmbeddedVersion(string file, Version version)
+    private static string? CheckEmbeddedVersion(string file, ReleaseVersion expected)
     {
         var embedded = EmbeddedVersion(file);
         if (embedded == null) { Log.Warn($"updater: {file} has no readable version resource"); return null; }
-        if (embedded.Value.Version != version || embedded.Value.Prerelease != null)
-            return $"the exe reports v{Format(embedded.Value)} instead of v{version.ToString(3)}";
-        return null;
+        return EmbeddedVersionProblem(embedded.Value, expected);
     }
+
+    /// <summary>The comparison of <see cref="CheckEmbeddedVersion"/>: null if the exe reports exactly <paramref name="expected"/> (suffix included), otherwise why not.</summary>
+    internal static string? EmbeddedVersionProblem(ReleaseVersion embedded, ReleaseVersion expected) =>
+        embedded != expected ? $"the exe reports v{embedded} instead of v{expected}" : null;
 
     /// <summary>
     /// Re-checks a downloaded <c>Clink-&lt;ver&gt;.exe</c> against what was verified when it was downloaded (hash recorded in
     /// settings) and the version it reports, so a file corrupted or swapped in the updates folder since then is never
     /// installed. Returns null if fine, otherwise why not.
     /// </summary>
-    private string? VerifyDownload(string file, Version version)
+    private string? VerifyDownload(string file, ReleaseVersion version)
     {
         if (!LooksLikeExe(file)) return "it is not a Windows executable";
-        if (!string.Equals(_settings.PendingUpdateVersion, version.ToString(3), StringComparison.Ordinal) || string.IsNullOrEmpty(_settings.PendingUpdateSha256))
+        if (!string.Equals(_settings.PendingUpdateVersion, version.ToString(),StringComparison.Ordinal) || string.IsNullOrEmpty(_settings.PendingUpdateSha256))
             return "there is no record of a verified download of this version";
         string actual;
         try { actual = Sha256Hex(file); }
@@ -489,22 +559,22 @@ internal sealed class Updater : IDisposable
     /// failed to install earlier, or cannot be installed by this process; <see cref="InstallProblem"/> then carries the message
     /// for the user where there is something they can do about it.
     /// </summary>
-    public bool TryGetPendingUpdate(out string path, out Version version)
+    public bool TryGetPendingUpdate(out string path, out ReleaseVersion version)
     {
-        path = ""; version = CurrentVersion; InstallProblem = null;
+        path = ""; version = Current; InstallProblem = null;
         try
         {
             // A build without UpdateRepo never downloaded anything; the updates folder is shared by every Clink exe on the machine.
             if (Repo == null || !Directory.Exists(UpdatesDir)) return false;
-            string? best = null; Version? bestVer = null;
+            string? best = null; ReleaseVersion? bestNullable = null;
             foreach (string file in Directory.EnumerateFiles(UpdatesDir, "Clink-*.exe"))
             {
                 if (!file.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) continue;
-                var v = VersionFromFile(file);
-                if (v == null || !IsNewer(v) || (bestVer != null && v <= bestVer)) continue;
-                best = file; bestVer = v;
+                if (VersionFromFile(file) is not { } v) continue;
+                if (!ShouldInstall(v, allowLeaveDev: LeaveDevAllowedAtStart(v)) || (bestNullable is { } b && v <= b)) continue;
+                best = file; bestNullable = v;
             }
-            if (best == null || bestVer == null) return false;
+            if (best == null || bestNullable is not { } bestVer) return false;
 
             if (File.Exists(InstalledMarker(best)))
             {
@@ -547,7 +617,7 @@ internal sealed class Updater : IDisposable
     }
 
     /// <summary>Records why starting a downloaded update failed, in words the user can act on (shown once at startup).</summary>
-    public void ReportInstallFailure(Exception ex, Version version, string pendingExe)
+    public void ReportInstallFailure(Exception ex, ReleaseVersion version, string pendingExe)
     {
         bool appControl = ex.Message.Contains("Application Control", StringComparison.OrdinalIgnoreCase);
         // Kept short: this text comes back at every start inside a longer message, and tray balloons stop at 250 characters.
@@ -649,7 +719,7 @@ internal sealed class Updater : IDisposable
 
         if (installed)
         {
-            Log.Info($"[update] installed v{Format(GetCurrentSemVer())} to {target} (previous exe kept as {backup} until the new one has started)");
+            Log.Info($"[update] installed v{GetCurrentSemVer()} to {target} (previous exe kept as {backup} until the new one has started)");
             TryDelete(FailedMarker(self));
             try { File.WriteAllText(InstalledMarker(self), $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} {target}"); } catch { }
         }
@@ -729,7 +799,11 @@ internal sealed class Updater : IDisposable
             try
             {
                 await Task.Delay(FirstCheckDelay, ct).ConfigureAwait(false);
-                CleanupInstalled();   // after the delay: right after an update the apply process may still be exiting
+                // after the delay: right after an update the apply process may still be exiting. Under the gate so it cannot
+                // delete a download the check is just verifying or making pending.
+                await _gate.WaitAsync(ct).ConfigureAwait(false);
+                try { CleanupInstalled(); }
+                finally { _gate.Release(); }
                 if (!_settings.AutoUpdate) Log.Info("updater: AutoUpdate is off, not checking GitHub (click the version in the footer to check by hand)");
                 DateTime lastCheck = DateTime.MinValue;
                 while (!ct.IsCancellationRequested)
@@ -770,9 +844,11 @@ internal sealed class Updater : IDisposable
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            var info = await CheckAsync(ct).ConfigureAwait(false);
+            // A download from before the channel was switched (or before the running exe changed) may no longer be wanted.
+            DropStalePending();
+            var info = await CheckAsync(ct, manual).ConfigureAwait(false);
             if (info == null) return null;
-            if (PendingVersion != null && PendingVersion >= info.Version) return info;   // already downloaded in this run
+            if (PendingVersion is { } pending && pending >= info.Version && ShouldInstall(pending, allowLeaveDev: true) && PendingPath is { } pendingFile && File.Exists(pendingFile)) return info;   // already downloaded in this run
             UpdateAvailable?.Invoke(info);
             if (!_settings.AutoUpdate) return info;
 
@@ -798,8 +874,7 @@ internal sealed class Updater : IDisposable
                 if (bad == null)
                 {
                     if (failed != null) { Log.Info($"updater: retrying v{info.Version} after an earlier failure ({failed})"); TryDelete(FailedMarker(existing)); }
-                    SetPending(existing, info.Version, "already downloaded");
-                    return info;
+                    return TrySetPending(existing, info.Version, "already downloaded", manual) ? info : null;
                 }
                 Log.Warn($"updater: discarding {existing}: {bad}");
                 TryDelete(existing);
@@ -818,7 +893,7 @@ internal sealed class Updater : IDisposable
             try
             {
                 string path = await DownloadAsync(info, null, ct).ConfigureAwait(false);
-                SetPending(path, info.Version, "downloaded and verified");
+                if (!TrySetPending(path, info.Version, "downloaded and verified", manual)) return null;
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }   // shutting down; an HttpClient timeout is a failure like any other
             catch (Exception ex)
@@ -832,15 +907,52 @@ internal sealed class Updater : IDisposable
         finally { _gate.Release(); }
     }
 
-    private void SetPending(string path, Version version, string how)
+    /// <summary>
+    /// Makes a verified download the pending update, unless the channel chosen <em>now</em> no longer wants it (Dev Build was
+    /// switched while it downloaded; the check itself ran on the channel of its start). Then nothing becomes pending and false is
+    /// returned; the file stays in the updates folder, where the startup scan and <see cref="CleanupInstalled"/> apply the live
+    /// channel too (it is adopted without a new download if the channel is switched back, and deleted at the next start otherwise).
+    /// </summary>
+    internal bool TrySetPending(string path, ReleaseVersion version, string how, bool manual)
     {
-        PendingPath = path;
-        PendingVersion = version;
+        lock (_pendingLock)
+        {
+            if (!ShouldInstall(version, allowLeaveDev: manual))
+            {
+                Log.Info($"updater: v{version} {how}, but the update channel changed meanwhile ({(_settings.UseDevBuilds ? "dev builds" : "releases")}); not offering it");
+                return false;
+            }
+            PendingPath = path;
+            PendingVersion = version;
+        }
+        // Accepted by this exe now (a download adopted from an earlier run included), so the startup scan may install it (LeaveDevAllowedAtStart).
+        string self = Current.ToString();
+        if (_settings.PendingUpdateFrom != self) { _settings.PendingUpdateFrom = self; _settings.Save(); }
         // A problem reported at startup (an earlier failed install) is out of date now; keep only what still blocks installing.
         string? blocked = InstallProblemFor(Environment.ProcessPath ?? "");
         InstallProblem = blocked == null ? null : $"Update to v{version} is downloaded but {blocked}; {HowToInstallByHand}.";
         Log.Info($"updater: v{version} {how}: {path}");
         try { UpdateReady?.Invoke(version); } catch (Exception ex) { Log.Warn("updater: UpdateReady handler: " + ex.Message); }
+        return true;
+    }
+
+    /// <summary>
+    /// Forgets <see cref="PendingPath"/> if the channel chosen now or the running exe no longer wants it (raising <see cref="PendingCleared"/>),
+    /// so it can never be installed by <c>Update to v…</c>. True if something was dropped. The file stays (see <see cref="TrySetPending"/>).
+    /// </summary>
+    public bool DropStalePending()
+    {
+        ReleaseVersion dropped;
+        lock (_pendingLock)
+        {
+            if (PendingVersion is not { } v || (ShouldInstall(v, allowLeaveDev: true) && PendingPath is { } p && File.Exists(p))) return false;
+            dropped = v;
+            PendingPath = null;
+            PendingVersion = null;
+        }
+        Log.Info($"updater: v{dropped} is no longer wanted on the {(_settings.UseDevBuilds ? "dev" : "release")} channel; not offering it");
+        try { PendingCleared?.Invoke(); } catch (Exception ex) { Log.Warn("updater: PendingCleared handler: " + ex.Message); }
+        return true;
     }
 
     /// <summary>
@@ -859,7 +971,7 @@ internal sealed class Updater : IDisposable
             {
                 if (!file.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) continue;
                 var v = VersionFromFile(file);
-                if (v == null || !IsNewer(v)) { TryDelete(file); TryDelete(FailedMarker(file)); TryDelete(InstalledMarker(file)); }
+                if (v == null || !ShouldInstall(v.Value, allowLeaveDev: LeaveDevAllowedAtStart(v.Value))) { TryDelete(file); TryDelete(FailedMarker(file)); TryDelete(InstalledMarker(file)); }
             }
             foreach (string stale in Directory.EnumerateFiles(UpdatesDir, "*.partial")) TryDelete(stale);
             foreach (string marker in Directory.EnumerateFiles(UpdatesDir, "*.failed"))

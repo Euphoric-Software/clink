@@ -1,0 +1,165 @@
+# Publishes a dev build of Clink as a GitHub PRERELEASE whenever the dev branch is
+# pushed (or run by hand from the Actions tab, dev branch only). Clink installs it
+# only when "Dev Build" is ticked in its version popup (click the version in the
+# footer); the stable channel (/releases/latest) never sees a prerelease.
+#
+# Version: X.Y.Z-dev.N. X.Y.Z is <Version> in Clink/Clink.csproj when that is
+# ahead of the latest release (a bumped csproj gives a true prerelease of the
+# planned version), otherwise the latest release with the patch raised by one.
+# Either way it sorts above the shipped release and below that release's own
+# final build. N grows with every dev build (run number, or above the highest
+# existing dev tag); the app compares N numerically.
+#
+# The job runs the unit tests before it publishes: a dev build never ships with
+# failing tests. Only the 10 newest dev builds are kept.
+#
+# Same rules as release.yml: the asset is named exactly "Clink.exe" with a
+# "Clink.exe.sha256" beside it, and every action is pinned to a commit SHA.
+name: Release (dev build)
+
+on:
+  push:
+    branches:
+      - dev
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-dev
+  cancel-in-progress: false
+
+jobs:
+  dev-release:
+    runs-on: windows-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Only the dev branch publishes
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -ne 'refs/heads/dev') { throw "dev builds publish only from the dev branch (this run is on $env:GITHUB_REF)" }
+
+      - name: Build
+        shell: pwsh
+        run: dotnet build Clink/Clink.csproj -c Release
+
+      # Clink.exe is a GUI-subsystem exe: Start-Process -Wait -PassThru -NoNewWindow
+      # is what shows its output and gives its exit code (same as build.yml).
+      - name: Unit tests
+        shell: pwsh
+        timeout-minutes: 10
+        env:
+          CLINK_TESTS_NO_SKIP: '1'
+        run: |
+          $exe = Get-ChildItem -Path Clink/bin/Release -Filter Clink.exe -Recurse | Select-Object -First 1
+          if (-not $exe) { throw 'Clink.exe was not found under Clink/bin/Release' }
+          $run = Start-Process -FilePath $exe.FullName -ArgumentList '--unittest' -Wait -PassThru -NoNewWindow
+          if ($run.ExitCode -ne 0) { throw "Unit tests failed (exit code $($run.ExitCode))" }
+
+      - name: Determine version
+        id: version
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $match = Select-String -Path Clink/Clink.csproj -Pattern '<Version>([^<]+)</Version>' | Select-Object -First 1
+          if (-not $match) { throw 'No <Version> element in Clink/Clink.csproj' }
+          $csproj = [version]($match.Matches[0].Groups[1].Value.Trim() -replace '-.*$', '')
+
+          # The latest (non-prerelease) release; a 404 means there is none yet.
+          $eap = $ErrorActionPreference
+          $ErrorActionPreference = 'Continue'            # gh's stderr must not abort the step before we look at it
+          $PSNativeCommandUseErrorActionPreference = $false
+          $out = (& gh api "repos/$env:GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>&1 | Out-String)
+          $code = $LASTEXITCODE
+          $ErrorActionPreference = $eap
+          if ($code -eq 0) { $latest = [version](($out.Trim() -replace '^v', '') -replace '-.*$', '') }
+          elseif ($out -match 'HTTP 404') { $latest = [version]'0.0.0' }
+          else { throw "Could not read the latest release: $out" }
+
+          if ($csproj -gt $latest) { $xyz = "$($csproj.Major).$($csproj.Minor).$($csproj.Build)" }
+          else { $xyz = "$($latest.Major).$($latest.Minor).$($latest.Build + 1)" }
+
+          # N: the run number, but always above every dev build already published (tags of deleted runs, re-runs, a reset counter).
+          $tags = & gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" --jq '.[].tag_name'
+          if ($LASTEXITCODE -ne 0) { throw 'Could not list the releases' }
+          $maxN = 0
+          foreach ($tag in $tags) {
+            if ($tag -match '^v\d+\.\d+\.\d+-dev\.(\d+)$') { $maxN = [Math]::Max($maxN, [int]$Matches[1]) }
+          }
+          $n = [Math]::Max([int]$env:GITHUB_RUN_NUMBER, $maxN + 1)
+
+          $version = "$xyz-dev.$n"
+          if ($version -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$') { throw "'$version' is not a valid version (expected X.Y.Z-dev.N)" }
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "version=$version"
+          Write-Output "Building Clink $version (csproj $csproj, latest release $latest)"
+
+      - name: Publish
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          UPDATE_REPO: ${{ github.repository }}
+        run: |
+          dotnet publish Clink/Clink.csproj -c Release -o dist "-p:Version=$env:VERSION" "-p:UpdateRepo=$env:UPDATE_REPO"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path dist/Clink.exe)) { throw 'dist/Clink.exe was not produced' }
+          Get-ChildItem dist | Select-Object Name, Length
+
+      - name: Write Clink.exe.sha256
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash -Path dist/Clink.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          $path = Join-Path (Get-Location) 'dist/Clink.exe.sha256'
+          [System.IO.File]::WriteAllText($path, "$hash *Clink.exe`n", [System.Text.UTF8Encoding]::new($false))
+          Get-Content $path
+
+      # The app refuses a download whose embedded version differs from its tag (including the -dev.N part).
+      - name: Check the embedded version
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $embedded = ((Get-Item dist/Clink.exe).VersionInfo.ProductVersion -split '\+')[0]
+          if ($embedded -ne $env:VERSION) { throw "dist/Clink.exe reports '$embedded' but the tag will be v$env:VERSION; the updater would refuse it" }
+          Write-Output "Clink.exe reports $embedded"
+
+      - name: Create GitHub prerelease
+        uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631 # v2.2.2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: Clink v${{ steps.version.outputs.version }} (dev)
+          target_commitish: ${{ github.sha }}
+          prerelease: true
+          make_latest: false
+          generate_release_notes: false
+          fail_on_unmatched_files: true
+          body: Dev build of ${{ github.sha }} from the dev branch. Clink installs it only with Dev Build turned on (click the version in the footer).
+          files: |
+            dist/Clink.exe
+            dist/Clink.exe.sha256
+
+      # Housekeeping: a failure here must not fail a build that was already published.
+      - name: Prune old dev builds
+        continue-on-error: true
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tags = & gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" --jq '.[].tag_name'
+          if ($LASTEXITCODE -ne 0) { throw 'Could not list the releases' }
+          $dev = @($tags | Where-Object { $_ -match '^v\d+\.\d+\.\d+-dev\.(\d+)$' } |
+            Sort-Object { [int]([regex]::Match($_, '-dev\.(\d+)$').Groups[1].Value) } -Descending)
+          foreach ($t in ($dev | Select-Object -Skip 10)) {
+            Write-Output "Deleting $t"
+            & gh release delete $t --cleanup-tag --yes --repo $env:GITHUB_REPOSITORY
+          }

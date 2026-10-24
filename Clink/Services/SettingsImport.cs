@@ -320,6 +320,7 @@ internal static class SettingsImport
         || key.StartsWith("PendingUpdate", StringComparison.OrdinalIgnoreCase)
         || key.Equals(nameof(Settings.LastUpdateCheck), StringComparison.OrdinalIgnoreCase)
         || key.Equals(nameof(Settings.UpdateRepo), StringComparison.OrdinalIgnoreCase)
+        || key.Equals(nameof(Settings.UseDevBuilds), StringComparison.OrdinalIgnoreCase)
         || key.Equals(nameof(Settings.ImportDeclined), StringComparison.OrdinalIgnoreCase);
 
     /// <summary>The settings hold a protected Copium token that cannot be decrypted here (another user's, or another machine's).</summary>
@@ -338,7 +339,7 @@ internal static class SettingsImport
     /// ("video quality", "replay length", "hotkeys", "audio", "alerts", "archive", "clips folder", "Copium token", "theme", ...).
     /// Both are read the way Clink loads settings (a missing key is its default, hotkeys are put in shape), so only a setting that
     /// would really change is listed. This installation's own settings (<see cref="IsOwnKey"/>: where the window sits,
-    /// <c>LastUpdateCheck</c>, <c>UpdateRepo</c>, <c>PendingUpdate*</c>, <c>ImportDeclined</c>), <c>AudioSetupSeen</c> and
+    /// <c>LastUpdateCheck</c>, <c>UpdateRepo</c>, <c>UseDevBuilds</c>, <c>PendingUpdate*</c>, <c>ImportDeclined</c>), <c>AudioSetupSeen</c> and
     /// <c>SchemaVersion</c> are ignored. The Copium token is compared decrypted (the protected text differs on every save) and neither
     /// it nor any other value is ever logged or returned. A token the other copy holds that cannot be decrypted here (another
     /// user or machine) is no difference: an import keeps ours, and the list says so (<see cref="UnusableTokenNote"/>) instead of

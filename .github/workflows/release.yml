@@ -16,6 +16,7 @@ on:
   push:
     tags:
       - 'v*.*.*'
+      - '!v*-dev.*'   # dev builds are published by release-dev.yml
   workflow_dispatch:
 
 permissions:

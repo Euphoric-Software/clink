@@ -324,7 +324,7 @@ internal static class DevModeTests
         Check.Equal(Updater.DevModeNote.ToLowerInvariant(), up.LastError);
         Check.Contains(up.LastError, "dev mode");
         Check.Throws<InvalidOperationException>(() => Updater.LaunchApply(real, @"C:\x\Clink.exe", Array.Empty<string>()));
-        var release = new UpdateInfo(new Version(9, 9, 9), "v9.9.9", "https://example.invalid/Clink.exe", 1, "https://example.invalid/Clink.exe.sha256", "", "");
+        var release = new UpdateInfo(new ReleaseVersion(new Version(9, 9, 9), null), "v9.9.9", "https://example.invalid/Clink.exe", 1, "https://example.invalid/Clink.exe.sha256", "", "");
         Check.Throws<InvalidOperationException>(() => up.DownloadAsync(release, null, CancellationToken.None).GetAwaiter().GetResult());
         Check.Equal("exe", File.ReadAllText(real), "what is in the updates folder is left alone");
         Check.Equal(1, Directory.GetFileSystemEntries(Updater.UpdatesDir).Length);

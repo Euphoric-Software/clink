@@ -123,6 +123,7 @@ internal sealed class Settings
     public double? WindowX { get; set; }
     public double? WindowY { get; set; }
     public bool AutoUpdate { get; set; } = true;               // check GitHub on start + every 6 h, download new releases and install on next start; off = never contact GitHub unprompted
+    public bool UseDevBuilds { get; set; }                     // install dev-branch prereleases (Dev Build in the version popup); per installation, never imported
     public string? UpdateRepo { get; set; }                    // "owner/repo"; overrides the UpdateRepo baked into the exe at build time (validated, logged at start, shown in the version tooltip)
     public DateTime? LastUpdateCheck { get; set; }
 
@@ -161,6 +162,7 @@ internal sealed class Settings
     public double? WindowHeight { get; set; }
     public string? PendingUpdateVersion { get; set; }          // written by the updater: version and SHA-256 of the download it verified in %LOCALAPPDATA%\Clink\updates;
     public string? PendingUpdateSha256 { get; set; }           // the file is hashed again against this before it is ever installed
+    public string? PendingUpdateFrom { get; set; }             // version of the exe that made that download: only that exe may go from a dev build back to it at startup
 
     // ---- v3 (v0.2.5) ----
     /// <summary>dark | light</summary>
