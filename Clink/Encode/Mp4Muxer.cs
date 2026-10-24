@@ -615,6 +615,34 @@ internal sealed class Mp4Muxer : IDisposable
         finally { mux?.Dispose(); }
     }
 
+    /// <summary>What a journal file holds, see <see cref="InspectJournal"/>.</summary>
+    internal enum JournalState { NotAJournal, Empty, HasSamples }
+
+    /// <summary>
+    /// Looks into the journal at <paramref name="idxPath"/> without changing anything. <see cref="JournalState.Empty"/>: a valid header and not one
+    /// whole sample record (a recording that died in its first second, before the first flush). <paramref name="dataStart"/> is where the
+    /// samples begin in the data file (the head's size; 0 when not a journal). I/O errors (the file is in use) propagate.
+    /// </summary>
+    public static JournalState InspectJournal(string idxPath, out long dataStart)
+    {
+        dataStart = 0;
+        using var idx = new FileStream(idxPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 1 << 12);
+        var made = ReadJournalHeader(idx);
+        if (made == null) return JournalState.NotAJournal;
+        dataStart = made.Value.dataStart;
+        Span<byte> r = stackalloc byte[RecordSize];
+        if (idx.ReadAtLeast(r, RecordSize, throwOnEndOfStream: false) < RecordSize || BinaryPrimitives.ReadUInt16LittleEndian(r.Slice(2)) != RecordCheck(r)) return JournalState.Empty;
+        return JournalState.HasSamples;
+    }
+
+    /// <summary>The file starts with the journal's magic ("CLINKIDX"): it is one of ours (even if its header is torn).</summary>
+    public static bool HasJournalMagic(string idxPath)
+    {
+        using var f = new FileStream(idxPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 1 << 12);
+        Span<byte> head = stackalloc byte[8];
+        return f.ReadAtLeast(head, 8, throwOnEndOfStream: false) == 8 && head.SequenceEqual(JournalMagic);
+    }
+
     private static (VideoTrackDesc video, List<AudioTrackDesc> audio, long origin, bool aligned, long dataStart)? ReadJournalHeader(Stream s)
     {
         try { return ReadJournalHeaderCore(s); }

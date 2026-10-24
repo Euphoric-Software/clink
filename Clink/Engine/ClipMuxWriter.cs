@@ -104,7 +104,14 @@ internal sealed class ClipMuxWriter : IDisposable
         if (_mux == null)
         {
             bool ready = _av1 ? _seqObu != null : _ps.Complete(_hevc);
-            if (!ready) { (_pending ??= new()).Add((-1, q, keyframe, data)); return; }
+            if (!ready)
+            {
+                _pendingFirstVideo ??= q;
+                _pendingBytes += data.Length;
+                (_pending ??= new()).Add((-1, q, keyframe, data));
+                CheckPendingCap(q);
+                return;
+            }
             _mux = CreateMuxer();
             if (_pending != null)
             {
@@ -114,9 +121,23 @@ internal sealed class ClipMuxWriter : IDisposable
                     else _mux.WriteAudio(p.track, p.pts, p.data);
                 }
                 _pending = null;
+                _pendingBytes = 0;
             }
         }
         _mux.WriteVideo(q, q, keyframe, data);
+    }
+
+    // A recording has no end in sight: samples held back for parameter sets that never come would fill the memory. A clip is bounded by its ring.
+    private const long PendingMaxSpan100ns = 10 * 10_000_000L;
+    private const long PendingMaxBytes = 64L << 20;
+    private long? _pendingFirstVideo;
+    private long _pendingBytes;
+
+    private void CheckPendingCap(long? videoPts)
+    {
+        if (!_output.IsProgressive) return;
+        if (_pendingBytes > PendingMaxBytes || (_pendingFirstVideo is long first && videoPts is long last && last - first > PendingMaxSpan100ns))
+            throw new InvalidOperationException($"Encoder did not provide parameter sets within {PendingMaxSpan100ns / 10_000_000} s of video or {PendingMaxBytes >> 20} MB");
     }
 
     public void AddAudio(int track, in AacFrame frame)
@@ -124,7 +145,13 @@ internal sealed class ClipMuxWriter : IDisposable
         ObjectDisposedException.ThrowIf(_finished, this);
         if ((uint)track >= (uint)_audio.Count) throw new ArgumentOutOfRangeException(nameof(track));
         _audioCount[track]++;
-        if (_mux == null) (_pending ??= new()).Add((track, frame.Pts, false, frame.Data));
+        if (_mux == null)
+        {
+            // Deferred frames keep a reference to frame.Data: safe, audio frames are never pooled or reused.
+            _pendingBytes += frame.Data.Length;
+            (_pending ??= new()).Add((track, frame.Pts, false, frame.Data));
+            CheckPendingCap(null);
+        }
         else _mux.WriteAudio(track, frame.Pts, frame.Data);
     }
 
