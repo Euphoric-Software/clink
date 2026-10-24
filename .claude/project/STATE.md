@@ -18,7 +18,7 @@ ctor(ClipOutput FastStart(path) | Progressive(inProgress, final), ClipVideoConfi
 
 ## Sink contract (Mp4Muxer progressive mode)
 - Single owner thread for Write*/Flush/Finish/Discard/Dispose.
-- Flush(false) every 1-2 s, Flush(true) every 10-30 s (FlushFileBuffers stalls).
+- Flush(false) every 1 s, Flush(true) every 5 s (contract updated from 10-30 s to 5 s).
 - Know avcC before CreateProgressive (SPS/resolution change => new file).
 - Stop before DurationLimit() with a margin using VideoElapsed100ns, or catch DurationLimitException then Finish.
 - Any other Write* exception => stop writing, Dispose, Recover.
@@ -32,5 +32,30 @@ ctor(ClipOutput FastStart(path) | Progressive(inProgress, final), ClipVideoConfi
 - 32-bit duration limit ~13.25 h.
 - Trimmer loads whole selections in memory (unsuitable for hours-long files until seek-and-stream).
 
+Step 3 done (commit 73abefc): RecordingSink + Engine recording API + SelfTest --record. Verified: build 0 warnings; 360 passed/0 failed/0 skipped (also CLINK_TESTS_NO_SKIP=1); real `--selftest 10 --record` exit 0, 10.47 s HEVC + 5 AAC tracks, dropped video frames 0, clip saved mid-recording OK.
+
+## Engine recording API (Engine.cs)
+- `public bool IsRecording`
+- `public RecordingStatus? Recording`
+- `public event Action<RecordingResult>? RecordingStopped`
+- `public string StartRecording(RecordingOptions options, string? gameHint = null)`
+- `public Task<RecordingResult> StopRecordingAsync()`
+- `public static IReadOnlyList<RecordingResult> RecoverRecordings(string folder)`
+
+## Sink behaviour (RecordingSink)
+- Writer thread "Clink.Recorder"; encoder/audio threads only copy into pooled buffers and enqueue. Starts at ring's last keyframe via shared gate.
+- Byte budget max(64 MB, 15 s at bitrate); drop-to-keyframe backpressure; Overflow stop after 30 s of sustained overflow.
+- Discontinuity if gap >5 s. MaxDuration default 4 h, also limit-60 s of the 32-bit mux duration limit.
+- DiskFull when free space <1 GB, checked every 5 s.
+- Flush(false) 1 s, Flush(true) 5 s.
+- Clean stop: <=800 ms audio catch-up, audio cut at endPts for every track.
+- Taps detached before teardown; Dispose waits <=15 s for an in-flight finish.
+- Recovery never deletes files it cannot positively identify.
+
+## Residual risks
+- Hung disk I/O cannot be interrupted (Dispose waits <=15 s then proceeds).
+- L3 untested (no seam).
+- H1 shutdown race covered by code reading only.
+- Real-file recovery not yet exercised; leftover killed pairs for a manual test are in C:\Users\Jason\AppData\Local\Temp\claude\C--Users-Jason--claude-spares-spare-RBufNV\181a9c26-3628-401c-b06d-642afbeb070d\scratchpad\rec5 and ...\scratchpad\rec7_1500.
 ## Next action
-Step 3: RecordingSink + Engine API (see TASKS.md).
+Step 4: AppController integration (see TASKS.md, incl. review requirements).
