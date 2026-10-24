@@ -1,4 +1,4 @@
-# Tasks
+﻿# Tasks
 
 - [x] Step 1: Mp4Muxer progressive mode + journal + Recover + tests
 - [x] Step 2 (b9591c5): Engine/ClipWriter.cs -> incremental writer (AddVideo/AddAudio/Finish), Write stays a wrapper; existing tests green
@@ -12,6 +12,8 @@
 - Product decision pending: continuing a recording after an arbitrarily long sleep.
 
 ## Dev Build channel follow-ups
-- [ ] Merge feature/dev-channel to main (user approval), then create `dev` branch and push it to trigger the first dev build
+- [x] Merged feature/dev-channel to main (c72fb2d), `dev` created and pushed; first dev build v0.3.1-dev.1 published and verified (run 40130530774)
+- [ ] User: install v0.3.1-dev.1 by hand once (replace running Clink.exe), then tick Dev Build
 - [ ] GUI-check the footer popup with a build using `-p:UpdateRepo=owner/repo`
 - [ ] Optional hardening: split release-dev.yml into a read-only build/test job and a separate publish job
+
