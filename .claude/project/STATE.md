@@ -57,5 +57,29 @@ Step 3 done (commit 73abefc): RecordingSink + Engine recording API + SelfTest --
 - L3 untested (no seam).
 - H1 shutdown race covered by code reading only.
 - Real-file recovery not yet exercised; leftover killed pairs for a manual test are in C:\Users\Jason\AppData\Local\Temp\claude\C--Users-Jason--claude-spares-spare-RBufNV\181a9c26-3628-401c-b06d-642afbeb070d\scratchpad\rec5 and ...\scratchpad\rec7_1500.
+
+Step 4 done (commit 93af45d): AppController.Recording.cs + RecordingPolicy.cs, hotkey/tray/--record. Verified: build 0 warnings; 368 passed/0 failed/0 skipped (also CLINK_TESTS_NO_SKIP=1). Live GUI test not run.
+
+## Controller behaviour (Step 4)
+- Toggle: starts if idle, stops if recording; during the gap between parts or while a start is queued, toggle cancels/stops rather than starting a second recording. A start requested while the recorder is starting is queued (30 s).
+- Policy (RecordingPolicy, keyed on engine run generations): new part for EngineStopped/MaxDuration/Discontinuity, plus autoPart; none for UserStopped/DiskFull/WriteFailed/Overflow/Empty/Unrecoverable. Continuation window 180 s; technical-restart deadline = restart delay + 10 s.
+- Settings-driven engine restarts are postponed until the recording ends. Display change, resume from sleep, GPU loss continue into a new part.
+- Finished file added to library tagged IsRecording (share-last and trim-last skip it).
+- Status dot red with "Recording mm:ss" from IsRecording/Recording status.
+- Recovery of abandoned recordings at startup and on folder change, off the UI thread, single toast.
+- Exit/session end: StopRecordingAsync with 4 s bounded wait.
+
+## Manual test script (Step 4)
+1. Press the record hotkey: toast, click sound, red dot, "Recording mm:ss".
+2. Press it again: stop toast, file in <ClipsFolder>\Recordings, appears in library.
+3. Start a recording, then save a clip with the clip hotkey: clip saved, recording continues.
+4. Start/stop from the tray item; also `Clink.exe --record` toggles.
+5. During recording change a setting that restarts the engine: restart is postponed until the recording stops.
+6. Pause capture while recording: recording ends.
+7. Start recording, kill the process, relaunch: file recovered, exactly one toast.
+8. Start recording, change the display (resolution/monitor): part 2 starts.
+9. Refusals: start while paused/no game (game-only) or low disk gives a clear toast, no recording.
+10. Quit Clink while recording: file finalized (within ~4 s) and playable.
+
 ## Next action
-Step 4: AppController integration (see TASKS.md, incl. review requirements).
+Run the manual test script; then Step 5 (see TASKS.md).
