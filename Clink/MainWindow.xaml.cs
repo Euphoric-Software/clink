@@ -43,6 +43,8 @@ public partial class MainWindow : Window
     private readonly CopiumPlusTick _copiumPlusTick = new();
     private bool _hintShown;
     private bool _checkingUpdate;
+    private bool _recheckUpdate;                          // Dev Build switched while a check was running: check again when it ends
+    private DateTime _versionPopupClosed = DateTime.MinValue;   // StaysOpen=False closes the popup on the mouse-down of the click that would reopen it
     private bool _wide, _layoutApplied;
     private List<MonitorInfo>? _shownMonitors;          // the monitor list the map and label were built from (AppController replaces it on a display change)
     private DateTime _noticeUntil = DateTime.MinValue;   // keep a Say() notice visible this long before the stats line takes the footer back
@@ -279,10 +281,10 @@ public partial class MainWindow : Window
         DotPositionCombo.IsEnabled = s.StatusDot;
 
         AutoUpdateCheck.IsChecked = s.AutoUpdate;
-        VersionText.Text = "v" + _app.Updater.VersionDisplay;
+        VersionText.Text = FooterVersion;
         UpdateVersionText.Text = "Clink v" + _app.Updater.VersionDisplay;
         VersionText.ToolTip = _app.Updater.Repo is string repo
-            ? $"Updates come from github.com/{repo}{(_app.Updater.RepoOverridden ? " (UpdateRepo in settings.json)" : "")} · click to check now"
+            ? $"Updates come from github.com/{repo}{(_app.Updater.RepoOverridden ? " (UpdateRepo in settings.json)" : "")} · click for update options"
             : NoUpdatesText;
         RefreshUpdateState();
         SettingsDirText.Text = "Saved in " + Settings.Dir;
@@ -867,9 +869,51 @@ public partial class MainWindow : Window
         if (_app.Settings.AutoUpdate) _app.Updater.Wake();
     }
 
-    private async void Version_Click(object sender, MouseButtonEventArgs e) => await CheckForUpdatesAsync();
+    /// <summary>The footer version opens a small popup (Dev Build switch, Check for updates) instead of checking at once.</summary>
+    private void Version_Click(object sender, MouseButtonEventArgs e)
+    {
+        // A click on the version while the popup is open closes it (on mouse-down); the mouse-up must not open it again.
+        if (DateTime.UtcNow - _versionPopupClosed < TimeSpan.FromMilliseconds(200)) return;
+        var up = _app.Updater;
+        VersionPopupText.Text = $"Clink v{up.VersionDisplay}" + (up.Current.IsDevBuild ? " · dev build" : "");
+        bool wasLoading = _loading;
+        _loading = true;
+        try { DevBuildCheck.IsChecked = _app.Settings.UseDevBuilds; }
+        finally { _loading = wasLoading; }
+        bool canCheck = up.Repo != null;
+        DevBuildCheck.IsEnabled = canCheck;
+        VersionCheckButton.IsEnabled = canCheck;
+        DevBuildCheck.ToolTip = canCheck
+            ? "Use the latest build from the dev branch instead of the latest release. Dev builds may be unstable; untick to go back to the latest release."
+            : NoUpdatesText;
+        VersionCheckButton.ToolTip = canCheck ? null : NoUpdatesText;
+        VersionPopup.IsOpen = true;
+    }
 
-    private async void CheckUpdate_Click(object sender, RoutedEventArgs e) => await CheckForUpdatesAsync();
+    private void VersionPopup_Closed(object? sender, EventArgs e) => _versionPopupClosed = DateTime.UtcNow;
+
+    /// <summary>Dev Build ticked or unticked: remember it and look on the new channel right away (a manual check, so leaving a dev build is allowed).</summary>
+    private async void DevBuildChanged(object sender, RoutedEventArgs e)
+    {
+        if (_loading) return;
+        _app.Settings.UseDevBuilds = DevBuildCheck.IsChecked == true;
+        _app.Settings.Save();
+        _app.Say(_app.Settings.UseDevBuilds ? "Switched to dev builds - checking…" : "Switched to releases - checking…");
+        VersionPopup.IsOpen = false;
+        VersionText.Text = FooterVersion;
+        // A check (and its download) already running looked on the old channel: check again on this one once it is done.
+        if (_checkingUpdate) { _recheckUpdate = true; return; }
+        await CheckForUpdatesAsync();
+    }
+
+    /// <summary>The footer version; " · dev builds" only where updates exist at all (a --dev instance or a build without UpdateRepo has no channel).</summary>
+    private string FooterVersion => "v" + _app.Updater.VersionDisplay + (_app.Updater.Repo != null && _app.Settings.UseDevBuilds ? " · dev builds" : "");
+
+    private async void CheckUpdate_Click(object sender, RoutedEventArgs e)
+    {
+        VersionPopup.IsOpen = false;
+        await CheckForUpdatesAsync();
+    }
 
     private async Task CheckForUpdatesAsync()
     {
@@ -891,7 +935,7 @@ public partial class MainWindow : Window
             var info = await check;
             string releasePage = info == null || string.IsNullOrEmpty(info.HtmlUrl) ? $"https://github.com/{up.Repo}/releases/latest" : info.HtmlUrl;
             if (info == null) _app.Say(up.LastError != null ? "Update check failed: " + up.LastError : $"You're up to date (v{up.VersionDisplay})");
-            else if (_app.PendingVersion is Version pending && pending >= info.Version) _app.Say($"Update v{info.Version} is ready - click 'Update to v{pending}' to restart");
+            else if (_app.PendingVersion is ReleaseVersion pending && pending >= info.Version) _app.Say($"Update v{info.Version} is ready - click 'Update to v{pending}' to restart");
             else if (!_app.Settings.AutoUpdate)
             {
                 // Nothing is downloaded with auto-update off, so make the answer actionable: show the release.
@@ -907,7 +951,13 @@ public partial class MainWindow : Window
                 OpenUrl(releasePage);
             }
         }
-        finally { _checkingUpdate = false; RefreshUpdateState(); }
+        finally
+        {
+            _checkingUpdate = false;
+            RefreshUpdateState();
+            // Dev Build was switched during this check: look again on the channel chosen now.
+            if (_recheckUpdate) { _recheckUpdate = false; await CheckForUpdatesAsync(); }
+        }
     }
 
     private void OpenUrl(string url)

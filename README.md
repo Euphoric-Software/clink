@@ -138,7 +138,19 @@ and under *App → Updates*, and leaves the download in `%LOCALAPPDATA%\Clink\up
 Updates* also shows *Last check failed: …* when GitHub could not be reached (it gives up after 30 s) and *Update
 problem: …* when a download failed. To turn auto-update off, untick *Install updates automatically* under *App →
 Updates*; this takes effect at once (no restart), Clink then never contacts GitHub on its own, and *Check now* (or
-clicking the version in the footer) checks by hand and opens the release page if there is something newer.
+*Check for updates* in the popup that clicking the version in the footer opens) checks by hand and opens the release
+page if there is something newer.
+
+**Dev builds.** Every push to the `dev` branch publishes a GitHub *prerelease* named `vX.Y.Z-dev.N` (workflow
+`release-dev.yml`, only after the unit tests pass; the 10 newest are kept). Clink ignores them unless you tick *Dev
+Build* in the popup that opens when you click the version in the footer: it then follows the newest of the latest
+release and the dev builds, and installs it like any update. Dev builds may be unstable. Untick *Dev Build* and
+Clink goes back to releases: unticking checks for updates right away, and from a dev build that is newer than the
+latest release this switches back to that release (with auto-update on, the release is downloaded and installed at
+the next start, or at once with *Update to v…*; *Check for updates* does the same later). The background checks
+never go back to an older release on their own. A dev build downloaded before you unticked the box is never
+installed on the release channel. The choice is kept in `UseDevBuilds` in
+`settings.json`, per installation (an import never changes it).
 
 ## Using it
 
@@ -393,6 +405,7 @@ copies of another Clink's settings you turned down, `<package>|<time>`, one per 
 | `HdrKnee` / `HdrPeak` | 0.75 / 4 | tone-mapper shoulder: everything below `knee` (relative to SDR white) is untouched, highlights roll off softly above it |
 | `ClickVolume` | 0.5 | 0..1 |
 | `StartMinimized` | false | |
+| `UseDevBuilds` | `false` | Follow the `dev` branch's prereleases (`vX.Y.Z-dev.N`) instead of only releases: the *Dev Build* box in the popup that opens when you click the version in the footer. Per installation, never imported |
 | `UpdateRepo` | *(built in)* | GitHub `owner/repo` whose releases to install, overriding the repository baked into the exe. Only for your own fork: it is logged at start and shown in the version tooltip |
 
 How `Hotkeys` is put in shape when a file is loaded (nothing that is bound changes what it does): a v0.1 file's single
@@ -425,7 +438,7 @@ and a banner under *App → Settings*) and, for a Clink that is not itself insid
 **What an import does.** It keeps what it replaces as `settings.pre-import.json`, or the next free
 `settings.pre-import.1.json`, `.2.json`, …: an earlier backup is never overwritten, and if the current settings cannot be
 kept first the import stops before anything is changed. It keeps this installation's own values (the window's position
-and size, the updater's state: `PendingUpdate*`, `LastUpdateCheck`, `UpdateRepo`, and `ImportDeclined`); everything else
+and size, the updater's state: `PendingUpdate*`, `LastUpdateCheck`, `UpdateRepo`, `UseDevBuilds`, and `ImportDeclined`); everything else
 comes from the other copy. An incoming Copium token that cannot be decrypted here (another user's, or another machine's)
 never replaces a working one: your own stays, and the offer lists *the incoming Copium token cannot be used on this
 machine* beside what else differs, never as a reason to offer a copy on its own. The clip index is merged as above, its

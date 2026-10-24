@@ -61,7 +61,17 @@
                         <Button x:Name="UpdateButton" Style="{StaticResource LinkButton}" Content="Update" Click="Update_Click" FontSize="12" FontWeight="SemiBold"
                                 Visibility="Collapsed" Margin="0,0,4,0" ToolTip="Restart Clink to install the downloaded update" />
                         <TextBlock x:Name="VersionText" Style="{StaticResource MutedText}" Text="" VerticalAlignment="Center" TextWrapping="NoWrap" Cursor="Hand"
-                                   Margin="4,0,8,0" MouseLeftButtonUp="Version_Click" ToolTip="Click to check for updates" />
+                                   Margin="4,0,8,0" MouseLeftButtonUp="Version_Click" ToolTip="Click for update options" />
+                        <Popup x:Name="VersionPopup" PlacementTarget="{Binding ElementName=VersionText}" Placement="Top" StaysOpen="False" AllowsTransparency="True" PopupAnimation="Fade" Closed="VersionPopup_Closed">
+                            <Border Background="{DynamicResource Panel2}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="6" Padding="10" Margin="0,0,0,2">
+                                <StackPanel>
+                                    <TextBlock x:Name="VersionPopupText" Style="{StaticResource MutedText}" Margin="0,0,0,8" />
+                                    <CheckBox x:Name="DevBuildCheck" Content="Dev Build" Checked="DevBuildChanged" Unchecked="DevBuildChanged" Margin="0,0,0,8" ToolTipService.ShowOnDisabled="True"
+                                              ToolTip="Use the latest build from the dev branch instead of the latest release. Dev builds may be unstable; untick to go back to the latest release." />
+                                    <Button x:Name="VersionCheckButton" Style="{StaticResource LinkButton}" Content="Check for updates" Click="CheckUpdate_Click" HorizontalAlignment="Left" ToolTipService.ShowOnDisabled="True" />
+                                </StackPanel>
+                            </Border>
+                        </Popup>
                         <Button x:Name="FolderButton" Style="{StaticResource LinkButton}" Content="Clips folder" Click="Folder_Click" FontSize="12" />
                     </StackPanel>
                 </Grid>
