@@ -4,6 +4,10 @@
 Manual start/stop recording (branch `feature/manual-recording`).
 Step 1 done: progressive Mp4Muxer + journal/Recover (commit 3855739).
 Verified: Debug build 0 warnings; `--unittest` 321 passed/0 failed/0 skipped (also with CLINK_TESTS_NO_SKIP=1 and CLINK_EMULATE_ELST=1).
+Step 2 done: incremental ClipMuxWriter (commit b9591c5); ClipWriter.Write is a wrapper, clips byte-identical (golden SHA-256 tests). Verified: build 0 warnings; 330 passed/0 failed/0 skipped.
+
+## ClipMuxWriter API
+ctor(ClipOutput FastStart(path) | Progressive(inProgress, final), ClipVideoConfig(Codec, Width, Height, Fps, SequenceHeader?), IReadOnlyList<AudioTrackDesc>, origin100ns, aligned). AddVideo(pts, key, ReadOnlySpan<byte> annexB); AddAudio(track, in AacFrame); NextVideoPts; Flush(durable); ClipMuxResult Finish() (Path, Duration100ns ~ video span, SizeBytes, AudioTracks, VideoSamples, AudioSamples[]); Discard(); Dispose() keeps .rec/.idx. Properties: HasVideo, VideoElapsed100ns, DurationLimit100ns. Single-thread. No monotonic-pts guard: the sink owns it. Progressive mode creates no files until parameter sets are known.
 
 ## Key decisions
 - moov-at-end + sidecar journal chosen over fragmented MP4: keeps box layout identical to clips so Trimmer/ClipSource/ClipAlignment/clk1 brand work unchanged; fMP4 would risk MF edit-list and seeking behaviour.
@@ -29,4 +33,4 @@ Verified: Debug build 0 warnings; `--unittest` 321 passed/0 failed/0 skipped (al
 - Trimmer loads whole selections in memory (unsuitable for hours-long files until seek-and-stream).
 
 ## Next action
-Step 2: incremental ClipWriter (see TASKS.md).
+Step 3: RecordingSink + Engine API (see TASKS.md).
