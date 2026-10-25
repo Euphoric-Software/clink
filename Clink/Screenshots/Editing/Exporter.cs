@@ -16,7 +16,7 @@ namespace Clink.Screenshots.Editing;
 /// shapes. A text note is rendered on a target of its own (its box plus margin, on a 32-pixel lattice of document coordinates),
 /// because WPF's text rasterizer is not translation invariant in the last bit (one level in a few glyph pixels at a tile edge or
 /// on another origin): rendered alone the same way in every case, the text of a tiled export equals the text of an untiled one.
-/// UI thread (WPF drawing objects).
+/// The vector render needs the UI thread (WPF drawing objects); the rest does not (<see cref="ExportAsync"/>).
 /// </summary>
 internal static class Exporter
 {
@@ -27,35 +27,96 @@ internal static class Exporter
 
     private const int Lattice = 32, TextMargin = 32, ShapeMargin = 8;
 
-    /// <summary>The finished picture (a new image, never the document's own buffers).</summary>
+    /// <summary>One WPF render of the vector band, ready to be blended over the composite at (X, Y) (premultiplied BGRA, <c>Width * Height * 4</c> bytes).</summary>
+    internal sealed record VectorLayer(byte[] Pixels, int Width, int Height, int X, int Y);
+
+    /// <summary>Test seam: called with the phase ("compose", "render", "blend") and the managed thread id it runs on. Null in the app.</summary>
+    internal static Action<string, int>? Probe;
+
+    private static void Mark(string phase) => Probe?.Invoke(phase, Environment.CurrentManagedThreadId);
+
+    /// <summary>
+    /// The finished picture (a new image, never the document's own buffers), all on the calling thread. <see cref="ExportAsync"/> gives
+    /// the same bytes with only the WPF drawing on the calling (UI) thread.
+    /// </summary>
     public static BgraImage Export(DocumentState doc, RasterComposer? composer = null)
     {
         composer ??= RasterOps.NewComposer();
-        var composite = composer.Compose(doc);
-        var crop = doc.Crop.Intersect(composite.Bounds);
-        if (crop.IsEmpty) throw new InvalidOperationException("The crop is empty");
-        var result = composite.Crop(crop);
-        if (doc.Vector.IsEmpty) return result;
+        var crop = CropOf(doc);
+        var result = ComposeCrop(doc, composer, crop);
+        BlendLayers(result, RenderLayers(doc, crop));
+        return result;
+    }
 
-        // z-order: a run of shapes, a text note, another run... each blended over the one before
+    /// <summary>
+    /// The same picture as <see cref="Export"/> (byte for byte), but the raster composite and the blend run on worker threads: only
+    /// the vector render (WPF drawing objects and <c>RenderTargetBitmap</c>, which need the UI thread, and are cheap next to the
+    /// raster work) runs on the calling thread, while the composite is computed. Call it from the UI thread.
+    /// </summary>
+    public static async Task<BgraImage> ExportAsync(DocumentState doc, RasterComposer? composer = null)
+    {
+        composer ??= RasterOps.NewComposer();
+        var crop = CropOf(doc);
+        var compose = Task.Run(() => ComposeCrop(doc, composer, crop));
+        List<VectorLayer> layers;
+        try { layers = RenderLayers(doc, crop); }
+        catch
+        {
+            try { await compose.ConfigureAwait(false); } catch { }   // never leave the composer in use behind the caller
+            throw;
+        }
+        var result = await compose;
+        if (layers.Count == 0) return result;
+        await Task.Run(() => BlendLayers(result, layers));
+        return result;
+    }
+
+    private static RectI CropOf(DocumentState doc)
+    {
+        var crop = doc.Crop.Intersect(doc.Base.Bounds);
+        if (crop.IsEmpty) throw new InvalidOperationException("The crop is empty");
+        return crop;
+    }
+
+    /// <summary>The raster composite cut to <paramref name="crop"/> (the part of the export that needs no WPF).</summary>
+    private static BgraImage ComposeCrop(DocumentState doc, RasterComposer composer, RectI crop)
+    {
+        Mark("compose");
+        var composite = composer.Compose(doc);
+        if (!composite.Bounds.Contains(crop)) throw new InvalidOperationException("The composite does not cover the crop");
+        return composite.Crop(crop);
+    }
+
+    /// <summary>Renders the vector band, in z-order: a run of shapes, a text note, another run... (UI thread).</summary>
+    private static List<VectorLayer> RenderLayers(DocumentState doc, RectI crop)
+    {
+        var layers = new List<VectorLayer>();
+        if (doc.Vector.IsEmpty) return layers;
+        Mark("render");
         var run = new List<EditorObject>();
         foreach (var o in doc.Vector)
         {
             if (o is TextNote note)
             {
-                RenderShapes(run, crop, result);
+                RenderShapes(run, crop, layers);
                 run.Clear();
-                RenderText(note, crop, result);
+                RenderText(note, crop, layers);
             }
             else run.Add(o);
         }
-        RenderShapes(run, crop, result);
-        return result;
+        RenderShapes(run, crop, layers);
+        return layers;
     }
 
+    private static void BlendLayers(BgraImage result, List<VectorLayer> layers)
+    {
+        if (layers.Count == 0) return;
+        Mark("blend");
+        foreach (var l in layers) Blend.OverPremultiplied(result, l.Pixels, l.Width, l.Height, l.X, l.Y);
+    }
     // ------------------------------------------------------------------ shapes
 
-    private static void RenderShapes(List<EditorObject> shapes, RectI crop, BgraImage result)
+    private static void RenderShapes(List<EditorObject> shapes, RectI crop, List<VectorLayer> layers)
     {
         if (shapes.Count == 0) return;
         bool tiled = crop.Width > TileThreshold || crop.Height > TileThreshold;
@@ -82,7 +143,7 @@ internal static class Exporter
                 // that part plus a margin that is thrown away, never beyond the crop (its edge is the edge of an untiled render, too)
                 var area = part.Inflate(ShapeMargin).Intersect(cropLocal);
                 var pixels = Render(shapes, crop.X + area.X, crop.Y + area.Y, area.Width, area.Height, new RectI(part.X - area.X, part.Y - area.Y, part.Width, part.Height));
-                Blend.OverPremultiplied(result, pixels, part.Width, part.Height, part.X, part.Y);
+                layers.Add(new VectorLayer(pixels, part.Width, part.Height, part.X, part.Y));
             }
         }
     }
@@ -108,12 +169,12 @@ internal static class Exporter
     private static int FloorLattice(int v) => (int)Math.Floor(v / (double)Lattice) * Lattice;
     private static int CeilLattice(int v) => (int)Math.Ceiling(v / (double)Lattice) * Lattice;
 
-    private static void RenderText(TextNote note, RectI crop, BgraImage result)
+    private static void RenderText(TextNote note, RectI crop, List<VectorLayer> layers)
     {
         var docArea = TextArea(VectorRenderer.TextBounds(note), crop);
         if (docArea.IsEmpty) return;
         var pixels = Render(new[] { note }, docArea.X, docArea.Y, docArea.Width, docArea.Height, new RectI(0, 0, docArea.Width, docArea.Height));
-        Blend.OverPremultiplied(result, pixels, docArea.Width, docArea.Height, docArea.X - crop.X, docArea.Y - crop.Y);
+        layers.Add(new VectorLayer(pixels, docArea.Width, docArea.Height, docArea.X - crop.X, docArea.Y - crop.Y));
     }
 
     // ------------------------------------------------------------------ one render target

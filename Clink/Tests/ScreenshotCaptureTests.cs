@@ -25,6 +25,18 @@ internal static class ScreenshotCaptureTests
         public void ShowNotice(string title, string text, bool paused = false) => Shown.Add("notice: " + title);
         public void ShowProblem(string title, string text) => Shown.Add("problem: " + title);
         public void ShowScreenshot(ScreenshotEntry entry, ScreenshotToastState state) => Shown.Add("screenshot: " + Path.GetFileName(entry.Path));
+        public IScreenshotUploadToast ShowScreenshotUploading(ScreenshotEntry entry) { Shown.Add("uploading: " + Path.GetFileName(entry.Path)); return new Handle(this); }
+
+        private sealed class Handle : IScreenshotUploadToast
+        {
+            private readonly FakeToasts _t;
+            public Handle(FakeToasts t) { _t = t; }
+            public Action? OnCancel { get; set; }
+            public void Report(double fraction) { }
+            public void Succeeded(string link, bool linkCopied) => _t.Shown.Add("shared: " + link + (linkCopied ? " (copied)" : ""));
+            public void Failed() => _t.Shown.Add("upload failed");
+            public void Declined() => _t.Shown.Add("upload declined");
+        }
     }
 
     private sealed class FakeSource : IScreenshotSource
@@ -90,6 +102,7 @@ internal static class ScreenshotCaptureTests
         var s = Settings.FromJson("{}");
         s.ClipsFolder = dir.File("clips");
         s.ScreenshotCopyImage = false;      // never the real clipboard
+        s.ScreenshotUpload = false;         // these tests are about capture; the upload / nudge have their own (ScreenshotUploadTests)
         s.ClickSound = false;
         var toasts = new FakeToasts();
         var picker = new FakePicker();

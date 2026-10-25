@@ -30,8 +30,11 @@
                 <Button Content="Open" Margin="8,0,0,0" Click="Open_Click" />
             </StackPanel>
             <StackPanel x:Name="ScreenshotButtons" Grid.Row="2" Orientation="Horizontal" Margin="16,10,0,0" Visibility="Collapsed">
-                <Button Style="{StaticResource AccentButton}" Content="Open" MinWidth="72" Click="ShotOpen_Click" />
+                <Button x:Name="ShotOpenButton" Style="{StaticResource AccentButton}" Content="Open" Click="ShotOpen_Click" />
                 <Button Content="Edit" Margin="8,0,0,0" Click="ShotEdit_Click" AutomationProperties.Name="Edit the screenshot" ToolTip="Open the screenshot in the editor" />
+                <!-- Upload (a token is set and no automatic upload follows) / Uploading 42% / Copy link (uploaded); collapsed otherwise. MinWidth: as wide as "Uploading… 100%". -->
+                <Button x:Name="ShotUploadButton" Content="Upload" Margin="8,0,0,0" MinWidth="64" Visibility="Collapsed" Click="ShotUpload_Click"
+                        AutomationProperties.Name="Upload the screenshot to Copium" ToolTip="Upload the screenshot to Copium" />
                 <Button Content="Folder" Margin="8,0,0,0" Click="ShotFolder_Click" />
             </StackPanel>
         </Grid>

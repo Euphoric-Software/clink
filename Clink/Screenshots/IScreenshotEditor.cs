@@ -29,6 +29,8 @@ internal sealed class EditorRequest
     /// each file on disk there too. Null = no list.
     /// </summary>
     public Func<(IReadOnlyList<ScreenshotEntry> Entries, IReadOnlyList<string> Exclude)>? Recent { get; init; }
+    /// <summary>The editor window (and its picture picker) is kept out of screen captures and recordings (<see cref="Services.Settings.ScreenshotEditorExcludeFromCapture"/>, hidden, on by default).</summary>
+    public bool ExcludeFromCapture { get; init; } = true;
 }
 
 /// <summary>The editor window the service opens (a made-up one in tests). UI thread.</summary>

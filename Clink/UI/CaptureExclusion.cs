@@ -9,7 +9,11 @@ namespace Clink.UI;
 /// window), so that its tooltips are too: a tooltip is a window of its own, and would be recorded into a clip over a game.
 /// A window class that implements it calls <see cref="CaptureExclusion.Register"/> from its static constructor.
 /// </summary>
-internal interface ICaptureExcludedWindow { }
+internal interface ICaptureExcludedWindow
+{
+    /// <summary>False when the window opted out (a setting): it is then an ordinary window, tooltips included.</summary>
+    bool CaptureExcluded => true;
+}
 
 internal static class CaptureExclusion
 {
@@ -46,7 +50,7 @@ internal static class CaptureExclusion
     internal static bool IsExcluded(Window? window)
     {
         for (int depth = 0; window != null && depth < 16; window = window.Owner, depth++)
-            if (window is ICaptureExcludedWindow) return true;
+            if (window is ICaptureExcludedWindow { CaptureExcluded: true }) return true;
         return false;
     }
 }

@@ -59,6 +59,12 @@ public partial class ClipsPane : UserControl
 
     private static AppController App => AppController.Instance;
 
+    /// <summary>Cloud sharing was switched: every row shows or hides its Share button (a row with a link keeps "Copy link").</summary>
+    public void RefreshShareButtons()
+    {
+        foreach (var row in _rows.Values.ToList()) row.Refresh();
+    }
+
     /// <summary>Re-reads the library. Rows for entries already shown keep their thumbnail and upload state.</summary>
     public void Refresh()
     {
@@ -307,25 +313,30 @@ public partial class ClipsPane : UserControl
         var progress = new Progress<double>(p => { row.Progress = p; row.Status = $"Uploading… {p:P0}"; });
         bool ok = await App.ShareAsync(row.Entry, progress);
         row.IsUploading = false;
-        if (!ok && App.LastShareOutcome == ShareOutcome.FileShareOpened)
-        {
-            // No Copium token: the share window opened with this clip's file to drag. Nothing failed, so no status line (not amber).
-            row.Status = null;
-            row.IsProblem = false;
-            return;
-        }
-        // Refused by Copium's limits, or failed and why (Copium's answer, the network); the tooltip has all of it. The rare "could not
-        // open the share window" (no token) is no upload failure: it is said as it is.
-        row.Status = ok ? "Link copied to clipboard"
-            : App.ShareRefusal ?? (App.LastShareOutcome == ShareOutcome.WindowFailed ? AppController.ShareWindowFailedText
-                : App.ShareError is string why ? "Upload failed: " + why : "Upload failed");
-        row.IsProblem = !ok;
+        var (status, problem) = ShareStatusFor(ok, App.LastShareOutcome, App.ShareRefusal, App.ShareError, App.Settings.CloudSharingEnabled);
+        row.Status = status;
+        row.IsProblem = problem;
+        if (status == null) return;   // the share window opened (no token): nothing failed, no status line
         row.Refresh();
         if (ok)
         {
             Refresh();   // the entry is now shared: it joins the Shared tab and gets the cloud icon
             _ = Task.Delay(4000).ContinueWith(_ => Dispatcher.BeginInvoke(() => { if (row.Status?.StartsWith("Link") == true) row.Status = null; }));
         }
+    }
+
+    /// <summary>
+    /// The row's status line (null = none) and whether it is a problem (amber) after a share. Not shared on purpose is neutral: the
+    /// share window opened (no token), or the user said "Not now" / cloud sharing was switched off meanwhile. Copium's limits, a
+    /// failed upload and a share window that could not open are problems. Pure.
+    /// </summary>
+    internal static (string? Status, bool Problem) ShareStatusFor(bool ok, ShareOutcome outcome, string? refusal, string? error, bool cloudOn)
+    {
+        if (ok) return ("Link copied to clipboard", false);
+        if (outcome == ShareOutcome.FileShareOpened) return (null, false);
+        if (outcome == ShareOutcome.Declined) return (cloudOn ? "Not shared" : "Not shared: cloud sharing is off", false);
+        return (refusal ?? (outcome == ShareOutcome.WindowFailed ? AppController.ShareWindowFailedText
+            : error is string why ? "Upload failed: " + why : "Upload failed"), true);
     }
 
     // Trim / folder / Play look for the file first (EnsureFileAsync): an archived clip on an offline NAS says "archive offline"
@@ -413,7 +424,9 @@ public partial class ClipsPane : UserControl
         var row = RowOf(sender);
         string? url = row?.Entry.CopiumPageUrl ?? row?.Link;
         if (url == null) return;
-        try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); }
+        // The address came from the server or from the clip list file: only an https address is handed to the shell.
+        if (!Clink.Services.CopiumClient.IsHttpsUrl(url, out var page)) { Log.Warn("clips: not opened: the clip's link is not an https address"); return; }
+        try { Process.Start(new ProcessStartInfo(page.AbsoluteUri) { UseShellExecute = true }); }
         catch (Exception ex) { App.Say("Could not open the browser: " + ex.Message); }
     }
 }
@@ -455,6 +468,8 @@ internal sealed class ClipRow : INotifyPropertyChanged
         }
     }
     public string ShareLabel => HasLink ? "Copy link" : "Share";
+    /// <summary>The Share button shows: always for a clip that has a link (Copy link needs no network), otherwise only while cloud sharing is on (Settings → App).</summary>
+    public bool ShareVisible => HasLink || AppController.Instance?.Settings.CloudSharingEnabled != false;
     public bool HasLink => !string.IsNullOrEmpty(Entry.CopiumLink);
     public string? Link => Entry.CopiumLink;
     public bool IsShared => Entry.IsShared;
@@ -505,7 +520,7 @@ internal sealed class ClipRow : INotifyPropertyChanged
 
     public void Refresh()
     {
-        foreach (var p in new[] { nameof(ShareLabel), nameof(HasLink), nameof(Link), nameof(Meta), nameof(CloudMeta), nameof(Title), nameof(IsShared), nameof(IsTrim), nameof(IsArchived), nameof(IsLocalOnly), nameof(ArchiveTip) })
+        foreach (var p in new[] { nameof(ShareLabel), nameof(ShareVisible), nameof(HasLink), nameof(Link), nameof(Meta), nameof(CloudMeta), nameof(Title), nameof(IsShared), nameof(IsTrim), nameof(IsArchived), nameof(IsLocalOnly), nameof(ArchiveTip) })
             Raise(p);
     }
 

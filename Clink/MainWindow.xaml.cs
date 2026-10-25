@@ -79,6 +79,10 @@ public partial class MainWindow : Window
         _app.Notice += msg => Dispatcher.BeginInvoke(() => { FooterText.Text = msg; _noticeUntil = DateTime.UtcNow.AddSeconds(Math.Clamp(msg.Length / 15.0, 4, 10)); });
         _app.ClipSaved += _ => Dispatcher.BeginInvoke(() => Clips.Refresh());
         _app.ShowRequested += () => Dispatcher.BeginInvoke(ShowFromTray);
+        _app.CopiumSetupRequested += () => Dispatcher.BeginInvoke(FocusTokenBox);   // after ShowRequested (it is raised first): the window is up by then
+        _app.CloudSharingChanged += () => Dispatcher.BeginInvoke(UpdateCloudUi);
+        _app.Consent.ConsentChanged += () => Dispatcher.BeginInvoke(SyncScreenshotChecks);
+        _app.FeaturesChanged += () => Dispatcher.BeginInvoke(SyncFeatureUi);
         _app.TrimLastRequested += () => Dispatcher.BeginInvoke(async () =>
         {
             // File.Exists on an archived entry is a share round trip that can stall for the SMB timeout: look on a worker.
@@ -187,9 +191,10 @@ public partial class MainWindow : Window
     private void ApplyLayout()
     {
         bool wide = ActualWidth >= WideWidth;
-        if (_layoutApplied && wide == _wide) return;
-        _wide = wide; _layoutApplied = true;
-        if (wide)
+        bool clips = _app.Settings.ClipsEnabled;
+        if (_layoutApplied && wide == _wide && clips == _clipsShown) return;
+        _wide = wide; _clipsShown = clips; _layoutApplied = true;
+        if (wide && clips)
         {
             ClipsTab.Content = null;
             if (ReferenceEquals(Tabs.SelectedItem, ClipsTab)) Tabs.SelectedIndex = 0;
@@ -208,8 +213,92 @@ public partial class MainWindow : Window
             RightCol.Width = new GridLength(0);
             Clips.Margin = new Thickness(0, 8, 0, 0);
             ClipsTab.Content = Clips;
-            ClipsTab.Visibility = Visibility.Visible;
+            ClipsTab.Visibility = clips ? Visibility.Visible : Visibility.Collapsed;   // (Clips feature off: no Library, wide or narrow)
+            if (!clips && ReferenceEquals(Tabs.SelectedItem, ClipsTab)) SelectFirstVisibleTab();
         }
+    }
+
+    private bool _clipsShown = true;
+
+    /// <summary>The selected tab was hidden (a feature was turned off): the first tab that is still shown takes over.</summary>
+    private void SelectFirstVisibleTab()
+    {
+        var first = Tabs.Items.OfType<TabItem>().FirstOrDefault(t => t.Visibility == Visibility.Visible);
+        if (first != null) Tabs.SelectedItem = first;
+    }
+
+    // ------------------------------------------------------------------ features (Settings → App → Features)
+
+    private bool _syncingUi;   // a checkbox is being set from the settings: its Checked / Unchecked is not a user choice
+
+    /// <summary>
+    /// The Features checkboxes show the settings (the last feature that is on cannot be turned off: its box is disabled and says why),
+    /// and the window follows them: with Clips off the Capture, Clips and Library tabs and the footer's folder link are hidden, with
+    /// Screenshots off its tab is. Live: no restart.
+    /// </summary>
+    private void SyncFeatureUi()
+    {
+        var s = _app.Settings;
+        _syncingUi = true;
+        try
+        {
+            FeatureClipsCheck.IsChecked = s.ClipsEnabled;
+            FeatureScreenshotsCheck.IsChecked = s.ScreenshotsEnabled;
+        }
+        finally { _syncingUi = false; }
+        FeatureClipsCheck.IsEnabled = !(s.ClipsEnabled && !s.ScreenshotsEnabled);
+        FeatureScreenshotsCheck.IsEnabled = !(s.ScreenshotsEnabled && !s.ClipsEnabled);
+        FeaturesHint.Visibility = FeatureClipsCheck.IsEnabled && FeatureScreenshotsCheck.IsEnabled ? Visibility.Collapsed : Visibility.Visible;
+        // Capture stays whenever any feature is on (the screenshot hotkeys live there): with Clips off only HOTKEYS remains.
+        CaptureTab.Visibility = Visibility.Visible;
+        CopiumTab.Visibility = s.ClipsEnabled ? Visibility.Visible : Visibility.Collapsed;   // Storage
+        ClipSettingsPanel.Visibility = s.ClipsEnabled ? Visibility.Visible : Visibility.Collapsed;
+        ClipNowButton.Visibility = s.ClipsEnabled ? Visibility.Visible : Visibility.Collapsed;
+        ClipsOffHotkeyHint.Visibility = s.ClipsEnabled ? Visibility.Collapsed : Visibility.Visible;
+        ScreenshotsTab.Visibility = s.ScreenshotsEnabled ? Visibility.Visible : Visibility.Collapsed;
+        FolderButton.Visibility = s.ClipsEnabled ? Visibility.Visible : Visibility.Collapsed;
+        _layoutApplied = false;
+        ApplyLayout();   // the Library tab / the clips column
+        if (Tabs.SelectedItem is TabItem { Visibility: not Visibility.Visible }) SelectFirstVisibleTab();
+        RefreshStatus();
+    }
+
+    private void FeatureChanged(object sender, RoutedEventArgs e)
+    {
+        if (_loading || _syncingUi) return;
+        var s = _app.Settings;
+        bool clips = FeatureClipsCheck.IsChecked == true, shots = FeatureScreenshotsCheck.IsChecked == true;
+        if (clips != s.ClipsEnabled) _app.SetClipsEnabled(clips);
+        if (shots != s.ScreenshotsEnabled) _app.SetScreenshotsEnabled(shots);
+        SyncFeatureUi();   // puts a refused change back
+        UpdateScreenshotTab();
+    }
+
+    // ------------------------------------------------------------------ cloud sharing (Settings → App → Cloud sharing)
+
+    /// <summary>
+    /// The window follows the kill switch: the App tab's Copium section is replaced by one line (the token is kept, not shown), the
+    /// Screenshots tab's upload rows are disabled with the same hint, and the clip list's Share buttons go. Live.
+    /// </summary>
+    private void UpdateCloudUi()
+    {
+        bool on = _app.Settings.CloudSharingEnabled;
+        _syncingUi = true;
+        try { CloudSharingCheck.IsChecked = on; }
+        finally { _syncingUi = false; }
+        CopiumCard.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+        CopiumCloudOffCard.Visibility = on ? Visibility.Collapsed : Visibility.Visible;
+        ScreenshotCloudOffHint.Visibility = on ? Visibility.Collapsed : Visibility.Visible;
+        UpdateScreenshotTab();
+        Clips.RefreshShareButtons();
+    }
+
+    private void CloudSharingChanged(object sender, RoutedEventArgs e)
+    {
+        if (_loading || _syncingUi) return;
+        // Off at once; on only after the confirmation (a Cancel leaves it off and puts the box back).
+        _app.SetCloudSharing(CloudSharingCheck.IsChecked == true);
+        UpdateCloudUi();
     }
 
     private void ScheduleSave()
@@ -267,16 +356,20 @@ public partial class MainWindow : Window
         UpdateArchiveEnabled();
         RefreshArchiveStatus();
 
-        ScreenshotsEnabledCheck.IsChecked = s.ScreenshotsEnabled;
         ScreenshotFolderBox.Text = ScreenshotService.FolderFor(s);
         ScreenshotCopyCheck.IsChecked = s.ScreenshotCopyImage;
         ScreenshotLoupeCheck.IsChecked = s.ScreenshotLoupe;
+        var (shotUpload, shotCopyLink) = ScreenshotChecksFor(s);
+        ScreenshotUploadCheck.IsChecked = shotUpload;
+        ScreenshotCopyLinkCheck.IsChecked = shotCopyLink;
         if (ScreenshotModeCombo.Items.Count == 0)
             foreach (var (value, label, tip) in ScreenshotModes.Choices)
                 ScreenshotModeCombo.Items.Add(new ComboBoxItem { Content = label, Tag = value, ToolTip = tip });
         ScreenshotModeCombo.SelectedItem = ScreenshotModeCombo.Items.OfType<ComboBoxItem>().FirstOrDefault(i => (string?)i.Tag == s.ScreenshotMode)
             ?? ScreenshotModeCombo.Items[0];
         UpdateScreenshotTab();
+        SyncFeatureUi();
+        UpdateCloudUi();
 
         Fill(ToastPositionCombo, new[]
         {
@@ -287,6 +380,7 @@ public partial class MainWindow : Window
         ToastClipCheck.IsChecked = s.ToastClip.Enabled; ToastClipSlider.Value = Math.Clamp(s.ToastClip.Seconds, 1, 30);
         ToastSharedCheck.IsChecked = s.ToastShared.Enabled; ToastSharedSlider.Value = Math.Clamp(s.ToastShared.Seconds, 1, 30);
         ToastRecordingCheck.IsChecked = s.ToastRecording.Enabled; ToastRecordingSlider.Value = Math.Clamp(s.ToastRecording.Seconds, 1, 30);
+        ToastScreenshotCheck.IsChecked = s.ToastScreenshot.Enabled; ToastScreenshotSlider.Value = Math.Clamp(s.ToastScreenshot.Seconds, 1, 30);
         UpdateToastLabels();
         DotCheck.IsChecked = s.StatusDot;
         Fill(DotPositionCombo, new[] { new Choice("Top left", "top-left"), new Choice("Top right", "top-right"), new Choice("Bottom left", "bottom-left"), new Choice("Bottom right", "bottom-right") }, s.StatusDotPosition);
@@ -674,6 +768,7 @@ public partial class MainWindow : Window
         var eng = _app.Engine;
         var state = _app.State;
         StatusDot.SetResourceReference(System.Windows.Shapes.Shape.FillProperty, StatusDotWindow.KeyFor(state, _app.IsManualRecording));
+        StatusDot.Visibility = _app.Settings.ClipsEnabled ? Visibility.Visible : Visibility.Collapsed;
         StatusText.Text = _app.StatusText;
 
         bool noticeShowing = DateTime.UtcNow < _noticeUntil;
@@ -692,7 +787,7 @@ public partial class MainWindow : Window
         else
         {
             if (!noticeShowing)
-                FooterText.Text = state switch
+                FooterText.Text = !_app.Settings.ClipsEnabled ? "" : state switch
                 {
                     RecordingState.Error => eng.Error ?? "Error",
                     RecordingState.WaitingForGame => "Not recording until a game or custom app runs (Capture → Recording)",
@@ -1154,7 +1249,7 @@ public partial class MainWindow : Window
         TokenSaveButton.IsEnabled = true;
     }
 
-    private void TokenSave_Click(object sender, RoutedEventArgs e)
+    private async void TokenSave_Click(object sender, RoutedEventArgs e)
     {
         string t = TokenBox.Password.Trim();
         _app.Settings.CopiumToken = string.IsNullOrEmpty(t) ? null : t;
@@ -1163,6 +1258,13 @@ public partial class MainWindow : Window
         if (string.IsNullOrEmpty(t)) { CopiumStatus.Text = "Not connected"; CopiumStatus.SetResourceReference(TextBlock.ForegroundProperty, "Muted"); }
         else if (!t.StartsWith("eup_")) { CopiumStatus.Text = "Saved (tokens usually start with eup_)"; CopiumStatus.SetResourceReference(TextBlock.ForegroundProperty, "Warn"); }
         else { CopiumStatus.Text = "Token saved"; CopiumStatus.SetResourceReference(TextBlock.ForegroundProperty, "Good"); }
+        UpdateScreenshotTab();   // the upload options follow the token
+        // A token was just saved but sharing is not agreed to yet: ask once, now, instead of at the first Share. (A cleared token asks nothing.)
+        if (!string.IsNullOrEmpty(t) && _app.Settings.CloudSharingEnabled && !_app.Settings.CopiumConsent)
+        {
+            try { await _app.EnsureCopiumConsentAsync(ConsentContext.TokenSaved); }
+            catch (Exception ex) { Log.Warn("consent after the token: " + ex.Message); }
+        }
     }
 
     private void CopiumSite_Click(object sender, RoutedEventArgs e)
@@ -1181,10 +1283,11 @@ public partial class MainWindow : Window
 
     private void UpdateToastLabels()
     {
-        if (ToastRecordingLabel == null) return;   // a slider's Minimum coerces its Value while the XAML is still loading
+        if (ToastRecordingLabel == null || ToastScreenshotLabel == null) return;   // a slider's Minimum coerces its Value while the XAML is still loading
         ToastClipLabel.Text = $"{(int)ToastClipSlider.Value} s";
         ToastSharedLabel.Text = $"{(int)ToastSharedSlider.Value} s";
         ToastRecordingLabel.Text = $"{(int)ToastRecordingSlider.Value} s";
+        ToastScreenshotLabel.Text = $"{(int)ToastScreenshotSlider.Value} s";
     }
 
     private void ToastChanged(object sender, RoutedEventArgs e)
@@ -1196,6 +1299,7 @@ public partial class MainWindow : Window
         s.ToastClip.Enabled = ToastClipCheck.IsChecked == true; s.ToastClip.Seconds = (int)ToastClipSlider.Value;
         s.ToastShared.Enabled = ToastSharedCheck.IsChecked == true; s.ToastShared.Seconds = (int)ToastSharedSlider.Value;
         s.ToastRecording.Enabled = ToastRecordingCheck.IsChecked == true; s.ToastRecording.Seconds = (int)ToastRecordingSlider.Value;
+        s.ToastScreenshot.Enabled = ToastScreenshotCheck.IsChecked == true; s.ToastScreenshot.Seconds = (int)ToastScreenshotSlider.Value;
         ScheduleSave();   // sliders fire on every tick while dragging
     }
 
@@ -1268,21 +1372,24 @@ public partial class MainWindow : Window
 
     // ------------------------------------------------------------------ screenshots
 
-    /// <summary>The other controls follow the master switch; the hint names the keys that are really bound (and the defaults, so it is findable).</summary>
+    /// <summary>The upload options follow the token and the cloud switch; the hint names the keys that are really bound (and the defaults, so it is findable).</summary>
     private void UpdateScreenshotTab()
     {
         if (ScreenshotOptions == null) return;
         var s = _app.Settings;
-        ScreenshotOptions.IsEnabled = s.ScreenshotsEnabled;
-        ScreenshotOptions.Opacity = s.ScreenshotsEnabled ? 1 : 0.55;
         string? keys = AppController.ScreenshotHotkeyLabelFor(s.Hotkeys);
         string? editKeys = AppController.ScreenshotEditHotkeyLabelFor(s.Hotkeys);
+        // Upload needs a token and cloud sharing on; the link option follows the upload option. The checks keep their values while disabled.
+        bool linked = !string.IsNullOrWhiteSpace(s.CopiumToken);
+        bool cloud = s.CloudSharingEnabled;
+        ScreenshotUploadCheck.IsEnabled = linked && cloud;
+        ScreenshotTokenHint.Visibility = linked || !cloud ? Visibility.Collapsed : Visibility.Visible;
+        ScreenshotCopyLinkCheck.IsEnabled = linked && cloud && ScreenshotUploadCheck.IsChecked == true;
         ScreenshotHotkeyHint.Text = (keys != null ? $"Hotkey: {keys} takes a screenshot. " : "No hotkey is set for screenshots. ")
             + (editKeys != null ? $"{editKeys} edits the last one. " : "No hotkey is set for editing the last one. ")
             + "The defaults are PrintScreen and Shift+PrintScreen. Change them under Capture → Hotkeys. "
             + "With Edit on screen, draw on the chosen area and press Enter or Done to save; Esc steps back, then throws it away.";
     }
-
     private void ScreenshotModeChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_loading || e.OriginalSource != ScreenshotModeCombo) return;
@@ -1293,21 +1400,60 @@ public partial class MainWindow : Window
         }
     }
 
-    private void ScreenshotsEnabledChanged(object sender, RoutedEventArgs e)
+    private bool _askingUploadConsent;   // the pop-up for turning the automatic upload on is up
+    private bool _revertingCheck;   // a check is being put back after a declined pop-up: not a user choice
+
+    /// <summary>What the two upload checks show for these settings (never armed without the user's yes).</summary>
+    internal static (bool Upload, bool CopyLink) ScreenshotChecksFor(Settings s) => (s.ScreenshotUpload && s.CopiumConsent, s.ScreenshotCopyLink);
+
+    /// <summary>Re-reads the two upload checks from the settings: the pop-up (or the kill switch) may have changed them while this tab was showing.</summary>
+    private void SyncScreenshotChecks()
     {
-        if (_loading) return;
-        _app.Settings.ScreenshotsEnabled = ScreenshotsEnabledCheck.IsChecked == true;
-        _app.Settings.Save();
-        _app.ReloadHotkeys();   // binds or unbinds the screenshot rows and shows or hides the tray item
+        if (ScreenshotOptions == null || _askingUploadConsent) return;
+        var (upload, copyLink) = ScreenshotChecksFor(_app.Settings);
+        bool was = _revertingCheck;
+        _revertingCheck = true;
+        try { ScreenshotUploadCheck.IsChecked = upload; ScreenshotCopyLinkCheck.IsChecked = copyLink; }
+        finally { _revertingCheck = was; }
         UpdateScreenshotTab();
     }
 
-    private void ScreenshotOptionChanged(object sender, RoutedEventArgs e)
+    private async void ScreenshotOptionChanged(object sender, RoutedEventArgs e)
     {
-        if (_loading) return;
-        _app.Settings.ScreenshotCopyImage = ScreenshotCopyCheck.IsChecked == true;
-        _app.Settings.ScreenshotLoupe = ScreenshotLoupeCheck.IsChecked == true;
-        _app.Settings.Save();
+        if (_loading || _revertingCheck) return;
+        var s = _app.Settings;
+        // Turning the automatic upload ON asks first (the Share with Copium? pop-up, unless the user already said yes); declined, it goes back.
+        if (ScreenshotUploadCheck.IsChecked == true && !s.ScreenshotUpload)
+        {
+            bool ok;
+            _askingUploadConsent = true;   // the gate's ConsentChanged must not reset this very box while we wait for the answer
+            try { ok = await _app.EnsureCopiumConsentAsync(ConsentContext.ScreenshotUploadSetting); }
+            finally { _askingUploadConsent = false; }
+            if (!ok)
+            {
+                _revertingCheck = true;
+                try { ScreenshotUploadCheck.IsChecked = false; }
+                finally { _revertingCheck = false; }
+                UpdateScreenshotTab();
+                return;
+            }
+        }
+        s.ScreenshotCopyImage = ScreenshotCopyCheck.IsChecked == true;
+        s.ScreenshotLoupe = ScreenshotLoupeCheck.IsChecked == true;
+        // Only the box that was touched writes its own setting: another option must not overwrite a value the pop-up changed meanwhile.
+        if (sender == ScreenshotUploadCheck) s.ScreenshotUpload = ScreenshotUploadCheck.IsChecked == true;
+        if (sender == ScreenshotCopyLinkCheck) s.ScreenshotCopyLink = ScreenshotCopyLinkCheck.IsChecked == true;
+        s.Save();
+        UpdateScreenshotTab();
+    }
+    /// <summary>The hint under the automatic upload: goes to the token box on the App tab.</summary>
+    private void ScreenshotTokenLink_Click(object sender, RoutedEventArgs e) => FocusTokenBox();
+
+    /// <summary>The App tab's Copium token box, selected and focused (the hint's link, the "Set up Copium" button of a notification). The App tab is always there.</summary>
+    private void FocusTokenBox()
+    {
+        Tabs.SelectedItem = AppTab;
+        Dispatcher.BeginInvoke(DispatcherPriority.Input, () => TokenBox.Focus());
     }
 
     private void ScreenshotFolderBox_LostFocus(object sender, RoutedEventArgs e)
@@ -1568,6 +1714,7 @@ public partial class MainWindow : Window
     {
         Show();
         WindowState = WindowState.Normal;
+        if (!_loading) SyncScreenshotChecks();
         Activate();
         Topmost = true; Topmost = false;
     }

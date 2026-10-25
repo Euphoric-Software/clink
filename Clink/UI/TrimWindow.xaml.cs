@@ -76,6 +76,14 @@ public partial class TrimWindow : Window
         _tick.Tick += (_, _) => Tick();
         SetTrimMode(trimMode);
         UpdateTexts(0);
+        // Cloud sharing off (Settings → App): no "Save & share"; switched while the editor is open, it follows.
+        void ShowShareButton() => SaveShareButton.Visibility = AppController.Instance?.Settings.CloudSharingEnabled == false ? Visibility.Collapsed : Visibility.Visible;
+        ShowShareButton();
+        if (AppController.Instance is { } cloudApp)
+        {
+            cloudApp.CloudSharingChanged += ShowShareButton;
+            Closed += (_, _) => cloudApp.CloudSharingChanged -= ShowShareButton;
+        }
         s_open.Add(this);
         _openedAt = Environment.TickCount64;
         ContentRendered += (_, _) => _openedAt = Environment.TickCount64;
@@ -686,7 +694,15 @@ public partial class TrimWindow : Window
             {
                 StatusText.Text = "Uploading…";
                 var progress = new Progress<double>(p => StatusText.Text = $"Uploading… {p:P0}");
-                bool ok = await app.ShareAsync(result, progress);
+                bool ok = await app.ShareAsync(result, progress, context: ConsentContext.TrimShare);
+                if (!ok && app.LastShareOutcome == ShareOutcome.Declined)
+                {
+                    // "Not now" in the Share with Copium? pop-up, or cloud sharing off: the trim is saved, nothing failed.
+                    StatusText.Text = $"Saved {Path.GetFileName(result.Path)}, not shared" + (app.Settings.CloudSharingEnabled ? "" : ": cloud sharing is off");
+                    SaveButton.IsEnabled = SaveShareButton.IsEnabled = true;
+                    await RestoreEditorAsync(replaced);
+                    return;
+                }
                 if (!ok && app.LastShareOutcome != ShareOutcome.FileShareOpened)
                 {
                     // Not uploaded, but the trim itself is saved: stay open with the reason instead of flashing "Upload failed" and

@@ -386,5 +386,8 @@ SetCursorPos
 GdiFlush
 // clipboard: a busy clipboard is not waited for (Screenshots/ScreenshotClipboard.cs); the unit test holds it open
 GetOpenClipboardWindow
+GetClipboardSequenceNumber
 OpenClipboard
 CloseClipboard
+// import folder check: a mapped network drive is a network folder too
+GetDriveType

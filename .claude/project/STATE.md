@@ -110,8 +110,20 @@ S5 done (5ea3308): mode "before" ("Edit on screen") inside the capture overlay: 
 - S4 raster: blur/pixelate/highlight/spotlight (drag on 4K)/magnify/smart erase, brightness/contrast/sharpness, insert image (picker + paste from Paint and browser), edit-last of a blurred document never shows un-redacted, memory after 10 sessions.
 - S5 overlay editing: set mode "Edit on screen"; toolbar placement at all screen edges and small/200% screens; crop handles; Esc ladder (gesture -> deselect -> tool -> cancel); Enter and Done save one cropped PNG with outside annotations clipped; Cancel button; cross-monitor drag opens the editor window with hint; insert dialogs while overlay is up; idle notice after 20 min; replay clip saved during/after overlay editing contains no overlay or toolbar.
 
+S6 done (56bb20d, branch feature/screenshots): Copium PNG upload path, toast actions (Open | Edit | Upload/Copy link | Folder, progress/Cancel/Retry), Copium nudge, settings rows + Alerts "Screenshot saved" switch, export compose/encode off the UI thread, AI background-remover seam (unavailable), security hardening. Two senior-review rounds plus a security review. Verified: Debug and Release 0 warnings; `--unittest` 699 passed/0 failed/0 skipped (Debug plain, Debug NO_SKIP, Release NO_SKIP); 49 new tests; no BOM changes; secrets scan clean (only eup_test fakes). NOT verified: a real upload to Copium; elevated-run pipe client.
+
+S7 done (4df4efa, branch feature/screenshots): sharing opt-in with Copium consent dialog (public-link warning), global "Allow cloud sharing" kill switch, Clips/Screenshots feature visibility, S6 leftovers. Three review rounds. Verified: Debug and Release 0 warnings; `--unittest` 736 passed/0 failed/0 skipped (Debug plain, Debug NO_SKIP, Release NO_SKIP); 37 new tests; no BOM changes; secrets scan clean (only eup_secret test fake). NOT verified: a real upload to Copium with a valid token; GUI walk-through of consent/kill switch.
+
 ## Dev channel push
-Merge of feature/screenshots into dev pushed on 2026-10-25 (authorized "A"). Result: see below.
+Merge of feature/screenshots into dev pushed on 2026-10-25 (authorized "A"). Result: dev 77705f5 (merge, slices 1-5), run 40168176731 success, prerelease v0.3.2-dev.2. Slices 6-7 push to dev: build #3 pending (this push). Standing policy: dev pushes after reviewed slices need no further approval; main always asks.
+
+## S7 follow-ups
+- Recording: queued-notice / `async void` stop ordering when Clips is turned off while recording
+- Bare 403 vs plan limits (not treated as token problem)
+- Share window not updated live after a kill-switch flip
+- Tab-to-Enable then Enter in the consent dialog agrees
+- Capture-excluded consent dialog is invisible in screen shares
+- Real-upload verification with a valid token; Copium image size limit unknown
 
 ## Next action
-S6 (Copium upload + nudge + settings completion + export off the UI thread), then a second dev build.
+S8 library pane (Clips | Screenshots switch, Local | Shared, Trimmed filter).

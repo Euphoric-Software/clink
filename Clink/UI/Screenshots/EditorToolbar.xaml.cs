@@ -77,7 +77,7 @@ public partial class EditorToolbar : UserControl
         // The Adjust flyout is a window of its own: inside the capture overlay it is kept out of screen captures like the overlay.
         AdjustPopup.Opened += (_, _) =>
         {
-            if (System.Windows.Window.GetWindow(this) is Clink.UI.ICaptureExcludedWindow && PresentationSource.FromVisual(AdjustPopup.Child) is System.Windows.Interop.HwndSource src)
+            if (Clink.UI.CaptureExclusion.IsExcluded(System.Windows.Window.GetWindow(this)) && PresentationSource.FromVisual(AdjustPopup.Child) is System.Windows.Interop.HwndSource src)
                 Clink.UI.ScreenPlacement.ExcludeFromCapture(src.Handle);
         };
     }

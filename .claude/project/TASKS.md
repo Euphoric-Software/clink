@@ -23,10 +23,16 @@
 - [x] S3 editor window + vector tools, edit-after, edit-last (f7aeb3f)
 - [x] S4 raster tools, adjustments, insert image (77530e1)
 - [x] S5 edit-before in the overlay (5ea3308)
-- [ ] S6 upload, toast actions, Copium nudge, settings completion, AI seam
-- [ ] S7 WGC HDR source, pending user HDR check
-- [ ] Follow-up: Alerts tab "Screenshot saved" toast row + upload toggles UI (S6)
-- [ ] Follow-up: README/ROADMAP docs for screenshots
+- [x] S6 upload, toast actions, Copium nudge, settings completion, AI seam, export off UI thread (56bb20d)
+- [x] S7 consent and sharing controls (4df4efa) (supersedes the old "WGC HDR source" slot, which stays pending the user HDR check):
+  - one-time Copium opt-in pop-up with public-link warning; cloud sharing default OFF (clips and screenshots); automatic upload opt-in
+  - global "Allow cloud sharing" kill switch with two-step re-enable
+  - feature-visibility toggles (Clips / Screenshots); hiding Clips stops the replay engine (assumption, confirm)
+  - S6 leftovers: per-install keys into `IsOwnKey`; accept any https for returned `link`/`url`, pin only the token destination; 403 pauses only when text mentions token/auth/key; type-refusal regex with word boundaries; deferred-close vs quit double prompt; `AllowAutoRedirect=false`; DIB header size allow-list; `WrittenUtc` 2 s tolerance; link copy with image-copy off via sequence gate; mapped network drives not detected as network
+- [ ] S8 library pane rework: Clips | Screenshots switch, Local | Shared subordinate, Trimmed as a filter
+- [ ] S7/S8 follow-ups: elevated-run control-pipe `CurrentUserOnly` client failure; real-upload verification against Copium; Win+V / clipboard managers may prevent link replacement
+- [x] Follow-up: Alerts tab "Screenshot saved" toast row + upload toggles UI (S6)
+- [x] Follow-up: README/ROADMAP docs for screenshots (S6)
 - [ ] User manual test list: STATE.md Dev manual checklist (S1, S3, S4, S5)
 
 ## Screenshots follow-ups
@@ -63,3 +69,13 @@
 - [ ] Native file dialog cannot be capture-excluded (may appear in a replay clip)
 - [ ] Two editor sessions at once (overlay + window) raise the memory peak
 - [ ] `Rebase` re-export may differ for edge effects (blur/magnify near the crop edge)
+
+## S7 follow-ups
+- [ ] Recording stop ordering (queued notice / async void) when Clips is turned off while recording
+- [ ] Bare 403 vs plan limits
+- [ ] Share window not updated live after a kill-switch flip
+- [ ] Tab-to-Enable + Enter agrees in consent dialog
+- [ ] Capture-excluded consent dialog invisible in screen shares
+- [ ] Real-upload verification with a valid token; Copium image size limit unknown
+- [ ] Dev build #3 (slices 6-7): pending this push
+- Next: S8 library pane
