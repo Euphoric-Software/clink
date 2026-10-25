@@ -86,6 +86,13 @@ Run the manual test script; then Step 5 (see TASKS.md).
 ## Dev Build channel (branch `feature/dev-channel`, commit 0eeca0a, from v0.3.0 / 7d26007)
 Done: ReleaseVersion, Updater channel logic (stable unchanged; dev lists releases), Settings.UseDevBuilds/PendingUpdateFrom, footer version popup, release-dev.yml, release.yml ignores v*-dev.* tags, 7 UpdaterChannel tests.
 Verified: Debug+Release forced rebuilds 0 warnings/0 errors; `--unittest` 381 passed/0 failed/0 skipped on both configs, also with CLINK_TESTS_NO_SKIP=1 and CLINK_EMULATE_ELST=1; two senior reviews (ship), findings fixed; GUI popup smoke passed once in an isolated `--dev` instance (disabled-controls state).
-Launched: feature/dev-channel merged to main at c72fb2d; `dev` branch created at c72fb2d and pushed (also feature/dev-channel at 49dbc77).
+Launched: feature/dev-channel merged to main at c72fb2d; `dev` exists on origin (c72fb2d, v0.3.1-dev.1 published); `dev` is now 2 commits behind `main` (3f66291 v0.3.1).
 First dev build: run https://github.com/jason-tucker/clink/actions/runs/40130530774, 2m52s, success. Prerelease v0.3.1-dev.1 (targetCommitish c72fb2d) verified: assets Clink.exe 31,537,088 B + Clink.exe.sha256 76 B; sha256 matches; embedded ProductVersion 0.3.1-dev.1+c72fb2d... OK; downloaded exe not executed. Stable releases/latest still v0.3.0; release.yml not triggered by the dev tag.
 Remaining: user installs the first dev build by hand once (download Clink.exe from the prerelease, replace the running exe, then tick Dev Build); popup enabled-state GUI check; optional release-dev.yml job split.
+
+## Screenshots (branch feature/screenshots, from main 3f66291 v0.3.1)
+S1 done: 2cb39b0 (feature slice: capture, overlay, PNG save, clipboard, toast, Screenshots tab, `screenshot` hotkey seeded as bare PrintScreen, `--screenshot`, tray) and 043467b (docs/screenshots-design.md). Review: 2 Opus reviews (FIX-THEN-SHIP both), fixes applied.
+Verified: Debug+Release 0 warnings/0 errors; `--unittest` 453 passed/0 failed/0 skipped (Debug plain, Debug CLINK_TESTS_NO_SKIP=1, Release NO_SKIP). Overlay stranding paths verified with real windows: WM_CLOSE closes all overlays, busy flag resets, trigger-again cancels.
+NOT verified: drag/PNG/clipboard by a human (only one unattributed 270x230 capture succeeded during a smoke); PrintScreen delivery via the real hook; Snipping Tool suppression; HDR appearance; exclusive-fullscreen behaviour.
+Delivery plan: fast-forward `dev` to `main`, merge `feature/screenshots`, push `dev` -> release-dev.yml -> 0.3.2-dev.N. Push requires user approval.
+Next action: S2 pixel library (worktree) || S3 editor window; then S4-S6.

@@ -17,3 +17,16 @@
 - [ ] GUI-check the footer popup with a build using `-p:UpdateRepo=owner/repo`
 - [ ] Optional hardening: split release-dev.yml into a read-only build/test job and a separate publish job
 
+## Screenshots (design: docs/screenshots-design.md)
+- [x] S1 capture to PNG (2cb39b0)
+- [ ] S2 pixel library: BoxBlur, Pixelate, Highlight, StrokeMask, SmartErase, Spotlight, Magnifier, Adjustments, Resample + tests (pure, worktree)
+- [ ] S3 editor window + vector tools, edit-after, edit-last (seeds Shift+PrintScreen `screenshot-edit-last`)
+- [ ] S4 raster tools, adjustments, insert image (needs S2 + S3)
+- [ ] S5 edit-before in the overlay (needs S3, after S4)
+- [ ] S6 upload, toast actions, Copium nudge, settings completion, AI seam
+- [ ] S7 WGC HDR source, pending user HDR check
+- [ ] Follow-up: window-factory test seam for the overlay `Session`
+- [ ] Follow-up: `IsOpenable` rule for history entries when the folder changes (S3)
+- [ ] Follow-up: Alerts tab "Screenshot saved" toast row + upload toggles UI (S6)
+- [ ] Follow-up: README/ROADMAP docs for screenshots
+- [ ] User manual test list: the S1 "Manual" list in docs/screenshots-design.md (run on `--dev <folder> --dev-hotkeys`)

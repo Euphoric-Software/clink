@@ -7,3 +7,13 @@
 - Leaving dev for an older stable release happens only on a manual check.
 - `UseDevBuilds` and `PendingUpdateFrom` are per-installation settings and excluded from settings import.
 - Clicking the footer version opens a popup ('Dev Build', 'Check for updates') instead of checking immediately.
+
+## Screenshots
+- GDI BitBlt capture first, behind `IScreenshotSource`; WGC/HDR source later (S7).
+- Per-monitor opaque overlay windows sized in physical pixels (mixed DPI safe).
+- Separate subsystem (`Clink.Screenshots`, own history); no ClipEntry reuse.
+- Hotkey seeding of the `screenshot` action instead of a settings schema bump.
+- Bare PrintScreen is the default screenshot hotkey (user decision).
+- Trigger-while-open cancels the overlay (no BringToFront).
+- Raster effects sit below vector annotations in v1.
+- `BgraImage` has no bitmap cache; `ToBitmapSource()` is always fresh.
