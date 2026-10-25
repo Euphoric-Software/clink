@@ -3,17 +3,23 @@ namespace Clink.Screenshots.Imaging;
 /// <summary>
 /// The float planes of <see cref="BoxBlur"/> (one image-sized plane is 4 bytes per pixel: 33 MB at 4K, and a blur uses 2 or 3),
 /// kept for reuse because a drag re-blurs many times a second and the planes live on the large object heap. Static and
-/// thread-safe. Keeps at most <see cref="MaxKept"/> planes; small ones (under <see cref="MinPooled"/> floats) are not pooled.
-/// <para>The editor calls <see cref="Clear"/> when it closes (before its <c>GC.Collect</c> with LOH compaction) so the 64-128 MB
-/// the planes can hold go back to the system; the next blur simply allocates again.</para>
+/// thread-safe. Keeps at most <see cref="MaxKept"/> planes and <see cref="MaxKeptBytes"/> bytes in all; small planes (under
+/// <see cref="MinPooled"/> floats) are not pooled.
+/// <para>The editor calls <see cref="Clear"/> when it closes (before its <c>GC.Collect</c> with LOH compaction) so the memory
+/// the planes hold (up to the cap) goes back to the system; the next blur simply allocates again. <see cref="Clear"/> also starts
+/// a new generation: a plane rented before it and returned after it (a blur still running on a worker) is dropped, not kept.</para>
 /// </summary>
 internal static class PlanePool
 {
     public const int MaxKept = 6;
+    /// <summary>The most bytes the kept planes may hold together (a few 4K planes; larger returns drop planes until under it).</summary>
+    public const long MaxKeptBytes = 160L << 20;
     public const int MinPooled = 1 << 16;
     private const int Granule = 1 << 18;   // lengths are rounded up to 1 MB so that slightly different regions reuse a plane
 
     private static readonly List<float[]> free = new();
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<float[], object> rented = new();   // plane -> boxed generation
+    private static int generation;   // guarded by free
 
     /// <summary>A plane of at least <paramref name="length"/> floats (contents undefined).</summary>
     public static float[] Rent(int length)
@@ -28,19 +34,31 @@ internal static class PlanePool
             {
                 var a = free[best];
                 free.RemoveAt(best);
+                rented.AddOrUpdate(a, generation);
                 return a;
             }
+            long rounded = ((long)length + Granule - 1) / Granule * Granule;
+            var plane = new float[(int)Math.Min(rounded, Array.MaxLength)];
+            rented.AddOrUpdate(plane, generation);
+            return plane;
         }
-        long rounded = ((long)length + Granule - 1) / Granule * Granule;
-        return new float[(int)Math.Min(rounded, Array.MaxLength)];
     }
 
-    /// <summary>Gives a plane back. Beyond <see cref="MaxKept"/> the smallest kept one is dropped.</summary>
+    /// <summary>
+    /// Gives a plane back. Beyond <see cref="MaxKept"/> the smallest kept one is dropped; while the kept planes hold more than
+    /// <see cref="MaxKeptBytes"/> the largest is dropped. A plane rented before the last <see cref="Clear"/> is dropped.
+    /// </summary>
     public static void Return(float[]? plane)
     {
         if (plane == null || plane.Length < MinPooled) return;
         lock (free)
         {
+            if (rented.TryGetValue(plane, out var gen))
+            {
+                rented.Remove(plane);
+                if ((int)gen != generation) return;   // rented before a Clear
+            }
+            if (free.Contains(plane)) return;
             free.Add(plane);
             if (free.Count > MaxKept)
             {
@@ -48,13 +66,26 @@ internal static class PlanePool
                 for (int i = 1; i < free.Count; i++) if (free[i].Length < free[smallest].Length) smallest = i;
                 free.RemoveAt(smallest);
             }
+            long bytes = 0;
+            foreach (var p in free) bytes += (long)p.Length * sizeof(float);
+            while (bytes > MaxKeptBytes && free.Count > 0)
+            {
+                int largest = 0;
+                for (int i = 1; i < free.Count; i++) if (free[i].Length > free[largest].Length) largest = i;
+                bytes -= (long)free[largest].Length * sizeof(float);
+                free.RemoveAt(largest);
+            }
         }
     }
 
     /// <summary>Drops every kept plane (the editor calls this on close).</summary>
     public static void Clear()
     {
-        lock (free) free.Clear();
+        lock (free)
+        {
+            free.Clear();
+            generation++;
+        }
     }
 
     /// <summary>The bytes the kept planes hold.</summary>
@@ -70,8 +101,9 @@ internal static class PlanePool
 /// <para>Uniform op form (like every raster op of this folder): <c>Blur(src, dst, clip, region, sigma)</c> reads
 /// <paramref name="src"/>, computes the blur of the region as if unclipped, writes only <c>clip ∩ region</c> (clipped to the image)
 /// into <c>dst</c> and touches nothing else. LOCAL: a pixel depends on <c>src</c> within the sum of the three radii
-/// (<see cref="ReadMargin"/>), so a dirty sub-rectangle can be recomposed on its own. <c>dst</c> may be <c>src</c> (every plane is
-/// read before it is written).</para>
+/// (<see cref="ReadMargin"/>), so a dirty sub-rectangle can be recomposed on its own. <c>dst</c> may be <c>src</c> only for a
+/// single-shot call that covers the whole region (<c>clip</c> contains <c>region ∩ image</c>; every plane is read before it is
+/// written); an in-place call with a smaller clip throws (see <see cref="ImagingUtil"/>).</para>
 /// <para>Alpha: an opaque read area blurs B, G and R and writes alpha 255 (the fast path). Otherwise the blur runs on premultiplied
 /// colour (c * a) and alpha, and the result is un-premultiplied, so transparent black does not darken its neighbours.</para>
 /// </summary>
@@ -110,9 +142,11 @@ internal static class BoxBlur
     public static void Blur(BgraImage src, BgraImage dst, RectI clip, RectI region, double sigma)
     {
         ImagingUtil.RequireSameSize(src, dst);
-        var w = region.Intersect(clip).Intersect(src.Bounds);
+        var whole = region.Intersect(src.Bounds);
+        var w = whole.Intersect(clip);
         if (w.IsEmpty) return;
-        BlurInto(src, w, sigma, dst, w.X, w.Y);
+        ImagingUtil.RequireSinglePass(src, dst, clip, whole, nameof(Blur));
+        BlurInto(src, w, sigma, dst, w.X, w.Y, IsOpaque(src, whole.Inflate(ReadMargin(sigma)).Intersect(src.Bounds)));
     }
 
     /// <summary>
@@ -120,7 +154,7 @@ internal static class BoxBlur
     /// (<paramref name="dstX"/>, <paramref name="dstY"/>), which must fit. <paramref name="dst"/> may be <paramref name="src"/>
     /// at the same position.
     /// </summary>
-    internal static void BlurInto(BgraImage src, RectI region, double sigma, BgraImage dst, int dstX, int dstY)
+    internal static void BlurInto(BgraImage src, RectI region, double sigma, BgraImage dst, int dstX, int dstY, bool? opaqueArea = null)
     {
         if (!src.Bounds.Contains(region) || !dst.Bounds.Contains(new RectI(dstX, dstY, region.Width, region.Height)))
             throw new ArgumentOutOfRangeException(nameof(region), "the region and its destination must lie inside the images");
@@ -139,12 +173,8 @@ internal static class BoxBlur
         var sp = src.Pixels;
         int stride = src.Stride;
 
-        bool opaque = true;
-        for (int y = e.Y; y < e.Bottom && opaque; y++)
-        {
-            int i = y * stride + e.X * 4 + 3;
-            for (int x = 0; x < ew; x++, i += 4) if (sp[i] != 255) { opaque = false; break; }
-        }
+        // The caller decides from the unclipped region so that a clipped run takes the same path as the whole one.
+        bool opaque = opaqueArea ?? IsOpaque(src, e);
 
         var p0 = PlanePool.Rent(len);
         var p1 = PlanePool.Rent(len);
@@ -220,6 +250,18 @@ internal static class BoxBlur
             ImagingUtil.Report("blur", $"{region.Width}x{region.Height} sigma {sigma:0.##} radii {radii[0]},{radii[1]},{radii[2]}{(opaque ? "" : " premultiplied")}", ms);
     }
 
+    /// <summary>True when every pixel of <paramref name="area"/> (inside the image) has alpha 255.</summary>
+    internal static bool IsOpaque(BgraImage src, RectI area)
+    {
+        var sp = src.Pixels;
+        for (int y = area.Y; y < area.Bottom; y++)
+        {
+            int i = y * src.Stride + area.X * 4 + 3;
+            for (int x = 0; x < area.Width; x++, i += 4) if (sp[i] != 255) return false;
+        }
+        return true;
+    }
+
     /// <summary>Channel <paramref name="c"/> of the area <paramref name="e"/> into a plane; <paramref name="premultiply"/> stores c * a.</summary>
     private static void LoadPlane(byte[] sp, int stride, RectI e, int c, bool premultiply, float[] plane, long pixels)
     {
@@ -253,7 +295,7 @@ internal static class BoxBlur
             for (int i = 0; i < w; i++)
             {
                 b[off + i] = (float)(sum / d);
-                sum += a[off + Math.Min(i + 1 + r, w - 1)] - a[off + Math.Max(i - r, 0)];
+                sum += (double)a[off + Math.Min(i + 1 + r, w - 1)] - a[off + Math.Max(i - r, 0)];
             }
         });
     }
@@ -279,7 +321,7 @@ internal static class BoxBlur
                 for (int x = 0; x < sw; x++)
                 {
                     b[o + x] = (float)(sum[x] / d);
-                    sum[x] += a[add + x] - a[rem + x];
+                    sum[x] += (double)a[add + x] - a[rem + x];
                 }
             }
         };

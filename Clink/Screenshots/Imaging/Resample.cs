@@ -4,7 +4,8 @@ namespace Clink.Screenshots.Imaging;
 /// Scaling and compositing of images (straight alpha).
 /// <para>Uniform op form: <c>Bilinear(src, dst, clip, srcRect, dstRect)</c> and <c>Over(src, dst, clip, dest, opacity)</c> read
 /// <c>src</c>, compute as if unclipped and write only <c>clip ∩ dstRect</c> / <c>clip ∩ dest</c> (clipped to <c>dst</c>), nothing
-/// else. <c>dst</c> must not alias <c>src</c> (throws). Their footprint is the destination rectangle; within it a pixel depends on
+/// else. <c>dst</c> must not alias <c>src</c> (throws). <b>Over composites onto dst</b>: dst must already hold the pixels below
+/// inside the clip (it is read), and it is not idempotent (a second run composes the source over its own result). Their footprint is the destination rectangle; within it a pixel depends on
 /// the source pixels around its mapped position only, so a dirty sub-rectangle of the destination can be redrawn on its own.</para>
 /// </summary>
 internal static class Resample

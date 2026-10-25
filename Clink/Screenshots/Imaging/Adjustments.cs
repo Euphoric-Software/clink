@@ -7,8 +7,9 @@ namespace Clink.Screenshots.Imaging;
 /// 0 = no change) straight into <see cref="BuildLut"/>; <b>Sharpness 0..200 (%), default 0 = no change, <see cref="Unsharp"/>
 /// amount = Sharpness / 100</b> (sigma 1.5).</para>
 /// <para>Uniform op form: <c>Apply(src, dst, clip, lut)</c> and <c>Unsharp(src, dst, clip, amount, sigma)</c> read <c>src</c> and
-/// write only <c>clip</c> (clipped to the image), every pixel of it; <c>dst</c> may be <c>src</c>. The footprint is the whole
-/// image. LOCAL: the LUT is per pixel, the unsharp mask reads <see cref="BoxBlur.ReadMargin"/> of sigma around a pixel, so a
+/// write only <c>clip</c> (clipped to the image), every pixel of it; <c>dst</c> may be <c>src</c> (Apply: any clip;
+/// Unsharp: only when <c>clip</c> covers the whole image, else it throws, see <see cref="ImagingUtil"/>). The footprint is the
+/// whole image. LOCAL: the LUT is per pixel, the unsharp mask reads <see cref="BoxBlur.ReadMargin"/> of sigma around a pixel, so a
 /// dirty sub-rectangle can be recomposed on its own.</para>
 /// </summary>
 internal static class Adjustments
@@ -55,14 +56,16 @@ internal static class Adjustments
     /// <summary>
     /// Unsharp mask over <paramref name="clip"/> (clipped to the image): <c>out = src + amount * (src - blur(src))</c>, clamped to
     /// 0..255; <paramref name="amount"/> 1 = 100 % (Sharpness / 100). Alpha is copied. <paramref name="dst"/> is the size of
-    /// <paramref name="src"/> or <paramref name="src"/> itself (the blur of the clip is taken into a temporary first). Amount 0
-    /// copies.
+    /// <paramref name="src"/> or <paramref name="src"/> itself, which requires <paramref name="clip"/> to contain the whole image
+    /// (ArgumentException otherwise: the blur margin of a second clipped in-place run would read the first one's output). The blur
+    /// of the clip is taken into a temporary first. Amount 0 copies.
     /// </summary>
     public static void Unsharp(BgraImage src, BgraImage dst, RectI clip, double amount, double sigma = 1.5)
     {
         ImagingUtil.RequireSameSize(src, dst);
         var r = clip.Intersect(src.Bounds);
         if (r.IsEmpty) return;
+        ImagingUtil.RequireSinglePass(src, dst, clip, src.Bounds, nameof(Unsharp));
         if (amount == 0 || !(sigma > 0))
         {
             if (!ReferenceEquals(src.Pixels, dst.Pixels)) dst.Blit(src, r, r.X, r.Y);
@@ -70,7 +73,7 @@ internal static class Adjustments
         }
         long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
         var blurred = new BgraImage(r.Width, r.Height);
-        BoxBlur.BlurInto(src, r, sigma, blurred, 0, 0);
+        BoxBlur.BlurInto(src, r, sigma, blurred, 0, 0, BoxBlur.IsOpaque(src, src.Bounds));
         var sp = src.Pixels;
         var bp = blurred.Pixels;
         var dp = dst.Pixels;

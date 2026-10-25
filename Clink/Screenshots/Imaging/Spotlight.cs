@@ -18,7 +18,7 @@ internal sealed class SpotlightLevels
 {
     internal SpotlightLevels(int width, int height, int radius, bool gradient, BgraImage?[] levels, bool[] half, bool opaque)
     {
-        Width = width; Height = height; Radius = radius; Gradient = gradient; Levels = levels; Half = half; Opaque = opaque;
+        Width = width; Height = height; Radius = radius; Gradient = gradient; Levels = Array.AsReadOnly(levels); Half = Array.AsReadOnly(half); Opaque = opaque;
     }
 
     /// <summary>The size of the image the levels were built from.</summary>
@@ -30,11 +30,14 @@ internal sealed class SpotlightLevels
     /// Fixed: one level, the image blurred with sigma = Radius. Gradient: 5 levels, k = sigma Radius * k / 4. A null level is the
     /// unblurred image (the caller's src): level 0 of a gradient always, every level when the radius is 0.
     /// </summary>
-    public BgraImage?[] Levels { get; }
+    public IReadOnlyList<BgraImage?> Levels { get; }
     /// <summary>Level k is stored at half resolution (ceil(W / 2) x ceil(H / 2), sampled bilinearly).</summary>
-    public bool[] Half { get; }
+    public IReadOnlyList<bool> Half { get; }
     /// <summary>The source was fully opaque when the levels were built (so is every level): the blend skips alpha.</summary>
     public bool Opaque { get; }
+
+    /// <summary>A stamp the caller may set (e.g. a counter of the pixel edits the levels were built from); echoed in <see cref="Spotlight.Blend"/>'s argument errors. Never checked.</summary>
+    public long Version { get; set; }
 
     /// <summary>The bytes the levels hold.</summary>
     public long Bytes => Levels.Sum(l => l == null ? 0L : l.Pixels.LongLength);
@@ -110,7 +113,7 @@ internal static class Spotlight
     public static void Blend(BgraImage src, BgraImage dst, RectI clip, SpotlightLevels levels, RectI box, double dim, int falloffPx)
     {
         if (src.Width != levels.Width || src.Height != levels.Height)
-            throw new ArgumentException($"src ({src.Width} x {src.Height}) must be the image the levels were built from ({levels.Width} x {levels.Height})", nameof(src));
+            throw new ArgumentException($"src ({src.Width} x {src.Height}) must be the image the levels (version {levels.Version}) were built from ({levels.Width} x {levels.Height})", nameof(src));
         ImagingUtil.RequireSameSize(src, dst);
         ImagingUtil.RequireNoAlias(src, dst);
         foreach (var lv in levels.Levels)
@@ -119,7 +122,7 @@ internal static class Spotlight
         if (c.IsEmpty) return;
         long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
 
-        int n = levels.Levels.Length;
+        int n = levels.Levels.Count;
         int cw = c.Width;
         bool hasBox = !box.IsEmpty;
         long bx0 = box.X, bx1 = (long)box.Right - 1, by0 = box.Y, by1 = (long)box.Bottom - 1;
@@ -142,7 +145,8 @@ internal static class Spotlight
 
         // Horizontal sampling of the half-resolution levels (all have the same size): element offsets into a vertical-lerp row that
         // starts at half column hj0.
-        int firstHalf = Array.IndexOf(levels.Half, true);
+        int firstHalf = -1;
+        for (int k = 0; k < levels.Half.Count; k++) if (levels.Half[k]) { firstHalf = k; break; }
         int[]? hx0 = null, hx1 = null;
         float[]? hfx = null;
         int hj0 = 0, hj1 = -1;

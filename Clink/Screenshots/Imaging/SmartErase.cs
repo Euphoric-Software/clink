@@ -4,7 +4,9 @@ namespace Clink.Screenshots.Imaging;
 /// Removes what is inside a rectangle by continuing the surroundings into it: a flat colour when the border is uniform, otherwise a
 /// smooth blend of the edge profiles (a Coons patch when all four sides have pixels). Specification: docs/screenshots-design.md A3.
 /// <para>Uniform op form: <c>Fill(src, dst, clip, r, ring, tolerance)</c> reads <c>src</c> (the ring around <c>r</c>), computes the
-/// fill of the whole rectangle as if unclipped and writes only <c>clip ∩ r</c> (clipped to the image); <c>dst</c> may be <c>src</c>.
+/// fill of the whole rectangle as if unclipped and writes only <c>clip ∩ r</c> (clipped to the image); <c>dst</c> may be <c>src</c> (the ring is never written, so any clip is fine in
+/// place, except for a rectangle that is the whole image, which has no ring and samples its own border: there <c>clip</c> must
+/// contain it, else ArgumentException).
 /// NON-LOCAL: every pixel of the rectangle depends on the whole ring, so the composer invalidates the whole rectangle (and recomposes
 /// it when anything under its ring changes), never a dirty sub-rectangle of it.</para>
 /// <para><b>Median convention.</b> A side's profile value at a position is the MEDIAN of the ring pixels across the ring's depth there
@@ -17,7 +19,8 @@ namespace Clink.Screenshots.Imaging;
 /// side's profile sits (rows + 1) / 2 pixels outside the rectangle, not on its edge. The blend parameters u and v are measured from
 /// the profiles' real positions (a block is symmetric around the position the corner is taken at, so for a linear image the median
 /// is exact, and a 1-px line through a corner block does not move it).</para>
-/// <para>Alpha: the fill is always opaque. An opaque ring is used as it is (the fast path). A ring with transparency is weighted by
+/// <para>Alpha: the fill is opaque, except that a ring that is entirely transparent (or an interpolated alpha of about 0) gives
+/// transparent black (0, 0, 0, 0), so erasing inside a transparent area leaves it transparent. An opaque ring is used as it is (the fast path). A ring with transparency is weighted by
 /// alpha: the uniformity test and the flat colour use alpha-weighted percentiles, the profiles and corners are taken premultiplied
 /// with their alpha alongside, and the blend is un-premultiplied at the end, so transparent black (crop padding, a gap between
 /// monitors) does not pull the fill towards black.</para>
@@ -50,6 +53,7 @@ internal static class SmartErase
         int kt = Math.Min(ring, y0), kb = Math.Min(ring, H - y1), kl = Math.Min(ring, x0), kr = Math.Min(ring, W - x1);
         bool hasT = kt > 0, hasB = kb > 0, hasL = kl > 0, hasR = kr > 0;
         bool none = !hasT && !hasB && !hasL && !hasR;
+        if (none) ImagingUtil.RequireSinglePass(src, dst, clip, rc, nameof(Fill));
 
         // The samples: the ring (r inflated, minus r, clipped), or the rectangle's own 1-px border when there is no ring.
         var samples = new List<int>();
@@ -105,7 +109,7 @@ internal static class SmartErase
             for (int y = wr.Y; y < wr.Bottom; y++)
             {
                 int i = y * stride + wr.X * 4;
-                for (int x = wr.X; x < wr.Right; x++, i += 4) { dp[i] = med[0]; dp[i + 1] = med[1]; dp[i + 2] = med[2]; dp[i + 3] = 255; }
+                for (int x = wr.X; x < wr.Right; x++, i += 4) { dp[i] = med[0]; dp[i + 1] = med[1]; dp[i + 2] = med[2]; dp[i + 3] = count == 0 ? (byte)0 : (byte)255; }
             }
             if (ImagingUtil.ShouldReport(t0, out double fms)) ImagingUtil.Report("smart-erase", $"{w}x{h} flat", fms);
             return;
@@ -173,6 +177,7 @@ internal static class SmartErase
                 {
                     double a = val[3];
                     for (int c = 0; c < 3; c++) dp[i + c] = a > 1e-6 ? ImagingUtil.ClampByte(val[c] * 255 / a) : (byte)0;
+                    if (!(a > 1e-6)) { dp[i + 3] = 0; continue; }   // a transparent surrounding stays transparent
                 }
                 dp[i + 3] = 255;
             }

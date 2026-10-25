@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Windows;
 using System.Windows.Media;
 using Clink.Screenshots.Imaging;
@@ -222,6 +222,76 @@ internal static class ScreenshotImagingTests
     }
 
     [UnitTest]
+    public static void Blur_clip_contract_with_transparency_far_from_the_clip_and_long_rows()
+    {
+        // one transparent pixel inside the region, far from the small clips: the path (premultiplied or not) must not depend on the clip
+        var img = Noise(80, 40, 70);
+        img.SetPixel(70, 35, 10, 20, 30, 0);
+        var region = new RectI(2, 2, 76, 36);
+        ClipContract("blur, transparent pixel far from the clip", img, (s, d, c) => BoxBlur.Blur(s, d, c, region, 2.5),
+            new RectI(3, 3, 6, 5), new RectI(10, 8, 13, 9), new RectI(0, 0, 20, 20));
+
+        // a 2000 px wide row: running sums that start at different places must still give the same bytes
+        var wide = Noise(2000, 6, 71);
+        var whole = wide.Clone();
+        BoxBlur.Blur(wide, whole, wide.Bounds, wide.Bounds, 6.5);
+        foreach (var clip in new[] { new RectI(1500, 0, 100, 6), new RectI(1990, 1, 10, 4), new RectI(700, 2, 300, 2) })
+        {
+            var part = wide.Clone();
+            BoxBlur.Blur(wide, part, clip, wide.Bounds, 6.5);
+            Check.Equal(0, MaxDiff4(whole, part, clip), $"2000 px row, clip {clip}: byte for byte");
+        }
+    }
+
+    [UnitTest]
+    public static void In_place_runs_must_cover_the_whole_region_in_one_call()
+    {
+        var img = Noise(60, 40, 72);
+        var region = new RectI(5, 5, 40, 30);
+        var half = new RectI(5, 5, 20, 30);
+        Check.Throws<ArgumentException>(() => BoxBlur.Blur(img, img, half, region, 2), "blur: in place with a partial clip");
+        Check.Throws<ArgumentException>(() => Adjustments.Unsharp(img, img, half, 1.0), "unsharp: in place with a partial clip");
+        var whole = img.Clone();
+        var inPlace = img.Clone();
+        BoxBlur.Blur(img, whole, whole.Bounds, region, 2);
+        BoxBlur.Blur(inPlace, inPlace, region, region, 2);
+        Check.True(Same(whole, inPlace), "blur: in place with a clip that covers the region");
+        BoxBlur.Blur(inPlace, inPlace, inPlace.Bounds, region, 2);   // a bigger clip also covers it
+        BoxBlur.Blur(img, img, new RectI(100, 100, 5, 5), region, 2);   // no overlap: nothing to do, no throw
+        var u1 = img.Clone();
+        var u2 = img.Clone();
+        Adjustments.Unsharp(img, u1, u1.Bounds, 1.0);
+        Adjustments.Unsharp(u2, u2, u2.Bounds, 1.0);
+        Check.True(Same(u1, u2), "unsharp: in place with the whole image");
+        // a separate dst takes any clip
+        BoxBlur.Blur(img, whole, half, region, 2);
+        Adjustments.Unsharp(img, whole, half, 1.0);
+
+        // smart erase: a rectangle that is the whole image has no ring and samples its own border
+        var all = Noise(12, 10, 73);
+        Check.Throws<ArgumentException>(() => SmartErase.Fill(all, all, new RectI(0, 0, 5, 5), all.Bounds));
+        SmartErase.Fill(all, all, all.Bounds, all.Bounds);
+        var partial = Noise(12, 10, 74);
+        SmartErase.Fill(partial, partial, new RectI(3, 3, 3, 3), new RectI(2, 2, 6, 5));   // has a ring: any clip works
+    }
+
+    [UnitTest]
+    public static void Smart_erase_in_a_fully_transparent_area_stays_transparent()
+    {
+        var img = new BgraImage(30, 20);   // all (0, 0, 0, 0)
+        var r = new RectI(8, 6, 10, 6);
+        SmartErase.Fill(img, r);
+        Check.Equal(((byte)0, (byte)0, (byte)0, (byte)0), img.GetPixel(10, 8), "flat fill of a transparent ring");
+        Check.Equal(((byte)0, (byte)0, (byte)0, (byte)0), img.GetPixel(r.X, r.Y));
+        // transparent on one side only: the interpolated alpha follows the surroundings, never an opaque black
+        var edge = new BgraImage(30, 20);
+        for (int y = 0; y < 20; y++)
+            for (int x = 0; x < 30; x++) if (x >= 15) edge.SetPixel(x, y, 200, 100, 50, 255);
+        SmartErase.Fill(edge, new RectI(2, 2, 10, 8), 3, 0);
+        Check.Equal(((byte)0, (byte)0, (byte)0, (byte)0), edge.GetPixel(4, 4), "ring all transparent");
+    }
+
+    [UnitTest]
     public static void Blur_with_transparency_is_premultiplied_so_transparent_black_does_not_darken()
     {
         // left half opaque red, right half transparent black
@@ -259,8 +329,28 @@ internal static class ScreenshotImagingTests
         Check.True(PlanePool.KeptBytes < (5L << 20), "small planes are not pooled");
         for (int i = 0; i < PlanePool.MaxKept + 3; i++) PlanePool.Return(new float[PlanePool.MinPooled + i]);
         Check.True(PlanePool.KeptBytes <= (long)PlanePool.MaxKept * a.Length * 4, "at most MaxKept planes");
+        Check.True(PlanePool.KeptBytes <= PlanePool.MaxKeptBytes, "within the byte cap");
         PlanePool.Clear();
         Check.Equal(0L, PlanePool.KeptBytes, "Clear drops everything");
+
+        // the byte cap: oversized planes are dropped until the kept ones fit
+        int big = (int)(PlanePool.MaxKeptBytes / 4 / 2) + 1;   // a bit over half the cap each
+        for (int i = 0; i < 4; i++) PlanePool.Return(new float[big]);
+        Check.True(PlanePool.KeptBytes <= PlanePool.MaxKeptBytes, $"kept {PlanePool.KeptBytes} bytes, cap {PlanePool.MaxKeptBytes}");
+        Check.True(PlanePool.KeptBytes > 0, "one oversized plane is still kept");
+        PlanePool.Return(new float[(int)(PlanePool.MaxKeptBytes / 4) + 1]);   // alone over the cap
+        Check.True(PlanePool.KeptBytes <= PlanePool.MaxKeptBytes, "a plane over the cap on its own is dropped");
+        PlanePool.Clear();
+
+        // generation: a plane rented before Clear is not kept when it comes back
+        var before = PlanePool.Rent(1 << 20);
+        PlanePool.Clear();
+        PlanePool.Return(before);
+        Check.Equal(0L, PlanePool.KeptBytes, "a plane rented before Clear is dropped on return");
+        var after = PlanePool.Rent(1 << 20);
+        PlanePool.Return(after);
+        Check.True(PlanePool.KeptBytes > 0, "a plane rented after Clear is kept");
+        PlanePool.Clear();
         var img = Noise(300, 300, 4);
         BoxBlur.Blur(img, img.Bounds, 3);   // works again after a clear
     }
@@ -701,7 +791,7 @@ internal static class ScreenshotImagingTests
     {
         var o = new BgraImage(src.Width, src.Height);
         double keep = 1 - Math.Clamp(dim, 0, 1);
-        int n = lv.Levels.Length;
+        int n = lv.Levels.Count;
         var a = area.Intersect(src.Bounds);
         var sv = new double[4];
         for (int y = a.Y; y < a.Bottom; y++)
@@ -812,6 +902,22 @@ internal static class ScreenshotImagingTests
         Spotlight.Blend(big, dst, clip, lv, box, 0.4, 150);
         Check.True(MaxDiff4(ReferenceBlend(big, lv, box, 0.4, 150, clip), dst, clip) <= 1, "matches the reference");
 
+        // a clip of at least 1 M pixels takes the parallel, chunked path of the blend
+        var bigClip = new RectI(700, 800, 1200, 900);
+        Check.True(bigClip.Area >= ImagingUtil.ParallelPixels);
+        var par = new BgraImage(2000, 2000);
+        Spotlight.Blend(big, par, bigClip, lv, box, 0.4, 150);
+        Check.True(MaxDiff4(ReferenceBlend(big, lv, box, 0.4, 150, bigClip), par, bigClip) <= 1, "parallel path matches the reference");
+
+        // 4K: a band of rows next to the box against the reference
+        var uhd = Noise(3840, 2160, 33);
+        var lv4 = Spotlight.Build(uhd, 12, gradient: true);
+        var box4 = new RectI(1500, 900, 600, 300);
+        var out4 = new BgraImage(3840, 2160);
+        Spotlight.Blend(uhd, out4, out4.Bounds, lv4, box4, 0.5, 200);
+        var band = new RectI(0, 860, 3840, 64);
+        Check.True(MaxDiff4(ReferenceBlend(uhd, lv4, box4, 0.5, 200, band), out4, band) <= 1, "4K band matches the reference");
+
         var small = Spotlight.Build(Noise(200, 100, 32), 3, gradient: true);
         Check.True(small.Half.All(hh => !hh), "below 4 MP small sigmas stay full resolution");
         var fixedBig = Spotlight.Build(big, 2, gradient: false);
@@ -885,7 +991,7 @@ internal static class ScreenshotImagingTests
     {
         var img = Noise(260, 60, 9);
         var levels = Spotlight.Build(img, 12, gradient: true);
-        Check.Equal(5, levels.Levels.Length);
+        Check.Equal(5, levels.Levels.Count);
         Check.True(levels.Levels[0] == null, "level 0 is the caller's image, not kept");
         Check.True(levels.Levels.Skip(1).All(l => l != null && !ReferenceEquals(l.Pixels, img.Pixels)), "the blurred levels are owned copies");
         Check.True(levels.Half[4] && !levels.Half[0], "the strong levels are half resolution");

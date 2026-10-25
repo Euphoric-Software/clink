@@ -31,8 +31,12 @@ internal sealed record AlphaMask(RectI Bounds, byte[] Coverage)
 /// <c>clip ∩ footprint</c> (clipped to the image) and never touches another pixel of <c>dst</c>; inside the footprint every pixel of
 /// the clip is written (an identity pixel is copied). Running it once per dirty sub-rectangle gives the same bytes as one unclipped
 /// run (BoxBlur and the unsharp mask: up to the float rounding of running sums that start elsewhere, byte-identical in the tests).
-/// In place (<c>dst == src</c>) is allowed for BoxBlur, Pixelate, Highlight, SmartErase and Adjustments; Spotlight.Blend,
-/// Magnifier.Render, Resample.Bilinear and Resample.Over throw on it. LOCAL ops (a pixel depends on src near it): BoxBlur
+/// In place (<c>dst == src</c>) is allowed for BoxBlur, Pixelate, Highlight, SmartErase and Adjustments, but ONLY as a
+/// single call that covers the whole footprint: in-place calls must cover the whole region in one call, because a second clipped
+/// in-place run would read the first one's output in its margin (BoxBlur.Blur and Adjustments.Unsharp, and SmartErase.Fill of a
+/// rectangle that is the whole image, throw <see cref="ArgumentException"/> otherwise); dirty-rect recomposition must use a separate
+/// dst. Spotlight.Blend, Magnifier.Render and Resample.Bilinear throw on any aliasing. Resample.Over composites ONTO dst (not
+/// idempotent: dst must already hold the pixels below inside the clip, and a second run composes again); it throws on aliasing src. LOCAL ops (a pixel depends on src near it): BoxBlur
 /// (<see cref="BoxBlur.ReadMargin"/>), Highlight, Adjustments (LUT per pixel, unsharp within the blur margin), Resample. NON-LOCAL
 /// ops, whose whole footprint the composer invalidates rather than a dirty sub-rectangle: Pixelate (whole blocks), SmartErase (the
 /// whole rectangle depends on the ring), Magnifier (dest depends on a source far from it), Spotlight (the whole image).</para>
@@ -117,6 +121,17 @@ internal static class ImagingUtil
     }
 
     /// <summary>Throws when <paramref name="dst"/> shares its pixels with <paramref name="src"/> (the ops that cannot run in place).</summary>
+    /// <summary>
+    /// Throws when <paramref name="dst"/> shares its pixels with <paramref name="src"/> and <paramref name="clip"/> does not contain
+    /// <paramref name="whole"/> (the part of the footprint inside the image): in-place is single-shot only. Nothing to check for
+    /// an empty <paramref name="whole"/>.
+    /// </summary>
+    public static void RequireSinglePass(BgraImage src, BgraImage dst, RectI clip, RectI whole, string op)
+    {
+        if (!whole.IsEmpty && ReferenceEquals(src.Pixels, dst.Pixels) && !clip.Contains(whole))
+            throw new ArgumentException($"{op}: an in-place call must cover the whole region in one call (clip {clip} does not contain {whole}); recompose dirty rectangles into a separate dst", nameof(dst));
+    }
+
     public static void RequireNoAlias(BgraImage src, BgraImage dst)
     {
         if (ReferenceEquals(src.Pixels, dst.Pixels)) throw new ArgumentException("dst must not alias src", nameof(dst));
