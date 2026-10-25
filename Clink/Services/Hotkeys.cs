@@ -228,6 +228,28 @@ internal static unsafe class Hotkeys
         }
     }
 
+    /// <summary>
+    /// Lets this process take the foreground (Windows only allows SetForegroundWindow to the process that got the last input): sends
+    /// the same tagged dummy key as <see cref="MaskAlt"/>, which the hook passes on and no program acts on. Used by the screenshot
+    /// overlay, which needs the keyboard (Esc / Enter). Never while the detected game is in front: nothing synthetic goes to a game
+    /// (anti-cheat), and over a game the first click activates the overlay instead. Returns true when the key was sent. Never throws.
+    /// </summary>
+    public static bool GrantForeground()
+    {
+        if (GameInFront()) return false;
+        try
+        {
+            KeybdEvent(VK_MASK, 0, 0, MaskTag);
+            KeybdEvent(VK_MASK, 0, KEYEVENTF_KEYUP, MaskTag);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            if (!s_maskFailed) { s_maskFailed = true; Log.Warn("hotkeys: the foreground key could not be sent: " + ex.Message); }
+            return false;
+        }
+    }
+
     // ------------------------------------------------------------------ matching
 
     private static bool IsModifier(int vk) => vk is 0xA0 or 0xA1 or VK_SHIFT or 0xA2 or 0xA3 or VK_CONTROL or 0xA4 or 0xA5 or VK_MENU or VK_LWIN or VK_RWIN;

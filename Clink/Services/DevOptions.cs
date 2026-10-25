@@ -303,7 +303,7 @@ internal sealed record DevOptions(string Folder, bool BindHotkeys)
     /// settings file taken over from another copy of Clink, or a folder that already held a real Clink's. Applied in memory to the
     /// loaded settings on every start and again after any import (the file is not rewritten): no automatic updates and no
     /// run-at-startup; the clips folder inside the dev folder (so the clip index never lists, nor the trim editor or Share touch,
-    /// the real clips); the archive off, and its location forgotten, unless that is inside the dev folder (it moves and deletes
+    /// the real clips) and a screenshots folder outside it back to the default (a Screenshots folder inside the clips folder); the archive off, and its location forgotten, unless that is inside the dev folder (it moves and deletes
     /// clips, and writes to the location, which a manual "Archive now" does whatever the switch says); no Copium token
     /// unless <c>--dev-token</c> (so nothing is shared to the real account). On a fresh store (<paramref name="freshStore"/>) the
     /// "Recording started" toast is also off, so a recording dev instance does not put toasts over a game.
@@ -318,6 +318,12 @@ internal sealed record DevOptions(string Folder, bool BindHotkeys)
         {
             changed.Add($"clips folder {Path.Combine(Folder, "clips")} instead of {s.ClipsFolder}");
             s.ClipsFolder = Path.Combine(Folder, "clips");
+        }
+        if (!string.IsNullOrWhiteSpace(s.ScreenshotsFolder) && !IsInsideFolder(s.ScreenshotsFolder))
+        {
+            // null means "Screenshots inside the clips folder", which is in the dev folder by now.
+            changed.Add("screenshots folder reset (it is outside the dev folder)");
+            s.ScreenshotsFolder = null;
         }
         if (!IsInsideFolder(s.ArchivePath))
         {

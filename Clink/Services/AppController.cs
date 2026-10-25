@@ -128,7 +128,7 @@ internal sealed partial class AppController : IDisposable
     private readonly SemaphoreSlim _engineGate = new(1, 1);   // Engine.Start / Stop are not thread-safe against each other
     private System.Windows.Forms.NotifyIcon? _tray;
     private System.Drawing.Icon? _trayIcon;     // the tray's icon at the taskbar's small-icon size (owned here, unlike SystemIcons)
-    private System.Windows.Forms.ToolStripMenuItem? _statusItem, _clipItem, _pauseItem, _updateItem, _importItem;
+    private System.Windows.Forms.ToolStripMenuItem? _statusItem, _clipItem, _pauseItem, _updateItem, _importItem, _screenshotItem, _screenshotEditItem;
     private DispatcherTimer? _timer;
     private StatusDotWindow? _dot;
     private static Mutex? s_mutex;
@@ -194,13 +194,33 @@ internal sealed partial class AppController : IDisposable
         return false;
     }
 
-    /// <summary>The pipe command a command line asks for: "clip" (--clip), "trim" (--trim-last), "share" (--share-last), or null.</summary>
+    /// <summary>The pipe command a command line asks for: "clip" (--clip), "trim" (--trim-last), "share" (--share-last), "record" (--record), "screenshot" (--screenshot), or null.</summary>
     public static string? CommandFromArgs(string[] args) =>
         args.Any(a => a.Equals("--clip", StringComparison.OrdinalIgnoreCase)) ? "clip"
+        : args.Any(a => a.Equals("--screenshot", StringComparison.OrdinalIgnoreCase)) ? "screenshot"
+        : args.Any(a => a.Equals("--screenshot-edit-last", StringComparison.OrdinalIgnoreCase)) ? "screenshot-edit-last"
+        : EditCommandFromArgs(args) is string edit ? edit
         : args.Any(a => a.Equals("--trim-last", StringComparison.OrdinalIgnoreCase)) ? "trim"
         : args.Any(a => a.Equals("--share-last", StringComparison.OrdinalIgnoreCase)) ? "share"
         : args.Any(a => a.Equals("--record", StringComparison.OrdinalIgnoreCase)) ? "record"   // toggles a manual recording (to a running Clink; a start finds the recorder not up yet and says so)
         : null;
+
+    /// <summary>
+    /// <c>--screenshot-edit &lt;path&gt;</c> as the pipe command <c>screenshot-edit &lt;full path&gt;</c>: the path is made absolute here, in the
+    /// process that was given it (a running Clink has another current directory). Null without a path (the next argument is a
+    /// switch or there is none) or when the path is not a valid one; the running Clink checks the rest (a readable .png).
+    /// </summary>
+    internal static string? EditCommandFromArgs(string[] args)
+    {
+        for (int i = 0; i < args.Length; i++)
+        {
+            if (!args[i].Equals("--screenshot-edit", StringComparison.OrdinalIgnoreCase)) continue;
+            if (i + 1 >= args.Length || args[i + 1].StartsWith("--", StringComparison.Ordinal) || string.IsNullOrWhiteSpace(args[i + 1])) return null;
+            try { return "screenshot-edit " + Path.GetFullPath(args[i + 1].Trim()); }
+            catch (Exception) { return null; }
+        }
+        return null;
+    }
 
     /// <summary>
     /// Gives up the single-instance mutex so a replacement process can take it (a restart, an update, or this process on its way
@@ -295,12 +315,19 @@ internal sealed partial class AppController : IDisposable
         }
     }
 
-    /// <summary>A control command from the pipe ("clip", "show", "trim", "share", "pause", "resume"). UI thread.</summary>
+    /// <summary>A control command from the pipe ("clip", "show", "trim", "share", "record", "screenshot", "pause", "resume"). UI thread.</summary>
     internal void RunCommand(string cmd)
     {
+        if (EditPathOf(cmd) is string editPath)   // "screenshot-edit <path>": the path keeps its case
+        {
+            Screenshots.EditFile(editPath, explicitPath: true);
+            return;
+        }
         switch (cmd.Trim().ToLowerInvariant())
         {
             case "clip": ClipNow(); break;
+            case "screenshot": Screenshots.CaptureRegion(Clink.Screenshots.ScreenshotTrigger.Cli); break;
+            case "screenshot-edit-last": Screenshots.EditLast(); break;
             case "show": ShowRequested?.Invoke(); break;
             case "trim": TrimLastRequested?.Invoke(); break;
             case "share": ShareLast(); break;
@@ -572,7 +599,7 @@ internal sealed partial class AppController : IDisposable
             Say("Update failed to start: " + ex.Message);
             return;
         }
-        Quit();
+        Quit(userInitiated: false);
     }
 
     /// <summary>
@@ -760,7 +787,7 @@ internal sealed partial class AppController : IDisposable
         }
         Log.Info("restart: the new Clink is started (" + string.Join(' ', psi.ArgumentList) + "); this one ends");
         ReleaseSingleInstance();
-        (ExitForRestart ?? Quit)();
+        (ExitForRestart ?? (() => Quit(userInitiated: false)))();   // the new Clink is running already: unsaved editor edits are saved as a copy
         return true;
     }
 
@@ -773,8 +800,18 @@ internal sealed partial class AppController : IDisposable
     /// </summary>
     internal static List<string> RestartArguments(IEnumerable<string> args)
     {
-        var once = new[] { "--clip", "--trim-last", "--share-last", "--record", "--minimized", "--no-update" };
-        var kept = WithoutAfterPid(DevOptions.WithoutSwitches(args)).Where(a => !once.Contains(a, StringComparer.OrdinalIgnoreCase)).ToList();
+        var once = new[] { "--clip", "--trim-last", "--share-last", "--record", "--screenshot", "--screenshot-edit-last", "--minimized", "--no-update" };
+        var kept = new List<string>();
+        var all = WithoutAfterPid(DevOptions.WithoutSwitches(args)).ToList();
+        for (int i = 0; i < all.Count; i++)
+        {
+            if (all[i].Equals("--screenshot-edit", StringComparison.OrdinalIgnoreCase))   // with its path: a command for one start only
+            {
+                if (i + 1 < all.Count && !all[i + 1].StartsWith("--", StringComparison.Ordinal)) i++;
+                continue;
+            }
+            if (!once.Contains(all[i], StringComparer.OrdinalIgnoreCase)) kept.Add(all[i]);
+        }
         if (!kept.Contains("--show", StringComparer.OrdinalIgnoreCase)) kept.Add("--show");
         kept.AddRange(DevSwitches());
         return kept;
@@ -991,9 +1028,38 @@ internal sealed partial class AppController : IDisposable
     /// </summary>
     private void MigrateHotkeys()
     {
-        if (Settings.Migrated) { Settings.Save(); Log.Info("settings: migrated to schema 3"); }
+        if (Settings.Migrated)
+        {
+            Settings.Save();
+            if (Settings.SchemaMigrated) Log.Info("settings: migrated to schema 3");
+            if (Settings.OfferedHotkeyDefaults.Count > 0)
+                Log.Info($"settings: hotkey defaults offered ({string.Join(", ", Settings.OfferedHotkeyDefaults)}){(Settings.AddedHotkeyDefaults.Count > 0 ? $", added: {string.Join(", ", Settings.AddedHotkeyDefaults)}" : ", none added (their keys or actions were taken)")}");
+        }
         if (Settings.MainHotkeyAssigned) Say(_hotkeyNotice = "Alt+C now saves the full replay. Change it under Capture → Hotkeys");
         else if (Settings.MainHotkeyNeedsSetup) Say(_hotkeyNotice = "Set your main hotkey under Capture → Hotkeys: it saves the full replay");
+        // A key Clink just took over (bare PrintScreen used to be Windows' own screenshot): said once, like the main hotkey above.
+        if (SeededHotkeyNotice(Settings) is string seeded)
+        {
+            Say(seeded);
+            _hotkeyNotice = _hotkeyNotice == null ? seeded : _hotkeyNotice + "\n" + seeded;
+        }
+    }
+
+    /// <summary>What to tell the user about default hotkeys this load added as rows (<see cref="Settings.AddedHotkeyDefaults"/>); null when none was.</summary>
+    internal static string? SeededHotkeyNotice(Settings s)
+    {
+        if (!s.ScreenshotsEnabled || (IsDev && !DevHotkeys)) return null;   // no tools, or a --dev instance whose hook binds nothing: the key is not taken over
+        if (s.AddedHotkeyDefaults.Contains("screenshot", StringComparer.OrdinalIgnoreCase))
+        {
+            string keys = ScreenshotHotkeyLabelFor(s.Hotkeys) ?? "PrintScreen";
+            return $"{keys} now takes a Clink screenshot — change it under Capture → Hotkeys";
+        }
+        if (s.AddedHotkeyDefaults.Contains("screenshot-edit-last", StringComparer.OrdinalIgnoreCase))   // an install that already had the screenshot key
+        {
+            string keys = ScreenshotEditHotkeyLabelFor(s.Hotkeys) ?? "Shift+PrintScreen";
+            return $"{keys} now edits your last Clink screenshot — change it under Capture → Hotkeys";
+        }
+        return null;
     }
 
     /// <summary>
@@ -1001,7 +1067,21 @@ internal sealed partial class AppController : IDisposable
     /// unless started with <c>--dev-hotkeys</c>, so it never swallows a combo the real Clink (or a game) is waiting for. The hook is
     /// installed either way, which is all the hotkey editor's key capture needs.
     /// </summary>
-    private IReadOnlyList<HotkeyAction> ActiveHotkeys => IsDev && !DevHotkeys ? Array.Empty<HotkeyAction>() : Settings.Hotkeys;
+    private IReadOnlyList<HotkeyAction> ActiveHotkeys => IsDev && !DevHotkeys ? Array.Empty<HotkeyAction>() : BindableHotkeys(Settings);
+
+    /// <summary>
+    /// What the hook may bind: all of <see cref="Settings.Hotkeys"/>, except that with the screenshot tools off the screenshot rows
+    /// stay in the list (and in settings.json) but are not handed to the hook, so their keys (PrintScreen) are left to Windows. A
+    /// "screenshot-edit-last" row follows the same rule (it opens the editor).
+    /// </summary>
+    internal static IReadOnlyList<HotkeyAction> BindableHotkeys(Settings s) =>
+        s.Hotkeys.Where(h => CommandFor(h.Action) switch
+        {
+            var c when IsScreenshotCommand(c) => s.ScreenshotsEnabled,
+            _ => true,
+        }).ToList();
+
+    private static bool IsScreenshotCommand(HotkeyCommand c) => c is HotkeyCommand.Screenshot or HotkeyCommand.ScreenshotEditLast;
 
     /// <summary>Re-reads <see cref="Settings.Hotkeys"/> after the list changed in the UI (an unset main hotkey and no other row means no hotkeys).</summary>
     public void ReloadHotkeys()
@@ -1023,20 +1103,42 @@ internal sealed partial class AppController : IDisposable
     /// <summary>"Clip now (F9)" for the tray menu, or just "Clip now" without a binding.</summary>
     private string ClipTrayText => ClipHotkeyLabel is string l ? $"Clip now ({l})" : "Clip now";
 
+    /// <summary>What a hotkey row does, by <see cref="HotkeyAction.Action"/> (see <see cref="CommandFor"/>).</summary>
+    internal enum HotkeyCommand { Clip, Pause, ShareLast, Record, Screenshot, ScreenshotEditLast, Unknown }
+
+    /// <summary>
+    /// The command of a hotkey row's action text (case-insensitive, trimmed). Null, blank and "clip" are the clip; "share" is
+    /// "share-last". Any other text is <see cref="HotkeyCommand.Unknown"/> and is ignored when pressed: before v0.4 it fell through to
+    /// saving a clip, so a typo in a hand-edited row clipped. (<see cref="Hotkeys.IsClip"/> still decides which rows are clip rows.)
+    /// </summary>
+    internal static HotkeyCommand CommandFor(string? action) => (action ?? "").Trim().ToLowerInvariant() switch
+    {
+        "" or "clip" => HotkeyCommand.Clip,
+        "pause" => HotkeyCommand.Pause,
+        "share-last" or "share" => HotkeyCommand.ShareLast,
+        "record" => HotkeyCommand.Record,
+        "screenshot" => HotkeyCommand.Screenshot,
+        "screenshot-edit-last" => HotkeyCommand.ScreenshotEditLast,
+        _ => HotkeyCommand.Unknown,
+    };
+
     private void OnHotkey(HotkeyAction a)
     {
-        switch ((a.Action ?? "clip").Trim().ToLowerInvariant())
+        switch (CommandFor(a.Action))
         {
-            case "pause":
+            case HotkeyCommand.Pause:
                 TogglePause();
                 // In a game nothing else shows it: a press by mistake would stop recording without a sign. A resume with a game
                 // running gets its "Recording started" toast once the engine is up.
                 if (!MainWindowInFront && Settings.ToastRecording.Enabled && (IsPaused || CurrentGame == null))
                     Toasts.ShowNotice(IsPaused ? "Recording paused" : "Recording resumed", IsPaused ? $"Press {a.Keys} to resume" : GameOnly ? "Waiting for a game" : "Replay buffer restarted", paused: IsPaused);
                 break;
-            case "share-last": case "share": ShareLast(); break;
-            case "record": ToggleRecording(); break;
-            default: ClipNow(a.Seconds > 0 ? a.Seconds : null); break;
+            case HotkeyCommand.ShareLast: ShareLast(); break;
+            case HotkeyCommand.Record: ToggleRecording(); break;
+            case HotkeyCommand.Screenshot: Screenshots.CaptureRegion(Clink.Screenshots.ScreenshotTrigger.Hotkey); break;
+            case HotkeyCommand.ScreenshotEditLast: Screenshots.EditLast(); break;
+            case HotkeyCommand.Clip: ClipNow(a.Seconds > 0 ? a.Seconds : null); break;
+            default: Log.Warn($"hotkey: unknown action '{a.Action}' on {a.Keys}: ignored"); break;
         }
     }
 
@@ -1388,6 +1490,12 @@ internal sealed partial class AppController : IDisposable
             menu.Items.Add(new System.Windows.Forms.ToolStripSeparator());
             _clipItem = new System.Windows.Forms.ToolStripMenuItem(ClipTrayText, null, (_, _) => _ui.BeginInvoke(() => ClipNow()));
             menu.Items.Add(_clipItem);
+            _screenshotItem = new System.Windows.Forms.ToolStripMenuItem(ScreenshotTrayText, null, (_, _) => _ui.BeginInvoke(() => Screenshots.CaptureRegion(Clink.Screenshots.ScreenshotTrigger.Tray)))
+                { Visible = Settings.ScreenshotsEnabled };
+            menu.Items.Add(_screenshotItem);
+            _screenshotEditItem = new System.Windows.Forms.ToolStripMenuItem(ScreenshotEditTrayText, null, (_, _) => _ui.BeginInvoke(() => Screenshots.EditLast()))
+                { Visible = Settings.ScreenshotsEnabled };
+            menu.Items.Add(_screenshotEditItem);
             _recordItem = new System.Windows.Forms.ToolStripMenuItem(RecordItemText, null, (_, _) => _ui.BeginInvoke(ToggleRecording));
             menu.Items.Add(_recordItem);
             menu.Items.Add("Share last clip", null, (_, _) => _ui.BeginInvoke(ShareLast));
@@ -1469,7 +1577,12 @@ internal sealed partial class AppController : IDisposable
         }
     }
 
-    public void UpdateTrayHotkey() { if (_clipItem != null) _clipItem.Text = ClipTrayText; }
+    public void UpdateTrayHotkey()
+    {
+        if (_clipItem != null) _clipItem.Text = ClipTrayText;
+        if (_screenshotItem != null) { _screenshotItem.Text = ScreenshotTrayText; _screenshotItem.Visible = Settings.ScreenshotsEnabled; }
+        if (_screenshotEditItem != null) { _screenshotEditItem.Text = ScreenshotEditTrayText; _screenshotEditItem.Visible = Settings.ScreenshotsEnabled; }
+    }
 
     public void ShowBalloon(string title, string text)
     {
@@ -1477,14 +1590,66 @@ internal sealed partial class AppController : IDisposable
         try { _tray?.ShowBalloonTip(3000, title, text, System.Windows.Forms.ToolTipIcon.None); } catch { }
     }
 
-    public void Quit()
+    /// <param name="userInitiated">The tray's Quit / the menu: an open screenshot editor with unsaved edits asks and can cancel the quit. An update restart is not (the new version is launched already): the edits are saved as a copy.</param>
+    public void Quit(bool userInitiated = true)
     {
-        _ui.BeginInvoke(() =>
+        _ui.BeginInvoke(() => QuitAsync(userInitiated));
+    }
+
+    private bool _quitAsking;
+    private bool _forcedQuitPending;   // an update restart asked to quit while the user's question was up: it cannot be refused
+
+    private async void QuitAsync(bool userInitiated)
+    {
+        if (_quitAsking)   // the editor's question is up already
         {
-            // A throw while cleaning up must not leave a process with no tray icon running on.
-            try { StopRecordingForExit(); Dispose(); }
-            finally { System.Windows.Application.Current.Shutdown(); }
-        });
+            if (!userInitiated) _forcedQuitPending = true;   // remembered: Cancel then no longer keeps Clink running
+            return;
+        }
+        bool go = true;
+        if (_screenshotEditor is { IsOpen: true } editor)
+        {
+            _quitAsking = true;
+            try
+            {
+                go = await editor.ConfirmQuitAsync(userInitiated);
+                if (!go && _forcedQuitPending)
+                {
+                    Log.Info("quit: a forced quit came in during the question: saving a copy and quitting");
+                    go = await editor.ConfirmQuitAsync(userInitiated: false);
+                }
+            }
+            catch (Exception ex) { Log.Error("quit: screenshot editor", ex); }
+            finally { _quitAsking = false; _forcedQuitPending = false; }
+        }
+        if (!go)
+        {
+            Log.Info("Quit cancelled from the screenshot editor");
+            return;
+        }
+        // A throw while cleaning up must not leave a process with no tray icon running on.
+        try { StopRecordingForExit(); Dispose(); }
+        finally { System.Windows.Application.Current.Shutdown(); }
+    }
+
+    /// <summary>Windows is ending the session (cannot be refused): unsaved screenshot edits are saved as a copy, waiting at most ~3 s with the UI still pumping.</summary>
+    internal void SaveEditorForSessionEnd()
+    {
+        // Follow-up (accepted for S5): edits made in the capture overlay (mode "before") are NOT saved here; they are lost on a quit / session end.
+        if (_screenshotEditor is not { IsOpen: true } editor) return;
+        try
+        {
+            var task = editor.ConfirmQuitAsync(userInitiated: false);
+            var until = DateTime.UtcNow.AddSeconds(3);
+            while (!task.IsCompleted && DateTime.UtcNow < until)
+            {
+                var frame = new DispatcherFrame();
+                _ui.BeginInvoke(DispatcherPriority.Background, () => frame.Continue = false);
+                Dispatcher.PushFrame(frame);
+            }
+            if (!task.IsCompleted) Log.Warn("session end: the screenshot editor's save did not finish within 3 s");
+        }
+        catch (Exception ex) { Log.Error("session end: screenshot editor", ex); }
     }
 
     public void Dispose()

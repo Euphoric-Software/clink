@@ -9,6 +9,7 @@ using System.Windows.Media;
 using System.Windows.Threading;
 using Clink.Audio;
 using Clink.Native;
+using Clink.Screenshots;
 using Clink.Services;
 using Clink.UI;
 
@@ -22,7 +23,7 @@ internal sealed record Choice(string Label, object Value, bool Header = false, b
 /// window is ≥ 900 px wide and becomes the last tab, Library, when it is narrower. Capture holds, top to bottom, Capturing (monitor,
 /// quality, size target, replay length with the one size/RAM readout under its slider, cursor) · Audio tracks (under a "set up
 /// your audio" banner that goes away for good once the pointer has rested on the group and moved off, or an option in it
-/// changes) · Recording · Hotkeys (the main hotkey, then shorter ones); Clips holds Copium and Storage; Alerts holds Toasts and
+/// changes) · Recording · Hotkeys (the main hotkey, then shorter ones); Clips holds Copium and Storage; Screenshots holds the screenshot tools' switch, folder and options; Alerts holds Toasts and
 /// Status dot; App holds Appearance (theme and accent), Updates (with "run at startup") and Settings (where they are kept, and
 /// the banners about a private copy of AppData and another copy's settings). Every control writes its setting on change and,
 /// where the engine is affected, restarts it after a short debounce (<see cref="ScheduleRestart"/>). Every colour is a
@@ -265,6 +266,17 @@ public partial class MainWindow : Window
         ArchiveGbBox.Text = s.ArchiveWhenLocalExceedsGB.ToString("0.##", CultureInfo.InvariantCulture);
         UpdateArchiveEnabled();
         RefreshArchiveStatus();
+
+        ScreenshotsEnabledCheck.IsChecked = s.ScreenshotsEnabled;
+        ScreenshotFolderBox.Text = ScreenshotService.FolderFor(s);
+        ScreenshotCopyCheck.IsChecked = s.ScreenshotCopyImage;
+        ScreenshotLoupeCheck.IsChecked = s.ScreenshotLoupe;
+        if (ScreenshotModeCombo.Items.Count == 0)
+            foreach (var (value, label, tip) in ScreenshotModes.Choices)
+                ScreenshotModeCombo.Items.Add(new ComboBoxItem { Content = label, Tag = value, ToolTip = tip });
+        ScreenshotModeCombo.SelectedItem = ScreenshotModeCombo.Items.OfType<ComboBoxItem>().FirstOrDefault(i => (string?)i.Tag == s.ScreenshotMode)
+            ?? ScreenshotModeCombo.Items[0];
+        UpdateScreenshotTab();
 
         Fill(ToastPositionCombo, new[]
         {
@@ -1034,6 +1046,7 @@ public partial class MainWindow : Window
         if (s.Hotkeys.Count > 0 && s.Hotkeys[0].Keys.Vk > 0) s.Hotkey = s.Hotkeys[0].Keys.Clone();
         s.Save();
         _app.ReloadHotkeys();
+        UpdateScreenshotTab();   // the hint names the screenshot key
     }
 
     private void AudioChanged(object sender, RoutedEventArgs e)
@@ -1240,6 +1253,8 @@ public partial class MainWindow : Window
         _app.Library.Load(path);
         _app.RecoverRecordingsAsync();   // unfinished recordings the new folder may hold
         _app.Say("Clips folder changed");
+        // The default screenshots folder lives inside the clips folder: show the new one, or leaving that box later would pin the old default.
+        ScreenshotFolderBox.Text = ScreenshotService.FolderFor(s);
         ScheduleRestart();   // the engine writes clips to its configured folder
     }
 
@@ -1250,6 +1265,87 @@ public partial class MainWindow : Window
         ClipsFolderBox.Text = picked;
         ClipsFolderBox_LostFocus(sender, e);
     }
+
+    // ------------------------------------------------------------------ screenshots
+
+    /// <summary>The other controls follow the master switch; the hint names the keys that are really bound (and the defaults, so it is findable).</summary>
+    private void UpdateScreenshotTab()
+    {
+        if (ScreenshotOptions == null) return;
+        var s = _app.Settings;
+        ScreenshotOptions.IsEnabled = s.ScreenshotsEnabled;
+        ScreenshotOptions.Opacity = s.ScreenshotsEnabled ? 1 : 0.55;
+        string? keys = AppController.ScreenshotHotkeyLabelFor(s.Hotkeys);
+        string? editKeys = AppController.ScreenshotEditHotkeyLabelFor(s.Hotkeys);
+        ScreenshotHotkeyHint.Text = (keys != null ? $"Hotkey: {keys} takes a screenshot. " : "No hotkey is set for screenshots. ")
+            + (editKeys != null ? $"{editKeys} edits the last one. " : "No hotkey is set for editing the last one. ")
+            + "The defaults are PrintScreen and Shift+PrintScreen. Change them under Capture → Hotkeys. "
+            + "With Edit on screen, draw on the chosen area and press Enter or Done to save; Esc steps back, then throws it away.";
+    }
+
+    private void ScreenshotModeChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_loading || e.OriginalSource != ScreenshotModeCombo) return;
+        if (ScreenshotModeCombo.SelectedItem is ComboBoxItem { Tag: string mode, IsEnabled: true })
+        {
+            _app.Settings.ScreenshotMode = ScreenshotModes.Normalize(mode);
+            _app.Settings.Save();
+        }
+    }
+
+    private void ScreenshotsEnabledChanged(object sender, RoutedEventArgs e)
+    {
+        if (_loading) return;
+        _app.Settings.ScreenshotsEnabled = ScreenshotsEnabledCheck.IsChecked == true;
+        _app.Settings.Save();
+        _app.ReloadHotkeys();   // binds or unbinds the screenshot rows and shows or hides the tray item
+        UpdateScreenshotTab();
+    }
+
+    private void ScreenshotOptionChanged(object sender, RoutedEventArgs e)
+    {
+        if (_loading) return;
+        _app.Settings.ScreenshotCopyImage = ScreenshotCopyCheck.IsChecked == true;
+        _app.Settings.ScreenshotLoupe = ScreenshotLoupeCheck.IsChecked == true;
+        _app.Settings.Save();
+    }
+
+    private void ScreenshotFolderBox_LostFocus(object sender, RoutedEventArgs e)
+    {
+        if (_loading) return;
+        var s = _app.Settings;
+        string path = ScreenshotFolderBox.Text.Trim().Trim('"');
+        if (path.Length == 0)
+        {
+            // Empty = back to the default, a Screenshots folder inside the clips folder.
+            if (s.ScreenshotsFolder != null) { s.ScreenshotsFolder = null; s.Save(); _app.Say("Screenshots folder reset"); }
+            ScreenshotFolderBox.Text = ScreenshotService.FolderFor(s);
+            return;
+        }
+        if (string.Equals(path, ScreenshotService.FolderFor(s), StringComparison.OrdinalIgnoreCase)) { ScreenshotFolderBox.Text = ScreenshotService.FolderFor(s); return; }
+        if (!Path.IsPathFullyQualified(path))
+        {
+            _app.Say(@"Use a full path for the screenshots folder, e.g. D:\Screenshots");
+            ScreenshotFolderBox.Text = ScreenshotService.FolderFor(s);
+            return;
+        }
+        try { Directory.CreateDirectory(path); }
+        catch (Exception ex) { _app.Say("Cannot use that folder: " + ex.Message); ScreenshotFolderBox.Text = ScreenshotService.FolderFor(s); return; }
+        s.ScreenshotsFolder = path;
+        s.Save();
+        ScreenshotFolderBox.Text = path;
+        _app.Say("Screenshots folder changed");
+    }
+
+    private void BrowseScreenshots_Click(object sender, RoutedEventArgs e)
+    {
+        string? picked = PickFolder("Screenshots folder", ScreenshotService.FolderFor(_app.Settings));
+        if (picked == null) return;
+        ScreenshotFolderBox.Text = picked;
+        ScreenshotFolderBox_LostFocus(sender, e);
+    }
+
+    private void OpenScreenshots_Click(object sender, RoutedEventArgs e) => _app.OpenScreenshotsFolder();
 
     private void BrowseArchive_Click(object sender, RoutedEventArgs e)
     {

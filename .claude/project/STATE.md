@@ -1,4 +1,4 @@
-﻿# State
+# State
 
 ## In progress
 Manual start/stop recording (branch `feature/manual-recording`).
@@ -86,6 +86,32 @@ Run the manual test script; then Step 5 (see TASKS.md).
 ## Dev Build channel (branch `feature/dev-channel`, commit 0eeca0a, from v0.3.0 / 7d26007)
 Done: ReleaseVersion, Updater channel logic (stable unchanged; dev lists releases), Settings.UseDevBuilds/PendingUpdateFrom, footer version popup, release-dev.yml, release.yml ignores v*-dev.* tags, 7 UpdaterChannel tests.
 Verified: Debug+Release forced rebuilds 0 warnings/0 errors; `--unittest` 381 passed/0 failed/0 skipped on both configs, also with CLINK_TESTS_NO_SKIP=1 and CLINK_EMULATE_ELST=1; two senior reviews (ship), findings fixed; GUI popup smoke passed once in an isolated `--dev` instance (disabled-controls state).
-Launched: feature/dev-channel merged to main at c72fb2d; `dev` branch created at c72fb2d and pushed (also feature/dev-channel at 49dbc77).
+Launched: feature/dev-channel merged to main at c72fb2d; `dev` exists on origin (c72fb2d, v0.3.1-dev.1 published); `dev` is now 2 commits behind `main` (3f66291 v0.3.1).
 First dev build: run https://github.com/jason-tucker/clink/actions/runs/40130530774, 2m52s, success. Prerelease v0.3.1-dev.1 (targetCommitish c72fb2d) verified: assets Clink.exe 31,537,088 B + Clink.exe.sha256 76 B; sha256 matches; embedded ProductVersion 0.3.1-dev.1+c72fb2d... OK; downloaded exe not executed. Stable releases/latest still v0.3.0; release.yml not triggered by the dev tag.
 Remaining: user installs the first dev build by hand once (download Clink.exe from the prerelease, replace the running exe, then tick Dev Build); popup enabled-state GUI check; optional release-dev.yml job split.
+
+## Screenshots (branch feature/screenshots, from main 3f66291 v0.3.1)
+Progress: S1 2cb39b0 (capture, overlay, PNG, clipboard, toast, tab, `screenshot` hotkey = bare PrintScreen, `--screenshot`, tray; docs 043467b). S3 f7aeb3f (editor window, vector tools, edit-after, edit-last, `screenshot-edit-last` seeded Shift+PrintScreen, `--screenshot-edit-last`, `--screenshot-edit <png>`). S2 merged at 0d1dc6f (pixel library in Clink/Screenshots/Imaging; worktree branch `worktree-agent-ac33d7baec9c3d8a6` tip 41962cb kept, not deleted; worktree left in place). S2 and S3 each went through two senior-review rounds.
+Verified (merged tree): Debug and Release `--no-incremental` 0 warnings/0 errors; `--unittest` 572 passed/0 failed/0 skipped (Debug plain, Debug NO_SKIP, Release NO_SKIP); `ScreenshotImaging` 54, `ScreenshotEditor` 37. S3 alone was 518; S1 453.
+NOT verified: any human GUI run of the editor; real PrintScreen hook delivery; Snipping Tool suppression; HDR; exclusive fullscreen. Desktop-dependent tests (GDI monitor capture, busy clipboard) first run on a GitHub runner with the first dev push.
+Delivery plan: fast-forward `dev` to `main`, merge `feature/screenshots`, push `dev` -> release-dev.yml -> 0.3.2-dev.N. Push needs user approval.
+
+Manual GUI test list (run on `Clink.exe --dev <folder> --dev-hotkeys`; never the installed Clink)
+S1: Ctrl/Print-Screen overlay on every monitor without visible jump; drag -> PNG in `<ClipsFolder>\Screenshots` sized as the label; paste into Paint pixel-identical; toast Open/Folder; Esc/right-click save nothing; Enter = whole monitor; mixed-DPI and negative-coordinate monitors; cross-monitor rect; tray item and `--screenshot`; seeded hotkey row appears once and deleting it survives restart; unknown hand-edited action logs and does not clip; HDR result noted here (decides S7); exclusive-fullscreen black toast; overlay absent from a replay clip saved right after.
+S3: each tool (select, pen, line, arrow, freehand arrow, rectangle, text, crop) at 100% and 200%; undo/redo of each; text UX incl. right-click menu then Esc/Ctrl+C/Space must NOT close the editor; saved PNG equals the 100% view; Ctrl+C paste into Paint and Discord; "Save edits?" on Esc/Alt+F4/X with Yes/No/Cancel; Shift+PrintScreen reopens the live document, after a restart opens the flattened PNG; toast Edit button, tray "Edit last screenshot", `--screenshot-edit <png>`; both seeded hotkey rows present; memory after 10 editor sessions; Alt+Space then drag draws, not pans; tray Quit with unsaved edits, all three answers; thick short freehand arrow export matches screen; small 200% screen still shows Done.
+S4 done (77530e1): composer v2, RasterOps, blur/pixelate/highlight/spotlight/magnify/smart erase tools, insert image picker + paste, adjustments flyout; two senior-review rounds. Verified: Debug and Release 0 warnings; `--unittest` 622 passed/0 failed/0 skipped (Debug plain, Debug NO_SKIP, Release NO_SKIP).
+Release perf at 4K: first compose ~180-195 ms; spotlight move ~9 ms; levels rebuild ~170 ms; drag under spotlight ~18 ms; LUT 4-6 ms; LUT over cached sharpened base 3-4 ms. Honest memory: 158 MB display composer + 84 MB blur planes + 63 MB sharpen composer.
+S4 manual GUI list (add to the lists above): each raster tool incl. handles/undo; spotlight drag on a 4K capture with and without gradient; brightness/contrast drag with a spotlight present (<=120 ms stale blur then snap); sharpness slider (sharpening appears when the slider rests); smart erase on a gradient background and on text over a flat panel; magnify outline + dashed source frame absent from the PNG; Ctrl+V from Paint (CF_DIB, must paste opaque) and from a browser; insert a large JPEG and drag immediately; `I` picker with a long history/missing files; edit-last reopen of a document with blur must never flash un-redacted; 50-object status warning; memory in Task Manager after 10 sessions; small 200%-DPI screen shows all three toolbar rows + Done.
+S5 done (5ea3308): mode "before" ("Edit on screen") inside the capture overlay: shared EditorSession/EditorCanvas at 1:1, crop handles, floating toolbar, Enter/Done/Esc ladder, cross-monitor fallback to the editor window. Two senior-review rounds. Verified: Debug and Release 0 warnings; `--unittest` 650 passed/0 failed/0 skipped (Debug plain, Debug NO_SKIP, Release NO_SKIP); 28 new tests; no BOM changes on touched files.
+
+## Dev manual checklist (user, dev build; use `--dev <folder> --dev-hotkeys` or the installed dev build knowingly)
+- S1 capture: overlay on every monitor without visible jump; drag -> PNG sized as the label; paste into Paint identical; PrintScreen works and Snipping Tool is suppressed; Esc/right-click save nothing; Enter = whole monitor; mixed-DPI/negative-coordinate monitors; HDR look noted (decides S7); exclusive-fullscreen black toast.
+- S3 editor: every vector tool at 100% and 200%, text UX (context menu then Esc must not close), undo/redo, save equals view, Ctrl+C paste, "Save edits?" prompts, Shift+PrintScreen edit-last (live and after restart), toast Edit button, tray item.
+- S4 raster: blur/pixelate/highlight/spotlight (drag on 4K)/magnify/smart erase, brightness/contrast/sharpness, insert image (picker + paste from Paint and browser), edit-last of a blurred document never shows un-redacted, memory after 10 sessions.
+- S5 overlay editing: set mode "Edit on screen"; toolbar placement at all screen edges and small/200% screens; crop handles; Esc ladder (gesture -> deselect -> tool -> cancel); Enter and Done save one cropped PNG with outside annotations clipped; Cancel button; cross-monitor drag opens the editor window with hint; insert dialogs while overlay is up; idle notice after 20 min; replay clip saved during/after overlay editing contains no overlay or toolbar.
+
+## Dev channel push
+Merge of feature/screenshots into dev pushed on 2026-10-25 (authorized "A"). Result: see below.
+
+## Next action
+S6 (Copium upload + nudge + settings completion + export off the UI thread), then a second dev build.

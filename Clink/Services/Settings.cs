@@ -67,7 +67,7 @@ internal sealed class HotkeyBinding
 internal sealed class HotkeyAction
 {
     public HotkeyBinding Keys { get; set; } = new();
-    /// <summary>clip | pause | share-last</summary>
+    /// <summary>clip | pause | share-last | record | screenshot | screenshot-edit-last; see <c>AppController.CommandFor</c>. Anything else is ignored (and logged) when pressed.</summary>
     public string Action { get; set; } = "clip";
     public int Seconds { get; set; } = 0;
     /// <summary>Keys inside this hotkey that this version does not know (written by a newer Clink): kept and written back, like <see cref="Settings.Unknown"/>.</summary>
@@ -175,6 +175,25 @@ internal sealed class Settings
     /// different one and is offered again.
     /// </summary>
     public string? ImportDeclined { get; set; }
+
+    // ---- v0.4 screenshots (additive: no schema change, see SeedHotkeyDefaults) ----
+    /// <summary>Master switch of the screenshot tools: off = the screenshot hotkey rows stay in the list but are not bound, the tray items are hidden and <c>--screenshot</c> only says they are off.</summary>
+    public bool ScreenshotsEnabled { get; set; } = true;
+    /// <summary>Where screenshots are saved; null = a <c>Screenshots</c> folder inside <see cref="ClipsFolder"/> (resolved when used).</summary>
+    public string? ScreenshotsFolder { get; set; }
+    /// <summary>none | before | after (<see cref="Clink.Screenshots.ScreenshotModes"/>): what happens after the region is picked. "none" saves at once; "after" opens the editor on the picture first; "before" edits the chosen area right in the capture overlay (an area over several monitors opens the editor window instead).</summary>
+    public string ScreenshotMode { get; set; } = Clink.Screenshots.ScreenshotModes.None;
+    /// <summary>The screenshot editor's last-used tool options (colour, width, text size / backdrop): the next editor opens the way the last one was left.</summary>
+    public Clink.Screenshots.Editing.ScreenshotEditorOptions ScreenshotEditor { get; set; } = new();
+    public bool ScreenshotCopyImage { get; set; } = true;
+    public bool ScreenshotLoupe { get; set; } = true;
+    public ToastSetting ToastScreenshot { get; set; } = new() { Enabled = true, Seconds = 6 };
+    /// <summary>
+    /// The hotkey actions whose default binding was offered once (<see cref="SeedHotkeyDefaults"/>), whether or not it was added: a
+    /// user who deletes the row does not get it back. Newer Clink versions keep it too.
+    /// </summary>
+    public List<string> SeededHotkeyDefaults { get; set; } = new();
+
     /// <summary>
     /// Keys in settings.json that this version does not know (written by a newer Clink). They are kept and written back by
     /// <see cref="Save"/>, so going back and forth between versions does not drop the newer one's settings.
@@ -329,11 +348,12 @@ internal sealed class Settings
         }
         if (problems.Count > 0) s.LoadProblem = string.Join(". ", problems);
         s.Normalize();
+        s.SeedHotkeyDefaults();   // after Normalize, not inside it: FromJson (import comparisons) normalizes too and must not add rows
         // A NaN / Infinity the file holds (an earlier version wrote them as text) is put back to the default here, before anything
         // reads it: BuildConfig, the encoder and the window never see it, not only the next save.
         s.Sanitize(quiet: false);
         // A file of an older schema, or no usable file at all (a first start): the caller saves once, in the current layout.
-        if (s._fileSchema < CurrentSchema) s.Migrated = true;
+        if (s._fileSchema < CurrentSchema) s.Migrated = s.SchemaMigrated = true;
         s.SchemaVersion = CurrentSchema;   // what a save writes, whatever number the file had (see SchemaVersion)
         return s;
     }
@@ -352,7 +372,10 @@ internal sealed class Settings
     {
         var s = ParseCore(json, quiet: true);
         s.Normalize();
-        s.Sanitize(quiet: true);   // as Load does, so two copies are compared as they would be once loaded
+        // As Load does, so two copies are compared as they would be once loaded: a copy saved before the default hotkeys were offered
+        // would otherwise differ from ours for good (an import writes the copy's text, and the next load seeds it again).
+        s.SeedHotkeyDefaults();
+        s.Sanitize(quiet: true);
         return s;
     }
 
@@ -488,8 +511,75 @@ internal sealed class Settings
         if (string.IsNullOrWhiteSpace(Theme)) Theme = SettingsDefaults.Theme;
         if (string.IsNullOrWhiteSpace(Accent)) Accent = SettingsDefaults.Accent;
         if (string.IsNullOrWhiteSpace(ClipsFolder)) ClipsFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "Clink");
+        if (string.IsNullOrWhiteSpace(ScreenshotsFolder)) ScreenshotsFolder = null;
+        // A relative path (a hand edit, an import) would resolve against the current directory, which is System32 at sign-in: the default instead.
+        else if (!IsFullPath(ScreenshotsFolder.Trim())) ScreenshotsFolder = null;
+        ScreenshotMode = Clink.Screenshots.ScreenshotModes.Normalize(ScreenshotMode);
+        ScreenshotEditor ??= new Clink.Screenshots.Editing.ScreenshotEditorOptions();
+        ScreenshotEditor.Normalize();
+        ToastScreenshot ??= new ToastSetting { Enabled = true, Seconds = 6 };
+        SeededHotkeyDefaults ??= new List<string>();
+        SeededHotkeyDefaults.RemoveAll(a => string.IsNullOrWhiteSpace(a));
         EnsureHotkeyModel();
     }
+
+    private static bool IsFullPath(string path)
+    {
+        try { return Path.IsPathFullyQualified(path) && path.IndexOfAny(Path.GetInvalidPathChars()) < 0; }
+        catch { return false; }
+    }
+
+    /// <summary>
+    /// Test seam, true in the app: <see cref="SeedHotkeyDefaults"/> does something. The unit-test runner turns it off for every test
+    /// (the older tests pin exactly which hotkey rows a given file loads to); the seeding tests switch it on themselves.
+    /// </summary>
+    internal static bool SeedDefaults { get; set; } = true;
+
+    /// <summary>The default hotkeys a version offers once, as (action, keys): bare PrintScreen takes a screenshot, Shift+PrintScreen edits the last one.</summary>
+    internal static IEnumerable<(string Action, HotkeyBinding Keys)> HotkeyDefaultsToSeed()
+    {
+        yield return ("screenshot", new HotkeyBinding { Vk = 0x2C });   // VK_SNAPSHOT
+        yield return ("screenshot-edit-last", new HotkeyBinding { Shift = true, Vk = 0x2C });
+    }
+
+    /// <summary>
+    /// Offers each default hotkey (<see cref="HotkeyDefaultsToSeed"/>) once, instead of a schema migration (a schema bump would make
+    /// every schema-3 file look "older" to <see cref="EnsureHotkeyModel"/>): for an action not yet in <see cref="SeededHotkeyDefaults"/>
+    /// a row is appended only if no row has that action and no row uses those keys; the action is recorded as seeded either way. So a
+    /// user's own PrintScreen binding is respected, a deleted row never comes back, and a second load adds nothing. Raises
+    /// <see cref="Migrated"/> when anything changed, so the caller saves once. Called by <see cref="Load"/> after <see cref="Normalize"/>.
+    /// </summary>
+    internal void SeedHotkeyDefaults()
+    {
+        if (!SeedDefaults) return;
+        bool changed = false;
+        foreach (var (action, keys) in HotkeyDefaultsToSeed())
+        {
+            if (SeededHotkeyDefaults.Contains(action, StringComparer.OrdinalIgnoreCase)) continue;
+            bool actionFree = !Hotkeys.Any(h => string.Equals((h.Action ?? "").Trim(), action, StringComparison.OrdinalIgnoreCase));
+            bool keysFree = !Hotkeys.Any(h => h.Keys.SameKeys(keys));
+            if (actionFree && keysFree)
+            {
+                Hotkeys.Add(new HotkeyAction { Keys = keys, Action = action, Seconds = 0 });
+                _addedDefaults.Add(action);
+            }
+            SeededHotkeyDefaults.Add(action);
+            _offeredDefaults.Add(action);
+            changed = true;
+        }
+        if (changed) Migrated = true;
+    }
+
+    private readonly List<string> _offeredDefaults = new(), _addedDefaults = new();
+
+    /// <summary>The default hotkeys this load offered (<see cref="SeedHotkeyDefaults"/>), added or not: what made <see cref="Migrated"/> true besides <see cref="SchemaMigrated"/>.</summary>
+    [JsonIgnore] public IReadOnlyList<string> OfferedHotkeyDefaults => _offeredDefaults;
+
+    /// <summary>The default hotkeys this load added as rows (their keys were free): the user is told once (<c>AppController.SeededHotkeyNotice</c>).</summary>
+    [JsonIgnore] public IReadOnlyList<string> AddedHotkeyDefaults => _addedDefaults;
+
+    /// <summary><see cref="Migrated"/> for a reason other than offering default hotkeys: an older schema, a first start, a hotkey list put in shape.</summary>
+    [JsonIgnore] public bool SchemaMigrated { get; private set; }
 
     /// <summary>
     /// Puts <see cref="Hotkeys"/> in the shape the rest of Clink relies on: <c>Hotkeys[0]</c> is the main hotkey, a "clip" with
@@ -575,7 +665,7 @@ internal sealed class Settings
         if (m.Seconds != 0) { m.Seconds = 0; changed = true; }
         if (m.Keys.Vk > 0 && !Hotkey.SameKeys(m.Keys)) { Hotkey = m.Keys.Clone(); changed = true; }
         _hotkeysInShape = true;   // what is here now is schema-3 shape: a second pass must not read it as an older file's rows
-        if (changed) Migrated = true;
+        if (changed) Migrated = SchemaMigrated = true;
     }
 
     /// <summary>

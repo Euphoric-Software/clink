@@ -9,6 +9,7 @@ using Windows.Win32.Foundation;
 using Windows.Win32.Graphics.Gdi;
 using Windows.Win32.UI.WindowsAndMessaging;
 using Clink.Native;
+using Clink.Screenshots;
 using Clink.Services;
 
 namespace Clink.UI;
@@ -19,7 +20,7 @@ namespace Clink.UI;
 /// (<see cref="Settings.ToastClip"/> etc.), at one of 8 positions on the captured monitor's work area (<see cref="Settings.ToastPosition"/>, 16 px margin). Several toasts stack, the newest nearest the chosen edge; each fades in
 /// (180 ms) and fades out (260 ms) before it closes, and the rest re-stack once it has. All methods may be called from any thread.
 /// </summary>
-internal sealed class Toasts
+internal sealed class Toasts : IScreenshotToasts
 {
     private const int Margin = 16, Gap = 8;
 
@@ -85,6 +86,16 @@ internal sealed class Toasts
     {
         if (!_settings.ToastShared.Enabled) return;
         Add(new ToastWindow(this, "info", entry, null, title, ClipSubtitle(entry), Duration(_settings.ToastShared), false));
+    });
+
+    /// <summary>
+    /// "Screenshot saved" (kind "screenshot", green dot) with the size and what happened to the clipboard, and Open / Folder buttons.
+    /// Follows the "Screenshot saved" switch (<see cref="Settings.ToastScreenshot"/>). The picture itself is not shown: the toast stays small.
+    /// </summary>
+    public void ShowScreenshot(ScreenshotEntry entry, ScreenshotToastState state) => Post(() =>
+    {
+        if (!_settings.ToastScreenshot.Enabled) return;
+        Add(new ToastWindow(this, "screenshot", null, null, "Screenshot saved", ScreenshotService.Subtitle(entry, state), Duration(_settings.ToastScreenshot), false, entry));
     });
 
     /// <summary>
@@ -206,14 +217,17 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
     internal string Kind { get; } = "clip";
     internal ClipEntry? Entry { get; }
     internal string? Link { get; }
+    /// <summary>The screenshot a "screenshot" toast is about (Open / Folder act on its file).</summary>
+    internal ScreenshotEntry? Shot { get; }
 
-    internal ToastWindow(Toasts owner, string kind, ClipEntry? entry, string? link, string title, string subtitle, TimeSpan duration, bool preview)
+    internal ToastWindow(Toasts owner, string kind, ClipEntry? entry, string? link, string title, string subtitle, TimeSpan duration, bool preview, ScreenshotEntry? shot = null)
     {
         InitializeComponent();
         _owner = owner;
         Kind = kind;
         Entry = entry;
         Link = link;
+        Shot = shot;
         _duration = duration;
         _preview = preview;
         TitleText.Text = Toasts.TitleFor(title);
@@ -223,6 +237,7 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         if (kind == "problem") Subtitle.TextWrapping = TextWrapping.Wrap;   // the reason is the point: all of it, not an ellipsis
         ClipButtons.Visibility = kind == "clip" ? Visibility.Visible : Visibility.Collapsed;
         SharedButtons.Visibility = kind == "shared" ? Visibility.Visible : Visibility.Collapsed;
+        ScreenshotButtons.Visibility = kind == "screenshot" && shot != null ? Visibility.Visible : Visibility.Collapsed;
         // "Share" alone without a token: the button then opens the share window (the file to drag), it does not upload.
         if (kind == "clip") ShareButton.Content = entry?.IsShared == true ? "Copy link" : AppController.Instance?.HasCopiumToken == true ? "Share to Copium" : "Share";
         _hide.Interval = duration;
@@ -346,6 +361,44 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         {
             try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); }
             catch (Exception ex) { AppController.Instance.Say("Could not open the browser: " + ex.Message); }
+        }
+        Dismiss();
+    }
+
+    private void ShotOpen_Click(object sender, RoutedEventArgs e)
+    {
+        if (Shot != null && !_preview && System.IO.File.Exists(Shot.Path))
+        {
+            // Shell-executed only as a .png inside the current screenshots folder or a folder screenshots were recorded as saved to
+            // (never a folder that only a history entry names, nor a network path while the folder is local): a path from the history file must never start a program.
+            if (!AppController.Instance.Screenshots.IsOpenableEntry(Shot.Path))
+            {
+                Log.Warn("screenshot: not opened: not a .png in a screenshots folder");
+                AppController.Instance.Say("Could not open the screenshot: it is not in the screenshots folder");
+            }
+            else
+            {
+                try { Process.Start(new ProcessStartInfo(Shot.Path) { UseShellExecute = true }); }
+                catch (Exception ex) { AppController.Instance.Say("Could not open the screenshot: " + ex.Message); }
+            }
+        }
+        Dismiss();
+    }
+
+    private void ShotEdit_Click(object sender, RoutedEventArgs e)
+    {
+        // The service checks the file (a screenshot of this app, a readable .png) and opens the editor, or says why not.
+        if (Shot != null && !_preview) AppController.Instance.Screenshots.EditFile(Shot.Path);
+        Dismiss();
+    }
+
+    private void ShotFolder_Click(object sender, RoutedEventArgs e)
+    {
+        if (Shot != null && !_preview)
+        {
+            // The file is gone (deleted, moved): the screenshots folder, never the clips folder OpenFolder falls back to.
+            if (System.IO.File.Exists(Shot.Path)) AppController.Instance.OpenFolder(Shot.Path);
+            else AppController.Instance.OpenScreenshotsFolder();
         }
         Dismiss();
     }

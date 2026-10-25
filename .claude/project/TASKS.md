@@ -1,4 +1,4 @@
-﻿# Tasks
+# Tasks
 
 - [x] Step 1: Mp4Muxer progressive mode + journal + Recover + tests
 - [x] Step 2 (b9591c5): Engine/ClipWriter.cs -> incremental writer (AddVideo/AddAudio/Finish), Write stays a wrapper; existing tests green
@@ -17,3 +17,49 @@
 - [ ] GUI-check the footer popup with a build using `-p:UpdateRepo=owner/repo`
 - [ ] Optional hardening: split release-dev.yml into a read-only build/test job and a separate publish job
 
+## Screenshots (design: docs/screenshots-design.md)
+- [x] S1 capture to PNG (2cb39b0)
+- [x] S2 pixel library (merged 0d1dc6f; worktree branch kept)
+- [x] S3 editor window + vector tools, edit-after, edit-last (f7aeb3f)
+- [x] S4 raster tools, adjustments, insert image (77530e1)
+- [x] S5 edit-before in the overlay (5ea3308)
+- [ ] S6 upload, toast actions, Copium nudge, settings completion, AI seam
+- [ ] S7 WGC HDR source, pending user HDR check
+- [ ] Follow-up: Alerts tab "Screenshot saved" toast row + upload toggles UI (S6)
+- [ ] Follow-up: README/ROADMAP docs for screenshots
+- [ ] User manual test list: STATE.md Dev manual checklist (S1, S3, S4, S5)
+
+## Screenshots follow-ups
+- [ ] Quit flow: synchronous emergency save for non-user exits; message when a long-running save blocks a user quit
+- [ ] Overlay `Session` window-factory test seam
+- [ ] `LastEdit` retention cap/expiry
+- [ ] Toast Folder/Open after the folder changes (IsOpenable)
+- [ ] Design doc A3: name `AdjustmentValues` (Sharpness 0..200, default 0, amount = Sharpness/100)
+- [ ] CI: desktop-dependent tests (GDI monitor capture, busy clipboard) first run on a GitHub runner with the first dev push
+
+## S4 requirements (raster tools into the editor) - all done in 77530e1
+- [x] `IRasterOp.AffectedBy(changedInput)` for non-local ops (magnify Source->Dest, smart erase ring->whole rect, pixelate block-grid snap, spotlight global)
+- `Apply` must not depend on `area`; the composer computes the dirty area from old+new `Affects`
+- [x] Bounded memory: no full-size buffer per op (below-cache for the active object + final composite, or per-op patches)
+- [x] One compose in flight; double-buffer before WritePixels/Export; version tag; cancel only between composes
+- [x] Two-stage Adjuster: LUT synchronous, unsharp debounced 60 ms on a background thread
+- [x] Spotlight: cache `SpotlightLevels` keyed by below-version+radius+gradient (set `Version`); recompose dirty rects into a separate dst (in-place is single-shot); debounce `Spotlight.Build` on radius drag
+- `Resample.Over` needs the below pixels restored first
+- `PlanePool.Clear()` on editor close, after cancelling background work
+- [x] Blur/unsharp dirty-rect output may differ by +-1 from a full run
+
+## S4 follow-ups
+- [ ] `Export()` runs on the UI thread (4K save/copy may freeze 0.5-2 s): move to a worker, likely in S6 with upload
+- [ ] With > 2 spotlights all level sets are alive during a compose
+- [ ] Ctrl+V during an insert is silently ignored
+- [ ] Picker `Panel2` via `FindResource` does not follow a theme change
+- [ ] Picker thumbnails soft above ~110% DPI
+- [ ] `Recovered` clears any status text
+- [ ] User manual test list: S4 list in STATE.md
+
+## S5 follow-ups
+- [ ] Overlay edits are lost on quit/session end
+- [ ] 4K export runs on the UI thread (move off in S6)
+- [ ] Native file dialog cannot be capture-excluded (may appear in a replay clip)
+- [ ] Two editor sessions at once (overlay + window) raise the memory peak
+- [ ] `Rebase` re-export may differ for edge effects (blur/magnify near the crop edge)
