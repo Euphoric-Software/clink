@@ -21,7 +21,7 @@
 - [x] S1 capture to PNG (2cb39b0)
 - [x] S2 pixel library (merged 0d1dc6f; worktree branch kept)
 - [x] S3 editor window + vector tools, edit-after, edit-last (f7aeb3f)
-- [ ] S4 raster tools, adjustments, insert image (needs S2 + S3)
+- [x] S4 raster tools, adjustments, insert image (77530e1)
 - [ ] S5 edit-before in the overlay (needs S3, after S4)
 - [ ] S6 upload, toast actions, Copium nudge, settings completion, AI seam
 - [ ] S7 WGC HDR source, pending user HDR check
@@ -37,13 +37,22 @@
 - [ ] Design doc A3: name `AdjustmentValues` (Sharpness 0..200, default 0, amount = Sharpness/100)
 - [ ] CI: desktop-dependent tests (GDI monitor capture, busy clipboard) first run on a GitHub runner with the first dev push
 
-## S4 requirements (raster tools into the editor)
-- `IRasterOp.AffectedBy(changedInput)` for non-local ops (magnify Source->Dest, smart erase ring->whole rect, pixelate block-grid snap, spotlight global)
+## S4 requirements (raster tools into the editor) - all done in 77530e1
+- [x] `IRasterOp.AffectedBy(changedInput)` for non-local ops (magnify Source->Dest, smart erase ring->whole rect, pixelate block-grid snap, spotlight global)
 - `Apply` must not depend on `area`; the composer computes the dirty area from old+new `Affects`
-- Bounded memory: no full-size buffer per op (below-cache for the active object + final composite, or per-op patches)
-- One compose in flight; double-buffer before WritePixels/Export; version tag; cancel only between composes
-- Two-stage Adjuster: LUT synchronous, unsharp debounced 60 ms on a background thread
-- Spotlight: cache `SpotlightLevels` keyed by below-version+radius+gradient (set `Version`); recompose dirty rects into a separate dst (in-place is single-shot); debounce `Spotlight.Build` on radius drag
+- [x] Bounded memory: no full-size buffer per op (below-cache for the active object + final composite, or per-op patches)
+- [x] One compose in flight; double-buffer before WritePixels/Export; version tag; cancel only between composes
+- [x] Two-stage Adjuster: LUT synchronous, unsharp debounced 60 ms on a background thread
+- [x] Spotlight: cache `SpotlightLevels` keyed by below-version+radius+gradient (set `Version`); recompose dirty rects into a separate dst (in-place is single-shot); debounce `Spotlight.Build` on radius drag
 - `Resample.Over` needs the below pixels restored first
 - `PlanePool.Clear()` on editor close, after cancelling background work
-- Blur/unsharp dirty-rect output may differ by +-1 from a full run
+- [x] Blur/unsharp dirty-rect output may differ by +-1 from a full run
+
+## S4 follow-ups
+- [ ] `Export()` runs on the UI thread (4K save/copy may freeze 0.5-2 s): move to a worker, likely in S6 with upload
+- [ ] With > 2 spotlights all level sets are alive during a compose
+- [ ] Ctrl+V during an insert is silently ignored
+- [ ] Picker `Panel2` via `FindResource` does not follow a theme change
+- [ ] Picker thumbnails soft above ~110% DPI
+- [ ] `Recovered` clears any status text
+- [ ] User manual test list: S4 list in STATE.md

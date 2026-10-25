@@ -23,3 +23,7 @@
 - Edit-after never writes until Done/Save; edit-last always saves a new file; one editor at a time.
 - Sharpness 0..200 %, default 0, unsharp amount = Sharpness/100.
 - S2 was developed in a worktree and merged with `--no-ff`; the worktree branch is kept.
+- Adjustment order stays sharpen then LUT (design).
+- Freehand highlight is a toolbar toggle (Shift = square).
+- Inserted images are stored at <= picture size.
+- Interactive spotlight level-rebuild throttle is 120 ms.
