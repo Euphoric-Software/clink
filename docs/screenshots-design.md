@@ -211,6 +211,25 @@ Testable properties: uniform ring -> exact colour; any linear gradient a+bx+cy w
 edge with a horizontal gradient -> <= 1; a 1-px dark line crossing the ring -> deviation <= 6; deterministic; never writes outside `r`.
 (ShareX's start-pixel fill fails all but the first property.)
 
+S2 implementation notes (pixel library, `Clink/Screenshots/Imaging`):
+- Smart erase profiles are MEDIANS across the ring depth (not means), run over the ring's corner pixels past the rectangle (median 5,
+  then box 3) and are then cut back to the rectangle; corner values are medians of the ring's corner blocks. A fully transparent
+  ring (or interpolated alpha ~0) yields (0, 0, 0, 0), not opaque black.
+- Spotlight levels: from 4 MP up, ALL blurred levels are kept at half resolution; below that only levels with sigma >= 6.
+- Final signatures: every raster op is `Op(src, dst, clip, ...params)` (reads src, writes only clip inside its footprint).
+  `Spotlight.Blend(src, dst, clip, levels, box, dim, falloffPx)`; `SpotlightLevels` holds the blurred levels only (level 0 /
+  radius 0 is `null` = the caller's src) and exposes them read-only, with an optional caller-set `Version` stamp echoed in Blend's
+  argument errors.
+- In place (`dst == src`) is single-shot only: `BoxBlur.Blur`, `Adjustments.Unsharp` and `SmartErase.Fill` of a whole-image rectangle
+  throw `ArgumentException` unless `clip` covers the whole region. Dirty-rect recomposition must use a separate dst.
+- LOCAL ops (a dirty sub-rectangle can be recomposed alone): BoxBlur (margin = sum of the radii), Highlight, Adjustments, Resample.
+  NON-LOCAL ops (invalidate the whole footprint): Pixelate, SmartErase, Magnifier, Spotlight.
+- `Resample.Over` composites onto dst: dst must already hold the pixels below inside the clip; it is not idempotent.
+- `PlanePool` (blur float planes) keeps at most 6 planes and 160 MB; `PlanePool.Clear()` on editor close also drops planes still
+  rented from before it.
+- Sharpness mapping (pinned): Sharpness 0..200 (%), default 0 = no change, unsharp amount = Sharpness / 100 (sigma 1.5);
+  Brightness and Contrast -100..100 straight into the lookup table.
+
 Inserted image: WPF `BitmapDecoder` + `FormatConvertedBitmap(Bgra32)` (file), clipboard `GetImage` / "PNG" stream (paste), or a history
 PNG; refused above 16384 px per side or 100 MP (toast). Resampled into `Dest` (bilinear; box prefilter when shrinking > 2x),
 straight-alpha over, optional opacity.
