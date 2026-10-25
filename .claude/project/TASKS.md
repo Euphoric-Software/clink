@@ -29,7 +29,10 @@
   - global "Allow cloud sharing" kill switch with two-step re-enable
   - feature-visibility toggles (Clips / Screenshots); hiding Clips stops the replay engine (assumption, confirm)
   - S6 leftovers: per-install keys into `IsOwnKey`; accept any https for returned `link`/`url`, pin only the token destination; 403 pauses only when text mentions token/auth/key; type-refusal regex with word boundaries; deferred-close vs quit double prompt; `AllowAutoRedirect=false`; DIB header size allow-list; `WrittenUtc` 2 s tolerance; link copy with image-copy off via sequence gate; mapped network drives not detected as network
-- [ ] S8 library pane rework: Clips | Screenshots switch, Local | Shared subordinate, Trimmed as a filter
+- [x] S8 library pane rework (6795381): Clips | Screenshots switch, Local | Shared subordinate, Trimmed as a filter. Screenshot tools iteration 1 complete.
+- [ ] S8 follow-ups: Tab walk GUI check; shell second confirmation; EditorOpen/ListNotUpdated tests; 500-row thumbnail memory; tampered roots; junctions inside folder
+- [ ] Deferred: GIF/video from the tool, scrolling, delayed, auto/repeat capture, AI background remover, WGC HDR
+- [ ] User checks: HDR look, PrintScreen over a game, first real Copium upload, consent dialog, kill switch, Features toggles, library pane in both themes/widths
 - [ ] S7/S8 follow-ups: elevated-run control-pipe `CurrentUserOnly` client failure; real-upload verification against Copium; Win+V / clipboard managers may prevent link replacement
 - [x] Follow-up: Alerts tab "Screenshot saved" toast row + upload toggles UI (S6)
 - [x] Follow-up: README/ROADMAP docs for screenshots (S6)
@@ -78,4 +81,4 @@
 - [ ] Capture-excluded consent dialog invisible in screen shares
 - [ ] Real-upload verification with a valid token; Copium image size limit unknown
 - [ ] Dev build #3 (slices 6-7): pending this push
-- Next: S8 library pane
+- Next: merge S8 to dev; user manual checks
