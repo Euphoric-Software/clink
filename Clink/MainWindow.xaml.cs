@@ -99,6 +99,13 @@ public partial class MainWindow : Window
         _app.Archive.Changed += () => Dispatcher.BeginInvoke(RefreshArchiveStatus);
         Clips.TrimRequested += OpenTrim;
         Clips.PlayRequested += entry => OpenClip(entry, trim: false);
+        Clips.ViewChanged += () =>
+        {
+            if (_loading) return;
+            _app.Settings.LibraryFeature = LibraryView.Key(Clips.WantedFeature);   // the user's choice, not the fallback shown while a feature is switched off
+            _app.Settings.LibraryLevel = LibraryView.Key(Clips.Level);
+            ScheduleSave();
+        };
         HotkeyEditor.Changed += HotkeysChanged;
         ReplaySlider.ValueChanged += v => { if (!_loading) UpdateEstimates(v); };
         ReplaySlider.ValueCommitted += ReplayLengthCommitted;
@@ -187,11 +194,11 @@ public partial class MainWindow : Window
         return (all, atPointer);
     }
 
-    /// <summary>Wide: settings tabs left, the clips pane in a right column. Narrow: the clips pane is the Library tab, after the settings tabs.</summary>
+    /// <summary>Wide: settings tabs left, the library pane (clips and screenshots) in a right column. Narrow: the pane is the Library tab, after the settings tabs. Either way it is there whenever any feature is on.</summary>
     private void ApplyLayout()
     {
         bool wide = ActualWidth >= WideWidth;
-        bool clips = _app.Settings.ClipsEnabled;
+        bool clips = LibraryView.ShowLibrary(_app.Settings.ClipsEnabled, _app.Settings.ScreenshotsEnabled);
         if (_layoutApplied && wide == _wide && clips == _clipsShown) return;
         _wide = wide; _clipsShown = clips; _layoutApplied = true;
         if (wide && clips)
@@ -213,7 +220,7 @@ public partial class MainWindow : Window
             RightCol.Width = new GridLength(0);
             Clips.Margin = new Thickness(0, 8, 0, 0);
             ClipsTab.Content = Clips;
-            ClipsTab.Visibility = clips ? Visibility.Visible : Visibility.Collapsed;   // (Clips feature off: no Library, wide or narrow)
+            ClipsTab.Visibility = clips ? Visibility.Visible : Visibility.Collapsed;   // (every feature off cannot happen)
             if (!clips && ReferenceEquals(Tabs.SelectedItem, ClipsTab)) SelectFirstVisibleTab();
         }
     }
@@ -258,7 +265,8 @@ public partial class MainWindow : Window
         ScreenshotsTab.Visibility = s.ScreenshotsEnabled ? Visibility.Visible : Visibility.Collapsed;
         FolderButton.Visibility = s.ClipsEnabled ? Visibility.Visible : Visibility.Collapsed;
         _layoutApplied = false;
-        ApplyLayout();   // the Library tab / the clips column
+        ApplyLayout();   // the Library tab / the library column
+        Clips.Refresh();   // both switch rows follow the features (the top row is hidden with one feature on)
         if (Tabs.SelectedItem is TabItem { Visibility: not Visibility.Visible }) SelectFirstVisibleTab();
         RefreshStatus();
     }

@@ -8,22 +8,38 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media.Imaging;
+using Clink.Screenshots;
 using Clink.Services;
 
 namespace Clink.UI;
 
 /// <summary>
-/// The clips pane (docs/SPEC-v2.md §1): Local (every local file, with shared / trim / local-only / archived icons), Shared
-/// (everything shared, listed by link even after the local file is gone) and Trimmed (local files made by the trim editor).
-/// Rows come from <see cref="AppController.Library"/>; thumbnails and file checks run on a worker so an offline archive never
-/// stalls the window. Share works here; Trim asks the window (<see cref="TrimRequested"/>) so the editor gets the right owner.
+/// The library pane (docs/SPEC-v2.md §1). Despite its name (from when it only listed clips) it lists both stores: a big top switch
+/// Clips | Screenshots, under it a smaller Local | Shared switch, and on the clips side a Trimmed filter chip (<see cref="LibraryView"/>
+/// holds the rules). Clips: Local = every local file (with shared / trim / local-only / archived icons), Shared = everything shared,
+/// listed by link even after the local file is gone. Screenshots: Local = history entries whose file is there, Shared = entries with a
+/// Copium link. Rows come from <see cref="AppController.Library"/> / the screenshot history; thumbnails and file checks run on a
+/// worker so an offline archive never stalls the window. Share works here; Trim asks the window (<see cref="TrimRequested"/>) so the
+/// editor gets the right owner.
 /// </summary>
 public partial class ClipsPane : UserControl
 {
     /// <summary>An archive folder that did not answer is not asked again for this long (each try can block for the SMB timeout).</summary>
     private static readonly TimeSpan OfflineRetry = TimeSpan.FromSeconds(30);
 
-    private readonly ObservableCollection<ClipRow> _local = new(), _shared = new(), _trim = new();
+    private readonly ObservableCollection<ClipRow> _local = new(), _shared = new();
+    private readonly ObservableCollection<ScreenshotRow> _shots = new();
+    private readonly Dictionary<string, ScreenshotRow> _shotRows = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Queue<ScreenshotRow> _thumbQueue = new();
+    private ScreenshotListModel? _shotModel;
+    private ScreenshotService? _shotService;   // the one whose history events this pane listens to
+    private List<ScreenshotItem> _shotItems = new();
+    private int _shotGen;
+    private bool _thumbLoop, _shotsLoaded;
+    // the user's choice (the effective feature also depends on which features are on): restored from the settings on the first look
+    private LibraryFeature _wantedFeature;
+    private LibraryLevel _level;
+    private bool _stateRestored, _syncing, _trimmedChip;
     private readonly Dictionary<ClipEntry, ClipRow> _rows = new(ReferenceEqualityComparer.Instance);
     private readonly ConcurrentDictionary<string, DateTime> _offlineDirs = new(StringComparer.OrdinalIgnoreCase);
     private int _refreshGen;
@@ -31,9 +47,9 @@ public partial class ClipsPane : UserControl
     public ClipsPane()
     {
         InitializeComponent();
-        LocalList.ItemsSource = _local;
-        SharedList.ItemsSource = _shared;
-        TrimList.ItemsSource = _trim;
+        ClipLocalList.ItemsSource = _local;
+        ClipSharedList.ItemsSource = _shared;
+        ShotList.ItemsSource = _shots;
         // The row a press went down on is good for the release that follows it and no other. A row's own button handles its release
         // (Click), so the row never hears of it and the press would stay remembered: a later press that began somewhere else (the
         // empty part of the list, the tab header) and came up over that row would then play it. So every release in the pane forgets
@@ -57,23 +73,113 @@ public partial class ClipsPane : UserControl
     /// <summary>The user clicked a clip (its row or its thumbnail): the window opens the player.</summary>
     internal event Action<ClipEntry>? PlayRequested;
 
+    /// <summary>The user picked another feature or level: the window saves the choice (<see cref="Settings.LibraryFeature"/>, <see cref="Settings.LibraryLevel"/>).</summary>
+    internal event Action? ViewChanged;
+
     private static AppController App => AppController.Instance;
 
-    /// <summary>Cloud sharing was switched: every row shows or hides its Share button (a row with a link keeps "Copy link").</summary>
+    internal LibraryLevel Level => _level;
+
+    /// <summary>The feature the user chose (what is saved), which may differ from <see cref="Feature"/> while the other one is switched off.</summary>
+    internal LibraryFeature WantedFeature => _wantedFeature;
+
+    /// <summary>The feature shown: the user's choice, or the one that is on when the other was switched off.</summary>
+    internal LibraryFeature Feature => LibraryView.Fallback(_wantedFeature, App.Settings.ClipsEnabled, App.Settings.ScreenshotsEnabled);
+
+    /// <summary>Cloud sharing was switched: every row shows or hides its Share / Upload button (a row with a link keeps "Copy link").</summary>
     public void RefreshShareButtons()
     {
         foreach (var row in _rows.Values.ToList()) row.Refresh();
+        foreach (var row in _shotRows.Values.ToList()) row.Refresh();
     }
 
-    /// <summary>Re-reads the library. Rows for entries already shown keep their thumbnail and upload state.</summary>
+    // ------------------------------------------------------------------ the two switches
+
+    /// <summary>First look: the saved feature and level (the saved feature falls back at every refresh, see <see cref="Feature"/>).</summary>
+    private void RestoreState()
+    {
+        if (_stateRestored) return;
+        _stateRestored = true;
+        var s = App.Settings;
+        (_wantedFeature, _level) = LibraryView.Resolve(s.LibraryFeature, s.LibraryLevel, clipsOn: true, screenshotsOn: true);
+    }
+
+    /// <summary>Brings the switches in line with the choice and the feature settings (both rows, live): which segments are checked, the top row hidden when one feature is on, the Trimmed chip on the clips side only.</summary>
+    private void SyncSwitches()
+    {
+        var s = App.Settings;
+        var feature = Feature;
+        _syncing = true;
+        try
+        {
+            ClipsFeature.IsChecked = feature == LibraryFeature.Clips;
+            ShotsFeature.IsChecked = feature == LibraryFeature.Screenshots;
+            LocalLevel.IsChecked = _level == LibraryLevel.Local;
+            SharedLevel.IsChecked = _level == LibraryLevel.Shared;
+            TrimmedChip.IsChecked = _trimmedChip;
+        }
+        finally { _syncing = false; }
+        FeatureBar.Visibility = LibraryView.ShowFeatureSwitch(s.ClipsEnabled, s.ScreenshotsEnabled) ? Visibility.Visible : Visibility.Collapsed;
+        TrimmedChip.Visibility = LibraryView.ShowTrimmedChip(feature) ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void SetLabels(int local, int shared)
+    {
+        string l = LibraryView.Label("Local", local), sh = LibraryView.Label("Shared", shared);
+        LocalLevel.Content = l; LocalLevel.SetValue(System.Windows.Automation.AutomationProperties.NameProperty, l);
+        SharedLevel.Content = sh; SharedLevel.SetValue(System.Windows.Automation.AutomationProperties.NameProperty, sh);
+    }
+
+    private void Feature_Checked(object sender, RoutedEventArgs e)
+    {
+        if (_syncing || App == null) return;
+        _wantedFeature = ReferenceEquals(sender, ShotsFeature) ? LibraryFeature.Screenshots : LibraryFeature.Clips;
+        ViewChanged?.Invoke();
+        Refresh();
+    }
+
+    private void Level_Checked(object sender, RoutedEventArgs e)
+    {
+        if (_syncing || App == null) return;
+        _level = ReferenceEquals(sender, SharedLevel) ? LibraryLevel.Shared : LibraryLevel.Local;
+        ViewChanged?.Invoke();
+        Refresh();
+    }
+
+    private void Trimmed_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_syncing || App == null) return;
+        _trimmedChip = TrimmedChip.IsChecked == true;
+        Refresh();
+    }
+
+    /// <summary>Which list is on screen and what the empty list says.</summary>
+    private void ShowList(LibraryFeature feature, int count)
+    {
+        bool shots = feature == LibraryFeature.Screenshots, shared = _level == LibraryLevel.Shared;
+        ClipLocalList.Visibility = !shots && !shared ? Visibility.Visible : Visibility.Collapsed;
+        ClipSharedList.Visibility = !shots && shared ? Visibility.Visible : Visibility.Collapsed;
+        ShotList.Visibility = shots ? Visibility.Visible : Visibility.Collapsed;
+        EmptyText.Text = LibraryView.EmptyText(feature, _level, LibraryView.TrimmedOnly(feature, _trimmedChip));
+        EmptyText.Visibility = count == 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    /// <summary>Re-reads the list on screen (the clip library or the screenshot history, per the switches). Rows for entries already shown keep their thumbnail and upload state.</summary>
     public void Refresh()
     {
         if (App == null) return;
+        RestoreState();
+        SyncSwitches();
+        if (Feature == LibraryFeature.Screenshots) RefreshShots(); else RefreshClips();
+    }
+
+    private void RefreshClips()
+    {
+        _shotGen++;   // a screenshot read still under way is not wanted any more
         var entries = App.Library.Entries;
         var keep = new HashSet<ClipEntry>(ReferenceEqualityComparer.Instance);
-        var local = new List<ClipRow>();
-        var shared = new List<ClipRow>();
-        var trim = new List<ClipRow>();
+        var all = new List<ClipRow>();
+        var hasFileRows = new HashSet<ClipRow>();
         foreach (var e in entries)
         {
             // Archived entries are not File.Exists-checked on the UI thread (an offline share can block); the worker says "archive offline".
@@ -85,24 +191,22 @@ public partial class ClipsPane : UserControl
             if (!e.IsArchived) row.HasLocalFile = exists;   // a shared clip deleted outside Clink: no Play / folder, "local file deleted"
             else if (row.Checked && !row.HasLocalFile) row.Checked = false;   // look again: the archive may be back (or the file deleted there)
             bool hasFile = e.IsArchived ? !row.DeletedFromArchive : exists;
-            if (hasFile) local.Add(row);
-            if (hasFile && e.IsTrim) trim.Add(row);
-            if (e.IsShared) shared.Add(row);
+            all.Add(row);
+            if (hasFile) hasFileRows.Add(row);
         }
         foreach (var gone in _rows.Keys.Where(k => !keep.Contains(k)).ToList()) _rows.Remove(gone);
+        bool trimmed = LibraryView.TrimmedOnly(LibraryFeature.Clips, _trimmedChip);
+        Func<ClipRow, bool> isLocal = hasFileRows.Contains, isShared = r => r.IsShared, isTrim = r => r.IsTrim;
+        var local = LibraryView.Pick(all, LibraryLevel.Local, trimmed, isLocal, isShared, isTrim);
+        var shared = LibraryView.Pick(all, LibraryLevel.Shared, trimmed, isLocal, isShared, isTrim);
         Replace(_local, local);
         Replace(_shared, shared);
-        Replace(_trim, trim);
-        NoLocalText.Visibility = _local.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        NoSharedText.Visibility = _shared.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        NoTrimText.Visibility = _trim.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        LocalTab.Header = _local.Count > 0 ? $"Local ({_local.Count})" : "Local";
-        SharedTab.Header = _shared.Count > 0 ? $"Shared ({_shared.Count})" : "Shared";
-        TrimTab.Header = _trim.Count > 0 ? $"Trimmed ({_trim.Count})" : "Trimmed";
+        SetLabels(local.Count, shared.Count);
+        var shown = _level == LibraryLevel.Shared ? shared : local;
+        ShowList(LibraryFeature.Clips, shown.Count);
         // Only listed rows, in list order (newest first), and only while the pane is on screen (IsVisibleChanged refreshes on show).
-        if (IsVisible) LoadThumbnails(_local.Concat(_shared).Concat(_trim).Distinct().Where(r => !r.Checked).ToList());
+        if (IsVisible) LoadThumbnails(shown.Where(r => !r.Checked).ToList());
     }
-
     /// <summary>
     /// The archive service reached its share again (at login the NAS may come up after Clink): forget which folders did not
     /// answer, so the rows found "archive offline" are looked at again now instead of after <see cref="OfflineRetry"/>.
@@ -125,7 +229,7 @@ public partial class ClipsPane : UserControl
         return row;
     }
 
-    private static void Replace(ObservableCollection<ClipRow> target, IReadOnlyList<ClipRow> rows)
+    private static void Replace<T>(ObservableCollection<T> target, IReadOnlyList<T> rows) where T : class
     {
         if (target.Count == rows.Count && target.Zip(rows).All(p => ReferenceEquals(p.First, p.Second))) return;
         target.Clear();
@@ -359,12 +463,20 @@ public partial class ClipsPane : UserControl
         catch (Exception ex) { App.Say("Could not open folder: " + ex.Message); }
     }
 
-    private ClipRow? _pressed;   // the row the left button went down on: a click that began elsewhere must not play this one
+    private object? _pressed;   // the row (clip or screenshot) the left button went down on: a click that began elsewhere must not open this one
 
     private void Row_Down(object sender, MouseButtonEventArgs e) => _pressed = RowOf(sender);
 
+    /// <summary>The click landed on one of the row's own buttons (Trim, Share, the folder, the link): the button handles it, the row does not.</summary>
+    private static bool OnButton(MouseButtonEventArgs e, object row)
+    {
+        for (var d = e.OriginalSource as DependencyObject; d != null && !ReferenceEquals(d, row); d = d is System.Windows.Media.Visual ? System.Windows.Media.VisualTreeHelper.GetParent(d) : LogicalTreeHelper.GetParent(d))
+            if (d is System.Windows.Controls.Primitives.ButtonBase) return true;
+        return false;
+    }
+
     /// <summary>True when the button that came up now went down on this row too (and forgets it).</summary>
-    private bool ClickedOn(ClipRow row)
+    private bool ClickedOn(object row)
     {
         var pressed = _pressed;
         _pressed = null;
@@ -376,8 +488,7 @@ public partial class ClipsPane : UserControl
     {
         var row = RowOf(sender);
         if (row == null || e.Handled || !ClickedOn(row)) return;
-        for (var d = e.OriginalSource as DependencyObject; d != null && !ReferenceEquals(d, sender); d = d is System.Windows.Media.Visual ? System.Windows.Media.VisualTreeHelper.GetParent(d) : LogicalTreeHelper.GetParent(d))
-            if (d is System.Windows.Controls.Primitives.ButtonBase) return;
+        if (OnButton(e, sender)) return;
         if (!row.HasLocalFile && !row.Entry.IsArchived) return;   // a shared clip whose file is gone has nothing to play
         e.Handled = true;
         await PlayAsync(row);
@@ -429,9 +540,234 @@ public partial class ClipsPane : UserControl
         try { Process.Start(new ProcessStartInfo(page.AbsoluteUri) { UseShellExecute = true }); }
         catch (Exception ex) { App.Say("Could not open the browser: " + ex.Message); }
     }
+
+    // ------------------------------------------------------------------ screenshots side
+
+    private static ScreenshotRow? ShotOf(object sender) => (sender as FrameworkElement)?.DataContext as ScreenshotRow;
+
+    /// <summary>Starts to listen to the screenshot history (once per service): saves, uploads and deletes refresh the list.</summary>
+    private ScreenshotService HookShots()
+    {
+        var svc = App.Screenshots;
+        if (!ReferenceEquals(_shotService, svc))
+        {
+            _shotService = svc;
+            _shotModel = new ScreenshotListModel(() => svc.HistoryEntries, folders: svc.KnownFolders);
+            svc.HistoryChanged += () => Dispatcher.BeginInvoke(OnShotHistoryChanged);   // raised on the saving / uploading thread
+        }
+        return svc;
+    }
+
+    private void OnShotHistoryChanged()
+    {
+        if (Feature == LibraryFeature.Screenshots && IsVisible) RefreshShots();
+    }
+
+    /// <summary>The history and the files are read on a worker; the rows are put together here when it answers (a newer refresh wins).</summary>
+    private async void RefreshShots()
+    {
+        if (!App.Settings.ScreenshotsEnabled) return;
+        int gen = ++_shotGen;
+        ScreenshotListModel model;
+        try { HookShots(); model = _shotModel!; }
+        catch (Exception ex) { Log.Warn("library: screenshots: " + ex.Message); return; }
+        // The right list, labels and empty text at once, from what was read last (the clips list is never left on screen while this loads).
+        if (_shotsLoaded) ApplyShots(); else { SetLabels(0, 0); ShowList(LibraryFeature.Screenshots, 1); }
+        List<ScreenshotItem> items;
+        try { items = await model.LoadAsync(); }
+        catch (Exception ex)
+        {
+            Log.Warn("library: screenshot history: " + ex.Message);
+            items = new();   // the empty text says there is nothing to show
+        }
+        if (gen != _shotGen || Feature != LibraryFeature.Screenshots) return;
+        _shotItems = items;
+        _shotsLoaded = true;
+        ApplyShots();
+    }
+
+    private void ApplyShots()
+    {
+        var items = _shotItems;
+        var (local, shared) = LibraryView.Counts(items, false, ScreenshotListModel.IsLocal, ScreenshotListModel.IsShared, _ => false);
+        var rows = new List<ScreenshotRow>();
+        var keep = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in items)
+        {
+            if (!keep.Add(item.Entry.Path)) continue;
+            if (_shotRows.TryGetValue(item.Entry.Path, out var row)) row.Update(item); else _shotRows[item.Entry.Path] = row = new ScreenshotRow(item);
+        }
+        foreach (var gone in _shotRows.Keys.Where(k => !keep.Contains(k)).ToList()) _shotRows.Remove(gone);
+        foreach (var item in ScreenshotListModel.Pick(items, _level)) rows.Add(_shotRows[item.Entry.Path]);
+        Replace(_shots, rows);
+        SetLabels(local, shared);
+        ShowList(LibraryFeature.Screenshots, rows.Count);
+        // Only rows that have a visual get a thumbnail (a long history is not decoded in one go): a row that is realized later asks itself
+        // (ShotRow_Loaded / ShotRow_DataContextChanged, as the list scrolls); the ones already on screen are asked now.
+        if (IsVisible) QueueThumbnails(rows.Where(r => ShotList.ItemContainerGenerator.ContainerFromItem(r) != null));
+    }
+
+    private void ShotRow_Loaded(object sender, RoutedEventArgs e)
+    {
+        if (ShotOf(sender) is { } row && IsVisible && Feature == LibraryFeature.Screenshots) QueueThumbnails(new[] { row });
+    }
+
+    private void ShotRow_DataContextChanged(object sender, DependencyPropertyChangedEventArgs e)
+    {
+        if (e.NewValue is ScreenshotRow row && IsVisible && Feature == LibraryFeature.Screenshots) QueueThumbnails(new[] { row });
+    }
+
+    /// <summary>One at a time on workers (the model decodes off the UI thread); a row is asked once, and a pane that is hidden asks no more.</summary>
+    private void QueueThumbnails(IEnumerable<ScreenshotRow> rows)
+    {
+        foreach (var r in rows)
+        {
+            if (!r.HasLocalFile || r.Thumbnail != null || r.ThumbnailRequested) continue;
+            r.ThumbnailRequested = true;
+            _thumbQueue.Enqueue(r);
+        }
+        if (!_thumbLoop && _thumbQueue.Count > 0) _ = ThumbnailLoopAsync();
+    }
+
+    private async Task ThumbnailLoopAsync()
+    {
+        _thumbLoop = true;
+        try
+        {
+            while (_thumbQueue.Count > 0)
+            {
+                var row = _thumbQueue.Dequeue();
+                var model = _shotModel;
+                // asked again when the pane is shown on the screenshots side (also: the clips side was switched to meanwhile)
+                if (model == null || !IsVisible || Feature != LibraryFeature.Screenshots) { row.ThumbnailRequested = false; continue; }
+                BitmapSource? bmp = null;
+                int version = row.ThumbnailVersion;
+                try { bmp = await model.ThumbnailAsync(row.Entry.Path); } catch { }
+                row.TrySetThumbnail(bmp, version);   // not when the row's file changed while it decoded
+            }
+        }
+        finally { _thumbLoop = false; }
+    }
+
+    private void Shot_Down(object sender, MouseButtonEventArgs e) => _pressed = ShotOf(sender);
+
+    /// <summary>A click on the row (not on one of its buttons) opens the editor.</summary>
+    private void Shot_Click(object sender, MouseButtonEventArgs e)
+    {
+        var row = ShotOf(sender);
+        if (row == null || e.Handled || !ClickedOn(row) || OnButton(e, sender) || !row.HasLocalFile) return;
+        e.Handled = true;
+        EditShot(row);
+    }
+
+    private void ShotEdit_Click(object sender, RoutedEventArgs e)
+    {
+        if (ShotOf(sender) is { } row) EditShot(row);
+    }
+
+    /// <summary>The service checks the file (a screenshot of this app, a readable .png), opens the editor and reports a failure itself.</summary>
+    private void EditShot(ScreenshotRow row) => App.Screenshots.EditFile(row.Entry.Path);
+
+    private void ShotOpen_Click(object sender, RoutedEventArgs e)
+    {
+        var row = ShotOf(sender);
+        if (row == null) return;
+        string path = row.Entry.Path;
+        // Shell-executed only as a .png in a screenshots folder (never a path that only the history file names).
+        if (!App.Screenshots.IsOpenableEntry(path) || !File.Exists(path))
+        {
+            Log.Warn("library: screenshot not opened: not a .png in a screenshots folder");
+            App.Say("Could not open the screenshot: it is not in the screenshots folder, or it is gone");
+            return;
+        }
+        try { Process.Start(new ProcessStartInfo(path) { UseShellExecute = true }); }
+        catch (Exception ex) { App.Say("Could not open the screenshot: " + ex.Message); }
+    }
+
+    private void ShotFolder_Click(object sender, RoutedEventArgs e)
+    {
+        var row = ShotOf(sender);
+        if (row == null) return;
+        // The same rule as Open / Edit: a path only the history file names is never probed or handed to the shell.
+        if (!App.Screenshots.IsOpenableEntry(row.Entry.Path)) { App.Say("The screenshot file is gone, or it is not in the screenshots folder"); return; }
+        try { Process.Start("explorer.exe", $"/select,\"{row.Entry.Path}\""); }
+        catch (Exception ex) { App.Say("Could not open folder: " + ex.Message); }
+    }
+
+    /// <summary>Upload goes through the service, which asks for the Copium consent first (and refuses when cloud sharing is off).</summary>
+    private async void ShotUpload_Click(object sender, RoutedEventArgs e)
+    {
+        var row = ShotOf(sender);
+        if (row == null || row.IsUploading) return;
+        row.IsProblem = false;
+        row.Status = "Uploading…";
+        row.IsUploading = true;
+        bool ok = false;
+        try { ok = await App.Screenshots.UploadAsync(row.Entry, manual: true, askAs: ConsentContext.ScreenshotUploadLibrary); }
+        catch (Exception ex) { Log.Error("library: screenshot upload", ex); }
+        finally { row.IsUploading = false; }
+        row.Refresh();
+        if (ok)
+        {
+            row.Status = "Uploaded";
+            _ = Task.Delay(4000).ContinueWith(_ => Dispatcher.BeginInvoke(() => { if (row.Status == "Uploaded") row.Status = null; }));
+        }
+        else row.SetProblem(App.Settings.CloudSharingEnabled ? "Not uploaded" : "Not uploaded: cloud sharing is off");   // the reason was told in a toast
+    }
+
+    private void ShotCopyLink_Click(object sender, RoutedEventArgs e)
+    {
+        var row = ShotOf(sender);
+        if (row?.Link == null) return;
+        App.CopyToClipboard(row.Link);
+        row.Status = "Link copied to clipboard";
+        row.IsProblem = false;
+        _ = Task.Delay(3000).ContinueWith(_ => Dispatcher.BeginInvoke(() => { if (row.Status?.StartsWith("Link") == true) row.Status = null; }));
+    }
+
+    private void ShotOpenPage_Click(object sender, RoutedEventArgs e)
+    {
+        var row = ShotOf(sender);
+        string? url = row?.Entry.CopiumPageUrl ?? row?.Link;
+        if (url == null) return;
+        if (!CopiumClient.IsHttpsUrl(url, out var page)) { Log.Warn("library: screenshot page not opened: the link is not an https address"); return; }
+        try { Process.Start(new ProcessStartInfo(page.AbsoluteUri) { UseShellExecute = true }); }
+        catch (Exception ex) { App.Say("Could not open the browser: " + ex.Message); }
+    }
+
+    /// <summary>
+    /// Asks first (naming the file); the picture goes to the Recycle Bin (it can be restored) and leaves the list, except a shared one,
+    /// which stays with its link (Copy link / Open page / Remove from list). The link on Copium is never touched.
+    /// </summary>
+    private async void ShotDelete_Click(object sender, RoutedEventArgs e)
+    {
+        var row = ShotOf(sender);
+        if (row == null || row.IsDeleting || row.IsUploading) return;
+        string what = ScreenshotRow.ConfirmText(row.Entry, row.HasLocalFile);
+        var owner = Window.GetWindow(this);
+        var answer = owner != null
+            ? MessageBox.Show(owner, what, "Clink", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No)
+            : MessageBox.Show(what, "Clink", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No);
+        if (answer != MessageBoxResult.Yes) return;
+        row.IsDeleting = true;
+        var result = ScreenshotDeleteResult.Failed;
+        nint ownerHandle = 0;
+        try
+        {
+            var w = owner ?? Application.Current?.MainWindow;
+            if (w != null) ownerHandle = new System.Windows.Interop.WindowInteropHelper(w).Handle;
+        }
+        catch { }
+        try { result = await App.Screenshots.DeleteAsync(row.Entry, ownerHandle); }   // IsDeleting stays set until the shell call returns
+        catch (Exception ex) { Log.Warn("library: screenshot delete: " + ex.Message); }
+        finally { row.IsDeleting = false; }
+        if (result is ScreenshotDeleteResult.Deleted or ScreenshotDeleteResult.ListNotUpdated) RefreshShots();   // (the history says so too, once the entry was in it)
+        if (result != ScreenshotDeleteResult.Deleted)
+            row.SetProblem(ScreenshotRow.DeleteProblemText(result, ScreenshotService.IsOnLocalFixedDrive(row.Entry.Path)));
+    }
 }
 
-/// <summary>One library entry as a row in the clips lists (shared by the Local, Shared and Trimmed tabs).</summary>
+/// <summary>One library entry as a row in the clips lists (shared by the Local and Shared levels, trimmed or not).</summary>
 internal sealed class ClipRow : INotifyPropertyChanged
 {
     // Status lines about the file itself (cleared once the file is there again; an upload status is left alone).

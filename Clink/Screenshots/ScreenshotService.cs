@@ -100,6 +100,16 @@ internal interface IScreenshotUploadToast
     void Declined();
 }
 
+/// <summary>How a library delete ended (see <see cref="ScreenshotService.DeleteAsync"/>).</summary>
+internal enum ScreenshotDeleteResult
+{
+    Deleted, Refused, Failed,
+    /// <summary>An editor session has the file open: nothing was touched.</summary>
+    EditorOpen,
+    /// <summary>The file went to the Recycle Bin but the history could not be written: the entry is still listed.</summary>
+    ListNotUpdated,
+}
+
 /// <summary>What a saved screenshot is: the entry (in the history) and the encoded PNG (also for the clipboard).</summary>
 internal sealed record ScreenshotSaveResult(ScreenshotEntry Entry, byte[] Png);
 
@@ -267,13 +277,14 @@ internal sealed class ScreenshotService
     /// ignores <see cref="CopiumImagesRefused"/>. <paramref name="clipboardSequence"/>: the clipboard's change counter right after
     /// the image was copied (null when it was not). UI thread. Returns true when the screenshot has a link afterwards.
     /// </summary>
-    internal async Task<bool> UploadAsync(ScreenshotEntry entry, bool manual = false, uint? clipboardSequence = null)
+    internal async Task<bool> UploadAsync(ScreenshotEntry entry, bool manual = false, uint? clipboardSequence = null,
+        ConsentContext askAs = ConsentContext.ScreenshotUploadManual)
     {
-        // Sharing is opt-in and has a kill switch. A manual upload (the toast's Upload / Retry) asks once if the user has not agreed
-        // yet; an automatic one never asks: it needs the agreement and the setting already (AnnounceSaved checks; UploadCoreAsync again).
+        // Sharing is opt-in and has a kill switch. A manual upload (the toast's Upload / Retry, the library's Upload) asks once if the user
+        // has not agreed yet; an automatic one never asks: it needs the agreement and the setting already (AnnounceSaved checks; UploadCoreAsync again).
         if (manual)
         {
-            if (!await Consent.EnsureAsync(ConsentContext.ScreenshotUploadManual)) return false;
+            if (!await Consent.EnsureAsync(askAs)) return false;
         }
         else if (!Consent.CloudOn || !_settings.CopiumConsent)
         {
@@ -327,6 +338,12 @@ internal sealed class ScreenshotService
     {
         var ct = _uploadCts.Token;
         if (ct.IsCancellationRequested) return false;
+        // Only a screenshot of this app goes up: a .png inside a known screenshots folder, a regular file (the history file is data, not trusted).
+        if (!IsOpenableFile(entry.Path, KnownFolders()))
+        {
+            Log.Warn("screenshot: upload refused: " + System.IO.Path.GetFileName(entry.Path) + " is not a screenshot file in a screenshots folder");
+            return false;
+        }
         if (!string.IsNullOrEmpty(entry.CopiumLink)) return true;   // uploaded already (a second click, or queued twice)
         // Defence in depth: whatever got here, nothing leaves the computer with the kill switch off or without the user's yes.
         if (!_settings.CloudSharingEnabled)
@@ -575,6 +592,7 @@ internal sealed class ScreenshotService
                 if (_history == null || !string.Equals(_historyFolder, folder, StringComparison.OrdinalIgnoreCase))
                 {
                     _history = new ScreenshotHistory(ScreenshotHistory.DefaultFile, folder);
+                    _history.Changed += OnHistoryChanged;
                     _historyFolder = folder;
                     try { _history.NoteRoot(folder); }   // an earlier folder stays openable after the setting changes
                     catch (Exception ex) { Log.Warn("screenshot: folder not recorded: " + ex.Message); }
@@ -583,6 +601,190 @@ internal sealed class ScreenshotService
             }
         }
     }
+
+    /// <summary>
+    /// The history changed (a screenshot was saved, got its link, or was deleted from the library). Raised on the thread that made the
+    /// change (a save runs on a worker): the library list marshals to the UI thread itself.
+    /// </summary>
+    internal event Action? HistoryChanged;
+
+    private void OnHistoryChanged() => HistoryChanged?.Invoke();
+
+    /// <summary>A copy of the history, newest first (the library list reads it on a worker). Thread-safe.</summary>
+    internal IReadOnlyList<ScreenshotEntry> HistoryEntries => History.Entries;
+
+    // ------------------------------------------------------------------ delete (library list)
+
+    /// <summary>
+    /// Test seam: sends one file (full path) to the Recycle Bin (throws when it cannot); the second argument is the owner window
+    /// handle for the shell (0 = the main window). Never <c>File.Delete</c>: a deleted screenshot can be restored. The real one is
+    /// <c>SHFileOperation</c> with <c>FOF_ALLOWUNDO</c> and <c>FOF_WANTNUKEWARNING</c>: a file that cannot go to the Recycle Bin
+    /// needs a second, explicit confirmation from Windows (declining it leaves the file); otherwise no shell dialog of its own.
+    /// The call has no timeout (the shell may be waiting on that dialog); one shell call runs at a time.
+    /// </summary>
+    internal Action<string, nint> Recycler { get; set; } = RecycleViaShell;
+
+    /// <summary>Test seam: the window the Recycle Bin call belongs to (the main window), 0 for none. Read on the UI thread.</summary>
+    internal static Func<nint> OwnerHandle { get; set; } = () =>
+    {
+        try
+        {
+            var app = System.Windows.Application.Current;
+            if (app == null) return 0;
+            return app.Dispatcher.Invoke(() => app.MainWindow is { } w ? new System.Windows.Interop.WindowInteropHelper(w).Handle : 0);
+        }
+        catch { return 0; }
+    };
+
+    private const uint FO_DELETE = 3;
+    private const ushort FOF_SILENT = 0x4, FOF_NOCONFIRMATION = 0x10, FOF_ALLOWUNDO = 0x40, FOF_NOERRORUI = 0x400, FOF_WANTNUKEWARNING = 0x4000;
+
+    /// <summary>The shell wants an STA thread (as for opening an archived file): a dedicated one, never the pool's or the UI's.</summary>
+    private static readonly object s_recycleLock = new();
+
+    private static void RecycleViaShell(string path, nint owner)
+    {
+        string full = System.IO.Path.GetFullPath(path);
+        if (owner == 0) owner = OwnerHandle();
+        lock (s_recycleLock)   // never two shell operations at once
+        {
+            Exception? error = null;
+            var t = new Thread(() =>
+            {
+                try { RecycleCore(full, owner); }
+                catch (Exception ex) { error = ex; }
+            }) { IsBackground = true, Name = "Clink.RecycleScreenshot" };
+            t.SetApartmentState(ApartmentState.STA);
+            t.Start();
+            t.Join();   // no timeout: the caller is a pool thread the UI awaits, and the row stays "deleting" until the shell is done
+            if (error != null) throw new IOException(error.Message, error);
+        }
+    }
+
+    private static unsafe void RecycleCore(string path, nint owner)
+    {
+        string from = path + "\0\0";   // a double-null terminated list of one
+        fixed (char* pFrom = from)
+        {
+            var op = new Windows.Win32.UI.Shell.SHFILEOPSTRUCTW
+            {
+                hwnd = new Windows.Win32.Foundation.HWND(owner),
+                wFunc = FO_DELETE,
+                pFrom = pFrom,
+                fFlags = (ushort)(FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT | FOF_WANTNUKEWARNING),
+            };
+            int rc = Windows.Win32.PInvoke.SHFileOperation(ref op);
+            if (rc != 0 || op.fAnyOperationsAborted) throw new IOException("The file could not be moved to the Recycle Bin (code 0x" + rc.ToString("X") + ")");
+        }
+        if (File.Exists(path)) throw new IOException("The file is still there after the move to the Recycle Bin");
+    }
+
+    private const uint DriveFixed = 3;
+
+    /// <summary>The file is on a local fixed drive (<c>C:\</c> that <c>GetDriveType</c> calls fixed): not a network, UNC, device, removable or optical path. Only there does the Recycle Bin take a file instead of deleting it for good.</summary>
+    internal static bool IsOnLocalFixedDrive(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || IsUnc(path)) return false;
+        try
+        {
+            string root = System.IO.Path.GetPathRoot(System.IO.Path.GetFullPath(path)) ?? "";
+            if (root.Length != 3 || !char.IsAsciiLetter(root[0]) || root[1] != ':' || root[2] != '\\') return false;
+            return DriveTypeOf(root) == DriveFixed;
+        }
+        catch { return false; }
+    }
+
+    private volatile EditContext? _openEditor;   // the editor session that is open now (set while its window is up)
+
+    private bool EditorHasOpen(string path)
+    {
+        var c = _openEditor;
+        if (c == null || _editor is not { IsOpen: true }) return false;
+        return SamePath(c.EditedFrom, path) || SamePath(c.SavedPath, path);
+    }
+
+    private static bool SamePath(string? a, string? b)
+    {
+        if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b)) return false;
+        try { return string.Equals(System.IO.Path.GetFullPath(a), System.IO.Path.GetFullPath(b), StringComparison.OrdinalIgnoreCase); }
+        catch { return false; }
+    }
+
+    /// <summary>
+    /// Deletes a screenshot from the library. Nothing on disk is touched (not even looked at) unless the path passes the path rule
+    /// (<see cref="IsOpenable(string?, IEnumerable{string}?)"/>: a .png inside a known screenshots folder; no network path unless that
+    /// is the chosen folder); anything else is <see cref="ScreenshotDeleteResult.Refused"/>. The PNG goes to the Recycle Bin, and only
+    /// from a local fixed drive (<see cref="IsOnLocalFixedDrive"/>): on a removable / network drive it would be deleted for good, so
+    /// that is <see cref="ScreenshotDeleteResult.Refused"/> too. A screenshot with a Copium link keeps its entry (the link is the
+    /// only thing left of it); one without leaves the history. An entry whose file is already gone is just taken out of the list.
+    /// A Recycle Bin failure keeps the file and the entry; a file that an editor has open is not touched
+    /// (<see cref="ScreenshotDeleteResult.EditorOpen"/>). Off the UI thread; never throws.
+    /// </summary>
+    internal Task<ScreenshotDeleteResult> DeleteAsync(ScreenshotEntry entry, nint owner = 0) => Task.Run(() =>
+    {
+        string path = entry.Path;
+        try
+        {
+            if (!IsOpenable(path, KnownFolders()))
+            {
+                Log.Warn("screenshot: not deleted: " + System.IO.Path.GetFileName(path) + " is not a .png in a screenshots folder");
+                return ScreenshotDeleteResult.Refused;
+            }
+            if (EditorHasOpen(path))
+            {
+                Log.Info("screenshot: not deleted: " + System.IO.Path.GetFileName(path) + " is open in the editor");
+                return ScreenshotDeleteResult.EditorOpen;
+            }
+            bool exists;
+            try { exists = File.Exists(path) || Directory.Exists(path); } catch { exists = false; }
+            bool keep = false;
+            if (exists)
+            {
+                if (!IsOpenableFile(path, KnownFolders()))
+                {
+                    // A directory or a link at the path: not a screenshot file, so the disk is left alone and only the list entry goes
+                    // (the row offers "Remove from list" for it).
+                    Log.Warn("screenshot: " + System.IO.Path.GetFileName(path) + " is not a screenshot file (directory or link); only the list entry is removed");
+                    exists = false;
+                }
+                else
+                {
+                    if (!IsOnLocalFixedDrive(path))
+                    {
+                        Log.Warn("screenshot: not deleted: " + System.IO.Path.GetFileName(path) + " is not on a local fixed drive (it would not go to the Recycle Bin)");
+                        return ScreenshotDeleteResult.Refused;
+                    }
+                    try { Recycler(System.IO.Path.GetFullPath(path), owner); }
+                    catch (Exception ex)
+                    {
+                        Log.Warn("screenshot: not deleted: " + ex.Message);
+                        return ScreenshotDeleteResult.Failed;
+                    }
+                    if (LastEdit is { } live && SamePath(live.Path, path)) ClearLastEdit("its file was deleted");
+                    keep = !string.IsNullOrEmpty(History.Find(path)?.CopiumLink ?? entry.CopiumLink);
+                }
+            }
+            if (keep)
+            {
+                OnHistoryChanged();   // the entry stays (its link); the list shows it without the file
+                Log.Info("screenshot: deleted " + System.IO.Path.GetFileName(path) + " (Recycle Bin; the entry stays for its Copium link)");
+                return ScreenshotDeleteResult.Deleted;
+            }
+            try { History.Remove(path); }
+            catch (Exception ex)
+            {
+                Log.Warn("screenshot: deleted " + System.IO.Path.GetFileName(path) + " but the list was not updated: " + ex.Message);
+                return exists ? ScreenshotDeleteResult.ListNotUpdated : ScreenshotDeleteResult.Failed;
+            }
+            Log.Info("screenshot: deleted " + System.IO.Path.GetFileName(path) + (exists ? " (Recycle Bin)" : " (file was gone; entry removed)"));
+            return ScreenshotDeleteResult.Deleted;
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("screenshot: not deleted: " + ex.Message);
+            return ScreenshotDeleteResult.Failed;
+        }
+    });
 
     // ------------------------------------------------------------------ capture
 
@@ -824,6 +1026,7 @@ internal sealed class ScreenshotService
         };
         Log.Info($"screenshot: editor opened ({title}, {doc.Base.Width}x{doc.Base.Height})");
         bool failed = false;
+        _openEditor = ctx;
         try
         {
             if (!await editor.EditAsync(request))
@@ -839,6 +1042,7 @@ internal sealed class ScreenshotService
             _toasts.ShowProblem("Screenshot editor failed", ex.Message);
             failed = true;
         }
+        finally { if (ReferenceEquals(_openEditor, ctx)) _openEditor = null; }
         // A new capture that never reached an editor is not lost: it is saved as it is.
         if (failed && isNew)
         {

@@ -175,6 +175,41 @@ internal static class ThemeTests
         }
     }
 
+    [UnitTest]
+    public static void TheLibrarySecondarySwitchIsReadableInEveryTheme()
+    {
+        // SegmentSecondary (Theme.xaml) + its track (ClipsPane.xaml): Muted text on a Panel track, Fg on the chosen Panel3 segment.
+        foreach (var (theme, accent) in AllCombinations())
+        {
+            var t = ThemeManager.Tokens(theme, accent);
+            double muted = Contrast(t["Muted"], t["Panel"]);
+            double chosen = Contrast(t["Fg"], t["Panel3"]);
+            Check.True(muted >= 4.5, $"{theme}/{accent}: Muted on the Panel track is {muted.ToString("0.00", CultureInfo.InvariantCulture)}:1");
+            Check.True(chosen >= 4.5, $"{theme}/{accent}: Fg on the chosen segment is {chosen.ToString("0.00", CultureInfo.InvariantCulture)}:1");
+        }
+    }
+
+    [UnitTest]
+    public static void TheFilterChipIsReadableOffHoveredAndOn()
+    {
+        // FilterChip (Theme.xaml): off = Muted on the card, hovered = Fg on Panel3 (the hover trigger sets Foreground), on = OnAccent on Accent.
+        var app = RunningApp();
+        var style = (Style)app.Resources["FilterChip"];
+        var template = (System.Windows.Controls.ControlTemplate)style.Setters.OfType<Setter>().Single(s => s.Property == System.Windows.Controls.Control.TemplateProperty).Value;
+        var hover = template.Triggers.OfType<Trigger>().Single(t => t.Property == UIElement.IsMouseOverProperty);
+        var fg = hover.Setters.OfType<Setter>().SingleOrDefault(s => s.TargetName == null && s.Property == System.Windows.Controls.Control.ForegroundProperty);
+        Check.NotNull(fg, "the hover trigger sets the chip's Foreground (Muted on Panel3 is not readable in every theme)");
+        Check.True(fg!.Value is DynamicResourceExtension { ResourceKey: "Fg" }, "and it is Fg");
+        foreach (var (theme, accent) in AllCombinations())
+        {
+            var t = ThemeManager.Tokens(theme, accent);
+            double off = Contrast(t["Muted"], t["Panel"]);
+            double hovered = Contrast(t["Fg"], t["Panel3"]);
+            Check.True(off >= 4.5, $"{theme}/{accent}: chip Muted on Panel is {off.ToString("0.00", CultureInfo.InvariantCulture)}:1");
+            Check.True(hovered >= 4.5, $"{theme}/{accent}: hovered chip Fg on Panel3 is {hovered.ToString("0.00", CultureInfo.InvariantCulture)}:1");
+        }
+    }
+
     // ------------------------------------------------------------------ the resources the app carries
 
     [UnitTest]

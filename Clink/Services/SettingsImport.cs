@@ -302,6 +302,7 @@ internal static class SettingsImport
         ("archive", new[] { nameof(Settings.ArchiveEnabled), nameof(Settings.ArchivePath), nameof(Settings.ArchiveAfterDays), nameof(Settings.ArchiveWhenLocalExceedsGB) }),
         ("clips folder", new[] { nameof(Settings.ClipsFolder) }),
         ("features", new[] { nameof(Settings.ClipsEnabled) }),
+        ("library view", new[] { nameof(Settings.LibraryFeature), nameof(Settings.LibraryLevel) }),
         ("cloud sharing", new[] { nameof(Settings.CloudSharingEnabled) }),   // (only an incoming "off" counts: see KeepOurOwn / Differences)
         ("screenshots", new[] { nameof(Settings.ScreenshotsEnabled), nameof(Settings.ScreenshotsFolder), nameof(Settings.ScreenshotMode), nameof(Settings.ScreenshotCopyImage), nameof(Settings.ScreenshotLoupe), nameof(Settings.ScreenshotUpload), nameof(Settings.ScreenshotCopyLink) }),
         ("Copium token", Array.Empty<string>()),   // compared decrypted, below

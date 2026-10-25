@@ -207,6 +207,10 @@ internal sealed class Settings
     public bool CloudSharingEnabled { get; set; } = true;
     /// <summary>Feature visibility: the clip replay buffer, recording and the clip library. Off = the engine is not started and its hotkeys, tray items and tabs are hidden.</summary>
     public bool ClipsEnabled { get; set; } = true;
+    /// <summary>The library pane's top switch the last time it was used: <c>clips</c> or <c>screenshots</c> (see <see cref="Clink.UI.LibraryView"/>; a feature that is off falls back to the one that is on).</summary>
+    public string LibraryFeature { get; set; } = Clink.UI.LibraryView.ClipsKey;
+    /// <summary>The library pane's second switch the last time it was used: <c>local</c> or <c>shared</c>.</summary>
+    public string LibraryLevel { get; set; } = Clink.UI.LibraryView.LocalKey;
     /// <summary>Hidden (no UI): the screenshot editor window and its picture picker are kept out of screen captures and recordings. Per installation: never imported.</summary>
     public bool ScreenshotEditorExcludeFromCapture { get; set; } = true;
     public ToastSetting ToastScreenshot { get; set; } = new() { Enabled = true, Seconds = 6 };
@@ -547,6 +551,8 @@ internal sealed class Settings
         if (!CopiumConsent) ScreenshotUpload = false;
         // At least one feature stays on (Screenshots when both were switched off by hand): the window would have no tabs otherwise.
         if (!ClipsEnabled && !ScreenshotsEnabled) ScreenshotsEnabled = true;
+        LibraryFeature = Clink.UI.LibraryView.NormalizeFeature(LibraryFeature);
+        LibraryLevel = Clink.UI.LibraryView.NormalizeLevel(LibraryLevel);
         SeededHotkeyDefaults ??= new List<string>();
         SeededHotkeyDefaults.RemoveAll(a => string.IsNullOrWhiteSpace(a));
         EnsureHotkeyModel();

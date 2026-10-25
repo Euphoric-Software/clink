@@ -115,7 +115,7 @@ S6 done (56bb20d, branch feature/screenshots): Copium PNG upload path, toast act
 S7 done (4df4efa, branch feature/screenshots): sharing opt-in with Copium consent dialog (public-link warning), global "Allow cloud sharing" kill switch, Clips/Screenshots feature visibility, S6 leftovers. Three review rounds. Verified: Debug and Release 0 warnings; `--unittest` 736 passed/0 failed/0 skipped (Debug plain, Debug NO_SKIP, Release NO_SKIP); 37 new tests; no BOM changes; secrets scan clean (only eup_secret test fake). NOT verified: a real upload to Copium with a valid token; GUI walk-through of consent/kill switch.
 
 ## Dev channel push
-Merge of feature/screenshots into dev pushed on 2026-10-25 (authorized "A"). Result: dev 77705f5 (merge, slices 1-5), run 40168176731 success, prerelease v0.3.2-dev.2. Slices 6-7 push to dev: build #3 pending (this push). Standing policy: dev pushes after reviewed slices need no further approval; main always asks.
+Merge of feature/screenshots into dev pushed on 2026-10-25 (authorized "A"). Result: dev 77705f5 (merge, slices 1-5), run 40168176731 success, prerelease v0.3.2-dev.2. Slices 6-7 pushed to dev (merge 0173405): run 40214902237 success, prerelease v0.3.2-dev.3 (Clink.exe asset). Standing policy: dev pushes after reviewed slices need no further approval; main always asks.
 
 ## S7 follow-ups
 - Recording: queued-notice / `async void` stop ordering when Clips is turned off while recording
@@ -125,5 +125,27 @@ Merge of feature/screenshots into dev pushed on 2026-10-25 (authorized "A"). Res
 - Capture-excluded consent dialog is invisible in screen shares
 - Real-upload verification with a valid token; Copium image size limit unknown
 
+S8 done (6795381, branch feature/screenshots): library pane Clips | Screenshots primary switch (hidden when one feature is off), Local | Shared levels, Trimmed as a filter chip; screenshot rows with worker-decoded thumbnails, Edit/Open/Folder/Upload or Copy link/Open page, Delete to Recycle Bin (SHFileOperation), Remove from list for shared entries; live refresh; keyboard navigation; UIA names; last feature/level remembered. Two review rounds plus touch-up. Verified: Debug and Release 0 warnings; `--unittest` 763 passed/0 failed/0 skipped (Debug plain, Debug NO_SKIP, Release NO_SKIP); 27 new tests; no BOM changes; secrets scan clean.
+
+**Screenshot tools iteration 1 complete (S1-S8).**
+
+## S8 follow-ups
+- Keyboard Tab walk through row buttons not GUI-verified
+- Shell second confirmation (cannot be recycled) untested
+- `EditorOpen` / `ListNotUpdated` paths untested
+- Thumbnail memory for 500 rows not measured
+- Tampered history roots: residual risk
+- Junctions inside the screenshots folder are followed
+
+## User open manual checks
+- HDR look of captures (decides the S7 WGC source slot)
+- PrintScreen over a game
+- First real Copium PNG upload (valid token)
+- Consent dialog look; kill switch; Features toggles
+- Library pane in both themes and at several widths
+
+## Deferred scope
+GIF/video from the screenshot tool, scrolling capture, delayed capture, auto/repeat capture, AI background remover, WGC HDR source.
+
 ## Next action
-S8 library pane (Clips | Screenshots switch, Local | Shared, Trimmed filter).
+Merge to dev (slice 8) and record the dev build tag; then user manual checks.

@@ -36,4 +36,8 @@
 - 2026-10-25 product decision: all cloud sharing defaults OFF with a one-time opt-in pop-up warning that uploads are immediately publicly accessible by link; global "Allow cloud sharing" kill switch (two-step re-enable) for clips and screenshots; feature-visibility toggles hide and disable a feature; library pane becomes Clips | Screenshots with Local | Shared beneath and Trimmed as a filter (S7/S8).
 - S7 sharing is opt-in: nothing uploads until the user agrees in the Copium consent dialog (public-link warning; Not now is default/Esc; Don't ask again; max two proactive prompts a day apart; never over a game; none without a token). Consent keys are per-install and never imported.
 - S7 kill switch: global `Allow cloud sharing` off = no uploads (clips and screenshots), sharing UI hidden, token kept, running uploads cancelled; re-enable needs a confirmation repeating the warning; an imported `off` is honoured, an imported `on` never.
+- S8 Delete semantics: screenshot Delete sends the file to the Recycle Bin via SHFileOperation, fixed local drives only; if it cannot be recycled Windows asks explicitly; refused while the editor holds the file.
+- S8 shared entries keep their link: deleting a shared screenshot's file leaves the entry and link; "Remove from list" drops the entry only.
+- S8 list path rule: only paths passing the screenshots path rule are listed, probed or acted on.
+- S8 library view persistence: last feature (Clips/Screenshots) and level (Local/Shared) are remembered; Trimmed is a filter chip, not a tab.
 - S7 features: Clips and Screenshots toggles (last one stays on). Clips off stops the recorder, unbinds clip hotkeys and hides clip UI. Copium token card lives on App -> Cloud sharing.

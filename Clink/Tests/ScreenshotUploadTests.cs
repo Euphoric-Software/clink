@@ -275,7 +275,9 @@ internal static class ScreenshotUploadTests
 
     internal static ScreenshotEntry EntryFor(TempDir dir, string name, int bytes = 100)
     {
-        string path = dir.File(name);
+        // inside the screenshots folder of Make's settings (an upload only takes a file of the app's own folders)
+        string path = dir.File(Path.Combine("clips", "Screenshots", name));
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.WriteAllBytes(path, new byte[bytes]);
         return new ScreenshotEntry { Path = path, Size = bytes, Width = 4, Height = 4, Created = DateTime.Now };
     }

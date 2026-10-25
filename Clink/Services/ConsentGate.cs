@@ -11,6 +11,8 @@ internal enum ConsentContext
     TrimShare,
     /// <summary>The Upload / Retry button of a screenshot notification.</summary>
     ScreenshotUploadManual,
+    /// <summary>The Upload button of a screenshot row in the library pane (the main window is the dialog's owner).</summary>
+    ScreenshotUploadLibrary,
     /// <summary>Turning "Upload to Copium" on in the Screenshots tab.</summary>
     ScreenshotUploadSetting,
     /// <summary>A Copium token was just saved in the App tab and sharing is still not agreed to (asked once, right after the save).</summary>
@@ -54,7 +56,7 @@ internal sealed class ConsentGate
     public bool AutoUploadAllowed => _settings.ScreenshotUpload && _settings.CopiumConsent && _settings.CloudSharingEnabled;
 
     /// <summary>The pop-up offers the "upload every screenshot" box for a screenshot action. Not for a clip, and not when the user is turning that very setting on.</summary>
-    public static bool OffersAutoUpload(ConsentContext context) => context is ConsentContext.ScreenshotUploadManual or ConsentContext.Proactive;
+    public static bool OffersAutoUpload(ConsentContext context) => context is ConsentContext.ScreenshotUploadManual or ConsentContext.ScreenshotUploadLibrary or ConsentContext.Proactive;
 
     /// <summary>A clip context has its own "no token" path (the share window), so the gate does not also open the token setup.</summary>
     private static bool IsClip(ConsentContext context) => context is ConsentContext.ClipShare or ConsentContext.ShareLast or ConsentContext.TrimShare;
