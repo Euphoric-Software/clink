@@ -22,12 +22,12 @@
 - [x] S2 pixel library (merged 0d1dc6f; worktree branch kept)
 - [x] S3 editor window + vector tools, edit-after, edit-last (f7aeb3f)
 - [x] S4 raster tools, adjustments, insert image (77530e1)
-- [ ] S5 edit-before in the overlay (needs S3, after S4)
+- [x] S5 edit-before in the overlay (5ea3308)
 - [ ] S6 upload, toast actions, Copium nudge, settings completion, AI seam
 - [ ] S7 WGC HDR source, pending user HDR check
 - [ ] Follow-up: Alerts tab "Screenshot saved" toast row + upload toggles UI (S6)
 - [ ] Follow-up: README/ROADMAP docs for screenshots
-- [ ] User manual test list: STATE.md (S1 + S3 lists)
+- [ ] User manual test list: STATE.md Dev manual checklist (S1, S3, S4, S5)
 
 ## Screenshots follow-ups
 - [ ] Quit flow: synchronous emergency save for non-user exits; message when a long-running save blocks a user quit
@@ -56,3 +56,10 @@
 - [ ] Picker thumbnails soft above ~110% DPI
 - [ ] `Recovered` clears any status text
 - [ ] User manual test list: S4 list in STATE.md
+
+## S5 follow-ups
+- [ ] Overlay edits are lost on quit/session end
+- [ ] 4K export runs on the UI thread (move off in S6)
+- [ ] Native file dialog cannot be capture-excluded (may appear in a replay clip)
+- [ ] Two editor sessions at once (overlay + window) raise the memory peak
+- [ ] `Rebase` re-export may differ for edge effects (blur/magnify near the crop edge)

@@ -27,3 +27,7 @@
 - Freehand highlight is a toolbar toggle (Shift = square).
 - Inserted images are stored at <= picture size.
 - Interactive spotlight level-rebuild throttle is 120 ms.
+- S5 overlay editing: Esc ladder (gesture -> deselect -> tool -> cancel); Esc cancels without a confirm prompt.
+- Idle watchdog is 2 min while selecting, 20 min while editing (with a notice).
+- `LastEdit` is rebased to the crop after an overlay edit.
+- Overlay toolbar is placed in monitor pixels over the full monitor (ToolbarPlacement).
