@@ -110,8 +110,16 @@ S5 done (5ea3308): mode "before" ("Edit on screen") inside the capture overlay: 
 - S4 raster: blur/pixelate/highlight/spotlight (drag on 4K)/magnify/smart erase, brightness/contrast/sharpness, insert image (picker + paste from Paint and browser), edit-last of a blurred document never shows un-redacted, memory after 10 sessions.
 - S5 overlay editing: set mode "Edit on screen"; toolbar placement at all screen edges and small/200% screens; crop handles; Esc ladder (gesture -> deselect -> tool -> cancel); Enter and Done save one cropped PNG with outside annotations clipped; Cancel button; cross-monitor drag opens the editor window with hint; insert dialogs while overlay is up; idle notice after 20 min; replay clip saved during/after overlay editing contains no overlay or toolbar.
 
+S6 done (56bb20d, branch feature/screenshots): Copium PNG upload path, toast actions (Open | Edit | Upload/Copy link | Folder, progress/Cancel/Retry), Copium nudge, settings rows + Alerts "Screenshot saved" switch, export compose/encode off the UI thread, AI background-remover seam (unavailable), security hardening. Two senior-review rounds plus a security review. Verified: Debug and Release 0 warnings; `--unittest` 699 passed/0 failed/0 skipped (Debug plain, Debug NO_SKIP, Release NO_SKIP); 49 new tests; no BOM changes; secrets scan clean (only eup_test fakes). NOT verified: a real upload to Copium; elevated-run pipe client.
+
 ## Dev channel push
-Merge of feature/screenshots into dev pushed on 2026-10-25 (authorized "A"). Result: dev 77705f5 (merge), run 40168176731 (3m39s) success, prerelease v0.3.2-dev.2 published.
+Merge of feature/screenshots into dev pushed on 2026-10-25 (authorized "A"). Result: dev 77705f5 (merge, slices 1-5), run 40168176731 (3m39s) success, prerelease v0.3.2-dev.2 published. Next dev push waits for S7 (user to confirm timing and standing approval). No push done after S6.
+
+## User decisions (2026-10-25, after S6 review)
+- All cloud sharing defaults OFF (clips and screenshots). One-time Copium opt-in pop-up with a prominent warning: anything uploaded is immediately publicly accessible by link.
+- Global "Allow cloud sharing" kill switch (two-step re-enable) covering clips and screenshots.
+- Feature-visibility toggles (Clips / Screenshots) hide and disable a feature. Assumption to confirm: hiding Clips also stops the replay engine.
+- Library pane rework: big Clips | Screenshots switch, subordinate Local | Shared, Trimmed becomes a filter.
 
 ## Next action
-S6 (Copium upload + nudge + settings completion + export off the UI thread), then a second dev build.
+S7 (consent, kill switch, visibility toggles, S6 leftovers; see TASKS.md), then S8 library pane, then the next dev build.

@@ -31,3 +31,6 @@
 - Idle watchdog is 2 min while selecting, 20 min while editing (with a notice).
 - `LastEdit` is rebased to the crop after an overlay edit.
 - Overlay toolbar is placed in monitor pixels over the full monitor (ToolbarPlacement).
+- S6 upload: image endpoint override is pinned to copium.pics and never imported from settings files; returned links must be https; uploads are serialized; the clipboard link replaces the image only if the clipboard is unchanged since the image copy.
+- S6 export: compose/encode runs off the UI thread; AI background remover is a seam only (reports unavailable).
+- 2026-10-25 product decision: all cloud sharing defaults OFF with a one-time opt-in pop-up warning that uploads are immediately publicly accessible by link; global "Allow cloud sharing" kill switch (two-step re-enable) for clips and screenshots; feature-visibility toggles hide and disable a feature; library pane becomes Clips | Screenshots with Local | Shared beneath and Trimmed as a filter (S7/S8).
