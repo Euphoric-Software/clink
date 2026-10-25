@@ -1,4 +1,4 @@
-﻿# State
+# State
 
 ## In progress
 Manual start/stop recording (branch `feature/manual-recording`).
@@ -91,8 +91,12 @@ First dev build: run https://github.com/jason-tucker/clink/actions/runs/40130530
 Remaining: user installs the first dev build by hand once (download Clink.exe from the prerelease, replace the running exe, then tick Dev Build); popup enabled-state GUI check; optional release-dev.yml job split.
 
 ## Screenshots (branch feature/screenshots, from main 3f66291 v0.3.1)
-S1 done: 2cb39b0 (feature slice: capture, overlay, PNG save, clipboard, toast, Screenshots tab, `screenshot` hotkey seeded as bare PrintScreen, `--screenshot`, tray) and 043467b (docs/screenshots-design.md). Review: 2 Opus reviews (FIX-THEN-SHIP both), fixes applied.
-Verified: Debug+Release 0 warnings/0 errors; `--unittest` 453 passed/0 failed/0 skipped (Debug plain, Debug CLINK_TESTS_NO_SKIP=1, Release NO_SKIP). Overlay stranding paths verified with real windows: WM_CLOSE closes all overlays, busy flag resets, trigger-again cancels.
-NOT verified: drag/PNG/clipboard by a human (only one unattributed 270x230 capture succeeded during a smoke); PrintScreen delivery via the real hook; Snipping Tool suppression; HDR appearance; exclusive-fullscreen behaviour.
-Delivery plan: fast-forward `dev` to `main`, merge `feature/screenshots`, push `dev` -> release-dev.yml -> 0.3.2-dev.N. Push requires user approval.
-Next action: S2 pixel library (worktree) || S3 editor window; then S4-S6.
+Progress: S1 2cb39b0 (capture, overlay, PNG, clipboard, toast, tab, `screenshot` hotkey = bare PrintScreen, `--screenshot`, tray; docs 043467b). S3 f7aeb3f (editor window, vector tools, edit-after, edit-last, `screenshot-edit-last` seeded Shift+PrintScreen, `--screenshot-edit-last`, `--screenshot-edit <png>`). S2 merged at 0d1dc6f (pixel library in Clink/Screenshots/Imaging; worktree branch `worktree-agent-ac33d7baec9c3d8a6` tip 41962cb kept, not deleted; worktree left in place). S2 and S3 each went through two senior-review rounds.
+Verified (merged tree): Debug and Release `--no-incremental` 0 warnings/0 errors; `--unittest` 572 passed/0 failed/0 skipped (Debug plain, Debug NO_SKIP, Release NO_SKIP); `ScreenshotImaging` 54, `ScreenshotEditor` 37. S3 alone was 518; S1 453.
+NOT verified: any human GUI run of the editor; real PrintScreen hook delivery; Snipping Tool suppression; HDR; exclusive fullscreen. Desktop-dependent tests (GDI monitor capture, busy clipboard) first run on a GitHub runner with the first dev push.
+Delivery plan: fast-forward `dev` to `main`, merge `feature/screenshots`, push `dev` -> release-dev.yml -> 0.3.2-dev.N. Push needs user approval.
+
+Manual GUI test list (run on `Clink.exe --dev <folder> --dev-hotkeys`; never the installed Clink)
+S1: Ctrl/Print-Screen overlay on every monitor without visible jump; drag -> PNG in `<ClipsFolder>\Screenshots` sized as the label; paste into Paint pixel-identical; toast Open/Folder; Esc/right-click save nothing; Enter = whole monitor; mixed-DPI and negative-coordinate monitors; cross-monitor rect; tray item and `--screenshot`; seeded hotkey row appears once and deleting it survives restart; unknown hand-edited action logs and does not clip; HDR result noted here (decides S7); exclusive-fullscreen black toast; overlay absent from a replay clip saved right after.
+S3: each tool (select, pen, line, arrow, freehand arrow, rectangle, text, crop) at 100% and 200%; undo/redo of each; text UX incl. right-click menu then Esc/Ctrl+C/Space must NOT close the editor; saved PNG equals the 100% view; Ctrl+C paste into Paint and Discord; "Save edits?" on Esc/Alt+F4/X with Yes/No/Cancel; Shift+PrintScreen reopens the live document, after a restart opens the flattened PNG; toast Edit button, tray "Edit last screenshot", `--screenshot-edit <png>`; both seeded hotkey rows present; memory after 10 editor sessions; Alt+Space then drag draws, not pans; tray Quit with unsaved edits, all three answers; thick short freehand arrow export matches screen; small 200% screen still shows Done.
+Next action: S4 (raster tools into the editor).

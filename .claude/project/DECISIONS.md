@@ -1,4 +1,4 @@
-﻿# Decisions
+# Decisions
 
 ## Dev Build update channel
 - Dev builds are immutable `vX.Y.Z-dev.N` prereleases (not a rolling tag), pruned to the newest 10.
@@ -17,3 +17,9 @@
 - Trigger-while-open cancels the overlay (no BringToFront).
 - Raster effects sit below vector annotations in v1.
 - `BgraImage` has no bitmap cache; `ToBitmapSource()` is always fresh.
+- Editor document is an immutable `DocumentState` with snapshot undo/redo (200); export is a separate exact-pixel `Exporter` (RTB at 96 dpi, tiled).
+- `RasterComposer` with below-cache and `IRasterOp`/`Adjuster` seams (S3) so S4 plugs in raster tools without touching the editor.
+- Pixel ops are `Op(src, dst, clip, ...)`; local ops (blur, highlight, adjustments, resample) recompose dirty rects, non-local (pixelate, smart erase, magnifier, spotlight) invalidate the whole footprint; in-place is single-shot.
+- Edit-after never writes until Done/Save; edit-last always saves a new file; one editor at a time.
+- Sharpness 0..200 %, default 0, unsharp amount = Sharpness/100.
+- S2 was developed in a worktree and merged with `--no-ff`; the worktree branch is kept.

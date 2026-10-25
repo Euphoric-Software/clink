@@ -1,4 +1,4 @@
-﻿# Tasks
+# Tasks
 
 - [x] Step 1: Mp4Muxer progressive mode + journal + Recover + tests
 - [x] Step 2 (b9591c5): Engine/ClipWriter.cs -> incremental writer (AddVideo/AddAudio/Finish), Write stays a wrapper; existing tests green
@@ -19,14 +19,31 @@
 
 ## Screenshots (design: docs/screenshots-design.md)
 - [x] S1 capture to PNG (2cb39b0)
-- [ ] S2 pixel library: BoxBlur, Pixelate, Highlight, StrokeMask, SmartErase, Spotlight, Magnifier, Adjustments, Resample + tests (pure, worktree)
-- [ ] S3 editor window + vector tools, edit-after, edit-last (seeds Shift+PrintScreen `screenshot-edit-last`)
+- [x] S2 pixel library (merged 0d1dc6f; worktree branch kept)
+- [x] S3 editor window + vector tools, edit-after, edit-last (f7aeb3f)
 - [ ] S4 raster tools, adjustments, insert image (needs S2 + S3)
 - [ ] S5 edit-before in the overlay (needs S3, after S4)
 - [ ] S6 upload, toast actions, Copium nudge, settings completion, AI seam
 - [ ] S7 WGC HDR source, pending user HDR check
-- [ ] Follow-up: window-factory test seam for the overlay `Session`
-- [ ] Follow-up: `IsOpenable` rule for history entries when the folder changes (S3)
 - [ ] Follow-up: Alerts tab "Screenshot saved" toast row + upload toggles UI (S6)
 - [ ] Follow-up: README/ROADMAP docs for screenshots
-- [ ] User manual test list: the S1 "Manual" list in docs/screenshots-design.md (run on `--dev <folder> --dev-hotkeys`)
+- [ ] User manual test list: STATE.md (S1 + S3 lists)
+
+## Screenshots follow-ups
+- [ ] Quit flow: synchronous emergency save for non-user exits; message when a long-running save blocks a user quit
+- [ ] Overlay `Session` window-factory test seam
+- [ ] `LastEdit` retention cap/expiry
+- [ ] Toast Folder/Open after the folder changes (IsOpenable)
+- [ ] Design doc A3: name `AdjustmentValues` (Sharpness 0..200, default 0, amount = Sharpness/100)
+- [ ] CI: desktop-dependent tests (GDI monitor capture, busy clipboard) first run on a GitHub runner with the first dev push
+
+## S4 requirements (raster tools into the editor)
+- `IRasterOp.AffectedBy(changedInput)` for non-local ops (magnify Source->Dest, smart erase ring->whole rect, pixelate block-grid snap, spotlight global)
+- `Apply` must not depend on `area`; the composer computes the dirty area from old+new `Affects`
+- Bounded memory: no full-size buffer per op (below-cache for the active object + final composite, or per-op patches)
+- One compose in flight; double-buffer before WritePixels/Export; version tag; cancel only between composes
+- Two-stage Adjuster: LUT synchronous, unsharp debounced 60 ms on a background thread
+- Spotlight: cache `SpotlightLevels` keyed by below-version+radius+gradient (set `Version`); recompose dirty rects into a separate dst (in-place is single-shot); debounce `Spotlight.Build` on radius drag
+- `Resample.Over` needs the below pixels restored first
+- `PlanePool.Clear()` on editor close, after cancelling background work
+- Blur/unsharp dirty-rect output may differ by +-1 from a full run
