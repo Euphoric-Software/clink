@@ -1,69 +1,74 @@
-using System.Diagnostics;
-
 namespace Clink.Screenshots.Imaging;
 
-/// <summary>Scaling and compositing of images (straight alpha).</summary>
+/// <summary>
+/// Scaling and compositing of images (straight alpha).
+/// <para>Uniform op form: <c>Bilinear(src, dst, clip, srcRect, dstRect)</c> and <c>Over(src, dst, clip, dest, opacity)</c> read
+/// <c>src</c>, compute as if unclipped and write only <c>clip ∩ dstRect</c> / <c>clip ∩ dest</c> (clipped to <c>dst</c>), nothing
+/// else. <c>dst</c> must not alias <c>src</c> (throws). Their footprint is the destination rectangle; within it a pixel depends on
+/// the source pixels around its mapped position only, so a dirty sub-rectangle of the destination can be redrawn on its own.</para>
+/// </summary>
 internal static class Resample
 {
     /// <summary>
     /// Scales <paramref name="srcRect"/> of <paramref name="src"/> into <paramref name="dstRect"/> of <paramref name="dst"/>
-    /// (bilinear, pixel centres aligned; the part of <paramref name="dstRect"/> outside <paramref name="dst"/> is not computed).
-    /// Equal sizes copy. When an axis shrinks by more than 2 x, the source is first reduced by a box filter (an integer factor per
-    /// axis) so that no pixel is skipped. Sampling clamps to the source rectangle. Interpolation is alpha-weighted, so a transparent
-    /// pixel's colour does not bleed into its neighbours.
+    /// (bilinear, pixel centres aligned), writing only <c>dstRect ∩ clip ∩ dst</c>. Equal sizes copy (when the source rectangle lies
+    /// inside the image). When an axis shrinks by more than 2 x, the source is first reduced by a box filter (an integer factor per
+    /// axis) so that no pixel is skipped; both paths map the destination onto the UNCLIPPED <paramref name="srcRect"/> the same way
+    /// (a reduced pixel stands at the centre of its block). Sampling clamps to the part of the source rectangle inside the image.
+    /// Interpolation is alpha-weighted, so a transparent pixel's colour does not bleed into its neighbours.
     /// </summary>
-    public static void Bilinear(BgraImage src, RectI srcRect, BgraImage dst, RectI dstRect)
+    public static void Bilinear(BgraImage src, BgraImage dst, RectI clip, RectI srcRect, RectI dstRect)
     {
+        ImagingUtil.RequireNoAlias(src, dst);
         var sr = srcRect.Intersect(src.Bounds);
         if (sr.IsEmpty || dstRect.IsEmpty) return;
-        var clip = dstRect.Intersect(dst.Bounds);
-        if (clip.IsEmpty) return;
-        long t0 = Stopwatch.GetTimestamp();
+        var vis = dstRect.Intersect(dst.Bounds).Intersect(clip);
+        if (vis.IsEmpty) return;
+        long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
 
-        if (srcRect.Width == dstRect.Width && srcRect.Height == dstRect.Height)
+        if (srcRect.Width == dstRect.Width && srcRect.Height == dstRect.Height && src.Bounds.Contains(srcRect))
         {
-            dst.Blit(src, srcRect, dstRect.X, dstRect.Y);
+            dst.Blit(src, new RectI(srcRect.X + vis.X - dstRect.X, srcRect.Y + vis.Y - dstRect.Y, vis.Width, vis.Height), vis.X, vis.Y);
             return;
         }
 
-        double rx = (double)sr.Width / dstRect.Width, ry = (double)sr.Height / dstRect.Height;
-        if (rx > 2 || ry > 2)
-        {
-            var reduced = BoxReduce(src, sr, rx > 2 ? (int)rx : 1, ry > 2 ? (int)ry : 1);
-            Bilinear(reduced, reduced.Bounds, dst, dstRect);
-            return;
-        }
-
-        // Map by the unclipped rectangles; clamp to what the source really has.
-        double sx0 = srcRect.X, sy0 = srcRect.Y;
         double kx = (double)srcRect.Width / dstRect.Width, ky = (double)srcRect.Height / dstRect.Height;
-        int n = clip.Width;
-        var xi0 = new int[n];
-        var xi1 = new int[n];
-        var fx = new float[n];
-        for (int i = 0; i < n; i++)
+        int fx = kx > 2 ? (int)kx : 1, fy = ky > 2 ? (int)ky : 1;
+        // Per destination column / row: the two sample cells (blocks of fx / fy source pixels from sr's corner) and the weight.
+        Axis(vis.X, vis.Width, dstRect.X, srcRect.X, kx, sr.X, sr.Width, fx, out var xi0, out var xi1, out var wx);
+        Axis(vis.Y, vis.Height, dstRect.Y, srcRect.Y, ky, sr.Y, sr.Height, fy, out var yi0, out var yi1, out var wy);
+
+        BgraImage sample;
+        int offX, offY;   // sample column = cell + offX
+        if (fx > 1 || fy > 1)
         {
-            double sx = sx0 + (clip.X + i - dstRect.X + 0.5) * kx - 0.5;
-            sx = Math.Clamp(sx, sr.X, sr.Right - 1);
-            int a = (int)Math.Floor(sx);
-            xi0[i] = a; xi1[i] = Math.Min(a + 1, sr.Right - 1); fx[i] = (float)(sx - a);
+            // Reduce only the blocks the destination needs; the grid stays anchored at sr's corner.
+            int bx0 = xi0.Min(), bx1 = xi1.Max(), by0 = yi0.Min(), by1 = yi1.Max();
+            var part = new RectI(sr.X + bx0 * fx, sr.Y + by0 * fy, (bx1 - bx0 + 1) * fx, (by1 - by0 + 1) * fy).Intersect(sr);
+            sample = BoxReduce(src, part, fx, fy);
+            offX = -bx0; offY = -by0;
         }
-        var sp = src.Pixels;
-        var dp = dst.Pixels;
-        int ss = src.Stride, ds = dst.Stride;
-        ImagingUtil.ForRows(clip.Y, clip.Bottom, clip.Area, y =>
+        else
         {
-            double sy = sy0 + (y - dstRect.Y + 0.5) * ky - 0.5;
-            sy = Math.Clamp(sy, sr.Y, sr.Bottom - 1);
-            int ya = (int)Math.Floor(sy), yb = Math.Min(ya + 1, sr.Bottom - 1);
-            float fy = (float)(sy - ya);
-            int ra = ya * ss, rb = yb * ss;
-            int di = y * ds + clip.X * 4;
+            sample = src;
+            offX = sr.X; offY = sr.Y;
+        }
+        for (int i = 0; i < xi0.Length; i++) { xi0[i] = (xi0[i] + offX) * 4; xi1[i] = (xi1[i] + offX) * 4; }
+
+        var sp = sample.Pixels;
+        var dp = dst.Pixels;
+        int ss = sample.Stride, ds = dst.Stride, n = vis.Width;
+        ImagingUtil.ForRows(vis.Y, vis.Bottom, vis.Area, y =>
+        {
+            int r = y - vis.Y;
+            float fyw = wy[r];
+            int ra = (yi0[r] + offY) * ss, rb = (yi1[r] + offY) * ss;
+            int di = y * ds + vis.X * 4;
             for (int i = 0; i < n; i++, di += 4)
             {
-                int p00 = ra + xi0[i] * 4, p10 = ra + xi1[i] * 4, p01 = rb + xi0[i] * 4, p11 = rb + xi1[i] * 4;
-                float wx = fx[i];
-                float w00 = (1 - wx) * (1 - fy), w10 = wx * (1 - fy), w01 = (1 - wx) * fy, w11 = wx * fy;
+                int p00 = ra + xi0[i], p10 = ra + xi1[i], p01 = rb + xi0[i], p11 = rb + xi1[i];
+                float fxw = wx[i];
+                float w00 = (1 - fxw) * (1 - fyw), w10 = fxw * (1 - fyw), w01 = (1 - fxw) * fyw, w11 = fxw * fyw;
                 if (sp[p00 + 3] == 255 && sp[p10 + 3] == 255 && sp[p01 + 3] == 255 && sp[p11 + 3] == 255)
                 {
                     for (int c = 0; c < 3; c++)
@@ -81,7 +86,30 @@ internal static class Resample
                 }
             }
         });
-        ImagingUtil.LogTime("bilinear", $"{sr.Width}x{sr.Height} -> {dstRect.Width}x{dstRect.Height}", t0);
+        if (ImagingUtil.ShouldReport(t0, out double ms)) ImagingUtil.Report("bilinear", $"{srcRect.Width}x{srcRect.Height} -> {dstRect.Width}x{dstRect.Height} ({vis.Width}x{vis.Height} drawn)", ms);
+    }
+
+    /// <summary>
+    /// One axis of <see cref="Bilinear"/>: for the destination positions [v0, v0 + count), the sample position in source pixel space
+    /// <c>s = srcStart + (v - dstStart + 0.5) * k - 0.5</c> (the same mapping with or without the box reduction), expressed in cells
+    /// of <paramref name="f"/> source pixels starting at <paramref name="s0"/> (the clipped source range [s0, s0 + len)). A cell stands
+    /// at the centre of its pixels (the last cell may be shorter); positions before the first / after the last cell clamp to it.
+    /// </summary>
+    private static void Axis(int v0, int count, int dstStart, int srcStart, double k, int s0, int len, int f, out int[] i0, out int[] i1, out float[] w)
+    {
+        i0 = new int[count]; i1 = new int[count]; w = new float[count];
+        int cells = (len + f - 1) / f, last = cells - 1;
+        double c0 = s0 + (Math.Min(f, len) - 1) / 2.0;
+        double cLast = s0 + last * f + (len - last * f - 1) / 2.0;
+        for (int j = 0; j < count; j++)
+        {
+            double s = srcStart + (v0 + j - dstStart + 0.5) * k - 0.5;
+            if (last == 0 || s <= c0) { i0[j] = i1[j] = 0; w[j] = 0; continue; }
+            if (s >= cLast) { i0[j] = i1[j] = last; w[j] = 0; continue; }
+            int b = Math.Clamp((int)Math.Floor((s - c0) / f), 0, last - 1);
+            double cb = c0 + (double)b * f, cn = b + 1 == last ? cLast : cb + f;
+            i0[j] = b; i1[j] = b + 1; w[j] = (float)Math.Clamp((s - cb) / (cn - cb), 0, 1);
+        }
     }
 
     /// <summary>
@@ -95,7 +123,7 @@ internal static class Resample
         int ow = (r.Width + kx - 1) / kx, oh = (r.Height + ky - 1) / ky;
         var o = new BgraImage(ow, oh);
         if (ow == 0 || oh == 0) return o;
-        long t0 = Stopwatch.GetTimestamp();
+        long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
         var sp = src.Pixels;
         var op = o.Pixels;
         ImagingUtil.ForRows(0, oh, r.Area, oy =>
@@ -122,24 +150,28 @@ internal static class Resample
                 op[oi + 3] = ImagingUtil.ClampByte(sa / n);
             }
         });
-        ImagingUtil.LogTime("box-reduce", $"{r.Width}x{r.Height} by {kx}x{ky}", t0);
+        if (ImagingUtil.ShouldReport(t0, out double ms)) ImagingUtil.Report("box-reduce", $"{r.Width}x{r.Height} by {kx}x{ky}", ms);
         return o;
     }
 
     /// <summary>
-    /// Draws <paramref name="src"/> scaled into <paramref name="dest"/> (a rectangle in <paramref name="dst"/>'s pixels, clipped to it)
-    /// over <paramref name="dst"/>, straight-alpha source-over, with the source's alpha multiplied by <paramref name="opacity"/>
-    /// (0..1). Opacity 0 changes nothing; an opaque source at opacity 1 replaces.
+    /// Draws <paramref name="src"/> scaled into <paramref name="dest"/> (a rectangle in <paramref name="dst"/>'s pixels) over
+    /// <paramref name="dst"/>, only where <paramref name="clip"/> and <paramref name="dst"/> overlap it: straight-alpha source-over,
+    /// with the source's alpha multiplied by <paramref name="opacity"/> (0..1). Opacity 0 changes nothing; an opaque source at
+    /// opacity 1 replaces.
     /// </summary>
-    public static void Over(BgraImage dst, BgraImage src, RectI dest, double opacity)
+    // Note for the S3/S4 integration: the editor's Blend.OverStraight implements the same straight-alpha source-over; the two may be
+    // consolidated into one (this one, or a shared helper both call) when the composer lands.
+    public static void Over(BgraImage src, BgraImage dst, RectI clip, RectI dest, double opacity)
     {
+        ImagingUtil.RequireNoAlias(src, dst);
         opacity = Math.Clamp(opacity, 0, 1);
-        var vis = dest.Intersect(dst.Bounds);
+        var vis = dest.Intersect(dst.Bounds).Intersect(clip);
         if (vis.IsEmpty || src.Width == 0 || src.Height == 0 || opacity <= 0) return;
-        long t0 = Stopwatch.GetTimestamp();
+        long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
         // Scale into a temporary of the visible part only (the destination can be mostly off the image).
         var tmp = new BgraImage(vis.Width, vis.Height);
-        Bilinear(src, src.Bounds, tmp, dest.Offset(-vis.X, -vis.Y));
+        Bilinear(src, tmp, tmp.Bounds, src.Bounds, dest.Offset(-vis.X, -vis.Y));
         var tp = tmp.Pixels;
         var dp = dst.Pixels;
         int op = (int)Math.Round(opacity * 256);   // 0..256
@@ -164,6 +196,6 @@ internal static class Resample
                 dp[di + 3] = (byte)((outA255 + 127) / 255);
             }
         });
-        ImagingUtil.LogTime("over", $"{src.Width}x{src.Height} -> {dest} opacity {opacity:0.##}", t0);
+        if (ImagingUtil.ShouldReport(t0, out double ms)) ImagingUtil.Report("over", $"{src.Width}x{src.Height} -> {dest} opacity {opacity:0.##}", ms);
     }
 }

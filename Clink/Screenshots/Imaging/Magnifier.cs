@@ -1,32 +1,39 @@
-﻿using System.Diagnostics;
-using System.Windows.Media;
+﻿using System.Windows.Media;
 
 namespace Clink.Screenshots.Imaging;
 
-/// <summary>The magnifier: a scaled copy of a part of the image, framed by an outline.</summary>
+/// <summary>
+/// The magnifier: a scaled copy of a part of the image, framed by an outline.
+/// <para>Uniform op form: <c>Render(src, dst, clip, source, dest, smooth, outline, outlineWidth)</c> reads <c>src</c>, writes only
+/// <c>clip ∩ dest</c> (clipped to <c>dst</c>) and nothing else. <c>dst</c> must not alias <c>src</c> (throws): the composer renders
+/// from the below-composite into another buffer. NON-LOCAL: the pixels written (dest) are far from the pixels read (source), so a
+/// change under the source rectangle invalidates the whole dest rectangle.</para>
+/// </summary>
 internal static class Magnifier
 {
     /// <summary>The colour of the thin ring just outside the outline.</summary>
     public static readonly Color OuterRing = Color.FromRgb(0x20, 0x20, 0x20);
 
     /// <summary>
-    /// Draws <paramref name="source"/> (a rectangle of <paramref name="below"/>) scaled into <paramref name="dest"/> of
-    /// <paramref name="dst"/> (any image; the part outside it is not drawn). Nearest neighbour by default (crisp pixels), bilinear
-    /// when <paramref name="smooth"/>. Samples are clamped to <paramref name="below"/>. Then the frame: the outermost pixel row /
-    /// column of <paramref name="dest"/> is a 1-px dark ring (<see cref="OuterRing"/>) and the next
-    /// <paramref name="outlineWidth"/> pixels (rounded; 0 = no frame at all) are <paramref name="outline"/> (its alpha applies).
-    /// The frame lies inside <paramref name="dest"/>, so it never reaches outside the rectangle.
+    /// Draws <paramref name="source"/> (a rectangle of <paramref name="src"/>) scaled into <paramref name="dest"/> of
+    /// <paramref name="dst"/> (any size; only the part of dest inside <paramref name="clip"/> and <paramref name="dst"/> is drawn, as
+    /// if the whole were). Nearest neighbour by default (crisp pixels), bilinear when <paramref name="smooth"/>. Samples are clamped
+    /// to <paramref name="src"/>, so a source rectangle partly outside the image repeats the edge pixels. Then the frame: the
+    /// outermost pixel row / column of <paramref name="dest"/> is a 1-px dark ring (<see cref="OuterRing"/>) and the next
+    /// <paramref name="outlineWidth"/> pixels (rounded; 0 = no frame at all) are <paramref name="outline"/> (its alpha applies over
+    /// the magnified pixels). The frame lies inside <paramref name="dest"/>, so it never reaches outside the rectangle.
     /// </summary>
-    public static void Render(BgraImage below, RectI source, RectI dest, bool smooth, Color outline, double outlineWidth, BgraImage dst)
+    public static void Render(BgraImage src, BgraImage dst, RectI clip, RectI source, RectI dest, bool smooth, Color outline, double outlineWidth)
     {
-        var vis = dest.Intersect(dst.Bounds);
-        if (vis.IsEmpty || source.IsEmpty || below.Width == 0 || below.Height == 0) return;
-        long t0 = Stopwatch.GetTimestamp();
+        ImagingUtil.RequireNoAlias(src, dst);
+        var vis = dest.Intersect(dst.Bounds).Intersect(clip);
+        if (vis.IsEmpty || source.IsEmpty || src.Width == 0 || src.Height == 0) return;
+        long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
         double kx = (double)source.Width / dest.Width, ky = (double)source.Height / dest.Height;
-        int bw = below.Width, bh = below.Height;
-        var sp = below.Pixels;
+        int bw = src.Width, bh = src.Height;
+        var sp = src.Pixels;
         var dp = dst.Pixels;
-        int ss = below.Stride, ds = dst.Stride;
+        int ss = src.Stride, ds = dst.Stride;
         ImagingUtil.ForRows(vis.Y, vis.Bottom, vis.Area, y =>
         {
             double fy = source.Y + (y - dest.Y + 0.5) * ky;
@@ -78,7 +85,7 @@ internal static class Magnifier
                 }
             }
         }
-        ImagingUtil.LogTime("magnify", $"{source} -> {dest} {(smooth ? "smooth" : "nearest")}", t0);
+        if (ImagingUtil.ShouldReport(t0, out double ms)) ImagingUtil.Report("magnify", $"{source} -> {dest} {(smooth ? "smooth" : "nearest")}", ms);
     }
 
     private static void FillRect(BgraImage dst, RectI r, Color c, RectI limit)

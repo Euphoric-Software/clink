@@ -3,7 +3,10 @@ using System.Windows;
 
 namespace Clink.Screenshots.Imaging;
 
-/// <summary>A CPU rasterizer for freehand strokes: a union of round-capped segments ("capsules"), as an 8-bit coverage mask.</summary>
+/// <summary>
+/// A CPU rasterizer for freehand strokes: a union of round-capped segments ("capsules"), as an 8-bit coverage mask. Not a raster
+/// op (it reads no image); the mask feeds <see cref="Highlight.Multiply(BgraImage, BgraImage, RectI, AlphaMask, System.Windows.Media.Color)"/>.
+/// </summary>
 internal static class StrokeMask
 {
     /// <summary>
@@ -60,7 +63,7 @@ internal static class StrokeMask
                 }
             }
         }
-        ImagingUtil.LogTime("stroke-mask", $"{good.Count} pts width {width:0.#} bounds {bounds}", t0);
+        if (ImagingUtil.ShouldReport(t0, out double ms)) ImagingUtil.Report("stroke-mask", $"{good.Count} pts width {width:0.#} bounds {bounds}", ms);
         return new AlphaMask(bounds, cov);
     }
 
