@@ -115,7 +115,7 @@ S6 done (56bb20d, branch feature/screenshots): Copium PNG upload path, toast act
 S7 done (4df4efa, branch feature/screenshots): sharing opt-in with Copium consent dialog (public-link warning), global "Allow cloud sharing" kill switch, Clips/Screenshots feature visibility, S6 leftovers. Three review rounds. Verified: Debug and Release 0 warnings; `--unittest` 736 passed/0 failed/0 skipped (Debug plain, Debug NO_SKIP, Release NO_SKIP); 37 new tests; no BOM changes; secrets scan clean (only eup_secret test fake). NOT verified: a real upload to Copium with a valid token; GUI walk-through of consent/kill switch.
 
 ## Dev channel push
-Merge of feature/screenshots into dev pushed on 2026-10-25 (authorized "A"). Result: dev 77705f5 (merge, slices 1-5), run 40168176731 success, prerelease v0.3.2-dev.2. Slices 6-7 push to dev: build #3 pending (this push). Standing policy: dev pushes after reviewed slices need no further approval; main always asks.
+Merge of feature/screenshots into dev pushed on 2026-10-25 (authorized "A"). Result: dev 77705f5 (merge, slices 1-5), run 40168176731 success, prerelease v0.3.2-dev.2. Slices 6-7 pushed to dev (merge 0173405): run 40214902237 success, prerelease v0.3.2-dev.3 (Clink.exe asset). Standing policy: dev pushes after reviewed slices need no further approval; main always asks.
 
 ## S7 follow-ups
 - Recording: queued-notice / `async void` stop ordering when Clips is turned off while recording
