@@ -187,6 +187,22 @@ internal sealed class Settings
     public Clink.Screenshots.Editing.ScreenshotEditorOptions ScreenshotEditor { get; set; } = new();
     public bool ScreenshotCopyImage { get; set; } = true;
     public bool ScreenshotLoupe { get; set; } = true;
+    /// <summary>Upload a saved screenshot to Copium when a token is set (the file and the clipboard image are always done first). Without a token this only drives the "link your account" hint (<see cref="Clink.Screenshots.CopiumNudge"/>).</summary>
+    public bool ScreenshotUpload { get; set; } = true;
+    /// <summary>After an upload, put the link on the clipboard (it replaces the image).</summary>
+    public bool ScreenshotCopyLink { get; set; } = true;
+    /// <summary>Hidden: an https URL on copium.pics (or a subdomain) that screenshots (images only, never clips) are uploaded to instead of <see cref="CopiumClient.UploadEndpoint"/>. Anything else is ignored with a warning. This machine's own key: never imported (the token travels with the request).</summary>
+    public string? CopiumImageUploadUrl { get; set; }
+    /// <summary>The one-time notice before the first automatic upload ("Screenshots are uploaded to your Copium account automatically…") was shown. Per installation: never imported.</summary>
+    public bool CopiumAutoUploadNoticeShown { get; set; }
+    /// <summary>Hidden (no UI): the screenshot editor window and its picture picker are kept out of screen captures and recordings. Per installation: never imported.</summary>
+    public bool ScreenshotEditorExcludeFromCapture { get; set; } = true;
+    /// <summary>How many times the "link your Copium account" hint was shown (it stops at <see cref="Clink.Screenshots.CopiumNudge.MaxShown"/>). Per installation: never imported.</summary>
+    public int CopiumNudgeShown { get; set; }
+    /// <summary>The user chose "Don't show again" on the hint. Per installation: never imported.</summary>
+    public bool CopiumNudgeDismissed { get; set; }
+    /// <summary>When the hint was last shown (it shows at most once a day). Per installation: never imported.</summary>
+    public DateTime? CopiumNudgeLastShownUtc { get; set; }
     public ToastSetting ToastScreenshot { get; set; } = new() { Enabled = true, Seconds = 6 };
     /// <summary>
     /// The hotkey actions whose default binding was offered once (<see cref="SeedHotkeyDefaults"/>), whether or not it was added: a
@@ -518,6 +534,8 @@ internal sealed class Settings
         ScreenshotEditor ??= new Clink.Screenshots.Editing.ScreenshotEditorOptions();
         ScreenshotEditor.Normalize();
         ToastScreenshot ??= new ToastSetting { Enabled = true, Seconds = 6 };
+        if (string.IsNullOrWhiteSpace(CopiumImageUploadUrl)) CopiumImageUploadUrl = null;
+        if (CopiumNudgeShown < 0) CopiumNudgeShown = 0;
         SeededHotkeyDefaults ??= new List<string>();
         SeededHotkeyDefaults.RemoveAll(a => string.IsNullOrWhiteSpace(a));
         EnsureHotkeyModel();

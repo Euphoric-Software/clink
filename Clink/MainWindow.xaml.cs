@@ -79,6 +79,7 @@ public partial class MainWindow : Window
         _app.Notice += msg => Dispatcher.BeginInvoke(() => { FooterText.Text = msg; _noticeUntil = DateTime.UtcNow.AddSeconds(Math.Clamp(msg.Length / 15.0, 4, 10)); });
         _app.ClipSaved += _ => Dispatcher.BeginInvoke(() => Clips.Refresh());
         _app.ShowRequested += () => Dispatcher.BeginInvoke(ShowFromTray);
+        _app.CopiumSetupRequested += () => Dispatcher.BeginInvoke(FocusTokenBox);   // after ShowRequested (it is raised first): the window is up by then
         _app.TrimLastRequested += () => Dispatcher.BeginInvoke(async () =>
         {
             // File.Exists on an archived entry is a share round trip that can stall for the SMB timeout: look on a worker.
@@ -271,6 +272,8 @@ public partial class MainWindow : Window
         ScreenshotFolderBox.Text = ScreenshotService.FolderFor(s);
         ScreenshotCopyCheck.IsChecked = s.ScreenshotCopyImage;
         ScreenshotLoupeCheck.IsChecked = s.ScreenshotLoupe;
+        ScreenshotUploadCheck.IsChecked = s.ScreenshotUpload;
+        ScreenshotCopyLinkCheck.IsChecked = s.ScreenshotCopyLink;
         if (ScreenshotModeCombo.Items.Count == 0)
             foreach (var (value, label, tip) in ScreenshotModes.Choices)
                 ScreenshotModeCombo.Items.Add(new ComboBoxItem { Content = label, Tag = value, ToolTip = tip });
@@ -287,6 +290,7 @@ public partial class MainWindow : Window
         ToastClipCheck.IsChecked = s.ToastClip.Enabled; ToastClipSlider.Value = Math.Clamp(s.ToastClip.Seconds, 1, 30);
         ToastSharedCheck.IsChecked = s.ToastShared.Enabled; ToastSharedSlider.Value = Math.Clamp(s.ToastShared.Seconds, 1, 30);
         ToastRecordingCheck.IsChecked = s.ToastRecording.Enabled; ToastRecordingSlider.Value = Math.Clamp(s.ToastRecording.Seconds, 1, 30);
+        ToastScreenshotCheck.IsChecked = s.ToastScreenshot.Enabled; ToastScreenshotSlider.Value = Math.Clamp(s.ToastScreenshot.Seconds, 1, 30);
         UpdateToastLabels();
         DotCheck.IsChecked = s.StatusDot;
         Fill(DotPositionCombo, new[] { new Choice("Top left", "top-left"), new Choice("Top right", "top-right"), new Choice("Bottom left", "bottom-left"), new Choice("Bottom right", "bottom-right") }, s.StatusDotPosition);
@@ -1163,6 +1167,7 @@ public partial class MainWindow : Window
         if (string.IsNullOrEmpty(t)) { CopiumStatus.Text = "Not connected"; CopiumStatus.SetResourceReference(TextBlock.ForegroundProperty, "Muted"); }
         else if (!t.StartsWith("eup_")) { CopiumStatus.Text = "Saved (tokens usually start with eup_)"; CopiumStatus.SetResourceReference(TextBlock.ForegroundProperty, "Warn"); }
         else { CopiumStatus.Text = "Token saved"; CopiumStatus.SetResourceReference(TextBlock.ForegroundProperty, "Good"); }
+        UpdateScreenshotTab();   // the upload options follow the token
     }
 
     private void CopiumSite_Click(object sender, RoutedEventArgs e)
@@ -1181,10 +1186,11 @@ public partial class MainWindow : Window
 
     private void UpdateToastLabels()
     {
-        if (ToastRecordingLabel == null) return;   // a slider's Minimum coerces its Value while the XAML is still loading
+        if (ToastRecordingLabel == null || ToastScreenshotLabel == null) return;   // a slider's Minimum coerces its Value while the XAML is still loading
         ToastClipLabel.Text = $"{(int)ToastClipSlider.Value} s";
         ToastSharedLabel.Text = $"{(int)ToastSharedSlider.Value} s";
         ToastRecordingLabel.Text = $"{(int)ToastRecordingSlider.Value} s";
+        ToastScreenshotLabel.Text = $"{(int)ToastScreenshotSlider.Value} s";
     }
 
     private void ToastChanged(object sender, RoutedEventArgs e)
@@ -1196,6 +1202,7 @@ public partial class MainWindow : Window
         s.ToastClip.Enabled = ToastClipCheck.IsChecked == true; s.ToastClip.Seconds = (int)ToastClipSlider.Value;
         s.ToastShared.Enabled = ToastSharedCheck.IsChecked == true; s.ToastShared.Seconds = (int)ToastSharedSlider.Value;
         s.ToastRecording.Enabled = ToastRecordingCheck.IsChecked == true; s.ToastRecording.Seconds = (int)ToastRecordingSlider.Value;
+        s.ToastScreenshot.Enabled = ToastScreenshotCheck.IsChecked == true; s.ToastScreenshot.Seconds = (int)ToastScreenshotSlider.Value;
         ScheduleSave();   // sliders fire on every tick while dragging
     }
 
@@ -1277,6 +1284,11 @@ public partial class MainWindow : Window
         ScreenshotOptions.Opacity = s.ScreenshotsEnabled ? 1 : 0.55;
         string? keys = AppController.ScreenshotHotkeyLabelFor(s.Hotkeys);
         string? editKeys = AppController.ScreenshotEditHotkeyLabelFor(s.Hotkeys);
+        // Upload needs a token; the link option follows the upload option. The checks keep their values while disabled.
+        bool linked = !string.IsNullOrWhiteSpace(s.CopiumToken);
+        ScreenshotUploadCheck.IsEnabled = linked;
+        ScreenshotTokenHint.Visibility = linked ? Visibility.Collapsed : Visibility.Visible;
+        ScreenshotCopyLinkCheck.IsEnabled = linked && ScreenshotUploadCheck.IsChecked == true;
         ScreenshotHotkeyHint.Text = (keys != null ? $"Hotkey: {keys} takes a screenshot. " : "No hotkey is set for screenshots. ")
             + (editKeys != null ? $"{editKeys} edits the last one. " : "No hotkey is set for editing the last one. ")
             + "The defaults are PrintScreen and Shift+PrintScreen. Change them under Capture → Hotkeys. "
@@ -1307,7 +1319,20 @@ public partial class MainWindow : Window
         if (_loading) return;
         _app.Settings.ScreenshotCopyImage = ScreenshotCopyCheck.IsChecked == true;
         _app.Settings.ScreenshotLoupe = ScreenshotLoupeCheck.IsChecked == true;
+        _app.Settings.ScreenshotUpload = ScreenshotUploadCheck.IsChecked == true;
+        _app.Settings.ScreenshotCopyLink = ScreenshotCopyLinkCheck.IsChecked == true;
         _app.Settings.Save();
+        UpdateScreenshotTab();
+    }
+
+    /// <summary>The hint under "Upload to Copium when linked": goes to the token box on the Clips tab.</summary>
+    private void ScreenshotTokenLink_Click(object sender, RoutedEventArgs e) => FocusTokenBox();
+
+    /// <summary>The Clips tab's Copium token box, selected and focused (the hint's link, the "Set up Copium" button of a notification).</summary>
+    private void FocusTokenBox()
+    {
+        Tabs.SelectedItem = CopiumTab;
+        Dispatcher.BeginInvoke(DispatcherPriority.Input, () => TokenBox.Focus());
     }
 
     private void ScreenshotFolderBox_LostFocus(object sender, RoutedEventArgs e)

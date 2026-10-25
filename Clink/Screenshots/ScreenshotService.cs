@@ -35,8 +35,8 @@ internal static class ScreenshotModes
     }
 }
 
-/// <summary>What the "Screenshot saved" toast says about the clipboard.</summary>
-internal readonly record struct ScreenshotToastState(bool Copied, bool ClipboardFailed);
+/// <summary>What the "Screenshot saved" toast says about the clipboard, and whether it offers an Upload button (a token is set and no automatic upload follows).</summary>
+internal readonly record struct ScreenshotToastState(bool Copied, bool ClipboardFailed, bool CanUpload = false);
 
 /// <summary>
 /// A committed region: the rectangle (virtual-screen pixels), the monitor that holds most of it (<see cref="SelectionMath.MonitorIndexOf"/>,
@@ -79,6 +79,28 @@ internal interface IScreenshotToasts
     void ShowNotice(string title, string text, bool paused = false);
     void ShowProblem(string title, string text);
     void ShowScreenshot(ScreenshotEntry entry, ScreenshotToastState state);
+    /// <summary>
+    /// An upload of <paramref name="entry"/> begins: the screenshot toast that is still up for it turns into "Uploading…" (one is made
+    /// when it is gone). Nothing is shown when the screenshot toast is switched off. The handle reports the end.
+    /// </summary>
+    IScreenshotUploadToast ShowScreenshotUploading(ScreenshotEntry entry);
+    /// <summary>
+    /// The "link your Copium account" hint (Saved locally; Set up Copium / Don't show again). Returns false when nothing was shown
+    /// (the screenshot toast is switched off): it is then not counted as shown.
+    /// </summary>
+    bool ShowCopiumNudge(Action setUp, Action dismiss);
+}
+
+/// <summary>The toast of one running upload.</summary>
+internal interface IScreenshotUploadToast
+{
+    void Report(double fraction);
+    /// <summary>What the toast's Cancel button calls (set by the service for the upload that is running; null when there is nothing to cancel).</summary>
+    Action? OnCancel { get; set; }
+    /// <summary>Uploaded: the toast shows the link with Copy link / Open / Edit / Folder; <paramref name="linkCopied"/> says the link is on the clipboard.</summary>
+    void Succeeded(string link, bool linkCopied);
+    /// <summary>The upload ended without a link (failed, cancelled): the toast goes back to its saved state with a Retry button. The reason is a separate problem toast.</summary>
+    void Failed();
 }
 
 /// <summary>What a saved screenshot is: the entry (in the history) and the encoded PNG (also for the clipboard).</summary>
@@ -122,11 +144,357 @@ internal sealed class ScreenshotService
         _editor = editor;
     }
 
-    /// <summary>The last picture an editor saved (document + file + the file's time), for "edit last". In memory only: after a restart the flattened PNG is opened instead.</summary>
-    internal LastEditInfo? LastEdit { get; set; }
+    // ------------------------------------------------------------------ edit last: how long the live document is kept
+
+    /// <summary>How long the document of the last editor save is kept without an edit-last / editor interaction. It holds what the user cropped out and covered up, so it does not linger.</summary>
+    internal static readonly TimeSpan LastEditLifetime = TimeSpan.FromMinutes(15);
+
+    private readonly object _lastEditGate = new();
+    private LastEditInfo? _lastEdit;
+    private DateTime _lastEditTouched;
+    private System.Threading.Timer? _lastEditTimer;
+    private Microsoft.Win32.SessionSwitchEventHandler? _sessionHandler;
+
+    /// <summary>
+    /// The last picture an editor saved (document + file + the file's time), for "edit last". In memory only: after a restart the
+    /// flattened PNG is opened instead. Dropped when the session is locked / switched / signed out, and after
+    /// <see cref="LastEditLifetime"/> without an interaction (<see cref="TouchLastEdit"/>).
+    /// </summary>
+    internal LastEditInfo? LastEdit
+    {
+        get => Volatile.Read(ref _lastEdit);
+        set
+        {
+            lock (_lastEditGate)
+            {
+                _lastEdit = value;
+                _lastEditTouched = UtcNow();
+                if (value != null) ArmLastEdit(); else DisarmLastEdit();
+            }
+        }
+    }
+
+    /// <summary>An edit-last / editor interaction: the live document is kept another <see cref="LastEditLifetime"/>.</summary>
+    internal void TouchLastEdit() { lock (_lastEditGate) _lastEditTouched = UtcNow(); }
+
+    private void ArmLastEdit()
+    {
+        try
+        {
+            if (_sessionHandler == null)
+            {
+                _sessionHandler = (_, e) => OnSessionSwitch(e.Reason);
+                Microsoft.Win32.SystemEvents.SessionSwitch += _sessionHandler;
+            }
+            _lastEditTimer ??= new System.Threading.Timer(_ => ExpireLastEditIfIdle(), null, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1));
+        }
+        catch (Exception ex) { Log.Warn("screenshot: edit-last guard: " + ex.Message); }
+    }
+
+    private void DisarmLastEdit()
+    {
+        try
+        {
+            if (_sessionHandler != null) { Microsoft.Win32.SystemEvents.SessionSwitch -= _sessionHandler; _sessionHandler = null; }
+            _lastEditTimer?.Dispose();
+            _lastEditTimer = null;
+        }
+        catch (Exception ex) { Log.Warn("screenshot: edit-last guard: " + ex.Message); }
+    }
+
+    /// <summary>The Windows session was locked, switched, disconnected or signed out (any <see cref="Microsoft.Win32.SystemEvents.SessionSwitch"/>): the live document goes.</summary>
+    internal void OnSessionSwitch(Microsoft.Win32.SessionSwitchReason reason) => ClearLastEdit("the session changed (" + reason + ")");
+
+    /// <summary>Forgets the live document of the last editor save (the session was locked or switched; the timer ran out).</summary>
+    internal void ClearLastEdit(string why)
+    {
+        lock (_lastEditGate)
+        {
+            if (_lastEdit == null) return;
+            Log.Info("screenshot: edit last: the live document was dropped: " + why);
+            LastEdit = null;
+        }
+    }
+
+    /// <summary>Drops the live document when it has not been touched for <see cref="LastEditLifetime"/>. The timer calls it every minute.</summary>
+    internal void ExpireLastEditIfIdle()
+    {
+        bool idle;
+        lock (_lastEditGate) idle = _lastEdit != null && UtcNow() - _lastEditTouched >= LastEditLifetime;
+        if (idle) ClearLastEdit("idle for " + (int)LastEditLifetime.TotalMinutes + " min");
+    }
 
     /// <summary>A capture is in progress (frozen desktop being taken or the overlay up).</summary>
     public bool IsBusy => _busy;
+
+    // ------------------------------------------------------------------ upload to Copium
+
+    /// <summary>Test seams: the upload call, the clipboard text copy, the "Set up Copium" action and the clock.</summary>
+    internal Func<string, string, string?, IProgress<double>?, CancellationToken, string?, Task<CopiumUpload>> Uploader { get; set; } = CopiumClient.UploadAsync;
+    internal Func<string, bool> LinkCopier { get; set; } = ScreenshotClipboard.CopyText;
+    internal Action SetUpCopium { get; set; } = () => AppController.Instance?.ShowCopiumSetup();
+    internal Func<DateTime> UtcNow { get; set; } = () => DateTime.UtcNow;
+    /// <summary>Test seams: the clipboard image copy and the clipboard's change counter (see <see cref="ScreenshotClipboard.Sequence"/>).</summary>
+    internal Func<BitmapSource, byte[], bool> ImageCopier { get; set; } = ScreenshotClipboard.Copy;
+    internal Func<uint> ClipboardSequence { get; set; } = ScreenshotClipboard.Sequence;
+
+    /// <summary>Copium turned a picture down (HTTP 415, or a 400 about the type): no further AUTOMATIC uploads in this process; the toast's Upload button still tries.</summary>
+    internal bool CopiumImagesRefused { get; private set; }
+
+    private string? _rejectedToken;
+    /// <summary>Copium rejected the token now set (HTTP 401 / 403): automatic uploads wait until the token is changed; the toast's Upload button still tries.</summary>
+    internal bool CopiumTokenRejected => _rejectedToken != null && string.Equals(_rejectedToken, _settings.CopiumToken, StringComparison.Ordinal);
+
+    private bool AutoUploadPaused => CopiumImagesRefused || CopiumTokenRejected;
+
+    private readonly object _uploadGate = new();
+    private Task _uploadTail = Task.CompletedTask;       // uploads run one at a time, in the order asked
+    private readonly CancellationTokenSource _uploadCts = new();
+    private Task? _clientWork;                           // the HTTP part running now (a worker task: waiting for it needs no UI thread)
+    private bool _overrideNoticeShown;
+
+    /// <summary>Completes when every upload asked for so far has ended (a test waits on it).</summary>
+    internal Task UploadQueue { get { lock (_uploadGate) return _uploadTail; } }
+
+    private bool HasToken =>!string.IsNullOrWhiteSpace(_settings.CopiumToken);
+
+    /// <summary>
+    /// Uploads the screenshot to Copium: queued behind any upload under way, then the toast shows the progress (with a Cancel
+    /// button), the entry gets the link (history), the link replaces the image on the clipboard when
+    /// <see cref="Settings.ScreenshotCopyLink"/> is on and the clipboard still holds what this screenshot put there (or the upload
+    /// was <paramref name="manual"/>), and the toast shows it. Failures are told in a toast ("saved locally" first) and never throw;
+    /// the file and the clipboard image were done before this started. <paramref name="manual"/> (the toast's Upload / Retry button)
+    /// ignores <see cref="CopiumImagesRefused"/>. <paramref name="clipboardSequence"/>: the clipboard's change counter right after
+    /// the image was copied (null when it was not). UI thread. Returns true when the screenshot has a link afterwards.
+    /// </summary>
+    internal Task<bool> UploadAsync(ScreenshotEntry entry, bool manual = false, uint? clipboardSequence = null)
+    {
+        Task previous;
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        lock (_uploadGate)
+        {
+            previous = _uploadTail;
+            _uploadTail = gate.Task;   // in place before any of the work runs
+        }
+        return RunQueuedAsync(previous, gate, entry, manual, clipboardSequence);
+    }
+
+    private async Task<bool> RunQueuedAsync(Task previous, TaskCompletionSource gate, ScreenshotEntry entry, bool manual, uint? clipboardSequence)
+    {
+        try
+        {
+            try { await previous; } catch { }
+            try { return await UploadCoreAsync(entry, manual, clipboardSequence); }
+            catch (Exception ex)
+            {
+                Log.Error("screenshot: upload", ex);
+                return false;
+            }
+        }
+        finally { gate.TrySetResult(); }
+    }
+
+    /// <summary>Why the file is not the one that was saved (size / write time differ), or null when it is. A file that changed after the save is not what the user took.</summary>
+    private static string? ChangedSinceSaved(ScreenshotEntry e)
+    {
+        try
+        {
+            var info = new FileInfo(e.Path);
+            if (!info.Exists) return "the file is gone";
+            if (e.Size > 0 && info.Length != e.Size) return "the file changed after it was saved";
+            if (e.WrittenUtc is DateTime written && info.LastWriteTimeUtc != written) return "the file changed after it was saved";
+            return null;
+        }
+        catch (Exception ex) { return "the file could not be checked (" + ex.Message + ")"; }
+    }
+
+    private async Task<bool> UploadCoreAsync(ScreenshotEntry entry, bool manual, uint? clipboardSequence)
+    {
+        var ct = _uploadCts.Token;
+        if (ct.IsCancellationRequested) return false;
+        if (!string.IsNullOrEmpty(entry.CopiumLink)) return true;   // uploaded already (a second click, or queued twice)
+        if (!manual && AutoUploadPaused)
+        {
+            Log.Info("screenshot: upload skipped: Copium turned a picture down or rejected the token earlier in this session");
+            return false;
+        }
+        string? token = _settings.CopiumToken;
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            _toasts.ShowProblem("Screenshot not uploaded", "Saved locally. Add your Copium token under Clips → Copium to upload screenshots.");
+            return false;
+        }
+        // The size limit of the account is the only one that applies to a picture (no length).
+        if (AppController.ShareRefusalFor(entry.Size, 0, _settings.CopiumPlus) != null)
+        {
+            var (maxBytes, _, _) = Capabilities.CopiumLimits(_settings.CopiumPlus);
+            _toasts.ShowProblem("Screenshot not uploaded", $"Saved locally. The picture is {Capabilities.FormatBytes(entry.Size)}, over your Copium upload limit of {Capabilities.FormatBytes(maxBytes)}.");
+            return false;
+        }
+
+        // What goes up must be what was saved.
+        if (ChangedSinceSaved(entry) is string changed)
+        {
+            Log.Warn($"screenshot: upload skipped for {System.IO.Path.GetFileName(entry.Path)}: {changed}");
+            _toasts.ShowProblem("Screenshot not uploaded", "Saved locally, but it was not uploaded: " + changed + ".");
+            return false;
+        }
+
+        string? imageUrl = _settings.CopiumImageUploadUrl;
+        if (CopiumClient.OverrideUri(imageUrl) is { } overrideUri && !_overrideNoticeShown)
+        {
+            _overrideNoticeShown = true;
+            Log.Info("screenshot: pictures are uploaded to " + overrideUri.Host + " (CopiumImageUploadUrl)");
+            _toasts.ShowNotice("Screenshots go to " + overrideUri.Host, "The hidden CopiumImageUploadUrl setting sends screenshots (with your token) to this Copium address");
+        }
+
+        var history = History;   // the one this screenshot is listed in: the folder setting may change while it uploads
+        using var one = CancellationTokenSource.CreateLinkedTokenSource(ct);   // this upload only: the toast's Cancel button
+        var toast = _toasts.ShowScreenshotUploading(entry);
+        toast.OnCancel = () => { try { one.Cancel(); } catch (ObjectDisposedException) { } };
+        string title = System.IO.Path.GetFileNameWithoutExtension(entry.Path);
+        string path = entry.Path;
+        var progress = new Progress<double>(p => toast.Report(p));   // made here, on the UI thread: it reports there
+        var t = Stopwatch.StartNew();
+        var uploadToken = one.Token;
+        // Off the UI thread: opening the file can block.
+        var work = Task.Run(() => Uploader(token, path, title, progress, uploadToken, imageUrl));
+        _clientWork = work;
+        try
+        {
+            var up = await work;
+            entry.CopiumLink = up.Link;
+            entry.CopiumPageUrl = string.IsNullOrEmpty(up.PageUrl) ? null : up.PageUrl;
+            entry.CopiumId = string.IsNullOrEmpty(up.Id) ? null : up.Id;
+            try
+            {
+                history.Update(entry);
+                if (!ReferenceEquals(history, History)) History.Update(entry, warn: false);   // the folder changed meanwhile: that list may hold the entry too
+            }
+            catch (Exception ex) { Log.Warn("screenshot: history not updated with the link: " + ex.Message); }
+
+            // The link replaces the image on the clipboard only if the clipboard still holds the image this screenshot put there (or the
+            // user asked for the upload): a link must not overwrite something copied since.
+            bool copied = false;
+            string linkNote;
+            if (!_settings.ScreenshotCopyLink) linkNote = "not copied (off)";
+            else if (!manual && clipboardSequence == null) linkNote = "not copied (the image was not put on the clipboard)";
+            else if (!manual && ClipboardSequence() != clipboardSequence) linkNote = "not copied (clipboard changed)";
+            else
+            {
+                copied = LinkCopier(up.Link);
+                linkNote = copied ? "copied" : "not copied (clipboard busy)";
+            }
+            Log.Info($"screenshot: uploaded {System.IO.Path.GetFileName(path)} ({entry.Size / 1024} KB) in {t.ElapsedMilliseconds} ms, link {linkNote}");
+            toast.Succeeded(up.Link, copied);
+            return true;
+        }
+        catch (Exception) when (ct.IsCancellationRequested)
+        {
+            Log.Info("screenshot: upload cancelled (Clink is closing)");
+            toast.Failed();
+            return false;
+        }
+        catch (Exception) when (one.IsCancellationRequested)
+        {
+            Log.Info("screenshot: upload cancelled by the user");
+            toast.Failed();   // Retry; nothing is linked, and no problem toast: it was asked for
+            return false;
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("screenshot: upload failed: " + ex.Message);
+            toast.Failed();
+            if (ex is CopiumHttpException refusal && CopiumClient.IsTypeRefusal(refusal.StatusCode, refusal.ErrorText))
+            {
+                CopiumImagesRefused = true;
+                _toasts.ShowProblem("Copium did not accept the image", "Saved locally. Automatic uploads are paused until Clink restarts; the Upload button on a screenshot notification still tries. (" + ex.Message + ")");
+            }
+            else if (ex is CopiumHttpException { StatusCode: 401 or 403 })
+            {
+                // Every further try would fail the same way: pause until the token is changed, and say so once.
+                _rejectedToken = token;
+                _toasts.ShowProblem("Copium token rejected", "Saved locally. Check the token in Settings → Clips → Copium; automatic uploads are paused until it is changed. (" + ex.Message + ")");
+            }
+            else _toasts.ShowProblem("Screenshot not uploaded", "Saved locally. " + ex.Message);
+            return false;
+        }
+        finally
+        {
+            toast.OnCancel = null;
+            if (ReferenceEquals(_clientWork, work)) _clientWork = null;
+        }
+    }
+
+    /// <summary>
+    /// Clink is closing: cancels the running and queued uploads and waits for the HTTP call to end, at most <paramref name="wait"/>.
+    /// Waits for the worker task only, never for UI-thread work, so it is safe on the UI thread.
+    /// </summary>
+    internal void CancelUploads(TimeSpan wait)
+    {
+        Task? work;
+        lock (_uploadGate) work = _clientWork;
+        try { _uploadCts.Cancel(); } catch (Exception ex) { Log.Warn("screenshot: upload cancel: " + ex.Message); }
+        if (work == null) return;
+        try
+        {
+            if (!work.Wait(wait)) Log.Warn($"Exit: the screenshot upload was still ending after {wait.TotalSeconds:0} s");
+        }
+        catch (AggregateException) { }   // cancelled / failed: the upload already reported it
+    }
+
+    /// <summary>
+    /// A screenshot was saved (and copied): the toast, then what Copium does about it. With a token and upload on, the upload starts
+    /// (queued, never blocking); without a token the "link your account" hint may show (<see cref="CopiumNudge"/>). A black picture gets
+    /// only its warning.
+    /// </summary>
+    private void AnnounceSaved(ScreenshotEntry entry, bool copied, bool clipboardFailed, bool black, uint? clipboardSequence = null)
+    {
+        if (black)
+        {
+            _toasts.ShowProblem("Screenshot is black", "Saved, but the picture is all black. Is the game in exclusive fullscreen? Use borderless windowed mode.");
+            return;
+        }
+        bool token = HasToken;
+        bool auto = _settings.ScreenshotUpload && token && !AutoUploadPaused && string.IsNullOrEmpty(entry.CopiumLink);
+        _toasts.ShowScreenshot(entry, new ScreenshotToastState(copied, clipboardFailed, CanUpload: token && !auto && string.IsNullOrEmpty(entry.CopiumLink)));
+        if (auto)
+        {
+            NoteFirstAutoUpload();
+            _ = UploadAsync(entry, manual: false, clipboardSequence);
+        }
+        else if (!token) ShowNudgeIfDue();
+    }
+
+    /// <summary>The wording of the one-time notice before the first automatic upload on this install.</summary>
+    internal const string AutoUploadNoticeTitle = "Screenshots upload automatically";
+    internal const string AutoUploadNoticeText = "Screenshots are uploaded to your Copium account automatically — change this under Settings → Screenshots";
+
+    /// <summary>The first automatic upload on this install is announced once (<see cref="Settings.CopiumAutoUploadNoticeShown"/>): uploading is on by default, so it must not start unannounced.</summary>
+    private void NoteFirstAutoUpload()
+    {
+        if (_settings.CopiumAutoUploadNoticeShown) return;
+        _settings.CopiumAutoUploadNoticeShown = true;
+        try { _settings.Save(); } catch (Exception ex) { Log.Warn("screenshot: settings not saved: " + ex.Message); }
+        Log.Info("screenshot: first automatic upload on this install: told the user");
+        _toasts.ShowNotice(AutoUploadNoticeTitle, AutoUploadNoticeText);
+    }
+
+    /// <summary>Copies the picture to the clipboard (when that option is on) and returns the clipboard's change counter right after, for the link that may replace it later.</summary>
+    private (bool Copied, bool Failed, uint? Sequence) CopyImage(BitmapSource bitmap, byte[] png)
+    {
+        if (!_settings.ScreenshotCopyImage) return (false, false, null);
+        bool ok = ImageCopier(bitmap, png);
+        return (ok, !ok, ok ? ClipboardSequence() : null);
+    }
+
+    private void ShowNudgeIfDue()
+    {
+        var now = UtcNow();
+        if (!CopiumNudge.IsDue(_settings, hasToken: false, now)) return;
+        bool shown = _toasts.ShowCopiumNudge(() => SetUpCopium(), () => CopiumNudge.Dismiss(_settings));
+        if (shown) CopiumNudge.MarkShown(_settings, now);
+    }
 
     /// <summary>Where screenshots go: <see cref="Settings.ScreenshotsFolder"/>, else a <c>Screenshots</c> folder inside the clips folder (the library and the archive look at the clips folder's own files only).</summary>
     public static string FolderFor(Settings s) =>
@@ -272,7 +640,7 @@ internal sealed class ScreenshotService
 
     /// <summary>
     /// Mode "before": the overlay is closed; exports the edited document (the crop of the monitor's picture with the annotations
-    /// clipped to it; WPF drawing, so on the UI thread as in the editor window), then the normal save: one file on a worker, history,
+    /// clipped to it; only the WPF vector drawing runs on the UI thread, see <see cref="Exporter.ExportAsync"/>), then the normal save: one file on a worker, history,
     /// clipboard, one toast, and the document becomes the live "edit last" document.
     /// </summary>
     internal async Task CommitEditedAsync(DocumentState doc, RectI rect, bool black = false)
@@ -282,7 +650,8 @@ internal sealed class ScreenshotService
         try
         {
             var composer = RasterOps.NewComposer();
-            try { image = Exporter.Export(doc, composer); }
+            // the vector render (WPF) happens here on the UI thread, the raster compose and the blend on workers
+            try { image = await Exporter.ExportAsync(doc, composer); }
             finally { composer.Clear(); }
             // "edit last" keeps the crop only, not the whole monitor picture (and cannot reveal what the user cropped out)
             doc = doc.Rebase(doc.Crop);
@@ -389,6 +758,7 @@ internal sealed class ScreenshotService
             },
             SaveAsync = (image, d, finish) => SaveEditedAsync(ctx, image, d, finish),
             Recent = () => RecentForPicker(ctx.EditedFrom, ctx.SavedPath),
+            ExcludeFromCapture = _settings.ScreenshotEditorExcludeFromCapture,
         };
         Log.Info($"screenshot: editor opened ({title}, {doc.Base.Width}x{doc.Base.Height})");
         bool failed = false;
@@ -430,8 +800,12 @@ internal sealed class ScreenshotService
                 var t = Stopwatch.StartNew();
                 string folder = FolderFor(_settings);
                 var history = History;
-                var bitmap = image.ToBitmapSource();   // once: the PNG is encoded from it and the clipboard gets the same frozen instance
-                var saved = await Task.Run(() => SaveToDisk(image, folder, ctx.Game, DateTime.Now, history, bitmap, ctx.SavedPath, ctx.EditedFrom));
+                // once: the PNG is encoded from it and the clipboard gets the same frozen instance (both made on a worker: a 4K picture is 33 MB)
+                var (saved, bitmap) = await Task.Run(() =>
+                {
+                    var made = image.ToBitmapSource();
+                    return (SaveToDisk(image, folder, ctx.Game, DateTime.Now, history, made, ctx.SavedPath, ctx.EditedFrom), made);
+                });
                 ctx.Entry = saved.Entry;
                 ctx.SavedPath = saved.Entry.Path;
                 ctx.SavedDoc = doc;
@@ -442,16 +816,8 @@ internal sealed class ScreenshotService
             }
             if (finish && ctx.Entry != null && ctx.Bitmap != null && ctx.Png != null)
             {
-                bool copied = false, failed = false;
-                if (_settings.ScreenshotCopyImage)
-                {
-                    copied = ScreenshotClipboard.Copy(ctx.Bitmap, ctx.Png);
-                    failed = !copied;
-                }
-                if (ctx.Black)
-                    _toasts.ShowProblem("Screenshot is black", "Saved, but the picture is all black. Is the game in exclusive fullscreen? Use borderless windowed mode.");
-                else
-                    _toasts.ShowScreenshot(ctx.Entry, new ScreenshotToastState(copied, failed));
+                var (copied, failed, sequence) = CopyImage(ctx.Bitmap, ctx.Png);
+                AnnounceSaved(ctx.Entry, copied, failed, ctx.Black, sequence);
             }
             return true;
         }
@@ -488,6 +854,7 @@ internal sealed class ScreenshotService
     internal async Task EditLastAsync()
     {
         if (!CanEdit()) return;
+        TouchLastEdit();
         if (_editor!.IsOpen) { Log.Info("screenshot: edit last: the editor is open: brought forward"); _editor.Activate(); return; }
         ScreenshotEntry? newest = History.Entries.FirstOrDefault(e => IsOpenableEntry(e.Path));
         if (newest == null)
@@ -553,6 +920,7 @@ internal sealed class ScreenshotService
         var live = LastEdit;
         if (live != null && string.Equals(live.Path, full, StringComparison.OrdinalIgnoreCase) && SafeWriteTime(full) == live.FileTimeUtc)
         {
+            TouchLastEdit();
             Log.Info("screenshot: edit: reopening the live document of " + name);
             await OpenEditorAsync(live.Document, new EditContext { Game = game, EditedFrom = full }, name, isNew: false, null);
             return;
@@ -586,17 +954,27 @@ internal sealed class ScreenshotService
         try
         {
             bool uncOk = IsUnc(current);
-            list.AddRange(History.Roots.Where(r => uncOk || !IsUnc(r)));
+            // a device-path root (\\?\, \\.\, \??\) is never a screenshots folder, whatever the current one is
+            list.AddRange(History.Roots.Where(r => !IsDevicePath(r) && (uncOk || !IsUnc(r))));
         }
         catch (Exception ex) { Log.Warn("screenshot: folders: " + ex.Message); }
         return list;
     }
 
-    private static bool IsUnc(string? path)
+    /// <summary>A device path: <c>\\?\</c> (also <c>\\?\UNC\</c>), <c>\\.\</c> or the NT form <c>\??\</c> (either slash).</summary>
+    internal static bool IsDevicePath(string? path)
     {
         if (string.IsNullOrWhiteSpace(path)) return false;
-        string p = path.Trim();
-        return p.StartsWith(@"\\", StringComparison.Ordinal) || p.StartsWith("//", StringComparison.Ordinal);
+        string p = path.Trim().Replace('/', '\\');
+        return p.StartsWith(@"\\?\", StringComparison.Ordinal) || p.StartsWith(@"\\.\", StringComparison.Ordinal) || p.StartsWith(@"\??\", StringComparison.Ordinal);
+    }
+
+    /// <summary>A network path (<c>\\host\share</c>, either slash) or a device path (<see cref="IsDevicePath"/>, which can name a network share too): neither is touched unless the user chose such a folder.</summary>
+    internal static bool IsUnc(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return false;
+        string p = path.Trim().Replace('/', '\\');
+        return p.StartsWith(@"\\", StringComparison.Ordinal) || IsDevicePath(p);
     }
 
     /// <summary>A history entry (or the toast's file) that may be opened: see <see cref="IsOpenableFile"/> for the current and earlier screenshot folders.</summary>
@@ -619,7 +997,8 @@ internal sealed class ScreenshotService
 
     /// <summary>
     /// A PNG given explicitly by the user on the command line: fully qualified, exactly <c>.png</c>, no alternate data stream,
-    /// an existing regular file (not a directory or a link). Anywhere on disk.
+    /// an existing regular file (not a directory or a link). Anywhere on a local drive: a network (UNC) or device path is refused
+    /// (the pipe is the one door for it, and it must not make the app reach out to a server).
     /// </summary>
     internal static bool IsExplicitEditable(string? path) => IsOpenableFile(path, null);
 
@@ -655,17 +1034,9 @@ internal sealed class ScreenshotService
             return;
         }
         long encodeMs = t.ElapsedMilliseconds;
-        bool copied = false, failed = false;
-        if (_settings.ScreenshotCopyImage)
-        {
-            copied = ScreenshotClipboard.Copy(bitmap, saved.Png);
-            failed = !copied;
-        }
+        var (copied, failed, sequence) = CopyImage(bitmap, saved.Png);
         Log.Info($"screenshot: saved {saved.Entry.Path} ({saved.Entry.Width}x{saved.Entry.Height}, {saved.Entry.Size / 1024} KB), crop+encode+write {encodeMs} ms, clipboard {(copied ? "ok" : _settings.ScreenshotCopyImage ? "failed" : "off")}");
-        if (black)
-            _toasts.ShowProblem("Screenshot is black", "Saved, but the picture is all black. Is the game in exclusive fullscreen? Use borderless windowed mode.");
-        else
-            _toasts.ShowScreenshot(saved.Entry, new ScreenshotToastState(copied, failed));
+        AnnounceSaved(saved.Entry, copied, failed, black, sequence);
     }
 
     internal const string DisabledText = "Screenshot tools are disabled in Settings";
@@ -704,10 +1075,15 @@ internal sealed class ScreenshotService
         if (string.IsNullOrWhiteSpace(path)) return false;
         try
         {
+            if (IsDevicePath(path)) return false;
             if (!System.IO.Path.IsPathFullyQualified(path)) return false;
             string full = System.IO.Path.GetFullPath(path);
-            if (full.StartsWith(@"\\?\", StringComparison.Ordinal) || full.StartsWith(@"\\.\", StringComparison.Ordinal)) return false;
+            if (IsDevicePath(full)) return false;
             if (full.IndexOf(':', 2) >= 0 || (full.Length >= 2 && full[1] == ':' && !char.IsAsciiLetter(full[0]))) return false;
+            // A drive root (C:\) or, only inside a network folder the user chose, a share root: nothing else (no \\.\, \??\, ...).
+            string pathRoot = System.IO.Path.GetPathRoot(full) ?? "";
+            bool driveRoot = pathRoot.Length == 3 && char.IsAsciiLetter(pathRoot[0]) && pathRoot[1] == ':' && pathRoot[2] == '\\';
+            if (!driveRoot && (folders == null || !IsUnc(full))) return false;
             if (!string.Equals(System.IO.Path.GetExtension(full), ".png", StringComparison.OrdinalIgnoreCase)) return false;
             if (folders == null) return true;
             foreach (string folder in folders)
@@ -786,6 +1162,7 @@ internal sealed class ScreenshotService
             Path = path, Created = when, Width = image.Width, Height = image.Height, Size = png.Length,
             Game = string.IsNullOrWhiteSpace(game) ? null : game,
             EditedFrom = editedFrom,
+            WrittenUtc = SafeWriteTime(path) is var written && written != DateTime.MinValue ? written : null,   // an upload checks the file against this
         };
         try { history.Add(entry); }
         catch (Exception ex) { Log.Warn("screenshot: history not updated: " + ex.Message); }   // the PNG is on disk: that is the result

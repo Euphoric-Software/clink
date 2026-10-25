@@ -518,9 +518,13 @@ internal static class ScreenshotServiceTests
         s.ScreenshotsEnabled = false;
         Check.Equal(new[] { "clip", "pause" }, AppController.BindableHotkeys(s).Select(h => h.Action).ToArray());
         Check.Equal(rows, s.Hotkeys.Count, "the rows are still in settings");
-        // a row with an unknown action is not a screenshot row: bound as before (and ignored when pressed)
+        // a row with an unknown action stays in the list but is not bound: it does nothing when pressed, so it must not swallow the key either
         s.Hotkeys.Add(new HotkeyAction { Keys = new HotkeyBinding { Vk = 0x7A }, Action = "typo" });
-        Check.Equal(3, AppController.BindableHotkeys(s).Count);
+        Check.Equal(2, AppController.BindableHotkeys(s).Count);
+        Check.False(AppController.BindableHotkeys(s).Any(h => h.Action == "typo"));
+        s.ScreenshotsEnabled = true;
+        Check.Equal(new[] { "clip", "screenshot", "screenshot-edit-last", "pause" }, AppController.BindableHotkeys(s).Select(h => h.Action).ToArray());
+        Check.Equal(rows + 1, s.Hotkeys.Count, "the typo row is still in settings");
     }
 
     [UnitTest]

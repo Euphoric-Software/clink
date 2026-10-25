@@ -413,7 +413,9 @@ public partial class ClipsPane : UserControl
         var row = RowOf(sender);
         string? url = row?.Entry.CopiumPageUrl ?? row?.Link;
         if (url == null) return;
-        try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); }
+        // The address came from the server or from the clip list file: only an https address is handed to the shell.
+        if (!Clink.Services.CopiumClient.IsHttpsUrl(url, out var page)) { Log.Warn("clips: not opened: the clip's link is not an https address"); return; }
+        try { Process.Start(new ProcessStartInfo(page.AbsoluteUri) { UseShellExecute = true }); }
         catch (Exception ex) { App.Say("Could not open the browser: " + ex.Message); }
     }
 }

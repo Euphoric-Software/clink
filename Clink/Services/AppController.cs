@@ -44,6 +44,12 @@ internal sealed partial class AppController : IDisposable
     /// <summary>A dev instance that was not asked to record (<c>--dev-record</c>) starts paused.</summary>
     internal static bool StartsPaused => IsDev && !DevRecord;
     public static string PipeName => "Clink.Control" + InstanceSuffix;
+    /// <summary>
+    /// The pipe both ends really use: <see cref="PipeName"/> plus this Windows session's id, so a Clink in another session (another
+    /// signed-in user, a remote session) never receives this one's commands. The server and the client are always in one session.
+    /// </summary>
+    public static string SessionPipeName => PipeName + ".s" + SessionId.ToString(CultureInfo.InvariantCulture);
+    private static int SessionId { get { try { return Process.GetCurrentProcess().SessionId; } catch (Exception) { return 0; } } }
     internal static string MutexName => "Clink.SingleInstance.6F1B" + InstanceSuffix;
 
     /// <summary>The switches that make a restarted process this same dev instance (see <see cref="DevOptions.Switches"/>); none for a normal run.</summary>
@@ -289,7 +295,7 @@ internal sealed partial class AppController : IDisposable
     {
         try
         {
-            using var client = new NamedPipeClientStream(".", PipeName, PipeDirection.Out);
+            using var client = new NamedPipeClientStream(".", SessionPipeName, PipeDirection.Out, PipeOptions.CurrentUserOnly);
             client.Connect(2000);
             using var w = new StreamWriter(client);
             w.WriteLine(cmd);
@@ -304,7 +310,7 @@ internal sealed partial class AppController : IDisposable
         {
             try
             {
-                using var server = new NamedPipeServerStream(PipeName, PipeDirection.In, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+                using var server = new NamedPipeServerStream(SessionPipeName, PipeDirection.In, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
                 await server.WaitForConnectionAsync(ct);
                 using var r = new StreamReader(server);
                 string? line = await r.ReadLineAsync(ct);
@@ -408,6 +414,8 @@ internal sealed partial class AppController : IDisposable
         // Settings were imported (now, or by the Clink that restarted into this one) but the clip lists could not be merged: said once,
         // and every later start tries the merge again.
         if (SettingsImport.TakeClipsNotice() is string clipsNotice) { Say(clipsNotice); ShowBalloon("Clink", clipsNotice); }
+        // An import (now, or by the Clink that restarted into this one) did not take over a network folder: said once, naming which.
+        if (SettingsImport.TakeNetworkPathsNotice() is string pathsNotice) { Say(pathsNotice); ShowBalloon("Clink", pathsNotice); }
         SettingsImport.PendingChanged += OnImportPending;
         if (CanOfferImport) _ = SettingsImport.Scan(Settings);
         RaiseStateChanged();
@@ -1072,11 +1080,12 @@ internal sealed partial class AppController : IDisposable
     /// <summary>
     /// What the hook may bind: all of <see cref="Settings.Hotkeys"/>, except that with the screenshot tools off the screenshot rows
     /// stay in the list (and in settings.json) but are not handed to the hook, so their keys (PrintScreen) are left to Windows. A
-    /// "screenshot-edit-last" row follows the same rule (it opens the editor).
+    /// "screenshot-edit-last" row follows the same rule (it opens the editor). A row with an unknown action stays in the list but is not bound either.
     /// </summary>
     internal static IReadOnlyList<HotkeyAction> BindableHotkeys(Settings s) =>
         s.Hotkeys.Where(h => CommandFor(h.Action) switch
         {
+            HotkeyCommand.Unknown => false,   // an action this version does not know does nothing when pressed: it must not swallow the key either
             var c when IsScreenshotCommand(c) => s.ScreenshotsEnabled,
             _ => true,
         }).ToList();
@@ -1417,7 +1426,11 @@ internal sealed partial class AppController : IDisposable
     {
         Say("Add your token under Clips → Copium");
         ShowRequested?.Invoke();
+        CopiumSetupRequested?.Invoke();
     }
+
+    /// <summary>Raised after <see cref="ShowRequested"/> by <see cref="ShowCopiumSetup"/>: the window selects the Copium tab and focuses the token box.</summary>
+    public event Action? CopiumSetupRequested;
 
     /// <summary>Asks the window to open the trim editor on a clip. False when no window has subscribed to <see cref="TrimRequested"/>.</summary>
     public bool RequestTrim(ClipEntry entry)
@@ -1664,6 +1677,7 @@ internal sealed partial class AppController : IDisposable
         SystemEvents.PowerModeChanged -= OnPowerModeChanged;
         try { Hotkeys.Uninstall(); } catch { }
         try { Archive.Stop(); } catch { }
+        try { _screenshots?.CancelUploads(ExitStopLimit); } catch (Exception ex) { Log.Warn("Exit: screenshot uploads: " + ex.Message); }   // a running upload ends within 4 s (the HTTP call is cancelled)
         try { Toasts.CloseAll(); } catch { }
         try { _dot?.Close(); _dot = null; } catch { }
         try { Updater.Dispose(); } catch { }

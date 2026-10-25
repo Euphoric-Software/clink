@@ -19,6 +19,8 @@ internal sealed class ScreenshotEntry
     public string? CopiumId { get; set; }
     /// <summary>The path of the screenshot this one was edited from (edit-last saves a new file and leaves the original).</summary>
     public string? EditedFrom { get; set; }
+    /// <summary>The file's last-write time (UTC) right after it was saved, in memory only: an upload checks the file still has it (and <see cref="Size"/>) before sending it.</summary>
+    [JsonIgnore] public DateTime? WrittenUtc { get; set; }
     /// <summary>Keys this version does not know (written by a newer Clink): kept and written back.</summary>
     [JsonExtensionData] public Dictionary<string, JsonElement>? Unknown { get; set; }
 }
@@ -134,13 +136,29 @@ internal sealed class ScreenshotHistory
         }
     }
 
-    /// <summary>Writes the file after an entry changed (a Copium link was added).</summary>
-    public void Update(ScreenshotEntry entry)
+    /// <summary>
+    /// Records a Copium link: finds the entry LISTED here by its path (the caller's instance may be another object for the same file,
+    /// for example when the list was loaded again after the folder setting changed), copies the link fields onto it and writes the
+    /// file. False (and a warning unless <paramref name="warn"/> is off) when no entry has that path: nothing is written.
+    /// </summary>
+    public bool Update(ScreenshotEntry entry, bool warn = true)
     {
         lock (_gate)
         {
-            EnsureLoaded();
+            var listed = EnsureLoaded().FirstOrDefault(e => PathsEqual(e.Path, entry.Path));
+            if (listed == null)
+            {
+                if (warn) Log.Warn("screenshots: the link was not recorded in the history: " + System.IO.Path.GetFileName(entry.Path) + " is not listed");
+                return false;
+            }
+            if (!ReferenceEquals(listed, entry))
+            {
+                listed.CopiumLink = entry.CopiumLink;
+                listed.CopiumPageUrl = entry.CopiumPageUrl;
+                listed.CopiumId = entry.CopiumId;
+            }
             Save();
+            return true;
         }
     }
 
@@ -191,12 +209,7 @@ internal sealed class ScreenshotHistory
         try { return File.Exists(path); } catch { return false; }
     }
 
-    private static bool IsUnc(string? path)
-    {
-        if (string.IsNullOrWhiteSpace(path)) return false;
-        string p = path.Trim();
-        return p.StartsWith(@"\\", StringComparison.Ordinal) || p.StartsWith("//", StringComparison.Ordinal);
-    }
+    private static bool IsUnc(string? path) => ScreenshotService.IsUnc(path);   // network and device paths alike
 
     private List<ScreenshotEntry> ScanFolder()
     {

@@ -16,6 +16,29 @@ namespace Clink.Screenshots;
 /// </summary>
 internal static class ScreenshotClipboard
 {
+    /// <summary>The clipboard's change counter: it moves every time anything puts something on the clipboard. Read right after our copy, it tells later whether anyone has copied since.</summary>
+    public static uint Sequence() => PInvoke.GetClipboardSequenceNumber();
+
+    /// <summary>Puts text (the Copium link) on the clipboard, replacing whatever is there. UI thread. True when the clipboard took it; never throws.</summary>
+    public static bool CopyText(string text)
+    {
+        try
+        {
+            if (!PInvoke.GetOpenClipboardWindow().IsNull)
+            {
+                Log.Warn("screenshot: clipboard busy (another window has it open): link not copied");
+                return false;
+            }
+            Clipboard.SetDataObject(text, true);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("screenshot: clipboard (link): " + ex.Message);
+            return false;
+        }
+    }
+
     /// <summary>Copies the bitmap (frozen, made once by the caller). True when the clipboard took it; false when it is busy (or anything else went wrong). Never throws.</summary>
     public static bool Copy(BitmapSource bitmap, byte[] png)
     {

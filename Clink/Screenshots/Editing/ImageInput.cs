@@ -39,6 +39,13 @@ internal static class ImageInput
     public const string TooLarge = "That picture is too large (the limit is 16384 pixels on a side and 100 megapixels)";
     public const string Unreadable = "That file could not be read as a picture";
 
+    /// <summary>The kinds of file <see cref="LoadFile"/> reads, by their first bytes: PNG, JPEG, BMP, GIF. (WIC would also try TIFF, ICO, WMP, ... and guess the codec from the content: more parsers than an editor needs to expose to a file the user dropped in.)</summary>
+    internal static bool HasKnownMagic(ReadOnlySpan<byte> head) =>
+        (head.Length >= 4 && head[0] == 0x89 && head[1] == (byte)'P' && head[2] == (byte)'N' && head[3] == (byte)'G')
+        || (head.Length >= 3 && head[0] == 0xFF && head[1] == 0xD8 && head[2] == 0xFF)
+        || (head.Length >= 2 && head[0] == (byte)'B' && head[1] == (byte)'M')
+        || (head.Length >= 4 && head[0] == (byte)'G' && head[1] == (byte)'I' && head[2] == (byte)'F' && head[3] == (byte)'8');
+
     public static bool WithinLimits(int w, int h) => w > 0 && h > 0 && w <= MaxSide && h <= MaxSide && (long)w * h <= MaxPixels;
 
     /// <summary>A picture file (PNG, JPG, BMP, GIF, TIFF...). Null with the reason in <paramref name="error"/> when it cannot be read or is over the limits.</summary>
@@ -48,6 +55,10 @@ internal static class ImageInput
         try
         {
             using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            Span<byte> head = stackalloc byte[4];
+            int got = ReadUpTo(fs, head);
+            fs.Position = 0;
+            if (!HasKnownMagic(head[..got])) { error = Unreadable; return null; }   // (a TIFF, a WebP, an icon, or no picture at all)
             return FromStream(fs, out error);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or FileFormatException or InvalidOperationException or ArgumentException or COMException)
@@ -57,8 +68,11 @@ internal static class ImageInput
         }
     }
 
-    /// <summary>A picture in a stream (the clipboard's "PNG" format); see <see cref="LoadFile"/>.</summary>
-    public static BgraImage? FromStream(Stream stream, out string? error)
+    /// <summary>
+    /// A picture in a stream; see <see cref="LoadFile"/>. <paramref name="pngOnly"/> (the clipboard's "PNG" format): only the PNG
+    /// decoder is used, whatever the bytes claim to be.
+    /// </summary>
+    public static BgraImage? FromStream(Stream stream, out string? error, bool pngOnly = false)
     {
         error = null;
         try
@@ -70,7 +84,9 @@ internal static class ImageInput
                 stream.Position = at;
                 if (size is { } s && !WithinLimits(s.Width, s.Height)) { error = s.Width > 0 && s.Height > 0 ? TooLarge : Unreadable; return null; }
             }
-            var decoder = BitmapDecoder.Create(stream, BitmapCreateOptions.PreservePixelFormat | BitmapCreateOptions.IgnoreColorProfile, BitmapCacheOption.None);
+            var decoder = pngOnly
+                ? new PngBitmapDecoder(stream, BitmapCreateOptions.PreservePixelFormat | BitmapCreateOptions.IgnoreColorProfile, BitmapCacheOption.None)
+                : BitmapDecoder.Create(stream, BitmapCreateOptions.PreservePixelFormat | BitmapCreateOptions.IgnoreColorProfile, BitmapCacheOption.None);
             if (decoder.Frames.Count == 0) { error = Unreadable; return null; }
             var frame = decoder.Frames[0];
             if (!WithinLimits(frame.PixelWidth, frame.PixelHeight)) { error = frame.PixelWidth > 0 && frame.PixelHeight > 0 ? TooLarge : Unreadable; return null; }
@@ -133,6 +149,20 @@ internal static class ImageInput
             return null;
         }
         catch (Exception ex) when (ex is IOException or NotSupportedException or ObjectDisposedException) { return null; }
+    }
+
+    /// <summary>
+    /// Whether a clipboard DIB (its first bytes) may be handed to WPF: the header has to parse (BITMAPCOREHEADER / BITMAPINFOHEADER and
+    /// later) with a positive width and height inside the limits. <paramref name="error"/> says why not.
+    /// </summary>
+    internal static bool DibVerdict(ReadOnlySpan<byte> head, out string? error)
+    {
+        error = null;
+        if (head.Length >= 12 && BinaryPrimitives.ReadInt32LittleEndian(head) >= 40 && BinaryPrimitives.ReadInt32LittleEndian(head.Slice(4, 4)) <= 0) { error = Unreadable; return false; }   // a negative or zero width
+        if (BmpInfoSize(head) is not { } size) { error = Unreadable; return false; }
+        if (size.Width <= 0 || size.Height <= 0) { error = Unreadable; return false; }
+        if (!WithinLimits(size.Width, size.Height)) { error = TooLarge; return false; }
+        return true;
     }
 
     /// <summary>The size in a BITMAPINFOHEADER / BITMAPCOREHEADER (the bytes from the header's size field on; a CF_DIB starts there); the height may be negative (top-down).</summary>
@@ -240,15 +270,15 @@ internal sealed class SystemImageClipboard : IImageClipboard
                 {
                     using (png)
                     {
-                        var image = ImageInput.FromStream(png, out error);
+                        var image = ImageInput.FromStream(png, out error, pngOnly: true);
                         if (image != null || error == ImageInput.TooLarge) return (image, null);
                         error = null;   // not a readable PNG: the bitmap format may still be
                     }
                 }
                 if (Clipboard.ContainsImage())
                 {
-                    // the size from the DIB header first: an over-limit bitmap is refused before WPF converts all of it
-                    if (DibSize() is { } size && size.Width > 0 && size.Height > 0 && !ImageInput.WithinLimits(size.Width, size.Height)) { error = ImageInput.TooLarge; return (null, null); }
+                    // the DIB header first: one that cannot be parsed, or names no width / height, or an over-limit size, is refused before WPF converts any of it
+                    if (DibHeader() is { } head && !ImageInput.DibVerdict(head.Span, out error)) return (null, null);
                     if (Clipboard.GetImage() is { } bitmap)
                     {
                         if (!ImageInput.WithinLimits(bitmap.PixelWidth, bitmap.PixelHeight)) { error = bitmap.PixelWidth > 0 && bitmap.PixelHeight > 0 ? ImageInput.TooLarge : ImageInput.Unreadable; return (null, null); }
@@ -268,16 +298,17 @@ internal sealed class SystemImageClipboard : IImageClipboard
         return (null, null);
     }
 
-    private static (int Width, int Height)? DibSize()
+    /// <summary>The first bytes of the clipboard's DIB; null when it has none (the bitmap then comes from another format, which Windows converts).</summary>
+    private static ReadOnlyMemory<byte>? DibHeader()
     {
         try
         {
             if (!Clipboard.ContainsData(DataFormats.Dib) || Clipboard.GetData(DataFormats.Dib) is not Stream dib) return null;
             using (dib)
             {
-                Span<byte> head = stackalloc byte[16];
-                int got = dib.Read(head);
-                return ImageInput.BmpInfoSize(head[..got]);
+                var head = new byte[16];
+                int got = dib.Read(head, 0, head.Length);
+                return head.AsMemory(0, got);
             }
         }
         catch (Exception ex) when (ex is not COMException) { return null; }

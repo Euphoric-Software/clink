@@ -52,10 +52,23 @@ internal static class PngFile
     /// </summary>
     public static Clink.Screenshots.Imaging.BgraImage? Decode(string path)
     {
-        var size = ReadSize(path);
-        if (size is not { } s || s.Width > MaxSide || s.Height > MaxSide || (long)s.Width * s.Height > MaxPixels) return null;
         using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-        var decoder = new PngBitmapDecoder(fs, BitmapCreateOptions.PreservePixelFormat | BitmapCreateOptions.IgnoreColorProfile, BitmapCacheOption.OnLoad);
+        return Decode(fs);
+    }
+
+    /// <summary>
+    /// <see cref="Decode(string)"/> on one open stream, so the header that was checked and the pixels that are decoded are the same
+    /// bytes: the header is read, the stream rewound, and WIC decodes lazily from it (<see cref="BitmapCacheOption.None"/>); the
+    /// frame's size is compared with the header's before a single pixel is copied. A file swapped between two opens cannot get a
+    /// large picture past the limits this way. The stream has to stay open until this returns (the pixels are read from it).
+    /// </summary>
+    internal static Clink.Screenshots.Imaging.BgraImage? Decode(Stream fs)
+    {
+        long start = fs.Position;
+        var size = ReadSize(fs);
+        if (size is not { } s || s.Width > MaxSide || s.Height > MaxSide || (long)s.Width * s.Height > MaxPixels) return null;
+        fs.Position = start;
+        var decoder = new PngBitmapDecoder(fs, BitmapCreateOptions.PreservePixelFormat | BitmapCreateOptions.IgnoreColorProfile, BitmapCacheOption.None);
         if (decoder.Frames.Count == 0) return null;
         var frame = decoder.Frames[0];
         if (frame.PixelWidth != s.Width || frame.PixelHeight != s.Height) return null;
@@ -68,8 +81,25 @@ internal static class PngFile
         try
         {
             using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            return ReadSize(fs);
+        }
+        catch { return null; }
+    }
+
+    /// <summary>The pixel size from the PNG header at the stream's current position (24 bytes are read), or null.</summary>
+    internal static (int Width, int Height)? ReadSize(Stream fs)
+    {
+        try
+        {
             Span<byte> head = stackalloc byte[24];
-            if (fs.Read(head) < 24) return null;
+            int got = 0;
+            while (got < 24)
+            {
+                int n = fs.Read(head[got..]);
+                if (n <= 0) break;
+                got += n;
+            }
+            if (got < 24) return null;
             // 8-byte signature, then the IHDR chunk: length(4) "IHDR"(4) width(4) height(4), big-endian.
             ReadOnlySpan<byte> signature = new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A };
             if (!head[..8].SequenceEqual(signature) || head[12] != (byte)'I' || head[13] != (byte)'H' || head[14] != (byte)'D' || head[15] != (byte)'R') return null;

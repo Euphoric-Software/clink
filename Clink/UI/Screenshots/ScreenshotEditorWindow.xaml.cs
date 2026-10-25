@@ -20,14 +20,20 @@ namespace Clink.UI.Screenshots;
 /// The standalone screenshot editor (edit after capture, edit last, the toast's Edit button): TrimWindow-style chrome around an
 /// <see cref="EditorToolbar"/> and an <see cref="EditorCanvas"/> over one <see cref="EditorSession"/>. Done saves (the service does
 /// the file, history, clipboard and toast through <see cref="EditorRequest.SaveAsync"/>) and closes; Esc / Discard close without
-/// saving; closing with unsaved edits asks. A normal window: it is not hidden from screen capture. On close every picture
+/// saving; closing with unsaved edits asks. Kept out of screen capture and recordings (<see cref="EditorRequest.ExcludeFromCapture"/>,
+/// on by default: it shows what the user is covering up), its picture picker with it. On close every picture
 /// reference is dropped and the large-object heap is compacted once (Clink is a long-running tray app).
 /// </summary>
-public partial class ScreenshotEditorWindow : Window
+public partial class ScreenshotEditorWindow : Window, ICaptureExcludedWindow
 {
     private EditorRequest? _request;
     private EditorSession? _session;
     private bool _closeApproved, _busy, _everSaved;
+    private bool _closeWhenIdle;   // a close was asked for while a save was under way: asked again when it ends
+
+    static ScreenshotEditorWindow() => CaptureExclusion.Register();
+
+    bool ICaptureExcludedWindow.CaptureExcluded => _request?.ExcludeFromCapture ?? true;
 
     internal ScreenshotEditorWindow(EditorRequest request)
     {
@@ -43,7 +49,7 @@ public partial class ScreenshotEditorWindow : Window
         DiscardButton.Content = request.IsNewCapture ? "Discard" : "Close";
         Canvas.Attach(_session);
         Toolbar.Attach(_session);
-        Toolbar.CopyRequested += Copy;
+        Toolbar.CopyRequested += () => Run(CopyAsync);
         Toolbar.SaveRequested += () => Run(() => SaveCoreAsync(finish: false));
         Toolbar.FitRequested += Canvas.ZoomToFit;
         Toolbar.ActualRequested += Canvas.ZoomActual;
@@ -54,7 +60,11 @@ public partial class ScreenshotEditorWindow : Window
         _session.Notice += Say;
         Canvas.ViewChanged += () => Toolbar.SetZoom(Canvas.Zoom);
         Toolbar.SetZoom(Canvas.Zoom);
-        SourceInitialized += (_, _) => Place(request);
+        SourceInitialized += (_, _) =>
+        {
+            Place(request);
+            if (request.ExcludeFromCapture) ScreenPlacement.ExcludeFromCapture(new WindowInteropHelper(this).Handle);
+        };
         Loaded += (_, _) => Canvas.Focus();
         Deactivated += (_, _) => Canvas.SpaceDown = false;   // the key-up goes to another window
     }
@@ -187,15 +197,22 @@ public partial class ScreenshotEditorWindow : Window
         catch (Exception ex) { Log.Error("screenshot editor", ex); }
     }
 
-    private void Copy()
+    private async Task CopyAsync()
     {
         if (_session == null || _busy) return;
+        if (Canvas.IsTextEditing) Canvas.CommitText();
+        SetBusy(true);   // the buttons are off while the picture is made
+        Say("Copying…");
         try
         {
-            if (Canvas.IsTextEditing) Canvas.CommitText();
-            var image = _session.Export();
-            var bitmap = image.ToBitmapSource();
-            bool ok = ScreenshotClipboard.Copy(bitmap, PngFile.Encode(bitmap));
+            var image = await _session.ExportAsync();
+            // the bitmap and the PNG are made on a worker (a 4K picture is 33 MB); the clipboard itself needs this thread
+            var (bitmap, png) = await Task.Run(() =>
+            {
+                var made = image.ToBitmapSource();
+                return (made, PngFile.Encode(made));
+            });
+            bool ok = ScreenshotClipboard.Copy(bitmap, png);
             Say(ok ? "Copied to the clipboard" : "The clipboard is busy: not copied");
         }
         catch (Exception ex)
@@ -203,11 +220,12 @@ public partial class ScreenshotEditorWindow : Window
             Log.Error("screenshot editor: copy", ex);
             Say("Could not copy: " + ex.Message);
         }
+        finally { SetBusy(false); }
         Canvas.Focus();
     }
 
     /// <summary>Exports and saves through the service. True when the file was written; the editor stays as it is.</summary>
-    private async Task<bool> SaveCoreAsync(bool finish)
+    internal async Task<bool> SaveCoreAsync(bool finish)
     {
         if (_session == null || _request == null || _busy) return false;
         if (Canvas.IsTextEditing) Canvas.CommitText();
@@ -216,7 +234,8 @@ public partial class ScreenshotEditorWindow : Window
         try
         {
             var doc = _session.Committed;
-            var image = _session.Export();
+            var image = await _session.ExportAsync();
+            if (_session == null || _request == null) return false;   // closed meanwhile
             bool ok = await _request.SaveAsync(image, doc, finish);
             if (_session == null) return ok;
             if (ok)
@@ -240,6 +259,11 @@ public partial class ScreenshotEditorWindow : Window
     private void SetBusy(bool busy)
     {
         _busy = busy;
+        if (!busy && _closeWhenIdle)
+        {
+            _closeWhenIdle = false;
+            Dispatcher.BeginInvoke(DispatcherPriority.Normal, () => Run(RequestCloseAsync));   // the close that came in meanwhile (Esc, Alt+F4, the close button)
+        }
         ToolbarHost.IsEnabled = !busy;
         DoneButton.IsEnabled = !busy;
         DiscardButton.IsEnabled = !busy;
@@ -285,9 +309,10 @@ public partial class ScreenshotEditorWindow : Window
         Close();
     }
 
-    private async Task RequestCloseAsync()
+    internal async Task RequestCloseAsync()
     {
-        if (_session == null || _busy) return;
+        if (_session == null) return;
+        if (_busy) { _closeWhenIdle = true; return; }
         if (Canvas.IsTextEditing) Canvas.CommitText();
         if (_session.IsDirty)
         {
@@ -305,7 +330,8 @@ public partial class ScreenshotEditorWindow : Window
         {
             e.Cancel = true;   // Alt+F4, the taskbar, the close button: the same questions as Esc
             // Close() cannot be called from inside Closing: ask (and close) once this event is over
-            if (!_busy) Dispatcher.BeginInvoke(DispatcherPriority.Normal, () => Run(RequestCloseAsync));
+            if (_busy) _closeWhenIdle = true;
+            else Dispatcher.BeginInvoke(DispatcherPriority.Normal, () => Run(RequestCloseAsync));
         }
         base.OnClosing(e);
     }
@@ -351,7 +377,7 @@ public partial class ScreenshotEditorWindow : Window
         if (ctrl && key == Key.Return) { Run(DoneAsync); e.Handled = true; return; }
         if (key == Key.Escape && Toolbar.AdjustPopup.IsOpen) { Toolbar.AdjustPopup.IsOpen = false; e.Handled = true; return; }   // Esc closes the Adjust flyout and nothing else
         if (typing) return;
-        if (ctrl && key == Key.C) { Copy(); e.Handled = true; return; }
+        if (ctrl && key == Key.C) { Run(CopyAsync); e.Handled = true; return; }
         if (key == Key.Space && !e.IsRepeat && !mods.HasFlag(ModifierKeys.Alt) && focus is not ButtonBase)
         {
             Canvas.SpaceDown = true;

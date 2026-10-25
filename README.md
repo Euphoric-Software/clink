@@ -12,7 +12,7 @@ replay length is yours to set, 45 seconds by default); press a key, hear a click
 
 ![Clink's window: the Capture tab with the monitor map, codec, size target and audio tracks on the left, the clip list with Trim / Share buttons on the right](docs/screenshots/main-window.png)
 <sub>Recording a game: capture settings and audio tracks on the left, your clips on the right. More under
-[Screenshots](#screenshots).</sub>
+[Screenshots of Clink](#screenshots-of-clink); the screenshot tool itself is under [Taking screenshots](#taking-screenshots).</sub>
 
 * Single `Clink.exe`, no installer, no background services. Needs the .NET 10 Desktop Runtime (Windows 10 2004+ / Windows 11; HDR and per-process audio need Windows 11).
 * Captures with Windows Graphics Capture, so borderless **and** exclusive-fullscreen games work.
@@ -75,7 +75,36 @@ replay length is yours to set, 45 seconds by default); press a key, hear a click
   the clips pane beside them when the window is wide, as a fifth tab (Library) when it is narrow. Lives in the tray
   while you play.
 
-## Screenshots
+## Taking screenshots
+
+A ShareX-style screenshot tool that lives next to the clip recorder (its own folder and history; a screenshot is never a clip).
+
+* **Hotkeys**: <kbd>PrintScreen</kbd> takes a screenshot, <kbd>Shift</kbd>+<kbd>PrintScreen</kbd> reopens the last one in the
+  editor (both are rows in Capture → Hotkeys, added once for you when the keys are free; change or delete them there). The
+  tray menu and `Clink.exe --screenshot` / `--screenshot-edit-last` / `--screenshot-edit <file.png>` do the same.
+  Press the hotkey again while choosing an area to cancel.
+* **Choosing the area**: the screen freezes, you drag a rectangle (any monitor, mixed DPI, even across monitors) with a
+  magnifier at the pointer; <kbd>Enter</kbd> takes the whole monitor, <kbd>Esc</kbd> or a right click cancels.
+* **After capture** (Screenshots tab): *Save only* (the default: it is saved and put on the clipboard at once, and the
+  notification has Open / Edit / Folder buttons, and Upload when no automatic upload follows), *Open editor* (edit in a window, Done saves), or *Edit on screen*
+  (draw right on the chosen area, Enter or Done saves, Esc steps back and then throws it away).
+* **Editor tools**: select/move/resize, pen, line, arrow, freehand arrow, rectangle, text, crop, blur, pixelate, highlight,
+  spotlight, magnify, smart erase, insert image (file, clipboard or a recent screenshot), brightness / contrast / sharpness;
+  undo and redo for everything. Edit-last saves a new file and leaves the original alone.
+* **Copium upload**: with a Copium token (Clips → Copium) a saved screenshot is uploaded automatically (not a black capture,
+  and not the editor's *Save*; *Done* uploads) and, when nothing else was copied meanwhile, its link replaces the image on the
+  clipboard. The first automatic upload on an install says so once, and the *Uploading…* notification has a *Cancel* button.
+  The file is **always saved locally first**, so a failed upload loses nothing; without a token a short hint (at most three
+  times, once a day, *Don't show again*) offers to set Copium up. Both options are in the Screenshots tab (*Upload to Copium
+  when linked*, *Copy the link to the clipboard after uploading*); the *Screenshot saved* notification has its own switch and
+  duration under Alerts. If Copium turns a picture down (HTTP 415, or a 400 about the type) or rejects the token (401 / 403),
+  automatic uploads pause (until Clink restarts, or the token is changed) and the notification's *Upload* button still tries.
+  The notification's buttons are *Open | Edit | Upload or Copy link | Folder*; *Upload* shows only when a token is set and no
+  automatic upload follows.
+* **Settings**: folder (default `Screenshots` inside the clips folder), copy image to clipboard, magnifier, after-capture mode,
+  upload options. Files are named `Game yyyy-MM-dd HH-mm-ss.png` (the game only while it is being recorded).
+
+## Screenshots of Clink
 
 <table>
 <tr>
@@ -251,7 +280,7 @@ Copium Plus also ticks *I have Copium+*. The toast's button reads *Share* withou
   program), is refused with a hint and the box keeps listening; F-keys, ScrollLock and Pause work alone.
 * **Clips**: **Copium** - the upload token and the *I have Copium+* switch - and **Storage**: the local clips folder, the
   archive location (*Browse…*, *Test*, *Archive now…*) and *Move clips there automatically* with its rules (below).
-* **Alerts**: **Toasts** - the position and the three toast switches with their durations and a *Preview* button each;
+* **Alerts**: **Toasts** - the position and the four toast switches (Clip saved, Shared, Recording started, Screenshot saved) with their durations and a *Preview* button each;
   **Status dot** - the dot and its corner.
 * **App**: **Appearance** - *Dark* or *Light* and one of six accents (Cyan, the default; Blue, Violet, Pink, Orange,
   Green), applied at once to every window that is open; **Updates** - auto-update, *Run at startup*, the version and

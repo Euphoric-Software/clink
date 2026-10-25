@@ -620,6 +620,42 @@ internal sealed class EditorSession
         return _exported;
     }
 
+    private (DocumentState Doc, Task<BgraImage> Task)? _exportJob;
+
+    /// <summary>
+    /// <see cref="Export"/> without freezing the window: the vector render runs on the calling (UI) thread, the raster compose and the
+    /// blend on workers (<see cref="Clink.Screenshots.Editing.Exporter.ExportAsync"/>). The same bytes, cached per committed document;
+    /// a second call for the same document while one is running joins it. UI thread.
+    /// </summary>
+    public Task<BgraImage> ExportAsync()
+    {
+        var doc = Committed;
+        if (_exported != null && ReferenceEquals(_exportedFor, doc)) return Task.FromResult(_exported);
+        if (_exportJob is { } job && ReferenceEquals(job.Doc, doc) && !job.Task.IsCompleted) return job.Task;
+        var task = ExportCoreAsync(doc);
+        _exportJob = (doc, task);
+        return task;
+    }
+
+    private async Task<BgraImage> ExportCoreAsync(DocumentState doc)
+    {
+        var composer = RasterOps.NewComposer();   // its own, at full quality: the display composer belongs to the background worker
+        _exported = null;                          // the old one goes before the new one is made
+        _exportedFor = null;
+        try
+        {
+            var image = await Clink.Screenshots.Editing.Exporter.ExportAsync(doc, composer);
+            ExportComposerBytes = composer.Memory.Total;
+            if (!_released)
+            {
+                _exported = image;
+                _exportedFor = doc;
+            }
+            return image;
+        }
+        finally { composer.Clear(); }
+    }
+
     /// <summary>The bytes the export's own composer held at the end of the last export (it is cleared right after).</summary>
     internal long ExportComposerBytes { get; private set; }
 
@@ -669,6 +705,7 @@ internal sealed class EditorSession
         catch (Exception ex) { Log.Warn("screenshot editor: memory: " + ex.Message); }
         _exported = null;
         _exportedFor = null;
+        _exportJob = null;
         Composer.Clear();
         Ops.SpotCache.Clear();
         PlanePool.Clear();

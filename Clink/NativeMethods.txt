@@ -386,5 +386,6 @@ SetCursorPos
 GdiFlush
 // clipboard: a busy clipboard is not waited for (Screenshots/ScreenshotClipboard.cs); the unit test holds it open
 GetOpenClipboardWindow
+GetClipboardSequenceNumber
 OpenClipboard
 CloseClipboard

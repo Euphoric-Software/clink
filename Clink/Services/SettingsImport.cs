@@ -31,10 +31,13 @@ internal sealed record ForeignSettings(string Package, string Folder, DateTime S
 /// <summary>What <see cref="SettingsImport.Import"/> did besides writing the settings.</summary>
 /// <param name="BackupPath">Where the settings it replaced were kept (<c>settings.pre-import.json</c>, or the next free <c>settings.pre-import.N.json</c>); null when there were none.</param>
 /// <param name="ClipsProblem">Why the clip lists were not merged; null when they were, or the other copy had no clips to merge.</param>
-internal sealed record ImportResult(string? BackupPath, string? ClipsProblem)
+/// <param name="NetworkPathsKept">The folder settings (<c>ScreenshotsFolder</c>, <c>ClipsFolder</c>, <c>ArchivePath</c>) whose network path in the other copy was NOT taken over: ours stayed.</param>
+internal sealed record ImportResult(string? BackupPath, string? ClipsProblem, IReadOnlyList<string>? NetworkPathsKept = null)
 {
     /// <summary>"Settings imported; the clip list could not be merged: …", or null when it was merged.</summary>
     public string? ClipsNotice => ClipsProblem == null ? null : SettingsImport.ClipsNoticeFor(ClipsProblem);
+    /// <summary>"Settings imported; the other copy's network folders were not taken over: …", or null when there were none.</summary>
+    public string? NetworkPathsNotice => NetworkPathsKept is { Count: > 0 } kept ? SettingsImport.NetworkPathsNoticeFor(kept) : null;
 }
 
 /// <summary>
@@ -298,7 +301,7 @@ internal static class SettingsImport
         ("alerts", new[] { nameof(Settings.ClickSound), nameof(Settings.ClickVolume), nameof(Settings.ShowToast), nameof(Settings.ToastPosition), nameof(Settings.ToastClip), nameof(Settings.ToastShared), nameof(Settings.ToastRecording), nameof(Settings.ToastScreenshot), nameof(Settings.StatusDot), nameof(Settings.StatusDotPosition) }),
         ("archive", new[] { nameof(Settings.ArchiveEnabled), nameof(Settings.ArchivePath), nameof(Settings.ArchiveAfterDays), nameof(Settings.ArchiveWhenLocalExceedsGB) }),
         ("clips folder", new[] { nameof(Settings.ClipsFolder) }),
-        ("screenshots", new[] { nameof(Settings.ScreenshotsEnabled), nameof(Settings.ScreenshotsFolder), nameof(Settings.ScreenshotMode),nameof(Settings.ScreenshotCopyImage), nameof(Settings.ScreenshotLoupe) }),
+        ("screenshots", new[] { nameof(Settings.ScreenshotsEnabled), nameof(Settings.ScreenshotsFolder), nameof(Settings.ScreenshotMode), nameof(Settings.ScreenshotCopyImage), nameof(Settings.ScreenshotLoupe), nameof(Settings.ScreenshotUpload), nameof(Settings.ScreenshotCopyLink) }),
         ("Copium token", Array.Empty<string>()),   // compared decrypted, below
         (UnusableTokenNote, Array.Empty<string>()),
         ("Copium+", new[] { nameof(Settings.CopiumPlus) }),
@@ -322,7 +325,64 @@ internal static class SettingsImport
         || key.Equals(nameof(Settings.LastUpdateCheck), StringComparison.OrdinalIgnoreCase)
         || key.Equals(nameof(Settings.UpdateRepo), StringComparison.OrdinalIgnoreCase)
         || key.Equals(nameof(Settings.UseDevBuilds), StringComparison.OrdinalIgnoreCase)
+        || key.Equals(nameof(Settings.CopiumImageUploadUrl), StringComparison.OrdinalIgnoreCase)   // where the token is sent: this machine's own choice, never another copy's
         || key.Equals(nameof(Settings.ImportDeclined), StringComparison.OrdinalIgnoreCase);
+
+    private static readonly string[] s_folderKeys = { nameof(Settings.ScreenshotsFolder), nameof(Settings.ClipsFolder), nameof(Settings.ArchivePath) };
+
+    /// <summary>
+    /// Puts our value back in <paramref name="theirs"/> for each folder setting (<c>ScreenshotsFolder</c>, <c>ClipsFolder</c>,
+    /// <c>ArchivePath</c>) where the other copy holds a network or device path that differs from ours: the same rule as
+    /// <see cref="KeepOurOwn"/>, on loaded settings. Returns the names of the settings it kept.
+    /// </summary>
+    private static List<string> KeepOurNetworkPaths(Settings ours, Settings theirs)
+    {
+        var kept = new List<string>();
+        void One(string name, string? mine, string? their, Action<string?> set)
+        {
+            if (!Screenshots.ScreenshotService.IsUnc(their)) return;
+            if (string.Equals(mine?.Trim(), their!.Trim(), StringComparison.OrdinalIgnoreCase)) return;
+            set(mine);
+            kept.Add(name);
+        }
+        One(nameof(Settings.ScreenshotsFolder), ours.ScreenshotsFolder, theirs.ScreenshotsFolder, v => theirs.ScreenshotsFolder = v);
+        One(nameof(Settings.ClipsFolder), ours.ClipsFolder, theirs.ClipsFolder, v => theirs.ClipsFolder = v ?? ours.ClipsFolder);
+        One(nameof(Settings.ArchivePath), ours.ArchivePath, theirs.ArchivePath, v => theirs.ArchivePath = v);
+        return kept;
+    }
+
+    private static string FriendlyFolder(string key) => key switch
+    {
+        nameof(Settings.ScreenshotsFolder) => "screenshots folder",
+        nameof(Settings.ClipsFolder) => "clips folder",
+        nameof(Settings.ArchivePath) => "archive location",
+        _ => key,
+    };
+
+    /// <summary>"Settings imported; a network folder in the other copy is never taken over silently, so your own stayed: screenshots folder, archive location".</summary>
+    internal static string NetworkPathsNoticeFor(IReadOnlyList<string> kept) =>
+        "Settings imported; a network folder in the other copy is never taken over silently, so your own stayed: " + string.Join(", ", kept.Select(FriendlyFolder))
+        + " (set a network folder yourself under Settings if you want one)";
+
+    internal static string NetworkPathsNoticePath => Path.Combine(Settings.Dir, "import-paths.notice");
+
+    /// <summary>Said once at the next start (<c>AppController.Start</c>; an import restarts Clink, so it is kept in a file): which network folders an import did not take over.</summary>
+    public static string? TakeNetworkPathsNotice()
+    {
+        try
+        {
+            string path = NetworkPathsNoticePath;
+            if (!File.Exists(path)) return null;
+            string text = File.ReadAllText(path).Trim();
+            File.Delete(path);
+            return text.Length == 0 ? null : text;
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("import: the note about network folders cannot be read: " + ex.Message);
+            return null;
+        }
+    }
 
     /// <summary>The settings hold a protected Copium token that cannot be decrypted here (another user's, or another machine's).</summary>
     internal static bool IsTokenUnusable(Settings s) => !string.IsNullOrEmpty(s.CopiumTokenProtected) && s.CopiumToken == null;
@@ -335,6 +395,9 @@ internal static class SettingsImport
         || key.Equals(nameof(Settings.AudioSetupSeen), StringComparison.OrdinalIgnoreCase)
         || key.Equals(nameof(Settings.SeededHotkeyDefaults), StringComparison.OrdinalIgnoreCase)
         || key.Equals(nameof(Settings.ScreenshotEditor), StringComparison.OrdinalIgnoreCase)   // the editor's last-used colour and width
+        || key.StartsWith("CopiumNudge", StringComparison.OrdinalIgnoreCase)                    // how often the "link Copium" hint was shown: this installation's own counters
+        || key.Equals(nameof(Settings.CopiumAutoUploadNoticeShown), StringComparison.OrdinalIgnoreCase)   // told once per installation
+        || key.Equals(nameof(Settings.ScreenshotEditorExcludeFromCapture), StringComparison.OrdinalIgnoreCase)   // hidden, per installation
         || key.Equals(nameof(Settings.CopiumTokenProtected), StringComparison.OrdinalIgnoreCase);
 
     /// <summary>A settings key that an import offer names in the user's words or ignores: anything else would be listed as "other settings".</summary>
@@ -358,6 +421,7 @@ internal static class SettingsImport
         var ours = Settings.FromJson(ourJson);
         var theirs = Settings.FromJson(theirJson);
         guard?.Invoke(theirs);
+        KeepOurNetworkPaths(ours, theirs);   // as an import would: a network folder is not taken over, so it is no difference to offer
         var a = ours.ToElement().EnumerateObject().ToDictionary(p => p.Name, p => p.Value, StringComparer.OrdinalIgnoreCase);
         var b = theirs.ToElement().EnumerateObject().ToDictionary(p => p.Name, p => p.Value, StringComparer.OrdinalIgnoreCase);
         var labels = new HashSet<string>();
@@ -509,17 +573,25 @@ internal static class SettingsImport
 
         string dir = Settings.Dir;
         Directory.CreateDirectory(dir);
-        string text = KeepOurOwn(theirs, ReadOurSettings(), keepOurToken: IsTokenUnusable(incoming));
+        var networkKept = new List<string>();
+        string text = KeepOurOwn(theirs, ReadOurSettings(), keepOurToken: IsTokenUnusable(incoming), networkKept);
         string? backup = File.Exists(Settings.FilePath) ? KeepCurrentSettings(dir) : null;   // throws when it cannot be kept: nothing is changed yet
         AtomicFile.WriteAllText(Settings.FilePath, text);
 
+        if (networkKept.Count > 0)
+        {
+            string note = NetworkPathsNoticeFor(networkKept);
+            Log.Warn("import: " + note);
+            try { File.WriteAllText(NetworkPathsNoticePath, note); }
+            catch (Exception ex) { Log.Warn("import: could not note the network folders that were kept: " + ex.Message); }
+        }
         string? clipsProblem = MergeClipIndex(copy.Folder);
         if (Pending?.DeclineKey == copy.DeclineKey) SetPending(null);
         Log.Info($"import: took over the settings saved {copy.SavedLocalText} inside {copy.Package}"
             + (copy.Differences.Count > 0 ? $" (changes: {string.Join(", ", copy.Differences)})" : "")
             + (backup != null ? $"; the replaced settings are kept as {Path.GetFileName(backup)}" : "")
             + (clipsProblem != null ? "; the clip list was not merged" : ""));
-        return new ImportResult(backup, clipsProblem);
+        return new ImportResult(backup, clipsProblem, networkKept);
     }
 
     // ------------------------------------------------------------------ what an import keeps of ours
@@ -557,7 +629,7 @@ internal static class SettingsImport
     /// key <see cref="IsOwnKey"/> says is ours is taken from ours, or left out when ours has none. With
     /// <paramref name="keepOurToken"/> the Copium token is ours too. The text comes back as it was when none of that changes anything.
     /// </summary>
-    internal static string KeepOurOwn(string theirs, string? ours, bool keepOurToken)
+    internal static string KeepOurOwn(string theirs, string? ours, bool keepOurToken, List<string>? networkPathsKept = null)
     {
         if (JsonNode.Parse(theirs, documentOptions: s_lenient) is not JsonObject t) return theirs;
         JsonObject? o = null;
@@ -576,6 +648,16 @@ internal static class SettingsImport
         if (o != null)
             foreach (var p in o.ToList().Where(p => IsOwnKey(p.Key)))
                 if (Find(t, p.Key) == null) t[p.Key] = p.Value?.DeepClone();
+
+        // A network folder (UNC, device path) in the other copy is not taken over silently: ours stays (or the default, when we have none).
+        foreach (string key in t.Select(p => p.Key).Where(k => s_folderKeys.Contains(k, StringComparer.OrdinalIgnoreCase)).ToList())
+        {
+            if (t[key] is not JsonValue v || !v.TryGetValue<string>(out var value) || !Screenshots.ScreenshotService.IsUnc(value)) continue;
+            var mine = Find(o, key);
+            if (mine is { Value: JsonValue mv } && mv.TryGetValue<string>(out var ourValue) && string.Equals(ourValue?.Trim(), value.Trim(), StringComparison.OrdinalIgnoreCase)) continue;   // the same as ours: nothing to refuse
+            if (mine is { Value: not null }) t[key] = mine.Value.Value!.DeepClone(); else t.Remove(key);
+            networkPathsKept?.Add(s_folderKeys.First(k => k.Equals(key, StringComparison.OrdinalIgnoreCase)));
+        }
 
         if (keepOurToken)
         {
