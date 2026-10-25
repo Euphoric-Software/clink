@@ -369,11 +369,8 @@
                                                       ToolTip="An 8x zoom of the pixels around the pointer, with their position and colour" />
                                             <TextBlock Style="{StaticResource FieldLabel}" Margin="2,12,0,3" Text="After capture" />
                                             <ComboBox x:Name="ScreenshotModeCombo" SelectionChanged="ScreenshotModeChanged" HorizontalAlignment="Left" MinWidth="240"
-                                                      AutomationProperties.Name="After capture" ToolTip="What happens when you have chosen the area">
-                                                <ComboBoxItem Content="Save only" Tag="none" ToolTip="Save the picture at once; the notification has an Edit button" />
-                                                <ComboBoxItem Content="Open editor" Tag="after" ToolTip="Open the editor on the picture first; Done saves it" />
-                                                <ComboBoxItem Content="Edit on screen (coming soon)" Tag="before" IsEnabled="False" ToolTip="Coming soon: edit right on the screen before saving" />
-                                            </ComboBox>
+                                                      AutomationProperties.Name="After capture" ToolTip="What happens when you have chosen the area" />
+                                            <!-- (the items come from ScreenshotModes.Choices) -->
                                             <TextBlock x:Name="ScreenshotHotkeyHint" Style="{StaticResource Hint}" Margin="2,12,0,0" TextWrapping="Wrap" />
                                         </StackPanel>
                                     </StackPanel>

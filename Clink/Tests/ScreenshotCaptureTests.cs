@@ -32,6 +32,7 @@ internal static class ScreenshotCaptureTests
         private int _captures;
         public int Captures => Volatile.Read(ref _captures);
         public Exception? Throw;
+        public bool Black;   // an exclusive-fullscreen game: the copy of the screen is all black
         public string Name => "fake";
         public bool Handles(MonitorInfo monitor) => true;
         public FrozenMonitor Capture(MonitorInfo monitor)
@@ -41,7 +42,8 @@ internal static class ScreenshotCaptureTests
             var img = new BgraImage(monitor.Width, monitor.Height);
             for (int y = 0; y < img.Height; y++)
                 for (int x = 0; x < img.Width; x++)
-                    img.SetPixel(x, y, (byte)(x * 4), (byte)(y * 4), 128);
+                    if (Black) img.SetPixel(x, y, 0, 0, 0);
+                    else img.SetPixel(x, y, (byte)(x * 4), (byte)(y * 4), 128);
             return new FrozenMonitor(monitor, img, Name);
         }
     }
@@ -52,11 +54,13 @@ internal static class ScreenshotCaptureTests
         public Exception? Throw;
         public TaskCompletionSource<RegionPickResult?>? Pending;
         public CancellationToken Token;
+        public OverlayEditSetup? LastSetup;   // what the service asked for: non-null = editing on the screen
 
-        public Task<RegionPickResult?> PickAsync(FrozenDesktop desktop, bool loupe, CancellationToken ct)
+        public Task<RegionPickResult?> PickAsync(FrozenDesktop desktop, bool loupe, CancellationToken ct, OverlayEditSetup? edit = null)
         {
             Picks++;
             Token = ct;
+            LastSetup = edit;
             if (Throw != null) throw Throw;
             if (ct.IsCancellationRequested) return Task.FromResult<RegionPickResult?>(null);
             var tcs = new TaskCompletionSource<RegionPickResult?>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -80,7 +84,7 @@ internal static class ScreenshotCaptureTests
         public string[] Pngs => Directory.Exists(Folder) ? Directory.GetFiles(Folder, "*.png") : Array.Empty<string>();
     }
 
-    private static Rig Make(TempDir dir, IScreenshotEditor? editor = null)
+    private static Rig Make(TempDir dir, IScreenshotEditor? editor = null, string? game = null, bool recorded = false)
     {
         Settings.DirOverride = dir.Path;   // the history file
         var s = Settings.FromJson("{}");
@@ -91,7 +95,7 @@ internal static class ScreenshotCaptureTests
         var picker = new FakePicker();
         var source = new FakeSource();
         var monitor = new MonitorInfo(0, @"\\.\DISPLAY1", "", 0, 0, 64, 48, true, false, 80, 0, "");
-        var service = new ScreenshotService(s, toasts, picker, () => null, () => null, new IScreenshotSource[] { source }, () => new[] { monitor }, editor);
+        var service = new ScreenshotService(s, toasts, picker, () => game, () => recorded ? monitor : null, new IScreenshotSource[] { source }, () => new[] { monitor }, editor);
         return new Rig { Service = service, Settings = s, Toasts = toasts, Picker = picker, Source = source, Folder = ScreenshotService.FolderFor(s) };
     }
 
@@ -694,5 +698,232 @@ internal static class ScreenshotCaptureTests
         Check.Equal(AppController.HotkeyCommand.ScreenshotEditLast, AppController.CommandFor("screenshot-edit-last"));
         Check.Equal("Shift+PrintScreen", AppController.ScreenshotEditHotkeyLabelFor(new[] { new HotkeyAction { Keys = new HotkeyBinding { Shift = true, Vk = 0x2C }, Action = "screenshot-edit-last" } }));
         Check.Null(AppController.ScreenshotEditHotkeyLabelFor(new[] { new HotkeyAction { Keys = new HotkeyBinding { Vk = 0 }, Action = "screenshot-edit-last" } }));
+    }
+
+    // ------------------------------------------------------------------ mode "before" (editing inside the overlay)
+
+    /// <summary>The picture the fake source gives for the 64 x 48 monitor (what the overlay edits).</summary>
+    private static BgraImage MonitorPicture()
+    {
+        var img = new BgraImage(64, 48);
+        for (int y = 0; y < 48; y++)
+            for (int x = 0; x < 64; x++)
+                img.SetPixel(x, y, (byte)(x * 4), (byte)(y * 4), 128);
+        return img;
+    }
+
+    /// <summary>What the overlay returns after Done: the monitor's picture with a red 2 px rectangle (5,5)-(25,25), cropped to (10,10) 20 x 16.</summary>
+    private static RegionPickResult EditedPick()
+    {
+        var crop = new RectI(10, 10, 20, 16);
+        var doc = DocumentState.Create(MonitorPicture()).WithCrop(crop)
+            .Add(new RectOutline(0, new System.Windows.Rect(5, 5, 20, 20), System.Windows.Media.Colors.Red, 2), out _);
+        return new RegionPickResult(crop, 0, PickOutcome.Drag, doc);
+    }
+
+    private static Task CaptureWith(Rig rig, RegionPickResult? result)
+    {
+        var t = rig.Service.CaptureRegionAsync(ScreenshotTrigger.Hotkey);
+        Pump(() => rig.Picker.Pending != null && !rig.Picker.Pending.Task.IsCompleted || t.IsCompleted, "the overlay");
+        rig.Picker.Pending?.TrySetResult(result);
+        Pump(() => t.IsCompleted, "the end of the capture");
+        return t;
+    }
+
+    [UnitTest]
+    public static void Mode_before_asks_the_picker_to_edit_and_the_other_modes_do_not()
+    {
+        foreach (var (mode, edits) in new[] { ("none", false), ("after", false), ("before", true), ("bogus", false) })
+        {
+            using var dir = new TempDir();
+            var rig = Make(dir, new FakeEditor());
+            rig.Settings.ScreenshotMode = mode;
+            CaptureWith(rig, null);
+            Check.Equal(edits, rig.Picker.LastSetup != null, mode);
+            if (edits) Check.NotNull(rig.Picker.LastSetup!.PersistOptions, "the tool options are kept");
+        }
+    }
+
+    [UnitTest]
+    public static void Mode_before_saves_one_png_cropped_with_the_annotations_outside_the_crop_clipped()
+    {
+        using var dir = new TempDir();
+        var rig = Make(dir);   // no editor window at all: editing on the screen does not need one
+        rig.Settings.ScreenshotMode = "before";
+        var pick = EditedPick();
+        var t = CaptureWith(rig, pick);
+        Check.True(t.IsCompletedSuccessfully);
+        Check.False(rig.Service.IsBusy);
+        Check.Equal(1, rig.Picker.Closes, "the overlay is closed by the service");
+        Check.Equal(1, rig.Pngs.Length, "exactly one file");
+        Check.Equal((20, 16), PngFile.ReadSize(rig.Pngs[0])!.Value, "the crop, not the monitor");
+        var png = PngFile.Decode(rig.Pngs[0])!;
+        // crop-local (14, 7) = screen (24, 17): the right edge of the rectangle, 2 px wide at x = 24..25
+        Check.Equal(((byte)0, (byte)0, (byte)255, (byte)255), png.GetPixel(14, 7), "the part of the annotation inside the crop is in the file");
+        Check.Equal(((byte)0, (byte)0, (byte)255, (byte)255), png.GetPixel(5, 15), "and the bottom edge");
+        Check.Equal(((byte)40, (byte)40, (byte)128, (byte)255), png.GetPixel(0, 0), "the crop's corner is the screen's (10,10), untouched: the top and left edges are outside the crop");
+        for (int x = 0; x < 14; x++)
+            Check.Equal(((byte)(40 + x * 4), (byte)40, (byte)128, (byte)255), png.GetPixel(x, 0), "the top row is the plain capture");
+        for (int y = 0; y < 14; y++)
+            Check.Equal(((byte)40, (byte)(40 + y * 4), (byte)128, (byte)255), png.GetPixel(0, y), "and so is the left column");
+        Check.Equal(1, new ScreenshotHistory(ScreenshotHistory.DefaultFile, null).Entries.Count, "one history entry");
+        Check.Equal(new[] { "screenshot: " + Path.GetFileName(rig.Pngs[0]) }, rig.Toasts.Shown.ToArray());
+        Check.NotNull(rig.Service.LastEdit);
+        var last = rig.Service.LastEdit!.Document;
+        Check.Equal((20, 16), (last.Base.Width, last.Base.Height), "edit last keeps the crop, not the whole monitor picture");
+        Check.Equal(new RectI(0, 0, 20, 16), last.Crop);
+        Check.Equal(pick.Document!.Raster.Count + pick.Document.Vector.Count, last.Raster.Count + last.Vector.Count, "with its objects");
+        Check.Equal(new System.Windows.Rect(-5, -5, 20, 20), ((RectOutline)last.Vector[0]).R, "moved with the crop");
+        Check.Equal(rig.Pngs[0], rig.Service.LastEdit.Path);
+    }
+
+    [UnitTest]
+    public static void Mode_before_saves_a_black_picture_with_the_black_toast_instead_of_the_normal_one()
+    {
+        using var dir = new TempDir();
+        var rig = Make(dir);
+        rig.Settings.ScreenshotMode = "before";
+        rig.Source.Black = true;
+        CaptureWith(rig, EditedPick());
+        Check.Equal(1, rig.Pngs.Length, "saved all the same");
+        Check.Equal(new[] { "problem: Screenshot is black" }, rig.Toasts.Shown.ToArray());
+    }
+
+    [UnitTest]
+    public static void A_pick_with_a_document_is_saved_even_when_the_mode_reads_none_by_then()
+    {
+        using var dir = new TempDir();
+        var rig = Make(dir);
+        rig.Settings.ScreenshotMode = "before";
+        var t = rig.Service.CaptureRegionAsync(ScreenshotTrigger.Hotkey);
+        Pump(() => rig.Picker.Pending != null || t.IsCompleted, "the overlay");
+        rig.Settings.ScreenshotMode = "none";   // changed in settings while the overlay was up
+        rig.Picker.Pending!.SetResult(EditedPick());
+        Pump(() => t.IsCompleted, "the end of the capture");
+        Check.Equal(1, rig.Pngs.Length);
+        var png = PngFile.Decode(rig.Pngs[0])!;
+        Check.Equal(((byte)0, (byte)0, (byte)255, (byte)255), png.GetPixel(14, 7), "the edited document, annotation included");
+        Check.NotNull(rig.Service.LastEdit);
+
+        // and a spanning pick opens the editor window whatever the mode reads now
+        using var dir2 = new TempDir();
+        var editor = new FakeEditor();
+        var span = Make(dir2, editor);
+        span.Settings.ScreenshotMode = "before";
+        var t2 = span.Service.CaptureRegionAsync(ScreenshotTrigger.Hotkey);
+        Pump(() => span.Picker.Pending != null || t2.IsCompleted, "the overlay");
+        span.Settings.ScreenshotMode = "none";
+        span.Picker.Pending!.SetResult(new RegionPickResult(new RectI(5, 6, 10, 8), 0, PickOutcome.Drag, null, SpansMonitors: true));
+        Pump(() => t2.IsCompleted, "the end of the capture");
+        Check.Equal(1, editor.Opens);
+    }
+
+    [UnitTest]
+    public static void Mode_before_names_the_file_after_the_game_when_the_crop_is_on_the_recorded_monitor_and_edit_last_reopens_the_edit()
+    {
+        using var dir = new TempDir();
+        var editor = new FakeEditor();
+        var rig = Make(dir, editor, game: "Some Game", recorded: true);
+        rig.Settings.ScreenshotMode = "before";
+        var pick = EditedPick();
+        CaptureWith(rig, pick);
+        Check.Equal(1, rig.Pngs.Length);
+        Check.True(Path.GetFileName(rig.Pngs[0]).StartsWith("Some Game "), "game hint: " + Path.GetFileName(rig.Pngs[0]));
+        Check.Equal(0, editor.Opens, "no editor window for editing on the screen");
+
+        DocumentState? reopened = null;
+        editor.Script = r => { reopened = r.Document; return Task.CompletedTask; };
+        var last = rig.Service.EditLastAsync();
+        Pump(() => last.IsCompleted, "edit last");
+        Check.True(ReferenceEquals(rig.Service.LastEdit!.Document, reopened), "the objects are still editable");
+        Check.Equal(1, reopened!.Vector.Count);
+        Check.Equal(new RectI(0, 0, 20, 16), reopened.Crop, "the crop that was chosen is the whole picture now");
+    }
+
+    [UnitTest]
+    public static void Mode_before_over_several_monitors_opens_the_editor_window_with_the_hint()
+    {
+        using var dir = new TempDir();
+        var editor = new FakeEditor();
+        var rig = Make(dir, editor);
+        rig.Settings.ScreenshotMode = "before";
+        int pngsWhileOpen = -1;
+        editor.Script = r => { pngsWhileOpen = rig.Pngs.Length; return Task.CompletedTask; };
+        CaptureWith(rig, new RegionPickResult(new RectI(5, 6, 10, 8), 0, PickOutcome.Drag, null, SpansMonitors: true));
+        Check.Equal(1, editor.Opens);
+        Check.Equal(ScreenshotService.SpanHint, editor.Request!.Hint);
+        Check.True(ScreenshotService.SpanHint.StartsWith("Selection spanned monitors"));
+        Check.Equal((10, 8), (editor.Request.Document.Base.Width, editor.Request.Document.Base.Height), "the composed crop");
+        Check.True(editor.Request.IsNewCapture);
+        Check.Equal(0, pngsWhileOpen, "nothing is saved before Done");
+        Check.Equal(1, rig.Picker.Closes);
+        Check.Equal(0, rig.Pngs.Length, "Discard saves nothing");
+
+        // mode "after" gives the editor no hint
+        using var dir2 = new TempDir();
+        var editor2 = new FakeEditor();
+        var after = Make(dir2, editor2);
+        after.Settings.ScreenshotMode = "after";
+        Capture(after);
+        Check.Null(editor2.Request!.Hint);
+
+        // without an editor window the area is simply saved
+        using var dir3 = new TempDir();
+        var plain = Make(dir3);
+        plain.Settings.ScreenshotMode = "before";
+        CaptureWith(plain, new RegionPickResult(new RectI(5, 6, 10, 8), 0, PickOutcome.Drag, null, SpansMonitors: true));
+        Check.Equal(1, plain.Pngs.Length);
+        Check.Equal((10, 8), PngFile.ReadSize(plain.Pngs[0])!.Value);
+    }
+
+    [UnitTest]
+    public static void Mode_before_without_a_document_saves_the_plain_crop_and_a_cancel_saves_nothing()
+    {
+        using var dir = new TempDir();
+        var rig = Make(dir);
+        rig.Settings.ScreenshotMode = "before";
+        CaptureWith(rig, Area);   // a picker that did not edit
+        Check.Equal(1, rig.Pngs.Length);
+        Check.Equal((10, 8), PngFile.ReadSize(rig.Pngs[0])!.Value);
+
+        using var dir2 = new TempDir();
+        var cancelled = Make(dir2);
+        cancelled.Settings.ScreenshotMode = "before";
+        var t = CaptureWith(cancelled, null);   // Esc in the overlay
+        Check.True(t.IsCompletedSuccessfully);
+        Check.Equal(0, cancelled.Pngs.Length);
+        Check.Equal(0, cancelled.Toasts.Shown.Count);
+        Check.Equal(1, cancelled.Picker.Closes);
+        Check.False(cancelled.Service.IsBusy);
+        Check.Null(cancelled.Service.LastEdit);
+    }
+
+    [UnitTest]
+    public static void Mode_before_failing_in_the_overlay_leaves_the_service_ready_and_the_overlay_closed()
+    {
+        using var dir = new TempDir();
+        var rig = Make(dir);
+        rig.Settings.ScreenshotMode = "before";
+
+        // the editing phase failed: the pick completes with the error (and has closed its windows)
+        var t = rig.Service.CaptureRegionAsync(ScreenshotTrigger.Hotkey);
+        Pump(() => rig.Picker.Pending != null || t.IsCompleted, "the overlay");
+        rig.Picker.Pending!.SetException(new InvalidOperationException("the editor could not start"));
+        Pump(() => t.IsCompleted, "the failed capture");
+        Check.True(t.IsFaulted, "the error goes up to CaptureRegion, which reports it");
+        Check.False(rig.Service.IsBusy);
+        Check.Equal(1, rig.Picker.Closes, "the overlay is closed");
+        Check.Equal(0, rig.Pngs.Length);
+
+        // a document that cannot be exported (an empty crop) is reported and nothing is saved
+        var broken = new RegionPickResult(new RectI(0, 0, 1, 1), 0, PickOutcome.Drag, DocumentState.Create(MonitorPicture()) with { Crop = RectI.Empty });
+        CaptureWith(rig, broken);
+        Check.False(rig.Service.IsBusy);
+        Check.Equal(0, rig.Pngs.Length);
+        Check.Equal(new[] { "problem: Screenshot not saved" }, rig.Toasts.Shown.ToArray());
+
+        // and the next capture works
+        CaptureWith(rig, EditedPick());
+        Check.Equal(1, rig.Pngs.Length);
     }
 }

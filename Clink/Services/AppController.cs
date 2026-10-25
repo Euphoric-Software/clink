@@ -1635,6 +1635,7 @@ internal sealed partial class AppController : IDisposable
     /// <summary>Windows is ending the session (cannot be refused): unsaved screenshot edits are saved as a copy, waiting at most ~3 s with the UI still pumping.</summary>
     internal void SaveEditorForSessionEnd()
     {
+        // Follow-up (accepted for S5): edits made in the capture overlay (mode "before") are NOT saved here; they are lost on a quit / session end.
         if (_screenshotEditor is not { IsOpen: true } editor) return;
         try
         {

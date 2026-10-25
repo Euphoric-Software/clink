@@ -10,6 +10,8 @@ internal sealed class EditorRequest
     public required DocumentState Document { get; init; }
     /// <summary>The header text: the file name, or "New screenshot".</summary>
     public required string Title { get; init; }
+    /// <summary>One muted line in the header (e.g. why the editor opened in a window); null = none.</summary>
+    public string? Hint { get; init; }
     /// <summary>A capture that has not been saved yet (edit-after): closing it without Done discards it, and Done always saves.</summary>
     public bool IsNewCapture { get; init; }
     /// <summary>The monitor to open on (null = the primary one).</summary>

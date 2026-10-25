@@ -271,6 +271,9 @@ public partial class MainWindow : Window
         ScreenshotFolderBox.Text = ScreenshotService.FolderFor(s);
         ScreenshotCopyCheck.IsChecked = s.ScreenshotCopyImage;
         ScreenshotLoupeCheck.IsChecked = s.ScreenshotLoupe;
+        if (ScreenshotModeCombo.Items.Count == 0)
+            foreach (var (value, label, tip) in ScreenshotModes.Choices)
+                ScreenshotModeCombo.Items.Add(new ComboBoxItem { Content = label, Tag = value, ToolTip = tip });
         ScreenshotModeCombo.SelectedItem = ScreenshotModeCombo.Items.OfType<ComboBoxItem>().FirstOrDefault(i => (string?)i.Tag == s.ScreenshotMode)
             ?? ScreenshotModeCombo.Items[0];
         UpdateScreenshotTab();
@@ -1276,7 +1279,8 @@ public partial class MainWindow : Window
         string? editKeys = AppController.ScreenshotEditHotkeyLabelFor(s.Hotkeys);
         ScreenshotHotkeyHint.Text = (keys != null ? $"Hotkey: {keys} takes a screenshot. " : "No hotkey is set for screenshots. ")
             + (editKeys != null ? $"{editKeys} edits the last one. " : "No hotkey is set for editing the last one. ")
-            + "The defaults are PrintScreen and Shift+PrintScreen. Change them under Capture → Hotkeys.";
+            + "The defaults are PrintScreen and Shift+PrintScreen. Change them under Capture → Hotkeys. "
+            + "With Edit on screen, draw on the chosen area and press Enter or Done to save; Esc steps back, then throws it away.";
     }
 
     private void ScreenshotModeChanged(object sender, SelectionChangedEventArgs e)

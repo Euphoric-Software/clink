@@ -35,6 +35,11 @@ public partial class ScreenshotEditorWindow : Window
         _request = request;
         _session = new EditorSession(request.Document, request.Options, request.PersistOptions);
         TitleText.Text = request.Title;
+        if (!string.IsNullOrWhiteSpace(request.Hint))
+        {
+            HintText.Text = request.Hint;
+            HintText.Visibility = Visibility.Visible;
+        }
         DiscardButton.Content = request.IsNewCapture ? "Discard" : "Close";
         Canvas.Attach(_session);
         Toolbar.Attach(_session);
@@ -344,6 +349,7 @@ public partial class ScreenshotEditorWindow : Window
         bool typing = Canvas.IsTextEditing || focus is TextBoxBase || focus is Slider || focus is ComboBox;
         if (ctrl && key == Key.S) { Run(() => SaveCoreAsync(finish: false)); e.Handled = true; return; }
         if (ctrl && key == Key.Return) { Run(DoneAsync); e.Handled = true; return; }
+        if (key == Key.Escape && Toolbar.AdjustPopup.IsOpen) { Toolbar.AdjustPopup.IsOpen = false; e.Handled = true; return; }   // Esc closes the Adjust flyout and nothing else
         if (typing) return;
         if (ctrl && key == Key.C) { Copy(); e.Handled = true; return; }
         if (key == Key.Space && !e.IsRepeat && !mods.HasFlag(ModifierKeys.Alt) && focus is not ButtonBase)

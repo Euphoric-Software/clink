@@ -26,8 +26,27 @@ internal static class CaptureExclusion
         if (Interlocked.Exchange(ref s_registered, 1) == 1) return;
         EventManager.RegisterClassHandler(typeof(ToolTip), ToolTip.OpenedEvent, new RoutedEventHandler((s, _) =>
         {
-            if (s is ToolTip { PlacementTarget: { } owner } tip && Window.GetWindow(owner) is ICaptureExcludedWindow && PresentationSource.FromVisual(tip) is HwndSource src)
+            if (s is ToolTip { PlacementTarget: { } owner } tip && IsExcluded(Window.GetWindow(owner)) && PresentationSource.FromVisual(tip) is HwndSource src)
                 ScreenPlacement.ExcludeFromCapture(src.Handle);
         }));
+        EventManager.RegisterClassHandler(typeof(ContextMenu), ContextMenu.OpenedEvent, new RoutedEventHandler((s, _) =>
+        {
+            if (s is ContextMenu { PlacementTarget: { } owner } menu && IsExcluded(Window.GetWindow(owner)) && PresentationSource.FromVisual(menu) is HwndSource src)
+                ScreenPlacement.ExcludeFromCapture(src.Handle);
+        }));
+        // A window owned by an excluded one (the insert-image picker over the capture overlay) is out of capture itself.
+        EventManager.RegisterClassHandler(typeof(Window), FrameworkElement.LoadedEvent, new RoutedEventHandler((s, _) =>
+        {
+            if (s is Window { Owner: { } parent } w && IsExcluded(parent) && PresentationSource.FromVisual(w) is HwndSource src)
+                ScreenPlacement.ExcludeFromCapture(src.Handle);
+        }));
+    }
+
+    /// <summary>The window, or one that owns it (directly or further up), is an <see cref="ICaptureExcludedWindow"/>: its tooltips, menus and dialogs are kept out of capture too.</summary>
+    internal static bool IsExcluded(Window? window)
+    {
+        for (int depth = 0; window != null && depth < 16; window = window.Owner, depth++)
+            if (window is ICaptureExcludedWindow) return true;
+        return false;
     }
 }

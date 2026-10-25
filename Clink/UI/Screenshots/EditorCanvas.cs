@@ -132,6 +132,30 @@ internal sealed class EditorCanvas : FrameworkElement
 
     public bool IsTextEditing => _text != null;
 
+    private bool _overlayMode;
+
+    /// <summary>
+    /// Editing on the screen inside the capture overlay (mode "before"): the view is fixed at 1:1 (no zoom, no panning), the dim outside the
+    /// crop and its handles are always shown, and a press on a crop handle takes priority over every tool and object.
+    /// </summary>
+    internal bool OverlayMode
+    {
+        get => _overlayMode;
+        set
+        {
+            if (_overlayMode == value) return;
+            _overlayMode = value;
+            if (_session != null) { ZoomToFit(); RedrawOverlay(); }
+        }
+    }
+
+    /// <summary>The crop handle under a picture point (None when there is none).</summary>
+    private Handle CropHandleAt(Point doc)
+    {
+        var c = _session!.State.Crop;
+        return HitTest.HitHandle(HitTest.RectHandles(new Rect(c.X, c.Y, c.Width, c.Height)), doc, ScaleDip);
+    }
+
     // ------------------------------------------------------------------ the view
 
     private double Dpi => VisualTreeHelper.GetDpi(this).DpiScaleX;
@@ -151,6 +175,13 @@ internal sealed class EditorCanvas : FrameworkElement
     {
         _fit = true;
         if (_session == null || ActualWidth <= 0 || ActualHeight <= 0) return;
+        if (_overlayMode)
+        {
+            _zoom = 1;   // one picture pixel is one screen pixel, centred (the canvas is the size of the picture)
+            CenterImage();
+            ApplyView();
+            return;
+        }
         double dpi = Dpi, margin = 16;
         double availW = Math.Max(1, ActualWidth * dpi - 2 * margin), availH = Math.Max(1, ActualHeight * dpi - 2 * margin);
         var img = ImageSize;
@@ -163,7 +194,7 @@ internal sealed class EditorCanvas : FrameworkElement
 
     public void ZoomTo(double zoom, Point anchorView)
     {
-        if (_session == null) return;
+        if (_session == null || _overlayMode) return;
         zoom = Math.Clamp(zoom, MinZoom, MaxZoom);
         _fit = false;
         var doc = ToDoc(anchorView);
@@ -196,6 +227,7 @@ internal sealed class EditorCanvas : FrameworkElement
 
     public void PanBy(double dx, double dy)
     {
+        if (_overlayMode) return;
         _fit = false;
         _offset = new Point(_offset.X + dx, _offset.Y + dy);
         ClampOffset();
@@ -390,13 +422,13 @@ internal sealed class EditorCanvas : FrameworkElement
         var imageRect = new Rect(ToView(new Point(0, 0)), new Size(state.Base.Width * s, state.Base.Height * s));
         var crop = state.Crop;
         bool cropTool = _session.Tool == EditorTool.Crop;
-        if (crop != state.Base.Bounds || cropTool)
+        if (crop != state.Base.Bounds || cropTool || _overlayMode)
         {
             var cropRect = new Rect(ToView(new Point(crop.X, crop.Y)), new Size(crop.Width * s, crop.Height * s));
             dc.DrawGeometry(s_dim, null, new CombinedGeometry(GeometryCombineMode.Exclude, new RectangleGeometry(imageRect), new RectangleGeometry(cropRect)));
             dc.DrawRectangle(null, new Pen(Brushes.White, 1), cropRect);
             dc.DrawRectangle(null, new Pen(Brushes.Black, 1) { DashStyle = new DashStyle(new double[] { 4, 4 }, 0) }, cropRect);
-            if (cropTool) foreach (var (_, at) in HitTest.RectHandles(new Rect(crop.X, crop.Y, crop.Width, crop.Height))) DrawHandle(dc, ToView(at));
+            if (cropTool || _overlayMode) foreach (var (_, at) in HitTest.RectHandles(new Rect(crop.X, crop.Y, crop.Width, crop.Height))) DrawHandle(dc, ToView(at));
         }
         if (_session.Selected is { } sel && sel.Id != _editingId && !cropTool)
         {
@@ -451,6 +483,12 @@ internal sealed class EditorCanvas : FrameworkElement
         if (wasEditing) CommitText();
         var doc = ToDoc(view);
         CaptureMouse();
+        if (_overlayMode && _session.Tool != EditorTool.Crop && CropHandleAt(doc) != Handle.None)
+        {
+            BeginCrop(doc);   // the crop's handles come before every tool and object
+            e.Handled = true;
+            return;
+        }
         switch (_session.Tool)
         {
             case EditorTool.Select: BeginSelect(doc, e.ClickCount); break;
@@ -543,6 +581,7 @@ internal sealed class EditorCanvas : FrameworkElement
 
     internal void BeginPan(Point startView)
     {
+        if (_overlayMode) return;
         CancelGesture();
         var startOffset = _offset;
         CaptureMouse();
@@ -573,6 +612,7 @@ internal sealed class EditorCanvas : FrameworkElement
     {
         if (_session == null) return;
         if (_space) { Cursor = Cursors.Hand; return; }
+        if (_overlayMode && _session.Tool != EditorTool.Crop && CropHandleAt(doc) is var ch && ch != Handle.None) { Cursor = CursorFor(ch); return; }
         switch (_session.Tool)
         {
             case EditorTool.Select:

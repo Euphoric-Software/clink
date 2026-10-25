@@ -29,7 +29,14 @@
                 <Button x:Name="UndoButton" Style="{StaticResource GlyphButton}" Content="&#xE7A7;" Click="Undo_Click" AutomationProperties.Name="Undo" ToolTip="Undo (Ctrl+Z)" Margin="0,0,4,0" />
                 <Button x:Name="RedoButton" Style="{StaticResource GlyphButton}" Content="&#xE7A6;" Click="Redo_Click" AutomationProperties.Name="Redo" ToolTip="Redo (Ctrl+Y)" />
             </StackPanel>
-            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0">
+            <!-- the capture overlay's editing (compact): no zoom / copy / save, a Cancel and a Done instead -->
+            <StackPanel x:Name="OverlayPanel" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0" Visibility="Collapsed">
+                <Button x:Name="CancelCaptureButton" Style="{StaticResource SmallButton}" Content="Cancel" Click="CancelCapture_Click" AutomationProperties.Name="Cancel the screenshot"
+                        ToolTip="Throw the screenshot away (Esc, when there is nothing to deselect)" Margin="0,0,6,0" />
+                <Button x:Name="DoneButton" Style="{StaticResource AccentButton}" Content="Done" Click="Done_Click" MinWidth="72" AutomationProperties.Name="Done"
+                        ToolTip="Save the picture and copy it (Enter)" />
+            </StackPanel>
+            <StackPanel x:Name="ViewPanel" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0">
                 <Button x:Name="FitButton" Style="{StaticResource SmallButton}" Content="Fit" Click="Fit_Click" AutomationProperties.Name="Zoom to fit" ToolTip="Fit the picture in the window (Ctrl+0)" Margin="0,0,4,0" />
                 <Button x:Name="ActualButton" Style="{StaticResource SmallButton}" Content="100%" Click="Actual_Click" AutomationProperties.Name="Zoom to 100 percent" ToolTip="One picture pixel per screen pixel (Ctrl+1)" Margin="0,0,4,0" />
                 <TextBlock x:Name="ZoomText" Style="{StaticResource MutedText}" MinWidth="42" TextAlignment="Right" VerticalAlignment="Center" Margin="0,0,12,0" Text="100%" />

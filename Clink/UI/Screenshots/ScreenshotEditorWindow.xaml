@@ -8,8 +8,13 @@
     <Border Background="{DynamicResource Bg}" CornerRadius="10" BorderBrush="{DynamicResource Border}" BorderThickness="1">
         <DockPanel>
             <Grid DockPanel.Dock="Top" Height="42" MouseLeftButtonDown="Header_MouseLeftButtonDown" Background="Transparent">
-                <TextBlock x:Name="TitleText" Style="{StaticResource Display}" Text="Screenshot" Margin="16,0,60,0" VerticalAlignment="Center" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
-                <Button x:Name="CloseButton" Style="{StaticResource IconButton}" Content="✕" HorizontalAlignment="Right" Margin="0,0,8,0" Click="Close_Click"
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock x:Name="TitleText" Style="{StaticResource Display}" Text="Screenshot" Margin="16,0,12,0" VerticalAlignment="Center" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
+                <TextBlock x:Name="HintText" Grid.Column="1" Style="{StaticResource MutedText}" Margin="0,0,52,0" VerticalAlignment="Center" TextWrapping="NoWrap" Visibility="Collapsed" />
+                <Button x:Name="CloseButton" Grid.ColumnSpan="2" Style="{StaticResource IconButton}" Content="✕" HorizontalAlignment="Right" Margin="0,0,8,0" Click="Close_Click"
                         AutomationProperties.Name="Close the editor" ToolTip="Close (Esc)" />
             </Grid>
 

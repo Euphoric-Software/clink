@@ -97,6 +97,53 @@ internal sealed record DocumentState(
         return rt == i ? this : this with { Raster = Raster.RemoveAt(i).Insert(rt, Raster[i]) };
     }
 
+    /// <summary>
+    /// The same picture with the base cut down to <paramref name="crop"/> (clipped to the base) and every object moved by (-crop.X, -crop.Y)
+    /// so that it stays over the same pixels; the new crop is the whole new base. Exporting the result gives the same pixels as exporting
+    /// this document cropped to <paramref name="crop"/>, except where an effect reads pixels outside the crop (a blur or sharpening at
+    /// its edge, a magnifier whose source lies outside), which are gone now. Further differences when the crop cuts through effects:
+    /// a spotlight's dimming levels are computed half-resolution above 4 MP and full-resolution below it, so the smaller base can
+    /// give slightly different levels; pixelate blocks and smart-erase rings that straddle the crop edge are built from the cut
+    /// picture, so their edge blocks / ring samples differ; a spotlight's falloff percentage is relative to the shorter side of the
+    /// new (cropped) base. Only the crop itself is exact. An empty <paramref name="crop"/> changes nothing.
+    /// </summary>
+    public DocumentState Rebase(RectI crop)
+    {
+        var c = crop.Intersect(Base.Bounds);
+        if (c.IsEmpty) return this;
+        int dx = -c.X, dy = -c.Y;
+        var baseImage = Base.Crop(c);
+        return this with
+        {
+            Base = baseImage,
+            Raster = ImmutableList.CreateRange(Raster.Select(o => Move(o, dx, dy))),
+            Vector = ImmutableList.CreateRange(Vector.Select(o => Move(o, dx, dy))),
+            Crop = baseImage.Bounds,
+        };
+    }
+
+    private static EditorObject Move(EditorObject o, int dx, int dy)
+    {
+        Point P(Point p) => new(p.X + dx, p.Y + dy);
+        ImmutableArray<Point> Ps(ImmutableArray<Point> pts) => pts.Select(P).ToImmutableArray();
+        return o switch
+        {
+            PenStroke s => s with { Pts = Ps(s.Pts) },
+            LineShape l => l with { A = P(l.A), B = P(l.B) },
+            FreehandArrow f => f with { Pts = Ps(f.Pts) },
+            RectOutline r => r with { R = new Rect(r.R.X + dx, r.R.Y + dy, r.R.Width, r.R.Height) },
+            TextNote t => t with { Origin = P(t.Origin) },
+            BlurRegion b => b with { R = b.R.Offset(dx, dy) },
+            HighlightRect h => h with { R = h.R.Offset(dx, dy) },
+            HighlightStroke hs => hs with { Pts = Ps(hs.Pts) },
+            SpotlightBox sp => sp with { Box = sp.Box.Offset(dx, dy) },
+            MagnifyBox m => m with { Source = m.Source.Offset(dx, dy), Dest = m.Dest.Offset(dx, dy) },
+            SmartEraseRect e => e with { R = e.R.Offset(dx, dy) },
+            InsertedImage i => i with { Dest = i.Dest.Offset(dx, dy) },
+            _ => o,
+        };
+    }
+
     /// <summary>The same document with a different crop, clipped to the picture (an empty result keeps the old crop).</summary>
     public DocumentState WithCrop(RectI crop)
     {

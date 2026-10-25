@@ -42,6 +42,22 @@ public partial class EditorToolbar : UserControl
     private TextBlock _brightnessText = null!, _contrastText = null!, _sharpnessText = null!;
 
     internal event Action? CopyRequested, SaveRequested, FitRequested, ActualRequested, FocusCanvasRequested, InsertRequested;
+    /// <summary>Compact mode only: Done (keep the picture) and Cancel (throw it away).</summary>
+    internal event Action? DoneRequested, CancelRequested;
+
+    /// <summary>
+    /// The compact toolbar of editing on the screen: the same tools, effects, Insert image and Adjust, but no zoom / Copy / Save (the
+    /// view is fixed at 1:1 and the capture is saved by Done) and a Cancel and a Done button.
+    /// </summary>
+    internal bool Compact
+    {
+        get => OverlayPanel.Visibility == Visibility.Visible;
+        set
+        {
+            OverlayPanel.Visibility = value ? Visibility.Visible : Visibility.Collapsed;
+            ViewPanel.Visibility = value ? Visibility.Collapsed : Visibility.Visible;
+        }
+    }
 
     private enum Kind { Style, Text, Crop, Blur, Pixelate, Highlight, Spotlight, Magnify, Erase, Image }
 
@@ -58,6 +74,12 @@ public partial class EditorToolbar : UserControl
         }
         BuildEffectPanels();
         BuildAdjustPopup();
+        // The Adjust flyout is a window of its own: inside the capture overlay it is kept out of screen captures like the overlay.
+        AdjustPopup.Opened += (_, _) =>
+        {
+            if (System.Windows.Window.GetWindow(this) is Clink.UI.ICaptureExcludedWindow && PresentationSource.FromVisual(AdjustPopup.Child) is System.Windows.Interop.HwndSource src)
+                Clink.UI.ScreenPlacement.ExcludeFromCapture(src.Handle);
+        };
     }
 
     private RadioButton MakeSwatch(string group, string name, Color color) => MakeSwatchCore(group, name, color);
@@ -362,6 +384,8 @@ public partial class EditorToolbar : UserControl
     private void Redo_Click(object sender, RoutedEventArgs e) { _session?.Redo(); FocusCanvasRequested?.Invoke(); }
     private void Fit_Click(object sender, RoutedEventArgs e) { FitRequested?.Invoke(); FocusCanvasRequested?.Invoke(); }
     private void Actual_Click(object sender, RoutedEventArgs e) { ActualRequested?.Invoke(); FocusCanvasRequested?.Invoke(); }
+    private void Done_Click(object sender, RoutedEventArgs e) => DoneRequested?.Invoke();
+    private void CancelCapture_Click(object sender, RoutedEventArgs e) => CancelRequested?.Invoke();
     private void Copy_Click(object sender, RoutedEventArgs e) => CopyRequested?.Invoke();
     private void Save_Click(object sender, RoutedEventArgs e) => SaveRequested?.Invoke();
     private void ResetCrop_Click(object sender, RoutedEventArgs e) { _session?.ResetCrop(); FocusCanvasRequested?.Invoke(); }

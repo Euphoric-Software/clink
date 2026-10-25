@@ -570,6 +570,39 @@ Acceptance: ToolbarPlacement tests already in S3; manual: mixed-DPI monitor edit
 for a full-monitor selection, crop handles, Enter/Done commits, Esc cancels, cross-monitor selection opens the editor window instead,
 annotations outside the crop are clipped in the PNG.
 Risks: keyboard focus in the overlay over a game; toolbar overlapping the selection on small screens.
+Implementation notes (as built):
+- Contract: `IRegionPicker.PickAsync(desktop, loupe, ct, OverlayEditSetup? edit = null)`; a non-null `edit` (mode "before") turns the
+  editing phase on. `RegionPickResult` gained `DocumentState? Document` (base = the monitor's frozen picture, crop = final crop in monitor
+  pixels; `Rect` is that crop in virtual-screen pixels) and `bool SpansMonitors` (area over several monitors: no document, the service opens
+  the editor window on the composed crop, header hint `ScreenshotService.SpanHint`). The pick completes on Done/Enter with the windows still
+  open (the caller closes them, as before). Esc follows the editor window (`OverlayEditKeys.Decide`): it drops a drag, then deselects,
+  then returns to the Select tool, and cancels the capture (no question; edits are in memory only) only when none of that is left. Enter
+  and Space reach a focused toolbar button; a held (repeating) Enter does not finish the edit. After Done, Esc closes the windows.
+- The pick follows what the overlay returned (`Document` / `SpansMonitors`), not the mode setting read afterwards. A black frozen
+  picture under an edited crop gets the "Screenshot is black" toast like a plain capture.
+- The idle watchdog is suspended while the Insert-image picker / file dialog is open and restarts when it closes; a second trigger still
+  cancels. Closing a window between the selection commit and the start of editing ends the capture.
+- Phase logic is the pure `Geometry\OverlayEditState` (selection committed -> Editing / SpansMonitors / Done, crop, toolbar position in the
+  monitor's own physical pixels, idle timer); `RegionOverlayWindow.BeginEditing` hosts `EditorCanvas.OverlayMode` (fixed 1:1, crop handles
+  always on and before every tool/object, dim drawn by the canvas) and `EditorToolbar.Compact` (no zoom/copy/save; Cancel and Done).
+- The service exports with `Exporter` on the UI thread (WPF drawing), then the normal `SaveEditedAsync` (file on a worker, clipboard,
+  one toast, `LastEdit` = the live document rebased to its crop (`DocumentState.Rebase`: base cut to the crop, objects moved, crop =
+  whole), so edit-last reopens it with its objects, keeps no more than the crop in memory and cannot reveal what was cropped out; effects
+  that read outside the crop (blur or sharpen at the edge, a magnifier source outside) lose those pixels on a re-edit; also spotlight
+  dimming levels are half-resolution above 4 MP and full-resolution below it, pixelate blocks and smart-erase rings straddling the crop
+  edge are built from the cut picture, and a spotlight's falloff percentage is relative to the new, shorter side).
+  The edited document is not kept by the service after the rebase, and one LOH compaction runs (Background priority) after the save;
+  a cancelled pick compacts when its windows close.
+- Idle limits: 2 minutes without input while choosing the area, 20 minutes while editing; the watchdog cancelling an editing session
+  shows the notice "Screenshot cancelled after 20 minutes without input". A cancel (Esc, second trigger, watchdog) that arrives while
+  the Insert-image picker / native file dialog is modal is deferred and runs when the dialog returns. Esc inside the Adjust flyout only
+  closes the flyout (overlay and editor window). Enter on a focused toggle button is Done; Enter on a real button presses it.
+- Capture exclusion: tooltips and context menus of an excluded window, any window owned by one (the Insert-image picker and its
+  tooltips) and the Adjust flyout are excluded from screen capture like the overlay itself. The native file dialog (Browse in the
+  picker) cannot be excluded and may show in a recording.
+- After the last overlay window of an editing session closes, the large-object heap is compacted and collected (as the editor window does).
+- Known limitation (accepted): edits made in the overlay are lost on a quit / Windows session end (`SaveEditorForSessionEnd` covers the
+  editor window only). Follow-up if wanted.
 
 ### S6 - Upload, toast actions, nudge, settings completion, AI seam
 Create: `Screenshots\CopiumNudge.cs`, `Screenshots\Ai\IBackgroundRemover.cs` (seam + Unavailable implementation; hidden toolbar slot).

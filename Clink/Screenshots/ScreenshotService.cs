@@ -13,11 +13,19 @@ namespace Clink.Screenshots;
 
 internal enum ScreenshotTrigger { Hotkey, Tray, Cli }
 
-/// <summary>"none" | "before" | "after": what happens after the region is picked. Only "none" (save at once) exists in this version.</summary>
+/// <summary>"none" (save at once) | "before" (edit on the screen, inside the capture overlay) | "after" (edit in the editor window): what happens after the region is picked.</summary>
 internal static class ScreenshotModes
 {
     public const string None = "none", Before = "before", After = "after";
     public static readonly string[] All = { None, Before, After };
+
+    /// <summary>The "After capture" combo's items (stored value, label, tooltip), in the order shown; the settings tab fills the combo from it.</summary>
+    public static readonly (string Value, string Label, string Tip)[] Choices =
+    {
+        (None, "Save only", "Save the picture at once; the notification has an Edit button"),
+        (After, "Open editor", "Open the editor on the picture first; Done saves it"),
+        (Before, "Edit on screen", "Edit right on the screen before saving: draw on the chosen area, then Enter or Done saves it. Esc steps back (drops a drag, deselects, returns to Select) and then throws it away. An area over several monitors opens the editor window instead"),
+    };
 
     /// <summary>The stored mode, lower-cased; anything unknown or blank is <see cref="None"/>.</summary>
     public static string Normalize(string? mode)
@@ -30,19 +38,35 @@ internal static class ScreenshotModes
 /// <summary>What the "Screenshot saved" toast says about the clipboard.</summary>
 internal readonly record struct ScreenshotToastState(bool Copied, bool ClipboardFailed);
 
-/// <summary>A committed region: the rectangle (virtual-screen pixels), the monitor that holds most of it (<see cref="SelectionMath.MonitorIndexOf"/>, an index into <see cref="FrozenDesktop.Monitors"/>) and how it was made.</summary>
-internal sealed record RegionPickResult(RectI Rect, int MonitorIndex, PickOutcome HowEnded);
+/// <summary>
+/// A committed region: the rectangle (virtual-screen pixels), the monitor that holds most of it (<see cref="SelectionMath.MonitorIndexOf"/>,
+/// an index into <see cref="FrozenDesktop.Monitors"/>) and how it was made. After editing on the screen (mode "before",
+/// <see cref="OverlayEditSetup"/>), <see cref="Document"/> is the edited document (base = that monitor's frozen picture, crop = the final
+/// crop in monitor pixels) and <see cref="Rect"/> is its crop in virtual-screen pixels. <see cref="SpansMonitors"/>: mode "before" with an
+/// area over several monitors, which is not edited in the overlay (the service opens the editor window on the composed crop).
+/// </summary>
+internal sealed record RegionPickResult(RectI Rect, int MonitorIndex, PickOutcome HowEnded, DocumentState? Document = null, bool SpansMonitors = false);
+
+/// <summary>What the overlay needs to edit on the screen (mode "before"): the editor's tool options (and where to persist them) and the insert-image list. Passing it to <see cref="IRegionPicker.PickAsync"/> turns editing on.</summary>
+internal sealed record OverlayEditSetup(
+    ScreenshotEditorOptions Options,
+    Action<ScreenshotEditorOptions>? PersistOptions,
+    Func<(IReadOnlyList<ScreenshotEntry> Entries, IReadOnlyList<string> Exclude)>? Recent);
 
 /// <summary>Shows the region picker over a frozen desktop and returns the region chosen, or null when the capture was cancelled.</summary>
 internal interface IRegionPicker
 {
     /// <summary>
     /// UI thread. Shows the overlay and completes when the selection is COMMITTED, with the overlay still on screen: the caller owns
-    /// closing it (<see cref="Close"/>), so a later version can go on editing inside it. Completes with null when the capture was
+    /// closing it (<see cref="Close"/>). Completes with null when the capture was
     /// cancelled (Esc, right-click, <see cref="Cancel"/>, <paramref name="ct"/>, a change of the monitor layout, no input for a while,
     /// a window closed from outside); the overlay has then closed itself. At once with null when <paramref name="ct"/> is already cancelled.
+    /// With <paramref name="edit"/> (mode "before") a committed selection inside one monitor is not the end: that monitor's overlay
+    /// goes on to edit it, and the pick completes when the user confirms (Enter / Done) with <see cref="RegionPickResult.Document"/> set
+    /// (Esc cancels at once, without a question); a selection over several monitors completes with
+    /// <see cref="RegionPickResult.SpansMonitors"/> set and no document.
     /// </summary>
-    Task<RegionPickResult?> PickAsync(FrozenDesktop desktop, bool loupe, CancellationToken ct);
+    Task<RegionPickResult?> PickAsync(FrozenDesktop desktop, bool loupe, CancellationToken ct, OverlayEditSetup? edit = null);
     /// <summary>Cancels the pick that is on screen (it completes with null and closes); nothing when there is none.</summary>
     void Cancel();
     /// <summary>Closes the overlay of the last pick (after a commit; harmless when it is closed already).</summary>
@@ -183,7 +207,8 @@ internal sealed class ScreenshotService
                 if (!cts.IsCancellationRequested)
                 {
                     shown = true;
-                    picked = await _picker.PickAsync(desktop, _settings.ScreenshotLoupe, cts.Token);
+                    picked = await _picker.PickAsync(desktop, _settings.ScreenshotLoupe, cts.Token,
+                        ScreenshotModes.Normalize(_settings.ScreenshotMode) == ScreenshotModes.Before ? EditSetup() : null);
                 }
             }
         }
@@ -195,7 +220,7 @@ internal sealed class ScreenshotService
         }
         finally
         {
-            // The picker hands the overlay over still open after a commit (see IRegionPicker.PickAsync): nothing is edited in it yet.
+            // The picker hands the overlay over still open after a commit (see IRegionPicker.PickAsync); whatever was edited in it is in the result.
             if (shown)
             {
                 try { _picker.Close(); }
@@ -206,16 +231,87 @@ internal sealed class ScreenshotService
             _busy = false;
         }
 
-        if (desktop == null || picked is not { } pick || pick.Rect.IsEmpty)
+        if (desktop == null || picked == null || picked.Rect.IsEmpty)
         {
             Log.Info("screenshot: cancelled");
             return;
         }
-        // Mode "after": the editor first (one editor at a time: a capture made while it is open is saved as it is, the toast has an Edit button).
-        if (ScreenshotModes.Normalize(_settings.ScreenshotMode) == ScreenshotModes.After && _editor is { IsOpen: false })
-            await EditAfterAsync(Take(ref desktop), pick);   // not kept by this method while the editor is open (~100 MB for 3 x 4K)
+        // What happens follows what the pick says (the mode may have been changed in settings while the overlay was up), not the mode now.
+        // Edited on the screen (mode "before"): the overlay is closed and the edited document is exported, saved, copied.
+        if (picked.Document != null)
+        {
+            var rect = picked.Rect;
+            // the black-picture warning is judged on the monitor's frozen picture, before it is let go
+            bool black = WarnBlack(desktop, rect, GameFor(rect) != null);
+            desktop = null;   // only the edited document (its base is the one monitor's picture) is needed now
+            await CommitEditedAsync(TakeDocument(ref picked), rect, black);   // (nothing here keeps the original document: it is rebased to the crop)
+            return;
+        }
+        var pick = picked;
+        // Mode "after" (and "before" over several monitors, which is not edited in the overlay): the editor window first (one editor
+        // at a time: a capture made while it is open is saved as it is, the toast has an Edit button).
+        string mode = ScreenshotModes.Normalize(_settings.ScreenshotMode);
+        bool window = pick.SpansMonitors || mode == ScreenshotModes.After;
+        if (window && _editor is { IsOpen: false })
+            await EditAfterAsync(Take(ref desktop), pick, pick.SpansMonitors ? SpanHint : null);   // not kept by this method while the editor is open (~100 MB for 3 x 4K)
         else
             await CommitAsync(desktop, pick.Rect);
+    }
+
+    /// <summary>The line in the editor's header when a selection over several monitors could not be edited on the screen.</summary>
+    internal const string SpanHint = "Selection spanned monitors — editing in a window";
+
+    private OverlayEditSetup EditSetup() => new(
+        _settings.ScreenshotEditor,
+        o =>
+        {
+            _settings.ScreenshotEditor = o;
+            try { _settings.Save(); } catch (Exception ex) { Log.Warn("screenshot editor: options not saved: " + ex.Message); }
+        },
+        () => RecentForPicker());
+
+    /// <summary>
+    /// Mode "before": the overlay is closed; exports the edited document (the crop of the monitor's picture with the annotations
+    /// clipped to it; WPF drawing, so on the UI thread as in the editor window), then the normal save: one file on a worker, history,
+    /// clipboard, one toast, and the document becomes the live "edit last" document.
+    /// </summary>
+    internal async Task CommitEditedAsync(DocumentState doc, RectI rect, bool black = false)
+    {
+        if (_settings.ClickSound) ClickSound.Play(_settings.ClickVolume);
+        BgraImage image;
+        try
+        {
+            var composer = RasterOps.NewComposer();
+            try { image = Exporter.Export(doc, composer); }
+            finally { composer.Clear(); }
+            // "edit last" keeps the crop only, not the whole monitor picture (and cannot reveal what the user cropped out)
+            doc = doc.Rebase(doc.Crop);
+        }
+        catch (Exception ex)
+        {
+            Log.Error("screenshot: export", ex);
+            _toasts.ShowProblem("Screenshot not saved", ex.Message);
+            return;
+        }
+        await SaveEditedAsync(new EditContext { Game = GameFor(rect), Black = black }, image, doc, finish: true);
+        // the original document (the whole monitor picture and its undo states) is gone: compact once, after the save
+        System.Windows.Application.Current?.Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, CompactMemory);
+    }
+
+    private static DocumentState TakeDocument(ref RegionPickResult? picked)
+    {
+        var d = picked!.Document!;
+        picked = null;
+        return d;
+    }
+
+    /// <summary>Gives the big pictures of a finished editing session back now (one compaction of the large-object heap); Clink runs for weeks.</summary>
+    internal static void CompactMemory()
+    {
+        System.Runtime.GCSettings.LargeObjectHeapCompactionMode = System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
     }
 
     private static FrozenDesktop Take(ref FrozenDesktop? desktop)
@@ -231,6 +327,8 @@ internal sealed class ScreenshotService
     private sealed class EditContext
     {
         public string? Game;
+        /// <summary>The picture looked black (exclusive fullscreen): Done shows the warning instead of the normal toast.</summary>
+        public bool Black;
         /// <summary>The file this picture was opened from (history's <c>EditedFrom</c>); the original is never overwritten.</summary>
         public string? EditedFrom;
         public string? SavedPath;
@@ -241,7 +339,7 @@ internal sealed class ScreenshotService
     }
 
     /// <summary>The overlay is closed: compose the crop and open the editor on it. Nothing is saved until Done / Save.</summary>
-    internal async Task EditAfterAsync(FrozenDesktop desktop, RegionPickResult pick)
+    internal async Task EditAfterAsync(FrozenDesktop desktop, RegionPickResult pick, string? hint = null)
     {
         if (_settings.ClickSound) ClickSound.Play(_settings.ClickVolume);
         string? game = GameFor(pick.Rect);
@@ -270,16 +368,17 @@ internal sealed class ScreenshotService
         var monitor = pick.MonitorIndex >= 0 && pick.MonitorIndex < desktop.Monitors.Count ? desktop.Monitors[pick.MonitorIndex].Monitor : null;
         var document = DocumentState.Create(picture);
         desktop = null!;   // the frozen desktop is not needed any more: only the crop (in the document) is edited
-        await OpenEditorAsync(document, new EditContext { Game = game }, "New screenshot", isNew: true, monitor);
+        await OpenEditorAsync(document, new EditContext { Game = game }, "New screenshot", isNew: true, monitor, hint);
     }
 
-    private async Task OpenEditorAsync(DocumentState doc, EditContext ctx, string title, bool isNew, MonitorInfo? monitor)
+    private async Task OpenEditorAsync(DocumentState doc, EditContext ctx, string title, bool isNew, MonitorInfo? monitor, string? hint = null)
     {
         var editor = _editor!;
         var request = new EditorRequest
         {
             Document = doc,
             Title = title,
+            Hint = hint,
             IsNewCapture = isNew,
             Monitor = monitor ?? _recordedMonitor(),
             Options = _settings.ScreenshotEditor,
@@ -349,7 +448,10 @@ internal sealed class ScreenshotService
                     copied = ScreenshotClipboard.Copy(ctx.Bitmap, ctx.Png);
                     failed = !copied;
                 }
-                _toasts.ShowScreenshot(ctx.Entry, new ScreenshotToastState(copied, failed));
+                if (ctx.Black)
+                    _toasts.ShowProblem("Screenshot is black", "Saved, but the picture is all black. Is the game in exclusive fullscreen? Use borderless windowed mode.");
+                else
+                    _toasts.ShowScreenshot(ctx.Entry, new ScreenshotToastState(copied, failed));
             }
             return true;
         }
