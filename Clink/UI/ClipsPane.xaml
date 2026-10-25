@@ -52,6 +52,48 @@
                 </Setter.Value>
             </Setter>
         </Style>
+        <!-- The screenshots list is a ListBox only for what it gives UI Automation: every row is a ListBoxItem (a named element with an automation peer, so its buttons
+             are reachable after the list is rebuilt). It looks like the ItemsControl lists: no selection visual, no focus stop of its own, virtualized. -->
+        <Style x:Key="ShotListItem" TargetType="ListBoxItem">
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="AutomationProperties.Name" Value="{Binding Title}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListBoxItem">
+                        <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" />
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="ShotList" TargetType="ListBox">
+            <Setter Property="VirtualizingPanel.IsVirtualizing" Value="True" />
+            <Setter Property="VirtualizingPanel.VirtualizationMode" Value="Recycling" />
+            <Setter Property="VirtualizingPanel.ScrollUnit" Value="Pixel" />
+            <Setter Property="ScrollViewer.CanContentScroll" Value="True" />
+            <Setter Property="KeyboardNavigation.TabNavigation" Value="Continue" />
+            <Setter Property="KeyboardNavigation.DirectionalNavigation" Value="Continue" />
+            <Setter Property="IsTabStop" Value="False" />
+            <Setter Property="IsTextSearchEnabled" Value="False" />
+            <Setter Property="ItemContainerStyle" Value="{StaticResource ShotListItem}" />
+            <Setter Property="ItemsPanel">
+                <Setter.Value>
+                    <ItemsPanelTemplate>
+                        <VirtualizingStackPanel />
+                    </ItemsPanelTemplate>
+                </Setter.Value>
+            </Setter>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListBox">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,0,2,0" CanContentScroll="True" Focusable="False">
+                            <ItemsPresenter />
+                        </ScrollViewer>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
         <Style x:Key="UploadBar" TargetType="ProgressBar" BasedOn="{StaticResource {x:Type ProgressBar}}">
             <Setter Property="Visibility" Value="Collapsed" />
             <Setter Property="Margin" Value="0,4,0,0" />
@@ -148,26 +190,95 @@
                 </Grid>
             </Border>
         </DataTemplate>
+
+        <!-- Screenshot row: 176 x 99 thumbnail, title + meta (+ link when shared) + status, then Edit / Open / folder / Upload or Copy link + Open page / Delete.
+             A click on the row (not on a button) edits the screenshot. -->
+        <DataTemplate x:Key="ShotRow">
+            <Border Style="{StaticResource Row}" Cursor="Hand" PreviewMouseLeftButtonDown="Shot_Down" MouseLeftButtonUp="Shot_Click"
+                    Loaded="ShotRow_Loaded" DataContextChanged="ShotRow_DataContextChanged" AutomationProperties.Name="{Binding Title}">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <Border Width="176" Height="99" CornerRadius="4" Background="{DynamicResource Panel3}" VerticalAlignment="Top" ToolTip="Edit"
+                            Visibility="{Binding HasLocalFile, Converter={StaticResource Vis}}">
+                        <Border.Clip>
+                            <RectangleGeometry Rect="0,0,176,99" RadiusX="4" RadiusY="4" />
+                        </Border.Clip>
+                        <Image Source="{Binding Thumbnail}" Stretch="UniformToFill" />
+                    </Border>
+                    <StackPanel Grid.Column="1" Margin="10,0,0,0" VerticalAlignment="Top">
+                        <DockPanel LastChildFill="False">
+                            <TextBlock DockPanel.Dock="Right" Style="{StaticResource Glyph}" Text="&#xE753;" Foreground="{DynamicResource Accent}" Margin="6,1,0,0" ToolTip="Shared to Copium"
+                                       Visibility="{Binding HasLink, Converter={StaticResource Vis}}" />
+                            <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap" />
+                        </DockPanel>
+                        <TextBlock Text="{Binding Meta}" Style="{StaticResource MutedText}" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap" ToolTip="{Binding Meta}" />
+                        <Button Style="{StaticResource LinkButton}" Click="ShotCopyLink_Click" Padding="0,1" HorizontalAlignment="Left" FontSize="12" ToolTip="Click to copy the link"
+                                Visibility="{Binding HasLink, Converter={StaticResource Vis}}">
+                            <TextBlock Text="{Binding Link}" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap" Foreground="{DynamicResource Accent2}" />
+                        </Button>
+                        <TextBlock Text="{Binding Status}" Style="{StaticResource StatusText}" />
+                        <WrapPanel Margin="0,6,0,0">
+                            <Button Content="Edit" Click="ShotEdit_Click" Style="{StaticResource SmallButton}" Margin="0,0,6,4" AutomationProperties.Name="Edit screenshot"
+                                    Visibility="{Binding HasLocalFile, Converter={StaticResource Vis}}" />
+                            <Button Content="Open" Click="ShotOpen_Click" Style="{StaticResource SmallButton}" Margin="0,0,6,4" AutomationProperties.Name="Open screenshot" ToolTip="Open in the default image viewer"
+                                    Visibility="{Binding HasLocalFile, Converter={StaticResource Vis}}" />
+                            <Button Style="{StaticResource GlyphButton}" Content="&#xE8B7;" Click="ShotFolder_Click" Padding="8,4" Margin="0,0,6,4" ToolTip="Show in folder" AutomationProperties.Name="Show in folder"
+                                    Visibility="{Binding HasLocalFile, Converter={StaticResource Vis}}" />
+                            <Button Content="Upload" Click="ShotUpload_Click" Style="{StaticResource SmallButton}" Margin="0,0,6,4" AutomationProperties.Name="Upload to Copium" ToolTip="Upload to Copium"
+                                    Visibility="{Binding UploadVisible, Converter={StaticResource Vis}}" />
+                            <Button Content="Copy link" Click="ShotCopyLink_Click" Style="{StaticResource SmallButton}" Margin="0,0,6,4" AutomationProperties.Name="Copy link"
+                                    Visibility="{Binding HasLink, Converter={StaticResource Vis}}" />
+                            <Button Content="Open page" Click="ShotOpenPage_Click" Style="{StaticResource SmallButton}" Margin="0,0,6,4" ToolTip="Open the screenshot on copium.pics" AutomationProperties.Name="Open page"
+                                    Visibility="{Binding HasPage, Converter={StaticResource Vis}}" />
+                            <Button Style="{StaticResource GlyphButton}" Content="&#xE74D;" Click="ShotDelete_Click" Padding="8,4" Margin="0,0,0,4" ToolTip="Delete (to the Recycle Bin)" AutomationProperties.Name="Delete screenshot"
+                                    Visibility="{Binding DeleteVisible, Converter={StaticResource Vis}}" />
+                            <Button Content="Remove from list" Click="ShotDelete_Click" Style="{StaticResource SmallButton}" Margin="0,0,0,4" AutomationProperties.Name="Remove from list"
+                                    ToolTip="Remove from this list. The link stays on Copium" Visibility="{Binding RemoveVisible, Converter={StaticResource Vis}}" />
+                        </WrapPanel>
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </DataTemplate>
     </UserControl.Resources>
 
-    <TabControl x:Name="Tabs">
-        <TabItem x:Name="LocalTab" Header="Local">
-            <Grid Margin="0,8,0,0">
-                <TextBlock x:Name="NoLocalText" Style="{StaticResource MutedText}" Margin="8" Text="No clips yet. Press the hotkey while gaming." />
-                <ItemsControl x:Name="LocalList" ItemTemplate="{StaticResource LocalRow}" Style="{StaticResource ClipList}" />
-            </Grid>
-        </TabItem>
-        <TabItem x:Name="SharedTab" Header="Shared">
-            <Grid Margin="0,8,0,0">
-                <TextBlock x:Name="NoSharedText" Style="{StaticResource MutedText}" Margin="8" Text="Nothing shared to Copium yet. Clips shared to Copium are listed here, even after the local file is gone." />
-                <ItemsControl x:Name="SharedList" ItemTemplate="{StaticResource CloudRow}" Style="{StaticResource ClipList}" />
-            </Grid>
-        </TabItem>
-        <TabItem x:Name="TrimTab" Header="Trimmed">
-            <Grid Margin="0,8,0,0">
-                <TextBlock x:Name="NoTrimText" Style="{StaticResource MutedText}" Margin="8" Text="No trimmed clips yet. Trim saves a cut copy next to the original." />
-                <ItemsControl x:Name="TrimList" ItemTemplate="{StaticResource LocalRow}" Style="{StaticResource ClipList}" />
-            </Grid>
-        </TabItem>
-    </TabControl>
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- Top level: Clips | Screenshots (hidden when only one feature is on: that one is implied) -->
+        <Border x:Name="FeatureBar" Grid.Row="0" Background="{DynamicResource Panel2}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="10" Padding="3" Margin="0,0,0,8">
+            <UniformGrid Columns="2">
+                <RadioButton x:Name="ClipsFeature" GroupName="LibraryFeature" Style="{StaticResource SegmentPrimary}" Content="Clips" AutomationProperties.Name="Clips"
+                             Checked="Feature_Checked" />
+                <RadioButton x:Name="ShotsFeature" GroupName="LibraryFeature" Style="{StaticResource SegmentPrimary}" Content="Screenshots" AutomationProperties.Name="Screenshots"
+                             Checked="Feature_Checked" />
+            </UniformGrid>
+        </Border>
+
+        <!-- Second level, lower and quieter: Local | Shared, and on the clips side the Trimmed filter -->
+        <Grid Grid.Row="1" Margin="0,0,0,8">
+            <!-- Panel, not Panel3: the muted segment text measures 4.5:1 on Bg / Panel / Panel2 in both themes (ThemeTests), not on Panel3 -->
+            <Border Background="{DynamicResource Panel}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="7" Padding="2" HorizontalAlignment="Left">
+                <StackPanel Orientation="Horizontal">
+                    <RadioButton x:Name="LocalLevel" GroupName="LibraryLevel" Style="{StaticResource SegmentSecondary}" Content="Local" AutomationProperties.Name="Local" Checked="Level_Checked" />
+                    <RadioButton x:Name="SharedLevel" GroupName="LibraryLevel" Style="{StaticResource SegmentSecondary}" Content="Shared" AutomationProperties.Name="Shared" Checked="Level_Checked" />
+                </StackPanel>
+            </Border>
+            <ToggleButton x:Name="TrimmedChip" Style="{StaticResource FilterChip}" Content="Trimmed" HorizontalAlignment="Right" AutomationProperties.Name="Trimmed"
+                          ToolTip="Show only trimmed clips" Checked="Trimmed_Changed" Unchecked="Trimmed_Changed" />
+        </Grid>
+
+        <Grid Grid.Row="2">
+            <TextBlock x:Name="EmptyText" Style="{StaticResource MutedText}" Margin="8" TextWrapping="Wrap" />
+            <ItemsControl x:Name="ClipLocalList" ItemTemplate="{StaticResource LocalRow}" Style="{StaticResource ClipList}" />
+            <ItemsControl x:Name="ClipSharedList" ItemTemplate="{StaticResource CloudRow}" Style="{StaticResource ClipList}" Visibility="Collapsed" />
+            <ListBox x:Name="ShotList" ItemTemplate="{StaticResource ShotRow}" Style="{StaticResource ShotList}" Visibility="Collapsed" AutomationProperties.Name="Screenshots list" />
+        </Grid>
+    </Grid>
 </UserControl>

@@ -391,3 +391,5 @@ OpenClipboard
 CloseClipboard
 // import folder check: a mapped network drive is a network folder too
 GetDriveType
+// library Delete: the Recycle Bin (never a permanent delete), no shell dialogs
+SHFileOperation

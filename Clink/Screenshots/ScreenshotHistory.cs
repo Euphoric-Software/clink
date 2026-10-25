@@ -116,6 +116,15 @@ internal sealed class ScreenshotHistory
     /// <summary>Puts a screenshot at the top and writes the file; the oldest beyond <see cref="Cap"/> leave the list (their PNGs stay on disk).</summary>
     public void Add(ScreenshotEntry entry)
     {
+        try
+        {
+            AddCore(entry);
+        }
+        finally { RaiseChanged(); }
+    }
+
+    private void AddCore(ScreenshotEntry entry)
+    {
         lock (_gate)
         {
             var list = EnsureLoaded();
@@ -143,6 +152,13 @@ internal sealed class ScreenshotHistory
     /// </summary>
     public bool Update(ScreenshotEntry entry, bool warn = true)
     {
+        bool ok = false;
+        try { return ok = UpdateCore(entry, warn); }
+        finally { if (ok) RaiseChanged(); }
+    }
+
+    private bool UpdateCore(ScreenshotEntry entry, bool warn)
+    {
         lock (_gate)
         {
             var listed = EnsureLoaded().FirstOrDefault(e => PathsEqual(e.Path, entry.Path));
@@ -160,6 +176,38 @@ internal sealed class ScreenshotHistory
             Save();
             return true;
         }
+    }
+
+    /// <summary>
+    /// Takes the entry for <paramref name="path"/> out of the list and writes the file (the PNG itself is the caller's to deal with).
+    /// False when no entry has that path: nothing is written and <see cref="Changed"/> is not raised.
+    /// </summary>
+    public bool Remove(string path)
+    {
+        bool removed = false;
+        try
+        {
+            lock (_gate)
+            {
+                var list = EnsureLoaded();
+                removed = list.RemoveAll(e => PathsEqual(e.Path, path)) > 0;
+                if (removed) Save();
+            }
+            return removed;
+        }
+        finally { if (removed) RaiseChanged(); }
+    }
+
+    /// <summary>
+    /// Raised (on whatever thread made the change, never while the history's lock is held) after a screenshot was added, got its Copium
+    /// link, or was removed: the library list follows it. Handlers must marshal to the UI thread themselves.
+    /// </summary>
+    public event Action? Changed;
+
+    private void RaiseChanged()
+    {
+        try { Changed?.Invoke(); }
+        catch (Exception ex) { Log.Warn("screenshots: history change handler: " + ex.Message); }
     }
 
     public ScreenshotEntry? Find(string path)
@@ -195,7 +243,8 @@ internal sealed class ScreenshotHistory
         int before = loaded.Count;
         // (A network path is not probed while the folder in use is a local one: a hand-edited file cannot make the app reach out to a
         // server; such an entry is kept as it is and can never be opened, see ScreenshotService.KnownFolders.)
-        loaded = loaded.Where(e => (IsUnc(e.Path) && !IsUnc(_rebuildFolder)) || SafeExists(e.Path)).Take(Limit).ToList();
+        // (An entry with a Copium link stays when its file is gone: the link is still good, and the library's Shared list shows it.)
+        loaded = loaded.Where(e => !string.IsNullOrEmpty(e.CopiumLink) || (IsUnc(e.Path) && !IsUnc(_rebuildFolder)) || SafeExists(e.Path)).Take(Limit).ToList();
         _entries = loaded;
         if (rebuild && loaded.Count > 0 || before != loaded.Count && before > 0)
         {
