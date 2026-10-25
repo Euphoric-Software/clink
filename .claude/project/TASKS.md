@@ -24,7 +24,7 @@
 - [x] S4 raster tools, adjustments, insert image (77530e1)
 - [x] S5 edit-before in the overlay (5ea3308)
 - [x] S6 upload, toast actions, Copium nudge, settings completion, AI seam, export off UI thread (56bb20d)
-- [ ] S7 consent and sharing controls (supersedes the old "WGC HDR source" slot, which stays pending the user HDR check):
+- [x] S7 consent and sharing controls (4df4efa) (supersedes the old "WGC HDR source" slot, which stays pending the user HDR check):
   - one-time Copium opt-in pop-up with public-link warning; cloud sharing default OFF (clips and screenshots); automatic upload opt-in
   - global "Allow cloud sharing" kill switch with two-step re-enable
   - feature-visibility toggles (Clips / Screenshots); hiding Clips stops the replay engine (assumption, confirm)
@@ -69,3 +69,13 @@
 - [ ] Native file dialog cannot be capture-excluded (may appear in a replay clip)
 - [ ] Two editor sessions at once (overlay + window) raise the memory peak
 - [ ] `Rebase` re-export may differ for edge effects (blur/magnify near the crop edge)
+
+## S7 follow-ups
+- [ ] Recording stop ordering (queued notice / async void) when Clips is turned off while recording
+- [ ] Bare 403 vs plan limits
+- [ ] Share window not updated live after a kill-switch flip
+- [ ] Tab-to-Enable + Enter agrees in consent dialog
+- [ ] Capture-excluded consent dialog invisible in screen shares
+- [ ] Real-upload verification with a valid token; Copium image size limit unknown
+- [ ] Dev build #3 (slices 6-7): pending this push
+- Next: S8 library pane

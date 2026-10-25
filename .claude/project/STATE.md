@@ -112,14 +112,18 @@ S5 done (5ea3308): mode "before" ("Edit on screen") inside the capture overlay: 
 
 S6 done (56bb20d, branch feature/screenshots): Copium PNG upload path, toast actions (Open | Edit | Upload/Copy link | Folder, progress/Cancel/Retry), Copium nudge, settings rows + Alerts "Screenshot saved" switch, export compose/encode off the UI thread, AI background-remover seam (unavailable), security hardening. Two senior-review rounds plus a security review. Verified: Debug and Release 0 warnings; `--unittest` 699 passed/0 failed/0 skipped (Debug plain, Debug NO_SKIP, Release NO_SKIP); 49 new tests; no BOM changes; secrets scan clean (only eup_test fakes). NOT verified: a real upload to Copium; elevated-run pipe client.
 
-## Dev channel push
-Merge of feature/screenshots into dev pushed on 2026-10-25 (authorized "A"). Result: dev 77705f5 (merge, slices 1-5), run 40168176731 (3m39s) success, prerelease v0.3.2-dev.2 published. Next dev push waits for S7 (user to confirm timing and standing approval). No push done after S6.
+S7 done (4df4efa, branch feature/screenshots): sharing opt-in with Copium consent dialog (public-link warning), global "Allow cloud sharing" kill switch, Clips/Screenshots feature visibility, S6 leftovers. Three review rounds. Verified: Debug and Release 0 warnings; `--unittest` 736 passed/0 failed/0 skipped (Debug plain, Debug NO_SKIP, Release NO_SKIP); 37 new tests; no BOM changes; secrets scan clean (only eup_secret test fake). NOT verified: a real upload to Copium with a valid token; GUI walk-through of consent/kill switch.
 
-## User decisions (2026-10-25, after S6 review)
-- All cloud sharing defaults OFF (clips and screenshots). One-time Copium opt-in pop-up with a prominent warning: anything uploaded is immediately publicly accessible by link.
-- Global "Allow cloud sharing" kill switch (two-step re-enable) covering clips and screenshots.
-- Feature-visibility toggles (Clips / Screenshots) hide and disable a feature. Assumption to confirm: hiding Clips also stops the replay engine.
-- Library pane rework: big Clips | Screenshots switch, subordinate Local | Shared, Trimmed becomes a filter.
+## Dev channel push
+Merge of feature/screenshots into dev pushed on 2026-10-25 (authorized "A"). Result: dev 77705f5 (merge, slices 1-5), run 40168176731 success, prerelease v0.3.2-dev.2. Slices 6-7 push to dev: build #3 pending (this push). Standing policy: dev pushes after reviewed slices need no further approval; main always asks.
+
+## S7 follow-ups
+- Recording: queued-notice / `async void` stop ordering when Clips is turned off while recording
+- Bare 403 vs plan limits (not treated as token problem)
+- Share window not updated live after a kill-switch flip
+- Tab-to-Enable then Enter in the consent dialog agrees
+- Capture-excluded consent dialog is invisible in screen shares
+- Real-upload verification with a valid token; Copium image size limit unknown
 
 ## Next action
-S7 (consent, kill switch, visibility toggles, S6 leftovers; see TASKS.md), then S8 library pane, then the next dev build.
+S8 library pane (Clips | Screenshots switch, Local | Shared, Trimmed filter).
