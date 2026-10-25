@@ -111,7 +111,7 @@ S5 done (5ea3308): mode "before" ("Edit on screen") inside the capture overlay: 
 - S5 overlay editing: set mode "Edit on screen"; toolbar placement at all screen edges and small/200% screens; crop handles; Esc ladder (gesture -> deselect -> tool -> cancel); Enter and Done save one cropped PNG with outside annotations clipped; Cancel button; cross-monitor drag opens the editor window with hint; insert dialogs while overlay is up; idle notice after 20 min; replay clip saved during/after overlay editing contains no overlay or toolbar.
 
 ## Dev channel push
-Merge of feature/screenshots into dev pushed on 2026-10-25 (authorized "A"). Result: see below.
+Merge of feature/screenshots into dev pushed on 2026-10-25 (authorized "A"). Result: dev 77705f5 (merge), run 40168176731 (3m39s) success, prerelease v0.3.2-dev.2 published.
 
 ## Next action
 S6 (Copium upload + nudge + settings completion + export off the UI thread), then a second dev build.
