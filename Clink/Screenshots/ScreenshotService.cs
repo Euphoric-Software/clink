@@ -108,19 +108,25 @@ internal sealed class ScreenshotService
     public static string FolderFor(Settings s) =>
         !string.IsNullOrWhiteSpace(s.ScreenshotsFolder) ? s.ScreenshotsFolder.Trim() : System.IO.Path.Combine(s.ClipsFolder, "Screenshots");
 
+    private readonly object _historyGate = new();
+
+    /// <summary>The history of the current folder (made again when the folder setting changed). Thread-safe: the insert-image picker reads it on a worker.</summary>
     private ScreenshotHistory History
     {
         get
         {
-            string folder = FolderFor(_settings);
-            if (_history == null || !string.Equals(_historyFolder, folder, StringComparison.OrdinalIgnoreCase))
+            lock (_historyGate)
             {
-                _history = new ScreenshotHistory(ScreenshotHistory.DefaultFile, folder);
-                _historyFolder = folder;
-                try { _history.NoteRoot(folder); }   // an earlier folder stays openable after the setting changes
-                catch (Exception ex) { Log.Warn("screenshot: folder not recorded: " + ex.Message); }
+                string folder = FolderFor(_settings);
+                if (_history == null || !string.Equals(_historyFolder, folder, StringComparison.OrdinalIgnoreCase))
+                {
+                    _history = new ScreenshotHistory(ScreenshotHistory.DefaultFile, folder);
+                    _historyFolder = folder;
+                    try { _history.NoteRoot(folder); }   // an earlier folder stays openable after the setting changes
+                    catch (Exception ex) { Log.Warn("screenshot: folder not recorded: " + ex.Message); }
+                }
+                return _history;
             }
-            return _history;
         }
     }
 
@@ -283,6 +289,7 @@ internal sealed class ScreenshotService
                 try { _settings.Save(); } catch (Exception ex) { Log.Warn("screenshot editor: options not saved: " + ex.Message); }
             },
             SaveAsync = (image, d, finish) => SaveEditedAsync(ctx, image, d, finish),
+            Recent = () => RecentForPicker(ctx.EditedFrom, ctx.SavedPath),
         };
         Log.Info($"screenshot: editor opened ({title}, {doc.Base.Width}x{doc.Base.Height})");
         bool failed = false;
@@ -492,6 +499,21 @@ internal sealed class ScreenshotService
 
     /// <summary>A history entry (or the toast's file) that may be opened: see <see cref="IsOpenableFile"/> for the current and earlier screenshot folders.</summary>
     internal bool IsOpenableEntry(string? path) => IsOpenableFile(path, KnownFolders());
+
+    /// <summary>
+    /// The recent screenshots the editor's insert-image picker may list, newest first: only entries that pass the path rule of
+    /// <see cref="IsOpenableEntry"/> (inside a known screenshots folder; a network path only when the current folder is one), and not
+    /// <paramref name="exclude"/>d (the file being edited, the file this session saved). No disk access for the entries: the picker
+    /// checks the files themselves (<see cref="IsOpenableFile"/>: exists, regular, no link) on its worker, which is also where this
+    /// runs. Thread-safe.
+    /// </summary>
+    internal (IReadOnlyList<ScreenshotEntry> Entries, IReadOnlyList<string> Exclude) RecentForPicker(params string?[] exclude)
+    {
+        var folders = KnownFolders();
+        var skip = exclude.Where(p => !string.IsNullOrEmpty(p)).Select(p => p!).ToList();
+        var entries = History.Entries.Where(e => IsOpenable(e.Path, folders)).ToList();
+        return (InsertPickerModel.WithoutExcluded(entries, skip), skip);
+    }
 
     /// <summary>
     /// A PNG given explicitly by the user on the command line: fully qualified, exactly <c>.png</c>, no alternate data stream,

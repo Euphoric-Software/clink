@@ -38,7 +38,49 @@
             </StackPanel>
         </Grid>
 
-        <!-- Row 2: options of the current tool -->
+        <!-- Row 2: effects (raster tools), insert image, adjustments -->
+        <StackPanel x:Name="EffectsPanel" Orientation="Horizontal" Margin="0,8,0,0" VerticalAlignment="Center">
+            <TextBlock Style="{StaticResource MutedText}" Text="Effects" VerticalAlignment="Center" Margin="0,0,8,0" />
+            <RadioButton x:Name="BlurTool" Style="{StaticResource PillRadio}" Content="Blur" GroupName="EditorTool" Click="Tool_Click" Tag="Blur" AutomationProperties.Name="Blur tool"
+                         ToolTip="Blur a region: drag a rectangle (B)" Margin="0,0,4,0" Padding="10,4" />
+            <RadioButton x:Name="PixelateTool" Style="{StaticResource PillRadio}" Content="Pixelate" GroupName="EditorTool" Click="Tool_Click" Tag="Pixelate" AutomationProperties.Name="Pixelate tool"
+                         ToolTip="Pixelate a region: drag a rectangle (X)" Margin="0,0,4,0" Padding="10,4" />
+            <RadioButton x:Name="HighlightTool" Style="{StaticResource PillRadio}" Content="Highlight" GroupName="EditorTool" Click="Tool_Click" Tag="Highlight" AutomationProperties.Name="Highlight tool"
+                         ToolTip="Highlighter: drag a rectangle (Shift makes a square), or draw freehand (the Freehand option) (H)" Margin="0,0,4,0" Padding="10,4" />
+            <RadioButton x:Name="SpotlightTool" Style="{StaticResource PillRadio}" Content="Spotlight" GroupName="EditorTool" Click="Tool_Click" Tag="Spotlight" AutomationProperties.Name="Spotlight tool"
+                         ToolTip="Spotlight: keep a box sharp, blur and darken the rest (S)" Margin="0,0,4,0" Padding="10,4" />
+            <RadioButton x:Name="MagnifyTool" Style="{StaticResource PillRadio}" Content="Magnify" GroupName="EditorTool" Click="Tool_Click" Tag="Magnify" AutomationProperties.Name="Magnify tool"
+                         ToolTip="Magnify: drag over what to enlarge; the enlarged copy appears beside it (M)" Margin="0,0,4,0" Padding="10,4" />
+            <RadioButton x:Name="EraseTool" Style="{StaticResource PillRadio}" Content="Erase" GroupName="EditorTool" Click="Tool_Click" Tag="Erase" AutomationProperties.Name="Smart erase tool"
+                         ToolTip="Smart erase: drag over what to remove; the background is continued into it (E)" Margin="0,0,10,0" Padding="10,4" />
+            <Button x:Name="InsertButton" Style="{StaticResource SmallButton}" Click="Insert_Click" AutomationProperties.Name="Insert image"
+                    ToolTip="Insert an image: a recent screenshot, a file or the clipboard (I). Ctrl+V pastes the clipboard picture" Margin="0,0,4,0">
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Style="{StaticResource Glyph}" Text="&#xE91B;" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" Margin="0,0,6,0" />
+                    <TextBlock Text="Insert image" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" TextWrapping="NoWrap" />
+                </StackPanel>
+            </Button>
+            <Button x:Name="AdjustButton" Style="{StaticResource SmallButton}" Click="Adjust_Click" AutomationProperties.Name="Adjustments"
+                    ToolTip="Brightness, contrast and sharpness of the whole picture">
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Style="{StaticResource Glyph}" Text="&#xE706;" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" Margin="0,0,6,0" />
+                    <TextBlock Text="Adjust" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" TextWrapping="NoWrap" />
+                </StackPanel>
+            </Button>
+            <Popup x:Name="AdjustPopup" PlacementTarget="{Binding ElementName=AdjustButton}" Placement="Bottom" StaysOpen="False" AllowsTransparency="True" Closed="AdjustPopup_Closed" PopupAnimation="None">
+                <Border Style="{StaticResource Card}" Background="{DynamicResource Bg}" Padding="14,12" Margin="0,6,12,12" MinWidth="320">
+                    <StackPanel>
+                        <TextBlock Style="{StaticResource H}" Text="ADJUSTMENTS" />
+                        <Grid x:Name="AdjustGrid" />
+                        <TextBlock x:Name="AdjustHint" Style="{StaticResource MutedText}" Margin="0,8,0,0" Text="Applies to the whole picture, under the annotations." />
+                        <Button x:Name="ResetAdjustButton" Style="{StaticResource SmallButton}" Content="Reset" HorizontalAlignment="Left" Margin="0,10,0,0" Click="ResetAdjust_Click"
+                                AutomationProperties.Name="Reset adjustments" ToolTip="Brightness, contrast and sharpness back to 0" />
+                    </StackPanel>
+                </Border>
+            </Popup>
+        </StackPanel>
+
+        <!-- Row 3: options of the current tool -->
         <StackPanel Orientation="Horizontal" Margin="0,8,0,0" VerticalAlignment="Center">
             <StackPanel x:Name="SwatchPanel" Orientation="Horizontal" VerticalAlignment="Center" />
             <StackPanel x:Name="WidthPanel" Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0">
@@ -62,6 +104,16 @@
             </StackPanel>
             <Button x:Name="ResetCropButton" Style="{StaticResource SmallButton}" Content="Reset crop" Click="ResetCrop_Click" Visibility="Collapsed" Margin="12,0,0,0"
                     AutomationProperties.Name="Reset crop" ToolTip="Keep the whole picture again" />
+            <!-- per-tool option panels of the raster tools: filled by the code behind -->
+            <StackPanel x:Name="BlurPanel" Orientation="Horizontal" VerticalAlignment="Center" Visibility="Collapsed" />
+            <StackPanel x:Name="PixelatePanel" Orientation="Horizontal" VerticalAlignment="Center" Visibility="Collapsed" />
+            <StackPanel x:Name="HighlightPanel" Orientation="Horizontal" VerticalAlignment="Center" Visibility="Collapsed" />
+            <StackPanel x:Name="SpotlightPanel" Orientation="Horizontal" VerticalAlignment="Center" Visibility="Collapsed" />
+            <StackPanel x:Name="MagnifyPanel" Orientation="Horizontal" VerticalAlignment="Center" Visibility="Collapsed" />
+            <StackPanel x:Name="ErasePanel" Orientation="Horizontal" VerticalAlignment="Center" Visibility="Collapsed">
+                <TextBlock Style="{StaticResource MutedText}" Text="Drag over what to remove: the surroundings are continued into it" VerticalAlignment="Center" TextWrapping="NoWrap" />
+            </StackPanel>
+            <StackPanel x:Name="ImagePanel" Orientation="Horizontal" VerticalAlignment="Center" Visibility="Collapsed" />
         </StackPanel>
     </StackPanel>
 </UserControl>

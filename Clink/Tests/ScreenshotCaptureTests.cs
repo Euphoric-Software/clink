@@ -442,6 +442,30 @@ internal static class ScreenshotCaptureTests
     }
 
     [UnitTest]
+    public static void The_insert_picker_lists_only_openable_history_entries_and_never_the_file_being_edited()
+    {
+        using var dir = new TempDir();
+        var rig = Make(dir, new FakeEditor());
+        Directory.CreateDirectory(rig.Folder);
+        string a = Path.Combine(rig.Folder, "a.png"), b = Path.Combine(rig.Folder, "b.png"), c = Path.Combine(rig.Folder, "c.png");
+        foreach (var f in new[] { a, b, c }) File.WriteAllBytes(f, new byte[] { 1 });
+        string otherDir = dir.File("other");
+        Directory.CreateDirectory(otherDir);
+        string outside = Path.Combine(otherDir, "planted.png");
+        File.WriteAllBytes(outside, new byte[] { 1 });
+        string unc = @"\\clink-test-server.invalid\share\shots\a.png";
+        string Entry(string p) => "{ \"path\": " + System.Text.Json.JsonSerializer.Serialize(p) + ", \"created\": \"2026-01-01T00:00:00\" }";
+        File.WriteAllText(ScreenshotHistory.DefaultFile, "{ \"entries\": [ " + string.Join(", ", new[] { a, outside, unc, b, c }.Select(Entry)) + " ],"
+            + " \"roots\": [ " + System.Text.Json.JsonSerializer.Serialize(@"\\clink-test-server.invalid\share\shots") + " ] }");
+
+        var sw = Stopwatch.StartNew();
+        var (entries, exclude) = rig.Service.RecentForPicker(b.ToUpperInvariant(), null, "");
+        Check.Equal(new[] { a, c }, entries.Select(e => e.Path).ToArray(), "inside the screenshots folders only (no planted file, no network path), without the file being edited");
+        Check.Equal(1, exclude.Count, "the file being edited is passed on to the picker");
+        Check.True(sw.ElapsedMilliseconds < 3000, $"no server was waited for ({sw.ElapsedMilliseconds} ms)");
+    }
+
+    [UnitTest]
     public static void A_refused_editor_open_says_so_instead_of_opening_a_second_one()
     {
         using var dir = new TempDir();

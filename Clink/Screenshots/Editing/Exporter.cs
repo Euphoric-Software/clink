@@ -30,7 +30,7 @@ internal static class Exporter
     /// <summary>The finished picture (a new image, never the document's own buffers).</summary>
     public static BgraImage Export(DocumentState doc, RasterComposer? composer = null)
     {
-        composer ??= new RasterComposer();
+        composer ??= RasterOps.NewComposer();
         var composite = composer.Compose(doc);
         var crop = doc.Crop.Intersect(composite.Bounds);
         if (crop.IsEmpty) throw new InvalidOperationException("The crop is empty");

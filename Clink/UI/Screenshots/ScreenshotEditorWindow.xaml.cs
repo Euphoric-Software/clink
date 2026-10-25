@@ -43,6 +43,10 @@ public partial class ScreenshotEditorWindow : Window
         Toolbar.FitRequested += Canvas.ZoomToFit;
         Toolbar.ActualRequested += Canvas.ZoomActual;
         Toolbar.FocusCanvasRequested += () => Canvas.Focus();
+        Toolbar.InsertRequested += OpenInsertPicker;
+        Canvas.InsertImageRequested += OpenInsertPicker;
+        Canvas.PasteRequested += PasteImage;
+        _session.Notice += Say;
         Canvas.ViewChanged += () => Toolbar.SetZoom(Canvas.Zoom);
         Toolbar.SetZoom(Canvas.Zoom);
         SourceInitialized += (_, _) => Place(request);
@@ -59,7 +63,7 @@ public partial class ScreenshotEditorWindow : Window
     internal static (int X, int Y, int W, int H) Place(int imageW, int imageH, double dpi, int workLeft, int workTop, int workW, int workH)
     {
         int w = (int)Math.Min(Math.Max(imageW + 40 * dpi, 1000 * dpi), workW * 0.9);
-        int h = (int)Math.Min(Math.Max(imageH + 190 * dpi, 700 * dpi), workH * 0.9);
+        int h = (int)Math.Min(Math.Max(imageH + 232 * dpi, 700 * dpi), workH * 0.9);
         w = Math.Min(w, workW);
         h = Math.Min(h, workH);
         return (workLeft + (workW - w) / 2, workTop + (workH - h) / 2, w, h);
@@ -110,6 +114,64 @@ public partial class ScreenshotEditorWindow : Window
     // ------------------------------------------------------------------ status
 
     private void Say(string text) => StatusText.Text = text;
+
+    // ------------------------------------------------------------------ insert image
+
+    private bool _inserting;
+
+    /// <summary>The I key and the Insert image button: pick a recent screenshot, a file or the clipboard, and put it on the picture.</summary>
+    private void OpenInsertPicker() => Run(OpenInsertPickerAsync);
+
+    private async Task OpenInsertPickerAsync()
+    {
+        if (_session == null || _busy || _inserting) return;
+        if (Canvas.IsTextEditing) Canvas.CommitText();
+        try
+        {
+            bool canPaste = false;
+            try { canPaste = Clipboard.ContainsImage() || Clipboard.ContainsData("PNG"); } catch { }
+            // the model reads the history and checks the files on a worker: nothing here touches the disk
+            var picker = new InsertImagePicker(new InsertPickerModel(_request?.Recent), canPaste) { Owner = this };
+            if (picker.ShowDialog() == true && _session != null)
+            {
+                var centre = Canvas.ViewCentreDoc;
+                if (picker.PasteChosen) await InsertAsync(() => _session.PasteImageAsync(centre));
+                else if (picker.PickedPath is { } path) await InsertAsync(() => _session.InsertImageFileAsync(path, centre));   // a refusal goes to the status line
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error("screenshot editor: insert image", ex);
+            Say("Could not insert the image: " + ex.Message);
+        }
+        Canvas.Focus();
+    }
+
+    /// <summary>One insert at a time; the file is read and the picture reduced on a worker (the status line says so meanwhile).</summary>
+    private async Task InsertAsync(Func<Task<(bool Ok, string? Error)>> insert)
+    {
+        if (_session == null || _inserting) return;
+        _inserting = true;
+        Say("Reading the picture…");
+        try
+        {
+            var (ok, _) = await insert();
+            if (ok) Say("");   // a refusal was said already (the session's notice)
+        }
+        finally { _inserting = false; }
+    }
+
+    /// <summary>Ctrl+V: the clipboard picture goes straight onto the picture.</summary>
+    private void PasteImage()
+    {
+        if (_session == null || _busy) return;
+        var centre = Canvas.ViewCentreDoc;
+        Run(async () =>
+        {
+            if (_session != null) await InsertAsync(() => _session.PasteImageAsync(centre));
+            Canvas.Focus();
+        });
+    }
 
     // ------------------------------------------------------------------ output
 

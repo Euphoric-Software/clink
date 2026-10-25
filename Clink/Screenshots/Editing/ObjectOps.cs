@@ -49,7 +49,7 @@ internal static class ObjectOps
             case BlurRegion b: return b with { R = ToI(HitTest.ResizeRect(FromI(b.R), handle, to, keepAspect)) };
             case HighlightRect h: return h with { R = ToI(HitTest.ResizeRect(FromI(h.R), handle, to, keepAspect)) };
             case SpotlightBox sp: return sp with { Box = ToI(HitTest.ResizeRect(FromI(sp.Box), handle, to, keepAspect)) };
-            case MagnifyBox m: return m with { Dest = ToI(HitTest.ResizeRect(FromI(m.Dest), handle, to, keepAspect)) };
+            case MagnifyBox m: return m with { Dest = MagnifyLayout.ResizeDest(m.Source, m.Dest, handle, to) };   // always the proportions of the source
             case SmartEraseRect e: return e with { R = ToI(HitTest.ResizeRect(FromI(e.R), handle, to, keepAspect)) };
             case InsertedImage i: return i with { Dest = ToI(HitTest.ResizeRect(FromI(i.Dest), handle, to, true)) };
             default: return o;

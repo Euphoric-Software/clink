@@ -21,6 +21,12 @@ internal sealed class EditorRequest
     /// plain Save that keeps the editor open. True when the file was written. Never throws.
     /// </summary>
     public required Func<BgraImage, DocumentState, bool, Task<bool>> SaveAsync { get; init; }
+    /// <summary>
+    /// The recent screenshots the insert-image picker may list (newest first, already through the path rule of the screenshots
+    /// folders), and the files to leave out of it (the one being edited). Called on a worker (it reads the history); the picker checks
+    /// each file on disk there too. Null = no list.
+    /// </summary>
+    public Func<(IReadOnlyList<ScreenshotEntry> Entries, IReadOnlyList<string> Exclude)>? Recent { get; init; }
 }
 
 /// <summary>The editor window the service opens (a made-up one in tests). UI thread.</summary>

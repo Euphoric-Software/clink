@@ -25,6 +25,33 @@ public sealed class ScreenshotEditorOptions
     public string TextBackdrop { get; set; } = "outline";
     public string BackdropColor { get; set; } = DefaultBackdropColor;
 
+    // ---- raster tools (S4)
+    public const string DefaultHighlightColor = "#FFEB3B", DefaultOutlineColor = "#FFFFFF";
+    /// <summary>Blur: the Gaussian sigma in picture pixels.</summary>
+    public int BlurRadius { get; set; } = 8;
+    /// <summary>Pixelate: the block size in picture pixels.</summary>
+    public int PixelateBlock { get; set; } = 12;
+    public string HighlightColor { get; set; } = DefaultHighlightColor;
+    /// <summary>The pen width of a freehand highlight.</summary>
+    public double HighlightWidth { get; set; } = 18;
+    /// <summary>Highlight draws freehand (the toolbar's toggle); false = a rectangle (Shift keeps it square).</summary>
+    public bool HighlightFreehand { get; set; }
+    /// <summary>Spotlight: how dark the outside is (0 = not at all, 0.95 = nearly black).</summary>
+    public double SpotDim { get; set; } = 0.55;
+    /// <summary>Spotlight: the blur sigma of the outside.</summary>
+    public int SpotRadius { get; set; } = 12;
+    /// <summary>Spotlight: the blur grows with the distance from the box (false = one blur level).</summary>
+    public bool SpotGradient { get; set; }
+    /// <summary>Spotlight gradient: the distance over which the blur reaches its full strength, in % of the picture's shorter side.</summary>
+    public int SpotFalloffPercent { get; set; } = 35;
+    public double MagnifyZoom { get; set; } = 2;
+    public bool MagnifyOutline { get; set; } = true;
+    public string MagnifyOutlineColor { get; set; } = DefaultOutlineColor;
+    public double MagnifyOutlineWidth { get; set; } = 3;
+    /// <summary>Magnify: bilinear instead of crisp pixels.</summary>
+    public bool MagnifySmooth { get; set; }
+    /// <summary>An inserted image's opacity (0.1 .. 1).</summary>
+    public double ImageOpacity { get; set; } = 1;
     [JsonExtensionData] public Dictionary<string, JsonElement>? Unknown { get; set; }
 
     /// <summary>Puts every value back into its range (or its default when it is not a colour / a known word / a finite number).</summary>
@@ -37,6 +64,17 @@ public sealed class ScreenshotEditorOptions
         FontSize = double.IsFinite(FontSize) ? Math.Clamp(FontSize, MinFontSize, MaxFontSize) : 28;
         string b = (TextBackdrop ?? "").Trim().ToLowerInvariant();
         TextBackdrop = b is "none" or "box" or "outline" ? b : "outline";
+        HighlightColor = NormalColor(HighlightColor, DefaultHighlightColor);
+        MagnifyOutlineColor = NormalColor(MagnifyOutlineColor, DefaultOutlineColor);
+        BlurRadius = Math.Clamp(BlurRadius, 1, 40);
+        PixelateBlock = Math.Clamp(PixelateBlock, 2, 64);
+        HighlightWidth = double.IsFinite(HighlightWidth) ? Math.Clamp(HighlightWidth, 2, 80) : 18;
+        SpotDim = double.IsFinite(SpotDim) ? Math.Clamp(SpotDim, 0, 0.95) : 0.55;
+        SpotRadius = Math.Clamp(SpotRadius, 0, 40);
+        SpotFalloffPercent = Math.Clamp(SpotFalloffPercent, 5, 100);
+        MagnifyZoom = double.IsFinite(MagnifyZoom) ? Math.Clamp(MagnifyZoom, 1.25, 8) : 2;
+        MagnifyOutlineWidth = double.IsFinite(MagnifyOutlineWidth) ? Math.Clamp(MagnifyOutlineWidth, 1, 12) : 3;
+        ImageOpacity = double.IsFinite(ImageOpacity) ? Math.Clamp(ImageOpacity, 0.1, 1) : 1;
     }
 
     private static string NormalColor(string? text, string fallback) => TryParseColor(text, out var c) ? ToHex(c) : fallback;
@@ -59,6 +97,8 @@ public sealed class ScreenshotEditorOptions
 
     internal System.Windows.Media.Color ColorValue => TryParseColor(Color, out var c) ? c : System.Windows.Media.Colors.Red;
     internal System.Windows.Media.Color TextColorValue => TryParseColor(TextColor, out var c) ? c : System.Windows.Media.Colors.White;
+    internal System.Windows.Media.Color HighlightColorValue => TryParseColor(HighlightColor, out var c) ? c : System.Windows.Media.Color.FromRgb(0xFF, 0xEB, 0x3B);
+    internal System.Windows.Media.Color MagnifyOutlineColorValue => TryParseColor(MagnifyOutlineColor, out var c) ? c : System.Windows.Media.Colors.White;
     internal System.Windows.Media.Color BackdropColorValue => TryParseColor(BackdropColor, out var c) ? c : System.Windows.Media.Colors.Black;
 
     public ScreenshotEditorOptions Clone()
@@ -68,3 +108,4 @@ public sealed class ScreenshotEditorOptions
         return c;
     }
 }
+

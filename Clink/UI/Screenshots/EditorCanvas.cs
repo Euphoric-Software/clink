@@ -48,6 +48,7 @@ internal sealed class EditorCanvas : FrameworkElement
     private Action<Point, ModifierKeys>? _move;
     private Action<Point>? _up;
     private bool _space;
+    private RectI? _ghostSource;             // the source frame of a magnifier being dragged out
 
     public EditorCanvas()
     {
@@ -79,17 +80,30 @@ internal sealed class EditorCanvas : FrameworkElement
 
     public void Attach(EditorSession session)
     {
-        if (_session != null) _session.StateChanged -= OnSessionChanged;
+        if (_session != null) Unhook(_session);
         _session = session;
         _session.StateChanged += OnSessionChanged;
+        _session.Queue.Completed += OnComposed;
+        _session.Queue.Failed += OnComposeFailed;
         _shownFor = null;
+        _bitmap = null;
         OnSessionChanged();
         if (ActualWidth > 0) ZoomToFit();
     }
 
+    private void Unhook(EditorSession s)
+    {
+        s.StateChanged -= OnSessionChanged;
+        s.Queue.Completed -= OnComposed;
+        s.Queue.Failed -= OnComposeFailed;
+    }
+
+    /// <summary>A compose failed: the next session change asks again even for the same state (the queue no longer takes it for one it has).</summary>
+    private void OnComposeFailed(string _) => _shownFor = null;
+
     public void Detach()
     {
-        if (_session != null) _session.StateChanged -= OnSessionChanged;
+        if (_session != null) Unhook(_session);
         CancelTextQuietly();
         _session = null;
         _visuals.Clear();
@@ -101,6 +115,20 @@ internal sealed class EditorCanvas : FrameworkElement
 
     /// <summary>Raised when the zoom or the offset changed.</summary>
     public event Action? ViewChanged;
+
+    /// <summary>The I key: the window opens the picker of pictures to insert. Ctrl+V: the window pastes the clipboard's picture.</summary>
+    internal event Action? InsertImageRequested, PasteRequested;
+
+    /// <summary>The middle of what is shown, in picture pixels, kept inside the picture (where an inserted picture goes).</summary>
+    internal Point ViewCentreDoc
+    {
+        get
+        {
+            var img = ImageSize;
+            var c = ToDoc(new Point(ActualWidth / 2, ActualHeight / 2));
+            return new Point(Math.Clamp(c.X, 0, img.Width), Math.Clamp(c.Y, 0, img.Height));
+        }
+    }
 
     public bool IsTextEditing => _text != null;
 
@@ -246,26 +274,85 @@ internal sealed class EditorCanvas : FrameworkElement
         RedrawOverlay();
     }
 
+    /// <summary>
+    /// Makes sure the bitmap exists and asks the session's queue for the composite when what the composer works from changed (the
+    /// picture, the raster objects, the adjustments) or a gesture began / ended (a gesture's composes may re-blend with stale blur
+    /// levels; the first one after it has fresh ones). The composite arrives later, from a worker, in <see cref="OnComposed"/>; until
+    /// then the previous picture stays. The first time, a document without effects shows its base at once (that is what it looks
+    /// like); one with raster objects or adjustments shows NOTHING until its first composite (<see cref="FirstCompositePending"/>):
+    /// the raw base would flash what a blur or an erase hides.
+    /// </summary>
     private void UpdateBitmap()
     {
         var state = _session!.State;
-        if (_shownFor != null && ReferenceEquals(_shownFor.Base, state.Base) && ReferenceEquals(_shownFor.Raster, state.Raster) && Equals(_shownFor.Adjust, state.Adjust))
+        var baseImage = state.Base;
+        bool recreated = false;
+        if (_bitmap == null || _bitmap.PixelWidth != baseImage.Width || _bitmap.PixelHeight != baseImage.Height)
+        {
+            recreated = true;
+            _bitmap = new WriteableBitmap(baseImage.Width, baseImage.Height, 96, 96, PixelFormats.Bgra32, null);   // transparent: the pasteboard shows
+            using (var dc = _imageVisual.RenderOpen()) dc.DrawImage(_bitmap, new Rect(0, 0, baseImage.Width, baseImage.Height));
+            _vectors.Clip = new RectangleGeometry(new Rect(0, 0, baseImage.Width, baseImage.Height));
+            FirstCompositePending = !state.Raster.IsEmpty || !state.Adjust.IsIdentity;
+            if (!FirstCompositePending) _bitmap.WritePixels(new Int32Rect(0, 0, baseImage.Width, baseImage.Height), baseImage.Pixels, baseImage.Stride, 0);
+            _shownFor = null;
+        }
+        bool interactive = _session.HasPreview;
+        if (recreated)
+        {
+            // the new bitmap is blank: the queue may hold a composite of exactly this state already (it would ignore an equal request,
+            // and its dirty region was taken), so ask for the whole picture again
+            _shownFor = state;
+            _shownInteractive = interactive;
+            _session.Queue.RequestFull(state, interactive);
+            return;
+        }
+        if (_shownFor != null && interactive == _shownInteractive && ComposeQueue.SameInput(_shownFor, state))
         {
             _shownFor = state;
             return;
         }
-        var composite = _session.Composer.Compose(state);
-        if (_bitmap == null || _bitmap.PixelWidth != composite.Width || _bitmap.PixelHeight != composite.Height)
-        {
-            _bitmap = new WriteableBitmap(composite.Width, composite.Height, 96, 96, PixelFormats.Bgra32, null);
-            using var dc = _imageVisual.RenderOpen();
-            dc.DrawImage(_bitmap, new Rect(0, 0, composite.Width, composite.Height));
-            _vectors.Clip = new RectangleGeometry(new Rect(0, 0, composite.Width, composite.Height));
-        }
-        _bitmap.WritePixels(new Int32Rect(0, 0, composite.Width, composite.Height), composite.Pixels, composite.Stride, 0);
         _shownFor = state;
+        _shownInteractive = interactive;
+        _session.Queue.Request(state, interactive: interactive);
     }
 
+    private bool _shownInteractive;
+
+    /// <summary>The bitmap has not received its first composite yet (a document with effects shows nothing until then).</summary>
+    internal bool FirstCompositePending { get; private set; }
+
+    /// <summary>A finished composite (UI thread): the changed part goes into the bitmap. The image is the composer's own buffer: read here, nowhere else.</summary>
+    private void OnComposed(ComposeResult r)
+    {
+        var bitmap = _bitmap;
+        if (_session == null || bitmap == null) return;
+        var image = r.Image;
+        if (image.Width != bitmap.PixelWidth || image.Height != bitmap.PixelHeight)
+        {
+            // a composite of another size (the picture changed under it): its dirty area was taken, so ask for the whole of the current one
+            _session.Queue.RequestFull(_session.State, _session.HasPreview);
+            return;
+        }
+        var d = r.Dirty.Intersect(image.Bounds);
+        if (d.IsEmpty) return;
+        bitmap.WritePixels(new Int32Rect(d.X, d.Y, d.Width, d.Height), image.Pixels, image.Stride, d.X, d.Y);
+        FirstCompositePending = false;
+        ComposedCount++;
+    }
+
+    /// <summary>Test seam: how many composites were written into the bitmap.</summary>
+    internal int ComposedCount { get; private set; }
+
+    /// <summary>A pixel of the bitmap that is shown (test seam).</summary>
+    internal (byte B, byte G, byte R, byte A)? ShownPixel(int x, int y)
+    {
+        var b = _bitmap;
+        if (b == null || x < 0 || y < 0 || x >= b.PixelWidth || y >= b.PixelHeight) return null;
+        var px = new byte[4];
+        b.CopyPixels(new Int32Rect(x, y, 1, 1), px, 4, 0);
+        return (px[0], px[1], px[2], px[3]);
+    }
     private void SyncVectors()
     {
         var vec = _session!.State.Vector;
@@ -326,7 +413,23 @@ internal sealed class EditorCanvas : FrameworkElement
                 }
             }
             foreach (var (_, at) in handles) DrawHandle(dc, ToView(at));
+            if (sel is MagnifyBox mag) DrawSourceFrame(dc, mag.Source, "Source");
         }
+        if (_ghostSource is { } ghost && _move != null) DrawSourceFrame(dc, ghost, null);
+    }
+
+    /// <summary>The dashed frame of what a magnifier enlarges: an editing aid, drawn on the overlay only, so it is never part of the exported picture.</summary>
+    private void DrawSourceFrame(DrawingContext dc, RectI source, string? label)
+    {
+        if (source.IsEmpty) return;
+        var vr = new Rect(ToView(new Point(source.X, source.Y)), ToView(new Point(source.Right, source.Bottom)));
+        dc.DrawRectangle(null, new Pen(Brushes.White, 1), vr);
+        dc.DrawRectangle(null, new Pen(Brushes.Black, 1) { DashStyle = new DashStyle(new double[] { 4, 4 }, 0) }, vr);
+        if (label == null || vr.Width < 40) return;
+        var text = new FormattedText(label, System.Globalization.CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, new Typeface("Segoe UI"), 11, Brushes.White, VisualTreeHelper.GetDpi(this).PixelsPerDip);
+        var pos = new Point(vr.Left + 2, Math.Max(0, vr.Top - text.Height - 1));
+        dc.DrawRectangle(s_dim, null, new Rect(pos.X - 2, pos.Y, text.Width + 4, text.Height));
+        dc.DrawText(text, pos);
     }
 
     private void DrawHandle(DrawingContext dc, Point at)
@@ -358,6 +461,9 @@ internal sealed class EditorCanvas : FrameworkElement
             case EditorTool.Rectangle: BeginRect(doc); break;
             case EditorTool.Text: ReleaseMouseCapture(); BeginTextAt(doc); break;
             case EditorTool.Crop: BeginCrop(doc); break;
+            // freehand is the toolbar's toggle only: Shift means "square" with every rectangle tool, the highlight's too
+            case EditorTool.Highlight when _session.Options.HighlightFreehand: BeginHighlightStroke(doc); break;
+            case EditorTool.Blur or EditorTool.Pixelate or EditorTool.Highlight or EditorTool.Spotlight or EditorTool.Magnify or EditorTool.Erase: BeginRasterRect(_session.Tool, doc); break;
         }
         e.Handled = true;
     }
@@ -471,7 +577,8 @@ internal sealed class EditorCanvas : FrameworkElement
         {
             case EditorTool.Select:
                 var hit = HitTest.Hit(_session.State, _session.Selected, doc, ScaleDip, VectorRenderer.TextBounds);
-                Cursor = hit.Handle != Handle.None ? CursorFor(hit.Handle) : hit.Object != null ? Cursors.SizeAll : Cursors.Arrow;
+                bool overSource = _session.Selected is MagnifyBox mg && OverMagnifySource(mg, doc);
+                Cursor = hit.Handle != Handle.None ? CursorFor(hit.Handle) : hit.Object != null || overSource ? Cursors.SizeAll : Cursors.Arrow;
                 break;
             case EditorTool.Text: Cursor = Cursors.IBeam; break;
             case EditorTool.Crop:
@@ -502,9 +609,14 @@ internal sealed class EditorCanvas : FrameworkElement
         return new Point(a.X + Math.Cos(angle) * v.Length, a.Y + Math.Sin(angle) * v.Length);
     }
 
-    private void BeginSelect(Point doc, int clicks)
+    internal void BeginSelect(Point doc, int clicks)
     {
         var s = _session!;
+        if (s.Selected is MagnifyBox mg && OverMagnifySource(mg, doc))
+        {
+            BeginMoveSource(mg, doc);
+            return;
+        }
         var hit = HitTest.Hit(s.State, s.Selected, doc, ScaleDip, VectorRenderer.TextBounds);
         if (hit.Object == null) { s.Select(null); ReleaseMouseCapture(); return; }
         var obj = hit.Object;
@@ -541,6 +653,95 @@ internal sealed class EditorCanvas : FrameworkElement
             };
         }
         _up = _ => { if (moved) s.CommitPreview(); else s.CancelPreview(); };
+    }
+
+    /// <summary>The point is in the dashed source frame of the selected magnifier and not on its enlarged copy or one of that copy's handles: a drag moves the source.</summary>
+    private bool OverMagnifySource(MagnifyBox m, Point doc)
+    {
+        if (HitTest.HitHandle(HitTest.HandlesOf(m), doc, ScaleDip) != Handle.None) return false;
+        return m.Source.Contains((int)Math.Floor(doc.X), (int)Math.Floor(doc.Y)) && !m.Dest.Contains((int)Math.Floor(doc.X), (int)Math.Floor(doc.Y));
+    }
+
+    private void BeginMoveSource(MagnifyBox m, Point start)
+    {
+        var s = _session!;
+        var baseState = s.Committed;
+        var bounds = baseState.Base.Bounds;
+        bool moved = false;
+        _move = (v, _) =>
+        {
+            var d = ToDoc(v) - start;
+            if (!moved && d.Length * ScaleDip < 3) return;
+            moved = true;
+            s.SetPreview(baseState.Replace(m with { Source = MagnifyLayout.MoveSource(m.Source, (int)Math.Round(d.X), (int)Math.Round(d.Y), bounds) }));
+        };
+        _up = _ => { if (moved) s.CommitPreview(); else s.CancelPreview(); };
+    }
+
+    /// <summary>A drag with a rectangle-like raster tool (blur, pixelate, highlight, spotlight, magnify, erase): the object follows the drag, one undo step at the release; a click without a drag makes nothing.</summary>
+    internal void BeginRasterRect(EditorTool tool, Point doc)
+    {
+        var s = _session!;
+        var bounds = s.Committed.Base.Bounds;
+        int id = s.Committed.NextId;
+        Point Clamp(Point p) => new(Math.Clamp(p.X, 0, bounds.Width), Math.Clamp(p.Y, 0, bounds.Height));
+        var start = Clamp(doc);
+        RectI r = RectI.Empty;
+        _move = (v, mods) =>
+        {
+            var p = Clamp(ToDoc(v));
+            if (mods.HasFlag(ModifierKeys.Shift))
+            {
+                double side = Math.Max(Math.Abs(p.X - start.X), Math.Abs(p.Y - start.Y));
+                p = Clamp(new Point(start.X + (p.X < start.X ? -side : side), start.Y + (p.Y < start.Y ? -side : side)));
+            }
+            var rr = ToRectI(new Rect(start, p), bounds);
+            if (rr.IsEmpty) return;
+            r = rr;
+            var proto = s.NewRasterObject(tool, rr);
+            if (proto == null) return;
+            if (tool == EditorTool.Magnify) _ghostSource = rr;
+            s.SetPreview(s.Committed.Add(proto, out _));
+        };
+        _up = _ =>
+        {
+            _ghostSource = null;
+            if (r.Width >= MinRasterDrag && r.Height >= MinRasterDrag && s.HasPreview) s.CommitPreview(id);
+            else s.CancelPreview();
+        };
+    }
+
+    private const int MinRasterDrag = 3;
+
+    /// <summary>Freehand highlight: the marker follows the pointer; the stroke is a raster object (multiplied onto the picture).</summary>
+    internal void BeginHighlightStroke(Point doc)
+    {
+        var s = _session!;
+        var color = s.Options.HighlightColorValue;
+        double width = s.Options.HighlightWidth;
+        var pts = new List<Point> { doc };
+        int id = s.Committed.NextId;
+        double minStep = Math.Max(0.5, 1.5 / ScaleDip);
+        void Preview() => s.SetPreview(s.Committed.Add(new HighlightStroke(0, pts.ToImmutableArray(), width, color), out _));
+        Preview();
+        _move = (v, _) =>
+        {
+            var d = ToDoc(v);
+            if ((d - pts[^1]).Length < minStep) return;
+            pts.Add(d);
+            Preview();
+        };
+        _up = v =>
+        {
+            var d = ToDoc(v);
+            if ((d - pts[^1]).Length > 0.01) pts.Add(d);
+            var kept = StrokeSmoothing.Decimate(pts, 0.5);
+            pts.Clear();
+            pts.AddRange(kept);
+            if (ArrowGeometry.Length(pts) < 2) { s.CancelPreview(); return; }
+            Preview();
+            s.CommitPreview(id);
+        };
     }
 
     private void BeginStroke(Point doc, bool arrow)
@@ -858,6 +1059,7 @@ internal sealed class EditorCanvas : FrameworkElement
                 case Key.Z: if (shift) s.Redo(); else s.Undo(); return true;
                 case Key.Y: s.Redo(); return true;
                 case Key.D: s.Duplicate(); return true;
+                case Key.V: PasteRequested?.Invoke(); return true;
                 case Key.D0 or Key.NumPad0: ZoomToFit(); return true;
                 case Key.D1 or Key.NumPad1: ZoomActual(); return true;
                 case Key.OemPlus or Key.Add: ZoomBy(1.25, new Point(ActualWidth / 2, ActualHeight / 2)); return true;
@@ -887,6 +1089,13 @@ internal sealed class EditorCanvas : FrameworkElement
             case Key.R: s.SetTool(EditorTool.Rectangle); return true;
             case Key.T: s.SetTool(EditorTool.Text); return true;
             case Key.C: s.SetTool(EditorTool.Crop); return true;
+            case Key.B: s.SetTool(EditorTool.Blur); return true;
+            case Key.X: s.SetTool(EditorTool.Pixelate); return true;
+            case Key.H: s.SetTool(EditorTool.Highlight); return true;
+            case Key.S: s.SetTool(EditorTool.Spotlight); return true;
+            case Key.M: s.SetTool(EditorTool.Magnify); return true;
+            case Key.E: s.SetTool(EditorTool.Erase); return true;
+            case Key.I: InsertImageRequested?.Invoke(); return true;
         }
         return false;
     }

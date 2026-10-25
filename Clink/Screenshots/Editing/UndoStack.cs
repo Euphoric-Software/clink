@@ -24,6 +24,8 @@ internal sealed class UndoStack<T> where T : class
     public bool CanRedo => _at < _states.Count - 1;
     /// <summary>The number of states held (the current one included).</summary>
     public int Count => _states.Count;
+    /// <summary>Every state held (oldest first), the undone ones too (memory accounting).</summary>
+    public IReadOnlyList<T> States => _states;
 
     /// <summary>Makes <paramref name="state"/> current. A state that is the current one (same reference) is not pushed again; returns whether anything was pushed.</summary>
     public bool Push(T state)

@@ -67,5 +67,24 @@ internal static class StrokeMask
         return new AlphaMask(bounds, cov);
     }
 
+    /// <summary>The bounds <see cref="Rasterize"/> gives its mask (empty when it makes none), without rasterizing: the stroke's footprint for layout.</summary>
+    public static RectI BoundsOf(IReadOnlyList<Point> pts, double width, RectI clip)
+    {
+        if (pts.Count == 0 || !(width > 0) || clip.IsEmpty) return RectI.Empty;
+        double hw = width / 2;
+        double minX = double.MaxValue, minY = double.MaxValue, maxX = double.MinValue, maxY = double.MinValue;
+        bool any = false;
+        foreach (var p in pts)
+        {
+            if (!double.IsFinite(p.X) || !double.IsFinite(p.Y)) continue;
+            any = true;
+            minX = Math.Min(minX, p.X); maxX = Math.Max(maxX, p.X);
+            minY = Math.Min(minY, p.Y); maxY = Math.Max(maxY, p.Y);
+        }
+        if (!any) return RectI.Empty;
+        return RectI.FromLtrb(ToInt(Math.Floor(minX - hw - 1)), ToInt(Math.Floor(minY - hw - 1)),
+                              ToInt(Math.Ceiling(maxX + hw + 1)), ToInt(Math.Ceiling(maxY + hw + 1))).Intersect(clip);
+    }
+
     private static int ToInt(double v) => v <= -1e9 ? -1_000_000_000 : v >= 1e9 ? 1_000_000_000 : (int)v;
 }
