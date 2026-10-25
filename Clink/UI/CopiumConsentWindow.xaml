@@ -1,0 +1,55 @@
+<Window x:Class="Clink.UI.CopiumConsentWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Share with Copium?" Width="460" SizeToContent="Height"
+        WindowStyle="None" ResizeMode="NoResize" AllowsTransparency="True" Background="Transparent"
+        WindowStartupLocation="CenterScreen" ShowInTaskbar="False" FontFamily="{StaticResource UiFont}" TextOptions.TextFormattingMode="Display"
+        PreviewKeyDown="Window_PreviewKeyDown" Loaded="Window_Loaded">
+    <!-- Every colour here is a DynamicResource, so the window follows the theme when it changes. -->
+    <Border Background="{DynamicResource Bg}" CornerRadius="10" BorderBrush="{DynamicResource Border}" BorderThickness="1">
+        <DockPanel>
+            <Grid DockPanel.Dock="Top" Height="44" MouseLeftButtonDown="Header_MouseLeftButtonDown" Background="Transparent">
+                <TextBlock x:Name="TitleText" Style="{StaticResource Display}" Text="Share with Copium?" Margin="16,0,0,0" VerticalAlignment="Center" />
+            </Grid>
+
+            <Border DockPanel.Dock="Bottom" Padding="16,10,16,14" BorderBrush="{DynamicResource Border}" BorderThickness="0,1,0,0">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <Button x:Name="DontAskButton" Style="{StaticResource LinkButton}" Content="Don't ask again" FontSize="12" VerticalAlignment="Center" HorizontalAlignment="Left"
+                            Click="DontAsk_Click" ToolTip="Stops Clink asking on its own. Sharing a clip or a screenshot yourself, with a token saved, still asks each time until you say yes" />
+                    <StackPanel Grid.Column="1" Orientation="Horizontal">
+                        <!-- Not now is the default and the Esc button: Enter must never give consent (Enable is a deliberate click) -->
+                        <Button x:Name="NotNowButton" Content="Not now" MinWidth="84" Margin="0,0,8,0" Click="NotNow_Click" IsCancel="True" IsDefault="True" />
+                        <Button x:Name="EnableButton" Style="{StaticResource AccentButton}" Content="Enable Copium sharing" Padding="14,5" Click="Enable_Click" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <StackPanel Margin="16,4,16,16">
+                <TextBlock x:Name="BodyText" TextWrapping="Wrap" Margin="2,4,2,0"
+                           Text="Sharing uploads the clip or screenshot you choose to your Copium account and copies the link to your clipboard, so you can paste it into Discord, a chat or a browser. Nothing is uploaded until you ask for it." />
+
+                <!-- the warning: DangerTint fill, bold, a glyph; shown in both modes (this window and the cloud-sharing confirmation) -->
+                <Border x:Name="WarningPanel" Margin="0,14,0,0" Padding="12,10" CornerRadius="8" BorderThickness="1"
+                        BorderBrush="{DynamicResource Danger}" Background="{DynamicResource DangerTint}">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Style="{StaticResource Glyph}" Text="&#xE7BA;" FontSize="22" Foreground="{DynamicResource Fg}" VerticalAlignment="Top" Margin="0,1,12,0"
+                                   AutomationProperties.Name="Warning" />
+                        <TextBlock x:Name="WarningText" Grid.Column="1" TextWrapping="Wrap" FontWeight="Bold" Foreground="{DynamicResource Fg}" />
+                    </Grid>
+                </Border>
+
+                <CheckBox x:Name="AutoUploadCheck" Margin="2,14,0,0" IsChecked="False"
+                          Content="Also upload every screenshot I take automatically"
+                          ToolTip="After each screenshot is saved, upload it and put the link on the clipboard. You can change this under Settings → Screenshots" />
+            </StackPanel>
+        </DockPanel>
+    </Border>
+</Window>

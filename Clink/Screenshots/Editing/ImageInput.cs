@@ -158,12 +158,17 @@ internal static class ImageInput
     internal static bool DibVerdict(ReadOnlySpan<byte> head, out string? error)
     {
         error = null;
+        // Only the header sizes that exist (CORE, INFO, V2 / V3 INFO, OS/2 v2, V4, V5): anything else is not a DIB WPF should be handed.
+        if (head.Length >= 4 && !DibHeaderSizes.Contains(BinaryPrimitives.ReadInt32LittleEndian(head))) { error = Unreadable; return false; }
         if (head.Length >= 12 && BinaryPrimitives.ReadInt32LittleEndian(head) >= 40 && BinaryPrimitives.ReadInt32LittleEndian(head.Slice(4, 4)) <= 0) { error = Unreadable; return false; }   // a negative or zero width
         if (BmpInfoSize(head) is not { } size) { error = Unreadable; return false; }
         if (size.Width <= 0 || size.Height <= 0) { error = Unreadable; return false; }
         if (!WithinLimits(size.Width, size.Height)) { error = TooLarge; return false; }
         return true;
     }
+
+    /// <summary>The DIB header sizes that exist: 12 (core), 40 (info), 52 / 56 (info v2 / v3), 64 (OS/2 v2), 108 (V4), 124 (V5).</summary>
+    internal static readonly int[] DibHeaderSizes = { 12, 40, 52, 56, 64, 108, 124 };
 
     /// <summary>The size in a BITMAPINFOHEADER / BITMAPCOREHEADER (the bytes from the header's size field on; a CF_DIB starts there); the height may be negative (top-down).</summary>
     public static (int Width, int Height)? BmpInfoSize(ReadOnlySpan<byte> info)

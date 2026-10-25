@@ -153,12 +153,10 @@ internal static class ScreenshotUploadTests
 
     // ------------------------------------------------------------------ the service
 
-    private sealed class FakeToasts : IScreenshotToasts
+    internal sealed class FakeToasts : IScreenshotToasts
     {
         public readonly List<string> Shown = new();
         public ScreenshotToastState LastState;
-        public Action? SetUp, Dismiss;
-        public bool NudgeEnabled = true;
         public readonly List<double> Progress = new();
         public void ShowNotice(string title, string text, bool paused = false) => Shown.Add("notice: " + title);
         public void ShowProblem(string title, string text) { Shown.Add("problem: " + title); LastProblemText = text; }
@@ -167,12 +165,6 @@ internal static class ScreenshotUploadTests
         public void ShowScreenshot(ScreenshotEntry entry, ScreenshotToastState state) { Shown.Add("screenshot: " + Path.GetFileName(entry.Path)); LastState = state; LastEntry = entry; }
         public readonly List<Handle> Handles = new();
         public IScreenshotUploadToast ShowScreenshotUploading(ScreenshotEntry entry) { Shown.Add("uploading: " + Path.GetFileName(entry.Path)); var h = new Handle(this); lock (Handles) Handles.Add(h); return h; }
-        public bool ShowCopiumNudge(Action setUp, Action dismiss)
-        {
-            if (!NudgeEnabled) return false;
-            Shown.Add("nudge"); SetUp = setUp; Dismiss = dismiss;
-            return true;
-        }
 
         public sealed class Handle : IScreenshotUploadToast
         {
@@ -182,10 +174,11 @@ internal static class ScreenshotUploadTests
             public void Report(double fraction) => _t.Progress.Add(fraction);
             public void Succeeded(string link, bool linkCopied) => _t.Shown.Add("shared: " + link + (linkCopied ? " (copied)" : ""));
             public void Failed() => _t.Shown.Add("upload failed");
+            public void Declined() => _t.Shown.Add("upload declined");
         }
     }
 
-    private sealed class OnePicker : IRegionPicker
+    internal sealed class OnePicker : IRegionPicker
     {
         public Task<RegionPickResult?> PickAsync(FrozenDesktop desktop, bool loupe, CancellationToken ct, OverlayEditSetup? edit = null) =>
             Task.FromResult<RegionPickResult?>(new RegionPickResult(new RectI(5, 6, 10, 8), 0, PickOutcome.Drag));
@@ -193,7 +186,7 @@ internal static class ScreenshotUploadTests
         public void Close() { }
     }
 
-    private sealed class FlatSource : IScreenshotSource
+    internal sealed class FlatSource : IScreenshotSource
     {
         public string Name => "flat";
         public bool Handles(MonitorInfo monitor) => true;
@@ -206,7 +199,7 @@ internal static class ScreenshotUploadTests
         }
     }
 
-    private sealed class Rig
+    internal sealed class Rig
     {
         public required ScreenshotService Service;
         public required Settings Settings;
@@ -216,22 +209,24 @@ internal static class ScreenshotUploadTests
         /// <summary>The made-up clipboard's change counter: our image copy moves it, so does <see cref="SomeoneCopies"/>.</summary>
         public uint Sequence = 100;
         public int ImageCopies;
+        public bool GameInFront;
         public void SomeoneCopies() => Sequence++;
         public DateTime Now = new(2026, 10, 25, 12, 0, 0, DateTimeKind.Utc);
         public string Folder => ScreenshotService.FolderFor(Settings);
         public string[] Pngs => Directory.Exists(Folder) ? Directory.GetFiles(Folder, "*.png") : Array.Empty<string>();
     }
 
-    private static CopiumUpload Done(long size = 10) => new("id1", "https://v.copium.pics/id1.png", "https://v.copium.pics/id1.png", "https://copium.pics/p/id1", null, size);
+    internal static CopiumUpload Done(long size = 10) => new("id1", "https://v.copium.pics/id1.png", "https://v.copium.pics/id1.png", "https://copium.pics/p/id1", null, size);
 
-    private static Rig Make(TempDir dir, bool token = true, bool upload = true, bool copyLink = true, bool copyImage = false, bool autoNotice = false,
+    internal static Rig Make(TempDir dir, bool token = true, bool upload = true, bool copyLink = true, bool copyImage = false, bool consent = true, bool cloud = true,
         Func<string, string, string?, IProgress<double>?, CancellationToken, string?, Task<CopiumUpload>>? uploader = null)
     {
         Settings.DirOverride = dir.Path;   // the history file and the settings file
         var s = Settings.FromJson("{}");
         s.ClipsFolder = dir.File("clips");
         s.ScreenshotCopyImage = copyImage;  // never the real clipboard: ImageCopier below is a made-up one
-        s.CopiumAutoUploadNoticeShown = !autoNotice;   // the one-time notice has its own tests: the others do not list it
+        s.CopiumConsent = consent;       // sharing is opt-in: most tests are about what happens after the user said yes
+        s.CloudSharingEnabled = cloud;
         s.ClickSound = false;
         s.ScreenshotUpload = upload;
         s.ScreenshotCopyLink = copyLink;
@@ -250,11 +245,11 @@ internal static class ScreenshotUploadTests
         service.ImageCopier = (_, _) => { rig.ImageCopies++; rig.Sequence++; return true; };
         service.ClipboardSequence = () => rig.Sequence;
         service.UtcNow = () => rig.Now;
-        service.SetUpCopium = () => rig.Toasts.Shown.Add("setup");
+        service.GameInFront = () => rig.GameInFront;
         return rig;
     }
 
-    private static void Pump(Func<bool> done, string what, int timeoutMs = 10_000)
+    internal static void Pump(Func<bool> done, string what, int timeoutMs = 10_000)
     {
         var sw = Stopwatch.StartNew();
         while (!done())
@@ -269,7 +264,7 @@ internal static class ScreenshotUploadTests
     }
 
     /// <summary>A whole capture (the made-up screen, a 10 x 8 pick) and the upload it starts, to the end.</summary>
-    private static void Capture(Rig rig)
+    internal static void Capture(Rig rig)
     {
         var t = rig.Service.CaptureRegionAsync(ScreenshotTrigger.Hotkey);
         Pump(() => t.IsCompleted, "the capture");
@@ -278,7 +273,7 @@ internal static class ScreenshotUploadTests
         Pump(() => queue.IsCompleted && rig.Service.UploadQueue.IsCompleted, "the upload queue");
     }
 
-    private static ScreenshotEntry EntryFor(TempDir dir, string name, int bytes = 100)
+    internal static ScreenshotEntry EntryFor(TempDir dir, string name, int bytes = 100)
     {
         string path = dir.File(name);
         File.WriteAllBytes(path, new byte[bytes]);
@@ -306,7 +301,6 @@ internal static class ScreenshotUploadTests
         Check.Equal("https://v.copium.pics/id1.png", reloaded.CopiumLink);
         Check.Equal("https://copium.pics/p/id1", reloaded.CopiumPageUrl);
         Check.Equal("id1", reloaded.CopiumId);
-        Check.Equal(0, rig.Settings.CopiumNudgeShown, "no hint with a token");
     }
 
     [UnitTest]
@@ -324,7 +318,6 @@ internal static class ScreenshotUploadTests
         Check.Equal(0, off.Calls.Count);
         Check.Equal(1, off.Toasts.Shown.Count, "just the screenshot toast");
         Check.True(off.Toasts.LastState.CanUpload, "a token and no automatic upload: the toast offers Upload");
-        Check.Equal(0, off.Settings.CopiumNudgeShown, "upload off: no hint either");
     }
 
     [UnitTest]
@@ -491,100 +484,109 @@ internal static class ScreenshotUploadTests
         Pump(() => up.IsCompleted, "the end");
     }
 
-    // ------------------------------------------------------------------ the hint
+    // ------------------------------------------------------------------ the proactive "Share with Copium?" pop-up (S7)
 
     [UnitTest]
-    public static void The_nudge_rules_need_no_token_upload_on_not_dismissed_under_three_times_and_a_day_apart()
+    public static void The_proactive_prompt_rules_need_no_consent_no_dont_ask_cloud_on_two_screenshots_under_two_showings_a_day_apart()
     {
         var now = new DateTime(2026, 10, 25, 12, 0, 0, DateTimeKind.Utc);
-        Check.True(CopiumNudge.ShouldShow(false, true, false, 0, null, now));
-        Check.False(CopiumNudge.ShouldShow(true, true, false, 0, null, now), "has a token");
-        Check.False(CopiumNudge.ShouldShow(false, false, false, 0, null, now), "upload off");
-        Check.False(CopiumNudge.ShouldShow(false, true, true, 0, null, now), "dismissed");
-        Check.True(CopiumNudge.ShouldShow(false, true, false, 2, now.AddHours(-24), now), "third time, exactly a day later");
-        Check.False(CopiumNudge.ShouldShow(false, true, false, 3, now.AddDays(-30), now), "three is the most");
-        Check.False(CopiumNudge.ShouldShow(false, true, false, 1, now.AddHours(-23), now), "not twice in a day");
-        Check.False(CopiumNudge.ShouldShow(false, true, false, 1, now.AddHours(1), now), "a last time in the future shows nothing: IsDue starts the gap from now");
-        Check.True(CopiumNudge.ShouldShow(false, true, false, 1, now.AddHours(-25), now));
-        Check.True(CopiumNudge.ShouldShow(false, true, false, 1, DateTime.SpecifyKind(now.AddHours(-30), DateTimeKind.Local).ToUniversalTime(), now), "local time stamps compare as UTC");
+        Check.True(CopiumNudge.ShouldPrompt(false, false, true, 2, 0, null, now));
+        Check.False(CopiumNudge.ShouldPrompt(false, false, true, 1, 0, null, now), "only after the 2nd screenshot");
+        Check.False(CopiumNudge.ShouldPrompt(true, false, true, 2, 0, null, now), "already agreed");
+        Check.False(CopiumNudge.ShouldPrompt(false, true, true, 2, 0, null, now), "don't ask again");
+        Check.False(CopiumNudge.ShouldPrompt(false, false, false, 2, 0, null, now), "cloud sharing off: never");
+        Check.True(CopiumNudge.ShouldPrompt(false, false, true, 2, 1, now.AddHours(-24), now), "second time, exactly a day later");
+        Check.False(CopiumNudge.ShouldPrompt(false, false, true, 2, 2, now.AddDays(-30), now), "two is the most");
+        Check.False(CopiumNudge.ShouldPrompt(false, false, true, 2, 1, now.AddHours(-23), now), "not twice in a day");
+        Check.False(CopiumNudge.ShouldPrompt(false, false, true, 2, 1, now.AddHours(1), now), "a last time in the future shows nothing: IsDue starts the gap from now");
+        Check.True(CopiumNudge.ShouldPrompt(false, false, true, 2, 1, DateTime.SpecifyKind(now.AddHours(-30), DateTimeKind.Local).ToUniversalTime(), now), "local time stamps compare as UTC");
     }
 
     [UnitTest]
-    public static void Without_a_token_a_saved_screenshot_shows_the_hint_at_most_three_times_once_a_day()
+    public static void The_pop_up_comes_after_the_second_saved_screenshot_at_most_twice_a_day_apart_and_never_over_a_game()
     {
         using var dir = new TempDir();
-        var rig = Make(dir, token: false);
-        Capture(rig);
-        Check.Equal(1, rig.Toasts.Shown.Count(s => s == "nudge"));
-        Check.Equal(0, rig.Calls.Count, "no token, nothing uploaded");
-        Check.False(rig.Toasts.LastState.CanUpload);
-        Check.Equal(1, rig.Settings.CopiumNudgeShown);
-        Check.Equal(rig.Now, rig.Settings.CopiumNudgeLastShownUtc);
-        // the counters are saved
-        Check.Equal(1, Settings.FromJson(rig.Settings.ToJson()).CopiumNudgeShown);
+        var rig = Make(dir, token: false, upload: false, consent: false);
+        var asked = new List<ConsentContext>();
+        rig.Service.Consent.Prompt = ctx => { asked.Add(ctx); return Task.FromResult(new ConsentAnswer(ConsentChoice.NotNow)); };
+        void Shot() { Capture(rig); var t = rig.Service.PromptTask; Pump(() => t.IsCompleted, "the pop-up decision"); }
 
-        Capture(rig);   // same day
-        Check.Equal(1, rig.Toasts.Shown.Count(s => s == "nudge"), "once a day");
+        Shot();
+        Check.Equal(0, asked.Count, "not after the first screenshot");
+        rig.GameInFront = true;
+        Shot();
+        Check.Equal(0, asked.Count, "the second screenshot, but a game is in front: skipped, not counted");
+        Check.Equal(0, rig.Settings.CopiumConsentPromptCount);
+        rig.GameInFront = false;
+        Shot();
+        Check.Equal(new[] { ConsentContext.Proactive }, asked.ToArray(), "next time, when the game is not in front");
+        Check.Equal(1, rig.Settings.CopiumConsentPromptCount);
+        Check.Equal(rig.Now, rig.Settings.CopiumConsentPromptedUtc);
+        Check.Equal(1, Settings.FromJson(rig.Settings.ToJson()).CopiumConsentPromptCount, "saved");
+        Shot();
+        Check.Equal(1, asked.Count, "not twice in a day");
         rig.Now = rig.Now.AddHours(25);
-        Capture(rig);
-        rig.Now = rig.Now.AddHours(25);
-        Capture(rig);
-        Check.Equal(3, rig.Toasts.Shown.Count(s => s == "nudge"));
-        rig.Now = rig.Now.AddDays(10);
-        Capture(rig);
-        Check.Equal(3, rig.Toasts.Shown.Count(s => s == "nudge"), "never a fourth");
-        Check.Equal(3, rig.Settings.CopiumNudgeShown);
-        Check.Equal(5, rig.Toasts.Shown.Count(s => s.StartsWith("screenshot: ")), "and every screenshot was saved and announced all the same");
+        Shot();
+        Check.Equal(2, asked.Count, "a day later: the second and last time");
+        rig.Now = rig.Now.AddDays(40);
+        Shot();
+        Check.Equal(2, asked.Count, "never a third");
+        Check.False(rig.Settings.CopiumConsent);
+        Check.Equal(0, rig.Calls.Count, "and nothing was uploaded");
+        Check.True(rig.Toasts.Shown.All(s => !s.StartsWith("notice")), "the pop-up is a window, not a toast");
     }
 
     [UnitTest]
-    public static void Dont_show_again_stops_the_hint_for_good_and_Set_up_opens_the_copium_settings()
+    public static void Dont_ask_again_stops_the_proactive_pop_up_but_an_explicit_share_still_asks()
     {
         using var dir = new TempDir();
-        var rig = Make(dir, token: false);
+        var rig = Make(dir, token: true, upload: false, consent: false);
+        int asked = 0;
+        var answer = ConsentChoice.DontAskAgain;
+        rig.Service.Consent.Prompt = _ => { asked++; return Task.FromResult(new ConsentAnswer(answer)); };
         Capture(rig);
-        rig.Toasts.SetUp!();
-        Check.Contains(string.Join("|", rig.Toasts.Shown), "setup");
-        rig.Toasts.Dismiss!();
-        Check.True(rig.Settings.CopiumNudgeDismissed);
-        Check.True(Settings.FromJson(rig.Settings.ToJson()).CopiumNudgeDismissed, "saved");
-        rig.Now = rig.Now.AddDays(30);
         Capture(rig);
-        Check.Equal(1, rig.Toasts.Shown.Count(s => s == "nudge"));
+        Pump(() => rig.Service.PromptTask.IsCompleted, "the pop-up");
+        Check.Equal(1, asked);
+        Check.True(rig.Settings.CopiumConsentDontAsk);
+        Check.True(Settings.FromJson(rig.Settings.ToJson()).CopiumConsentDontAsk, "saved");
+        Check.False(rig.Settings.CopiumConsent);
+        rig.Now = rig.Now.AddDays(5);
+        Capture(rig);
+        Capture(rig);
+        Check.Equal(1, asked, "no more unasked pop-ups");
+        Check.Equal(0, rig.Calls.Count);
+        // an explicit upload (the toast's button) still asks
+        answer = ConsentChoice.NotNow;
+        var t = rig.Service.UploadAsync(rig.Toasts.LastEntry!, manual: true);
+        Pump(() => t.IsCompleted, "the manual upload");
+        Check.False(t.Result);
+        Check.Equal(2, asked, "an explicit try shows the pop-up");
+        Check.Equal(0, rig.Calls.Count, "Not now: nothing uploaded");
     }
-
-    [UnitTest]
-    public static void A_hint_that_could_not_be_shown_because_the_toast_is_off_is_not_counted()
-    {
-        using var dir = new TempDir();
-        var rig = Make(dir, token: false);
-        rig.Toasts.NudgeEnabled = false;
-        Capture(rig);
-        Check.Equal(0, rig.Settings.CopiumNudgeShown);
-        Check.Null(rig.Settings.CopiumNudgeLastShownUtc);
-        rig.Toasts.NudgeEnabled = true;
-        Capture(rig);
-        Check.Equal(1, rig.Settings.CopiumNudgeShown, "shown as soon as it can be");
-    }
-
     // ------------------------------------------------------------------ settings
 
     [UnitTest]
-    public static void The_upload_settings_default_to_on_and_the_hidden_ones_to_nothing()
+    public static void The_upload_settings_default_to_off_and_the_hidden_ones_to_nothing()
     {
         var s = Settings.FromJson("{}");
-        Check.True(s.ScreenshotUpload);
+        Check.False(s.ScreenshotUpload, "sharing is opt-in: nothing uploads on a fresh install");
         Check.True(s.ScreenshotCopyLink);
         Check.Null(s.CopiumImageUploadUrl);
-        Check.Equal(0, s.CopiumNudgeShown);
-        Check.False(s.CopiumNudgeDismissed);
-        Check.Null(s.CopiumNudgeLastShownUtc);
+        Check.False(s.CopiumConsent);
+        Check.False(s.CopiumConsentDontAsk);
+        Check.Null(s.CopiumConsentPromptedUtc);
+        Check.Equal(0, s.CopiumConsentPromptCount);
+        Check.Equal(0, s.CopiumConsentScreenshots);
+        Check.True(s.CloudSharingEnabled);
+        Check.True(s.ClipsEnabled);
         Check.True(s.ToastScreenshot.Enabled);
         Check.Equal(6, s.ToastScreenshot.Seconds);
 
-        var bad = Settings.FromJson("""{ "CopiumImageUploadUrl": "   ", "CopiumNudgeShown": -4, "ToastScreenshot": null }""");
+        var bad = Settings.FromJson("""{ "CopiumImageUploadUrl": "   ", "CopiumConsentPromptCount": -4, "CopiumConsentScreenshots": -1, "ToastScreenshot": null }""");
         Check.Null(bad.CopiumImageUploadUrl, "blank is none");
-        Check.Equal(0, bad.CopiumNudgeShown);
+        Check.Equal(0, bad.CopiumConsentPromptCount);
+        Check.Equal(0, bad.CopiumConsentScreenshots);
         Check.Equal(6, bad.ToastScreenshot.Seconds, "a null toast setting gets its default");
         // a value that is not a valid URL is kept as typed (it is judged, and ignored with a warning, when it is used)
         Check.Equal("http://x", Settings.FromJson("""{ "CopiumImageUploadUrl": "http://x" }""").CopiumImageUploadUrl);
@@ -596,41 +598,66 @@ internal static class ScreenshotUploadTests
         var s = Settings.FromJson("{}");
         s.ToastScreenshot.Enabled = false;
         s.ToastScreenshot.Seconds = 12;
-        s.ScreenshotUpload = false;
+        s.ScreenshotUpload = true;
         s.ScreenshotCopyLink = false;
         s.CopiumImageUploadUrl = "https://img.example.com/up";
-        s.CopiumNudgeShown = 2;
-        s.CopiumNudgeDismissed = true;
-        s.CopiumNudgeLastShownUtc = new DateTime(2026, 10, 24, 8, 30, 0, DateTimeKind.Utc);
+        s.CopiumConsent = true;
+        s.CopiumConsentDontAsk = true;
+        s.CopiumConsentPromptCount = 2;
+        s.CopiumConsentScreenshots = 2;
+        s.CloudSharingEnabled = false;
+        s.CopiumConsentPromptedUtc = new DateTime(2026, 10, 24, 8, 30, 0, DateTimeKind.Utc);
         var back = Settings.FromJson(s.ToJson());
         Check.False(back.ToastScreenshot.Enabled);
         Check.Equal(12, back.ToastScreenshot.Seconds);
-        Check.False(back.ScreenshotUpload);
+        Check.True(back.ScreenshotUpload);
         Check.False(back.ScreenshotCopyLink);
         Check.Equal("https://img.example.com/up", back.CopiumImageUploadUrl);
-        Check.Equal(2, back.CopiumNudgeShown);
-        Check.True(back.CopiumNudgeDismissed);
-        Check.Equal(new DateTime(2026, 10, 24, 8, 30, 0, DateTimeKind.Utc), back.CopiumNudgeLastShownUtc!.Value.ToUniversalTime());
+        Check.True(back.CopiumConsent);
+        Check.True(back.CopiumConsentDontAsk);
+        Check.Equal(2, back.CopiumConsentPromptCount);
+        Check.Equal(2, back.CopiumConsentScreenshots);
+        Check.False(back.CloudSharingEnabled);
+        Check.Equal(new DateTime(2026, 10, 24, 8, 30, 0, DateTimeKind.Utc), back.CopiumConsentPromptedUtc!.Value.ToUniversalTime());
     }
 
     [UnitTest]
-    public static void The_import_names_the_new_settings_and_ignores_the_hint_counters()
+    public static void The_import_names_the_new_settings_and_ignores_the_consent_state()
     {
         foreach (var key in new[] { nameof(Settings.ScreenshotUpload), nameof(Settings.ScreenshotCopyLink), nameof(Settings.CopiumImageUploadUrl), nameof(Settings.ToastScreenshot),
-                                    nameof(Settings.CopiumNudgeShown), nameof(Settings.CopiumNudgeDismissed), nameof(Settings.CopiumNudgeLastShownUtc) })
+                                    nameof(Settings.CopiumConsent), nameof(Settings.CopiumConsentDontAsk), nameof(Settings.CopiumConsentPromptedUtc), nameof(Settings.CopiumConsentPromptCount),
+                                    nameof(Settings.CopiumConsentScreenshots), nameof(Settings.CloudSharingEnabled), nameof(Settings.ClipsEnabled) })
             Check.True(SettingsImport.HasLabelOrIsVolatile(key), key);
         var ours = Settings.FromJson("{}");
         var theirs = Settings.FromJson("{}");
-        theirs.CopiumNudgeShown = 3;
-        theirs.CopiumNudgeDismissed = true;
-        Check.Equal(0, SettingsImport.Differences(ours.ToJson(), theirs.ToJson()).Count, "the counters say nothing about the user's choices");
-        theirs.ScreenshotUpload = false;
-        Check.Equal(new[] { "screenshots" }, SettingsImport.Differences(ours.ToJson(), theirs.ToJson()).ToArray());
+        theirs.CopiumConsent = true;
+        theirs.CopiumConsentDontAsk = true;
+        Check.Equal(0, SettingsImport.Differences(ours.ToJson(), theirs.ToJson()).Count, "another copy's consent says nothing about this installation");
+        theirs.CloudSharingEnabled = false;
+        Check.Equal(new[] { "cloud sharing" }, SettingsImport.Differences(ours.ToJson(), theirs.ToJson()).ToArray(), "but an incoming kill switch OFF is applied");
+        theirs.CloudSharingEnabled = true;
+        theirs.ScreenshotUpload = true;
+        Check.Equal(0, SettingsImport.Differences(ours.ToJson(), theirs.ToJson()).Count, "no consent here: their automatic upload is no difference (it would not apply)");
+        ours.CopiumConsent = true;
+        Check.Equal(new[] { "screenshots" }, SettingsImport.Differences(ours.ToJson(), theirs.ToJson()).ToArray(), "with our yes it is");
         var alerts = Settings.FromJson("{}");
         alerts.ToastScreenshot.Seconds = 15;
         Check.Equal(new[] { "alerts" }, SettingsImport.Differences(ours.ToJson(), alerts.ToJson()).ToArray());
     }
 
+    [UnitTest]
+    public static void An_import_does_not_switch_the_automatic_upload_on_without_our_consent()
+    {
+        var ours = Settings.FromJson("{}");   // no consent here
+        var theirs = Settings.FromJson("{}");
+        theirs.CopiumConsent = true;
+        theirs.ScreenshotUpload = true;
+        string kept = SettingsImport.KeepOurOwn(theirs.ToJson(), ours.ToJson(), keepOurToken: false);
+        var after = Settings.FromJson(kept);
+        Check.False(after.CopiumConsent, "the consent stays ours");
+        Check.False(after.ScreenshotUpload, "so their automatic upload is not applied");
+        Check.False(kept.Contains("\"ScreenshotUpload\": true", StringComparison.OrdinalIgnoreCase), "not even in the text");
+    }
     // ------------------------------------------------------------------ S6 review fixes: endpoint, consent, answer limits
 
     private static string NewPackageCopy(TempDir root, string settingsJson)
@@ -668,35 +695,163 @@ internal static class ScreenshotUploadTests
     }
 
     [UnitTest]
-    public static void The_first_automatic_upload_on_an_install_is_announced_once()
+    public static void An_automatic_upload_needs_the_setting_the_users_yes_cloud_sharing_on_and_a_token()
     {
+        // all four: it goes
         using var dir = new TempDir();
-        var rig = Make(dir, autoNotice: true);
-        Check.False(rig.Settings.CopiumAutoUploadNoticeShown);
+        var rig = Make(dir);
         Capture(rig);
-        string png = Path.GetFileName(rig.Pngs.Single());
-        Check.Equal(new[] { "screenshot: " + png, "notice: " + ScreenshotService.AutoUploadNoticeTitle, "uploading: " + png, "shared: https://v.copium.pics/id1.png" }, rig.Toasts.Shown.ToArray());
-        Check.Contains(ScreenshotService.AutoUploadNoticeText, "uploaded to your Copium account automatically");
-        Check.Contains(ScreenshotService.AutoUploadNoticeText, "Settings → Screenshots");
-        Check.True(rig.Settings.CopiumAutoUploadNoticeShown);
-        Check.True(Settings.FromJson(rig.Settings.ToJson()).CopiumAutoUploadNoticeShown, "saved: it is told once per install");
-        rig.Toasts.Shown.Clear();
-        Capture(rig);
-        Check.Equal(0, rig.Toasts.Shown.Count(s => s.StartsWith("notice")), "not again");
-
-        // a manual upload is not an automatic one
-        using var dir2 = new TempDir();
-        var off = Make(dir2, upload: false, autoNotice: true);
-        Capture(off);
-        var t = off.Service.UploadAsync(off.Toasts.LastEntry!, manual: true);
+        Check.Equal(1, rig.Calls.Count);
+        Check.Equal(0, rig.Toasts.Shown.Count(s => s.StartsWith("notice")), "no announcement toast any more: the pop-up was the announcement");
+        // each one missing: it does not (the file, the clipboard and the toast are done all the same)
+        var cases = new (string Why, Func<TempDir, Rig> Make)[]
+        {
+            ("no consent", d => Make(d, consent: false)),
+            ("cloud sharing off", d => Make(d, cloud: false)),
+            ("setting off", d => Make(d, upload: false)),
+            ("no token", d => Make(d, token: false)),
+        };
+        foreach (var (why, make) in cases)
+        {
+            using var d2 = new TempDir();
+            var r = make(d2);
+            Capture(r);
+            Check.Equal(0, r.Calls.Count, why + ": nothing uploaded");
+            Check.Equal(1, r.Pngs.Length, why + ": the screenshot is saved");
+            Check.True(r.Toasts.Shown.Any(s => s.StartsWith("screenshot: ")), why + ": and announced");
+        }
+        // a manual upload without the user's yes asks first; cloud sharing off refuses without asking
+        using var d3 = new TempDir();
+        var asked = Make(d3, consent: false, upload: false);
+        int popUps = 0;
+        asked.Service.Consent.Prompt = _ => { popUps++; return Task.FromResult(new ConsentAnswer(ConsentChoice.Enable)); };
+        Capture(asked);
+        var t = asked.Service.UploadAsync(asked.Toasts.LastEntry!, manual: true);
         Pump(() => t.IsCompleted, "the manual upload");
-        Check.True(t.Result);
-        Check.Equal(0, off.Toasts.Shown.Count(s => s.StartsWith("notice")));
-        Check.False(off.Settings.CopiumAutoUploadNoticeShown);
-        Check.True(SettingsImport.HasLabelOrIsVolatile(nameof(Settings.CopiumAutoUploadNoticeShown)), "never imported");
-        Check.True(SettingsImport.HasLabelOrIsVolatile(nameof(Settings.ScreenshotEditorExcludeFromCapture)));
+        Check.True(t.Result, "Enable: the upload goes on");
+        Check.Equal(1, popUps);
+        Check.True(asked.Settings.CopiumConsent);
+        Check.False(asked.Settings.ScreenshotUpload, "a manual upload does not turn the automatic one on by itself");
+        using var d4 = new TempDir();
+        var off = Make(d4, cloud: false, upload: false);
+        off.Service.Consent.Prompt = _ => { popUps++; return Task.FromResult(new ConsentAnswer(ConsentChoice.Enable)); };
+        Capture(off);
+        var t2 = off.Service.UploadAsync(off.Toasts.LastEntry!, manual: true);
+        Pump(() => t2.IsCompleted, "the refusal");
+        Check.False(t2.Result);
+        Check.Equal(1, popUps, "cloud sharing off: the pop-up never shows");
+        Check.Equal(0, off.Calls.Count);
+        Check.False(off.Toasts.LastState.CanUpload, "and the toast has no Upload button");
+        Check.True(off.Toasts.Shown.Contains("notice: " + ConsentGate.CloudOffTitle), "the notice says why");
     }
 
+    [UnitTest]
+    public static void UploadCoreAsync_refuses_by_itself_when_the_kill_switch_is_off_or_there_is_no_consent()
+    {
+        // Both flags are flipped while a second upload sits in the queue behind a first one: it passed the entry checks of UploadAsync
+        // (agreed, cloud on), so only UploadCoreAsync's own defence can stop it when its turn comes.
+        foreach (var (why, flip) in new (string, Action<Settings>)[] { ("kill switch off", s => s.CloudSharingEnabled = false), ("consent withdrawn", s => s.CopiumConsent = false) })
+        {
+            using var dir = new TempDir();
+            var gate = new TaskCompletionSource();
+            int started = 0;
+            var rig = Make(dir, upload: false, uploader: async (t, p, title, progress, ct, url) =>
+            {
+                Interlocked.Increment(ref started);
+                await gate.Task;
+                return Done(new FileInfo(p).Length);
+            });
+            Capture(rig);
+            var first = rig.Toasts.LastEntry!;
+            Capture(rig);
+            var second = rig.Toasts.LastEntry!;
+            Check.False(ReferenceEquals(first, second));
+            var t1 = rig.Service.UploadAsync(first, manual: true);
+            Pump(() => Volatile.Read(ref started) == 1, why + ": the first upload to be under way");
+            var t2 = rig.Service.UploadAsync(second, manual: true);   // agreed and cloud on: accepted into the queue
+            Check.False(t2.IsCompleted, why + ": it waits behind the first");
+            flip(rig.Settings);
+            gate.SetResult();
+            Pump(() => t1.IsCompleted && t2.IsCompleted, why + ": both to end");
+            Check.False(t2.Result, why + ": the queued upload refused by itself");
+            Check.Equal(1, Volatile.Read(ref started), why + ": the uploader was called for the first one only");
+        }
+    }
+
+    [UnitTest]
+    public static void CancelRunningUpload_stops_the_upload_that_is_going_up_when_cloud_sharing_is_turned_off()
+    {
+        using var dir = new TempDir();
+        int started = 0;
+        var rig = Make(dir, upload: false, uploader: async (t, p, title, progress, ct, url) =>
+        {
+            Interlocked.Increment(ref started);
+            await Task.Delay(Timeout.Infinite, ct);
+            return Done();
+        });
+        Capture(rig);
+        var t = rig.Service.UploadAsync(rig.Toasts.LastEntry!, manual: true);
+        Pump(() => Volatile.Read(ref started) == 1, "the upload to be under way");
+        rig.Service.CancelRunningUpload();
+        Pump(() => t.IsCompleted, "the upload to end");
+        Check.False(t.Result);
+        Check.True(string.IsNullOrEmpty(rig.Toasts.LastEntry!.CopiumLink), "nothing linked");
+        rig.Service.CancelRunningUpload();   // nothing running: nothing happens
+    }
+
+    [UnitTest]
+    public static void A_kill_switch_cancel_is_neutral_not_a_failure_and_the_cloud_off_notice_shows_once_per_flip()
+    {
+        using var dir = new TempDir();
+        int started = 0;
+        var rig = Make(dir, upload: false, uploader: async (t, p, title, progress, ct, url) =>
+        {
+            Interlocked.Increment(ref started);
+            await Task.Delay(Timeout.Infinite, ct);
+            return Done();
+        });
+        Capture(rig);
+        var first = rig.Toasts.LastEntry!;
+        Capture(rig);
+        var second = rig.Toasts.LastEntry!;
+        Capture(rig);
+        var third = rig.Toasts.LastEntry!;
+        var t1 = rig.Service.UploadAsync(first, manual: true);
+        Pump(() => Volatile.Read(ref started) == 1, "the first upload to be under way");
+        var t2 = rig.Service.UploadAsync(second, manual: true);   // queued behind it
+        var t3 = rig.Service.UploadAsync(third, manual: true);
+        rig.Settings.CloudSharingEnabled = false;                 // what SetCloudSharing(false) does, then:
+        rig.Service.CancelRunningUpload();
+        Pump(() => t1.IsCompleted && t2.IsCompleted && t3.IsCompleted, "all three to end");
+        Check.False(t1.Result);
+        Check.True(rig.Toasts.Shown.Contains("upload declined"), "the cancelled one is neutral");
+        Check.False(rig.Toasts.Shown.Contains("upload failed"), "and not a failure");
+        Check.Equal(1, rig.Toasts.Shown.Count(s => s == "notice: " + ConsentGate.CloudOffTitle), "the notice once for the flip, not once per queued screenshot");
+        Check.Equal(0, rig.Toasts.Shown.Count(s => s.StartsWith("problem")), "no problem toast");
+        Check.Equal(1, Volatile.Read(ref started), "the queued ones never started");
+    }
+
+    [UnitTest]
+    public static void With_image_copy_off_the_automatic_link_copy_uses_the_same_clipboard_gate()
+    {
+        using var dir = new TempDir();
+        var rig = Make(dir, copyImage: false);
+        Capture(rig);
+        Check.Equal(new[] { "https://v.copium.pics/id1.png" }, rig.Copied.ToArray(), "the clipboard did not change since the save: the link is copied");
+
+        using var dir2 = new TempDir();
+        var changed = Make(dir2, copyImage: false, uploader: null);
+        int calls = 0;
+        changed.Service.Uploader = (t, p, title, progress, ct, url) =>
+        {
+            Interlocked.Increment(ref calls);
+            changed.SomeoneCopies();   // the user copies something while the upload runs
+            return Task.FromResult(Done(new FileInfo(p).Length));
+        };
+        Capture(changed);
+        Check.Equal(1, calls);
+        Check.Equal(0, changed.Copied.Count, "the clipboard changed since the save: the link does not replace what was copied");
+    }
     [UnitTest]
     public static void Cancel_on_the_uploading_toast_stops_that_upload_and_the_next_one_goes_on()
     {
@@ -789,25 +944,29 @@ internal static class ScreenshotUploadTests
     }
 
     [UnitTest]
-    public static void An_answer_is_read_up_to_64_KB_only_and_a_link_must_be_an_https_copium_address()
+    public static void An_answer_is_read_up_to_64_KB_only_and_a_link_must_be_an_absolute_https_address()
     {
         string padding = new('x', 200_000);
         var (up, error, _) = Upload("a.png", _ => Json(HttpStatusCode.OK, "{\"link\":\"https://v.copium.pics/a.png\",\"pad\":\"" + padding + "\"}"));
         Check.Null(up);
         Check.Contains(error!.Message, "unexpected answer", "cut at the cap, so it is no JSON");
 
-        foreach (var bad in new[] { "file:///C:/x", "http://v.copium.pics/a.png", "https://evil.example/a.png", "https://copium.pics.evil.example/a", "javascript:alert(1)", "/a.png", "https://copium.pics@evil.example/a" })
+        foreach (var bad in new[] { "file:///C:/x", "http://v.copium.pics/a.png", "javascript:alert(1)", "/a.png", "https://copium.pics@evil.example/a" })
         {
             var r = Upload("a.png", _ => Json(HttpStatusCode.OK, "{\"id\":\"1\",\"link\":\"" + bad + "\"}"));
             Check.Null(r.Up, bad);
             Check.Contains(r.Error!.Message, "unexpected answer", bad);
         }
-        var good = Upload("a.png", _ => Json(HttpStatusCode.OK, """{"id":"1","link":"https://copium.pics/a.png","url":"file:///C:/x","pageUrl":"javascript:1","thumbUrl":"https://evil.example/t"}"""));
+        // the links are only copied and opened: any absolute https address is fine (a custom embed or CDN host); the token goes only to the upload endpoint
+        var elsewhere = Upload("a.png", _ => Json(HttpStatusCode.OK, """{"id":"1","link":"https://cdn.example.com/a.png"}"""));
+        Check.Null(elsewhere.Error);
+        Check.Equal("https://cdn.example.com/a.png", elsewhere.Up!.Link);
+        var good = Upload("a.png", _ => Json(HttpStatusCode.OK, """{"id":"1","link":"https://copium.pics/a.png","url":"file:///C:/x","pageUrl":"javascript:1","thumbUrl":"https://img.example.net/t"}"""));
         Check.Null(good.Error);
         Check.Equal("https://copium.pics/a.png", good.Up!.Link);
-        Check.Equal("", good.Up.Url, "an other address in the answer is dropped");
+        Check.Equal("", good.Up.Url, "an address that is not https is dropped");
         Check.Equal("", good.Up.PageUrl);
-        Check.Null(good.Up.ThumbUrl);
+        Check.Equal("https://img.example.net/t", good.Up.ThumbUrl);
         var fallback = Upload("a.png", _ => Json(HttpStatusCode.OK, """{"id":"1","url":"https://v.copium.pics/u.png"}"""));
         Check.Equal("https://v.copium.pics/u.png", fallback.Up!.Link, "url stands in for a missing link");
     }
@@ -848,17 +1007,13 @@ internal static class ScreenshotUploadTests
             Pump(() => manual.IsCompleted, "the manual upload");
             Check.Equal(1, r.Copied.Count);
 
-            // with the image copy off there is no image to replace: only a manual upload copies the link
+            // with the image copy off the clipboard is gated by the change counter recorded when the screenshot was announced
             using var dir2 = new TempDir();
             var noImage = Make(dir2, copyImage: false);
             Capture(noImage);
             Check.Equal(0, noImage.ImageCopies);
-            Check.Equal(0, noImage.Copied.Count);
-            Check.Equal("shared: https://v.copium.pics/id1.png", noImage.Toasts.Shown.Last());
-            var shot = noImage.Toasts.LastEntry!;
-            var again = noImage.Service.UploadAsync(new ScreenshotEntry { Path = shot.Path, Size = shot.Size, WrittenUtc = shot.WrittenUtc }, manual: true);
-            Pump(() => again.IsCompleted, "the manual upload");
-            Check.Equal(1, noImage.Copied.Count);
+            Check.Equal(1, noImage.Copied.Count, "nothing was copied since: the link is copied");
+            Check.Equal("shared: https://v.copium.pics/id1.png (copied)", noImage.Toasts.Shown.Last());
         }
         finally { Log.Line -= Collect; }
     }
@@ -929,9 +1084,28 @@ internal static class ScreenshotUploadTests
 
         // a 403 pauses too
         using var dir2 = new TempDir();
-        var r403 = Make(dir2, uploader: (_, _, _, _, _, _) => Task.FromException<CopiumUpload>(new CopiumHttpException(403, "Copium rejected the token (HTTP 403)")));
+        var r403 = Make(dir2, uploader: (_, _, _, _, _, _) => Task.FromException<CopiumUpload>(new CopiumHttpException(403, "Copium rejected the token (HTTP 403)", "Invalid API token")));
         Capture(r403);
         Check.True(r403.Service.CopiumTokenRejected);
+
+        // a 403 that says nothing about the token (a blocked file, a quota) is one refused upload, not a paused account
+        using var dir3 = new TempDir();
+        int other = 0;
+        var r403b = Make(dir3, uploader: (_, _, _, _, _, _) => { other++; return Task.FromException<CopiumUpload>(new CopiumHttpException(403, "Copium refused the upload (File blocked)", "File blocked")); });
+        Capture(r403b);
+        Capture(r403b);
+        Check.False(r403b.Service.CopiumTokenRejected);
+        Check.Equal(2, other, "the next screenshot is tried again");
+        Check.True(CopiumClient.IsTokenRejection(401, null));
+        Check.True(CopiumClient.IsTokenRejection(403, "Forbidden: bad API token"));
+        Check.False(CopiumClient.IsTokenRejection(403, "Invalid storage key"), "a bare 'key' is no token");
+        Check.True(CopiumClient.IsTokenRejection(403, "Not authorized"));
+        Check.False(CopiumClient.IsTokenRejection(403, "File blocked"));
+        Check.True(CopiumClient.IsTokenRejection(403, null), "a bare 403 is a token rejection");
+        Check.True(CopiumClient.IsTokenRejection(403, "  "));
+        Check.False(CopiumClient.IsTokenRejection(500, null));
+        Check.Equal("Copium refused the upload (File blocked)", CopiumClient.ErrorMessage(403, """{"error":"File blocked"}"""));
+        Check.Equal("Copium rejected the token (Invalid token)", CopiumClient.ErrorMessage(403, """{"error":"Invalid token"}"""));
     }
 
     // ------------------------------------------------------------------ the file, the history, the exit
@@ -1035,13 +1209,14 @@ internal static class ScreenshotUploadTests
         Settings.DirOverride = dir.Path;
         var s = Settings.FromJson("{}");
         var now = new DateTime(2026, 10, 25, 12, 0, 0, DateTimeKind.Utc);
-        s.CopiumNudgeShown = 1;
-        s.CopiumNudgeLastShownUtc = now.AddDays(40);   // the clock was set back
-        Check.False(CopiumNudge.IsDue(s, hasToken: false, now), "not shown");
-        Check.Equal(now, s.CopiumNudgeLastShownUtc!.Value.ToUniversalTime(), "the last time is now");
-        Check.Equal(now, Settings.Load().CopiumNudgeLastShownUtc!.Value.ToUniversalTime(), "saved");
-        Check.False(CopiumNudge.IsDue(s, false, now.AddHours(23)));
-        Check.True(CopiumNudge.IsDue(s, false, now.AddHours(25)));
+        s.CopiumConsentScreenshots = 2;
+        s.CopiumConsentPromptCount = 1;
+        s.CopiumConsentPromptedUtc = now.AddDays(40);   // the clock was set back
+        Check.False(CopiumNudge.IsDue(s, now), "not shown");
+        Check.Equal(now, s.CopiumConsentPromptedUtc!.Value.ToUniversalTime(), "the last time is now");
+        Check.Equal(now, Settings.Load().CopiumConsentPromptedUtc!.Value.ToUniversalTime(), "saved");
+        Check.False(CopiumNudge.IsDue(s, now.AddHours(23)));
+        Check.True(CopiumNudge.IsDue(s, now.AddHours(25)));
     }
 
     // ------------------------------------------------------------------ paths and devices
@@ -1449,5 +1624,129 @@ internal static class ScreenshotUploadTests
         // generous on a loaded CI machine: the point is that the UI is not blocked for the whole (seconds long) raster compose
         Check.True(worst < 1000, $"the UI thread was blocked for {worst} ms at a stretch");
 #endif
+    }
+
+    // ------------------------------------------------------------------ S7: the S6 review leftovers
+
+    [UnitTest]
+    public static void A_redirect_is_never_followed_it_is_an_error_without_the_token()
+    {
+        var r = Upload("a.png", _ =>
+        {
+            var m = new HttpResponseMessage(HttpStatusCode.Found);
+            m.Headers.Location = new Uri("https://evil.example/steal");
+            return m;
+        });
+        Check.Null(r.Up);
+        Check.Contains(r.Error!.Message, "unexpected redirect");
+        Check.DoesNotContain(r.Error.Message, "eup_secret");
+        Check.Equal(1, r.Handler.Requests.Count, "the redirect target was not requested");
+        foreach (int code in new[] { 301, 303, 307, 308 })
+            Check.Contains(Upload("a.png", _ => new HttpResponseMessage((HttpStatusCode)code)).Error!.Message, "unexpected redirect", code.ToString());
+    }
+
+    [UnitTest]
+    public static void The_type_refusal_words_are_whole_words_and_a_403_pauses_only_for_the_token()
+    {
+        foreach (var ok in new[] { "Unsupported file type", "Invalid MIME", "Bad extension .xyz", "Unsupported image format", "This is UNSUPPORTED" })
+            Check.True(CopiumClient.IsTypeRefusal(400, ok), ok);
+        foreach (var no in new[] { "Invalid token type", "Title format is wrong", "Mimeograph", "Account type not allowed", "Formatted title too long", "extensions" })
+            Check.False(CopiumClient.IsTypeRefusal(400, no), no);
+        Check.True(CopiumClient.IsTypeRefusal(415, ""));
+        Check.False(CopiumClient.IsTypeRefusal(403, "Unsupported file type"), "only 400 and 415");
+    }
+
+    [UnitTest]
+    public static void A_clipboard_bitmap_header_must_have_a_size_that_exists()
+    {
+        foreach (int size in new[] { 40, 52, 56, 64, 108, 124 })
+            Check.True(ImageInput.DibVerdict(DibHeader(size, 100, 50), out _), "header size " + size);
+        var core = new byte[16];
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(core, 12);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(core.AsSpan(4), 100);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(core.AsSpan(6), 50);
+        Check.True(ImageInput.DibVerdict(core, out _), "the 12-byte core header");
+        foreach (int size in new[] { 41, 48, 60, 100, 123, 125, 200, 4096, 0, -40 })
+            Check.False(ImageInput.DibVerdict(DibHeader(size, 100, 50), out var err), "header size " + size);
+    }
+
+    [UnitTest]
+    public static void A_write_time_two_seconds_off_is_still_the_same_file_three_is_not()
+    {
+        using var dir = new TempDir();
+        var rig = Make(dir, upload: false);
+        Capture(rig);
+        var entry = rig.Toasts.LastEntry!;
+        var written = entry.WrittenUtc!.Value;
+        File.SetLastWriteTimeUtc(entry.Path, written.AddSeconds(1.5));   // a coarse file system's rounding
+        var near = rig.Service.UploadAsync(entry, manual: true);
+        Pump(() => near.IsCompleted, "the upload");
+        Check.True(near.Result, "1.5 s off: uploaded");
+
+        using var dir2 = new TempDir();
+        var rig2 = Make(dir2, upload: false);
+        Capture(rig2);
+        var e2 = rig2.Toasts.LastEntry!;
+        File.SetLastWriteTimeUtc(e2.Path, e2.WrittenUtc!.Value.AddSeconds(-3));
+        var far = rig2.Service.UploadAsync(e2, manual: true);
+        Pump(() => far.IsCompleted, "the check");
+        Check.False(far.Result, "3 s off: not uploaded");
+        Check.Contains(rig2.Toasts.LastProblemText, "changed after it was saved");
+    }
+
+    [UnitTest]
+    public static void A_mapped_network_drive_is_a_network_folder_too()
+    {
+        var before = ScreenshotService.DriveTypeOf;
+        try
+        {
+            ScreenshotService.DriveTypeOf = root => root.StartsWith("Z", StringComparison.OrdinalIgnoreCase) ? 4u : 3u;
+            Check.True(ScreenshotService.IsNetworkFolder(@"Z:\Clips"), "a mapped drive");
+            Check.True(ScreenshotService.IsNetworkFolder(@"z:\"), "lower case");
+            Check.True(ScreenshotService.IsNetworkFolder(@"\\nas\clips"), "a UNC path");
+            Check.True(ScreenshotService.IsNetworkFolder(@"\\?\UNC\nas\clips"), "a device path");
+            Check.False(ScreenshotService.IsNetworkFolder(@"C:\Clips"), "a local drive");
+            Check.False(ScreenshotService.IsNetworkFolder(@"Clips"), "relative");
+            Check.False(ScreenshotService.IsNetworkFolder(null));
+            Check.False(ScreenshotService.IsNetworkFolder("  "));
+            ScreenshotService.DriveTypeOf = _ => throw new InvalidOperationException("no such drive");
+            Check.False(ScreenshotService.IsNetworkFolder(@"Q:\x"), "a drive that cannot be looked at counts as local");
+
+            // an import keeps ours instead of taking the mapped-drive folder over
+            ScreenshotService.DriveTypeOf = root => root.StartsWith("Z", StringComparison.OrdinalIgnoreCase) ? 4u : 3u;
+            var kept = new List<string>();
+            string text = SettingsImport.KeepOurOwn("""{ "ClipsFolder": "Z:\\Clips", "ArchivePath": "D:\\Archive" }""", """{ "ClipsFolder": "C:\\Clips" }""", false, kept);
+            using var doc = System.Text.Json.JsonDocument.Parse(text);
+            Check.Equal(@"C:\Clips", doc.RootElement.GetProperty("ClipsFolder").GetString());
+            Check.Equal(@"D:\Archive", doc.RootElement.GetProperty("ArchivePath").GetString(), "a local drive is taken");
+            Check.Equal(new[] { "ClipsFolder" }, kept.ToArray());
+        }
+        finally { ScreenshotService.DriveTypeOf = before; }
+    }
+
+    [UnitTest]
+    public static void A_close_deferred_during_a_save_does_not_ask_a_second_question_when_the_quit_resolves_the_editor()
+    {
+        var gate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var host = new EditorWindowHost { ShowWindows = false };
+        var open = host.EditAsync(new EditorRequest
+        {
+            Document = DocumentState.Create(new BgraImage(8, 8)), Title = "t", IsNewCapture = true, Options = new ScreenshotEditorOptions(),
+            SaveAsync = (_, _, _) => gate.Task,
+        });
+        var window = host.Window!;
+        var save = window.SaveCoreAsync(finish: false);
+        _ = window.RequestCloseAsync();                                  // Esc while saving: deferred until the save ends
+        var quit = window.ResolveForQuitAsync(userInitiated: false);     // and the app quits meanwhile
+        Check.True(window.ResolvingQuit);
+        gate.SetResult(true);
+        Pump(() => save.IsCompleted && quit.IsCompleted, "the save and the quit");
+        var moment = Stopwatch.StartNew();
+        Pump(() => moment.ElapsedMilliseconds > 200, "a moment for the deferred close to run");
+        Check.True(quit.Result, "the quit may go on");
+        Check.True(host.IsOpen, "the deferred close stood aside: the quit owns the window now");
+        Check.False(window.ResolvingQuit);
+        window.CloseApproved();
+        Pump(() => open.IsCompleted, "the window to close");
     }
 }

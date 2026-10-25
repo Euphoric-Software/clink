@@ -91,6 +91,11 @@ Things that were asked for or came up while building, roughly in the order they'
       folder and history, clipboard, notification with Edit / Upload / Copy link / Folder; the editor (vector and raster
       tools, adjustments, insert image, undo) as a window or right on the screen; edit-last; Copium upload with the link on
       the clipboard, the "link your account" hint, the settings and the AI background-remover seam (no model yet).
+- [x] **Opt-in sharing, kill switch and Features (S7)**: nothing is uploaded until the user agrees once in the *Share with
+      Copium?* pop-up (with the public-links warning; Enter never agrees); *App → Cloud sharing* turns every upload off at
+      once (running ones too) and back on only after a confirmation; *App → Features* switches Clips and Screenshots on or
+      off live; the Copium token moved to the App tab. Replaces the S6 "a token means automatic upload", its one-time
+      notice and once-a-day hint.
 - [ ] **GIF / video from the screenshot tool**: drag a region and record it (the region picker already returns a result a
       recorder could use).
 - [ ] **Scrolling capture** (long web pages, chats).

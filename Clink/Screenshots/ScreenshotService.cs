@@ -84,11 +84,6 @@ internal interface IScreenshotToasts
     /// when it is gone). Nothing is shown when the screenshot toast is switched off. The handle reports the end.
     /// </summary>
     IScreenshotUploadToast ShowScreenshotUploading(ScreenshotEntry entry);
-    /// <summary>
-    /// The "link your Copium account" hint (Saved locally; Set up Copium / Don't show again). Returns false when nothing was shown
-    /// (the screenshot toast is switched off): it is then not counted as shown.
-    /// </summary>
-    bool ShowCopiumNudge(Action setUp, Action dismiss);
 }
 
 /// <summary>The toast of one running upload.</summary>
@@ -101,6 +96,8 @@ internal interface IScreenshotUploadToast
     void Succeeded(string link, bool linkCopied);
     /// <summary>The upload ended without a link (failed, cancelled): the toast goes back to its saved state with a Retry button. The reason is a separate problem toast.</summary>
     void Failed();
+    /// <summary>The upload was stopped on purpose by the cloud kill switch: the toast goes neutral (saved, no Upload / Retry button).</summary>
+    void Declined();
 }
 
 /// <summary>What a saved screenshot is: the entry (in the history) and the encoded PNG (also for the clipboard).</summary>
@@ -124,6 +121,8 @@ internal sealed class ScreenshotService
     private readonly Func<string?> _game;
     private readonly Func<MonitorInfo?> _recordedMonitor;
     private readonly IScreenshotEditor? _editor;
+    /// <summary>The door to Copium (consent + kill switch). The app passes its own, whose pop-up is real; without one the pop-up is a "Not now" (no window).</summary>
+    internal ConsentGate Consent { get; set; }
     private ScreenshotHistory? _history;
     private string? _historyFolder;
     private bool _busy;
@@ -132,9 +131,10 @@ internal sealed class ScreenshotService
     /// <param name="monitors">The monitors to copy (default: <see cref="Native.Monitors.Enumerate"/>); a test passes made-up ones with <paramref name="sources"/>.</param>
     /// <param name="editor">Opens the editor window (mode "after", edit last, the toast's Edit); null = no editor: "after" then saves at once and edit-last says so.</param>
     public ScreenshotService(Settings settings, IScreenshotToasts toasts, IRegionPicker picker, Func<string?> game, Func<MonitorInfo?> recordedMonitor,
-        IReadOnlyList<IScreenshotSource>? sources = null, Func<IReadOnlyList<MonitorInfo>>? monitors = null, IScreenshotEditor? editor = null)
+        IReadOnlyList<IScreenshotSource>? sources = null, Func<IReadOnlyList<MonitorInfo>>? monitors = null, IScreenshotEditor? editor = null, ConsentGate? consent = null)
     {
         _settings = settings;
+        Consent = consent ?? new ConsentGate(settings) { Notice = (_, title, text) => toasts.ShowNotice(title, text) };
         _toasts = toasts;
         _picker = picker;
         _game = game;
@@ -229,11 +229,11 @@ internal sealed class ScreenshotService
 
     // ------------------------------------------------------------------ upload to Copium
 
-    /// <summary>Test seams: the upload call, the clipboard text copy, the "Set up Copium" action and the clock.</summary>
+    /// <summary>Test seams: the upload call, the clipboard text copy, the clock and the "a game is in front" check (a proactive pop-up never opens over one).</summary>
     internal Func<string, string, string?, IProgress<double>?, CancellationToken, string?, Task<CopiumUpload>> Uploader { get; set; } = CopiumClient.UploadAsync;
     internal Func<string, bool> LinkCopier { get; set; } = ScreenshotClipboard.CopyText;
-    internal Action SetUpCopium { get; set; } = () => AppController.Instance?.ShowCopiumSetup();
     internal Func<DateTime> UtcNow { get; set; } = () => DateTime.UtcNow;
+    internal Func<bool> GameInFront { get; set; } = () => Hotkeys.GameInFront() || UserNotificationState.FullScreenInFront();
     /// <summary>Test seams: the clipboard image copy and the clipboard's change counter (see <see cref="ScreenshotClipboard.Sequence"/>).</summary>
     internal Func<BitmapSource, byte[], bool> ImageCopier { get; set; } = ScreenshotClipboard.Copy;
     internal Func<uint> ClipboardSequence { get; set; } = ScreenshotClipboard.Sequence;
@@ -267,8 +267,19 @@ internal sealed class ScreenshotService
     /// ignores <see cref="CopiumImagesRefused"/>. <paramref name="clipboardSequence"/>: the clipboard's change counter right after
     /// the image was copied (null when it was not). UI thread. Returns true when the screenshot has a link afterwards.
     /// </summary>
-    internal Task<bool> UploadAsync(ScreenshotEntry entry, bool manual = false, uint? clipboardSequence = null)
+    internal async Task<bool> UploadAsync(ScreenshotEntry entry, bool manual = false, uint? clipboardSequence = null)
     {
+        // Sharing is opt-in and has a kill switch. A manual upload (the toast's Upload / Retry) asks once if the user has not agreed
+        // yet; an automatic one never asks: it needs the agreement and the setting already (AnnounceSaved checks; UploadCoreAsync again).
+        if (manual)
+        {
+            if (!await Consent.EnsureAsync(ConsentContext.ScreenshotUploadManual)) return false;
+        }
+        else if (!Consent.CloudOn || !_settings.CopiumConsent)
+        {
+            Log.Info("screenshot: automatic upload skipped: " + (Consent.CloudOn ? "sharing with Copium is not agreed to" : "cloud sharing is off"));
+            return false;
+        }
         Task previous;
         var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         lock (_uploadGate)
@@ -276,7 +287,7 @@ internal sealed class ScreenshotService
             previous = _uploadTail;
             _uploadTail = gate.Task;   // in place before any of the work runs
         }
-        return RunQueuedAsync(previous, gate, entry, manual, clipboardSequence);
+        return await RunQueuedAsync(previous, gate, entry, manual, clipboardSequence);
     }
 
     private async Task<bool> RunQueuedAsync(Task previous, TaskCompletionSource gate, ScreenshotEntry entry, bool manual, uint? clipboardSequence)
@@ -294,6 +305,9 @@ internal sealed class ScreenshotService
         finally { gate.TrySetResult(); }
     }
 
+    /// <summary>How far the write time of a file may be from the one recorded at the save before it counts as changed.</summary>
+    internal static readonly TimeSpan WriteTimeTolerance = TimeSpan.FromSeconds(2);
+
     /// <summary>Why the file is not the one that was saved (size / write time differ), or null when it is. A file that changed after the save is not what the user took.</summary>
     private static string? ChangedSinceSaved(ScreenshotEntry e)
     {
@@ -302,7 +316,8 @@ internal sealed class ScreenshotService
             var info = new FileInfo(e.Path);
             if (!info.Exists) return "the file is gone";
             if (e.Size > 0 && info.Length != e.Size) return "the file changed after it was saved";
-            if (e.WrittenUtc is DateTime written && info.LastWriteTimeUtc != written) return "the file changed after it was saved";
+            // 2 s of slack: a file system with a coarse clock (FAT, a NAS share) reads the write time back rounded
+            if (e.WrittenUtc is DateTime written && Math.Abs((info.LastWriteTimeUtc - written).TotalSeconds) > WriteTimeTolerance.TotalSeconds) return "the file changed after it was saved";
             return null;
         }
         catch (Exception ex) { return "the file could not be checked (" + ex.Message + ")"; }
@@ -313,6 +328,22 @@ internal sealed class ScreenshotService
         var ct = _uploadCts.Token;
         if (ct.IsCancellationRequested) return false;
         if (!string.IsNullOrEmpty(entry.CopiumLink)) return true;   // uploaded already (a second click, or queued twice)
+        // Defence in depth: whatever got here, nothing leaves the computer with the kill switch off or without the user's yes.
+        if (!_settings.CloudSharingEnabled)
+        {
+            Log.Info("screenshot: upload refused: cloud sharing is off");
+            if (!_cloudOffNoticeShown)   // once per flip, not once per queued screenshot
+            {
+                _cloudOffNoticeShown = true;
+                _toasts.ShowNotice(ConsentGate.CloudOffTitle, ConsentGate.CloudOffText);
+            }
+            return false;
+        }
+        if (!_settings.CopiumConsent)
+        {
+            Log.Info("screenshot: upload refused: sharing with Copium is not agreed to");
+            return false;
+        }
         if (!manual && AutoUploadPaused)
         {
             Log.Info("screenshot: upload skipped: Copium turned a picture down or rejected the token earlier in this session");
@@ -321,7 +352,7 @@ internal sealed class ScreenshotService
         string? token = _settings.CopiumToken;
         if (string.IsNullOrWhiteSpace(token))
         {
-            _toasts.ShowProblem("Screenshot not uploaded", "Saved locally. Add your Copium token under Clips → Copium to upload screenshots.");
+            _toasts.ShowProblem("Screenshot not uploaded", "Saved locally. Add your Copium token under App → Copium to upload screenshots.");
             return false;
         }
         // The size limit of the account is the only one that applies to a picture (no length).
@@ -350,6 +381,7 @@ internal sealed class ScreenshotService
 
         var history = History;   // the one this screenshot is listed in: the folder setting may change while it uploads
         using var one = CancellationTokenSource.CreateLinkedTokenSource(ct);   // this upload only: the toast's Cancel button
+        lock (_uploadGate) _currentOne = one;   // CancelRunningUpload (the cloud kill switch)
         var toast = _toasts.ShowScreenshotUploading(entry);
         toast.OnCancel = () => { try { one.Cancel(); } catch (ObjectDisposedException) { } };
         string title = System.IO.Path.GetFileNameWithoutExtension(entry.Path);
@@ -395,6 +427,13 @@ internal sealed class ScreenshotService
             toast.Failed();
             return false;
         }
+        catch (Exception) when (one.IsCancellationRequested && !_settings.CloudSharingEnabled)
+        {
+            // Stopped by the kill switch, not a failure: neutral, nothing to retry.
+            Log.Info("screenshot: upload cancelled (cloud sharing was turned off)");
+            toast.Declined();
+            return false;
+        }
         catch (Exception) when (one.IsCancellationRequested)
         {
             Log.Info("screenshot: upload cancelled by the user");
@@ -410,11 +449,11 @@ internal sealed class ScreenshotService
                 CopiumImagesRefused = true;
                 _toasts.ShowProblem("Copium did not accept the image", "Saved locally. Automatic uploads are paused until Clink restarts; the Upload button on a screenshot notification still tries. (" + ex.Message + ")");
             }
-            else if (ex is CopiumHttpException { StatusCode: 401 or 403 })
+            else if (ex is CopiumHttpException tokenRefusal && CopiumClient.IsTokenRejection(tokenRefusal.StatusCode, tokenRefusal.ErrorText))
             {
                 // Every further try would fail the same way: pause until the token is changed, and say so once.
                 _rejectedToken = token;
-                _toasts.ShowProblem("Copium token rejected", "Saved locally. Check the token in Settings → Clips → Copium; automatic uploads are paused until it is changed. (" + ex.Message + ")");
+                _toasts.ShowProblem("Copium token rejected", "Saved locally. Check the token in Settings → App → Copium; automatic uploads are paused until it is changed. (" + ex.Message + ")");
             }
             else _toasts.ShowProblem("Screenshot not uploaded", "Saved locally. " + ex.Message);
             return false;
@@ -422,8 +461,23 @@ internal sealed class ScreenshotService
         finally
         {
             toast.OnCancel = null;
+            lock (_uploadGate) { if (ReferenceEquals(_currentOne, one)) _currentOne = null; }
             if (ReferenceEquals(_clientWork, work)) _clientWork = null;
         }
+    }
+
+    private bool _cloudOffNoticeShown;   // "Cloud sharing is off" was shown since the last flip off
+    private CancellationTokenSource? _currentOne;   // the upload running now (under _uploadGate)
+
+    /// <summary>The cloud kill switch went off: cancels the upload that is running. Queued ones refuse themselves (UploadCoreAsync checks the switch).</summary>
+    internal void CancelRunningUpload()
+    {
+        _cloudOffNoticeShown = false;   // a new flip: the next refused upload says so once
+        CancellationTokenSource? one;
+        lock (_uploadGate) one = _currentOne;
+        if (one == null) return;
+        Log.Info("screenshot: the running upload is cancelled (cloud sharing was turned off)");
+        try { one.Cancel(); } catch (ObjectDisposedException) { }
     }
 
     /// <summary>
@@ -444,9 +498,10 @@ internal sealed class ScreenshotService
     }
 
     /// <summary>
-    /// A screenshot was saved (and copied): the toast, then what Copium does about it. With a token and upload on, the upload starts
-    /// (queued, never blocking); without a token the "link your account" hint may show (<see cref="CopiumNudge"/>). A black picture gets
-    /// only its warning.
+    /// A screenshot was saved (and copied): the toast, then what Copium does about it. Nothing is uploaded unasked: an automatic
+    /// upload needs <see cref="Settings.ScreenshotUpload"/> AND the user's yes (<see cref="Settings.CopiumConsent"/>) AND cloud sharing
+    /// on AND a token; the toast then offers an Upload button instead (which asks first). After the 2nd saved screenshot on an install
+    /// that has not decided, the "Share with Copium?" pop-up may follow (<see cref="MaybePromptAsync"/>). A black picture gets only its warning.
     /// </summary>
     private void AnnounceSaved(ScreenshotEntry entry, bool copied, bool clipboardFailed, bool black, uint? clipboardSequence = null)
     {
@@ -455,45 +510,52 @@ internal sealed class ScreenshotService
             _toasts.ShowProblem("Screenshot is black", "Saved, but the picture is all black. Is the game in exclusive fullscreen? Use borderless windowed mode.");
             return;
         }
+        bool cloud = _settings.CloudSharingEnabled;
         bool token = HasToken;
-        bool auto = _settings.ScreenshotUpload && token && !AutoUploadPaused && string.IsNullOrEmpty(entry.CopiumLink);
-        _toasts.ShowScreenshot(entry, new ScreenshotToastState(copied, clipboardFailed, CanUpload: token && !auto && string.IsNullOrEmpty(entry.CopiumLink)));
+        bool noLink = string.IsNullOrEmpty(entry.CopiumLink);
+        bool auto = Consent.AutoUploadAllowed && token && !AutoUploadPaused && noLink;
+        _toasts.ShowScreenshot(entry, new ScreenshotToastState(copied, clipboardFailed, CanUpload: cloud && token && !auto && noLink));
         if (auto)
         {
-            NoteFirstAutoUpload();
-            _ = UploadAsync(entry, manual: false, clipboardSequence);
+            // With the image copy off the clipboard holds whatever it held: the link may still replace it if nothing else is copied
+            // from now until the upload ends (the same change counter test as after an image copy).
+            _ = UploadAsync(entry, manual: false, clipboardSequence ?? ClipboardSequence());
         }
-        else if (!token) ShowNudgeIfDue();
+        else CopiumNudge.CountScreenshot(_settings);
+        if (!auto) PromptTask = MaybePromptAsync();
     }
 
-    /// <summary>The wording of the one-time notice before the first automatic upload on this install.</summary>
-    internal const string AutoUploadNoticeTitle = "Screenshots upload automatically";
-    internal const string AutoUploadNoticeText = "Screenshots are uploaded to your Copium account automatically — change this under Settings → Screenshots";
+    /// <summary>The proactive pop-up that the last save started (a test waits on it); completed when none was due.</summary>
+    internal Task PromptTask { get; private set; } = Task.CompletedTask;
 
-    /// <summary>The first automatic upload on this install is announced once (<see cref="Settings.CopiumAutoUploadNoticeShown"/>): uploading is on by default, so it must not start unannounced.</summary>
-    private void NoteFirstAutoUpload()
+    /// <summary>
+    /// The unasked "Share with Copium?" pop-up (<see cref="CopiumNudge"/>): after the 2nd saved screenshot without agreement, at most
+    /// twice, a day apart, never with cloud sharing off. Not over a game (it would take the focus): skipped now, due again next time.
+    /// Runs after the save's own work, off the capture's call stack.
+    /// </summary>
+    private async Task MaybePromptAsync()
     {
-        if (_settings.CopiumAutoUploadNoticeShown) return;
-        _settings.CopiumAutoUploadNoticeShown = true;
-        try { _settings.Save(); } catch (Exception ex) { Log.Warn("screenshot: settings not saved: " + ex.Message); }
-        Log.Info("screenshot: first automatic upload on this install: told the user");
-        _toasts.ShowNotice(AutoUploadNoticeTitle, AutoUploadNoticeText);
+        try
+        {
+            var now = UtcNow();
+            if (!CopiumNudge.IsDue(_settings, now)) return;
+            if (GameInFront())
+            {
+                Log.Info("copium consent: the pop-up waits: a game is in front");
+                return;
+            }
+            CopiumNudge.MarkPrompted(_settings, now);   // before it shows: a crash must not make it come back at once
+            await Task.Yield();
+            await Consent.EnsureAsync(ConsentContext.Proactive);
+        }
+        catch (Exception ex) { Log.Warn("copium consent: proactive pop-up: " + ex.Message); }
     }
-
     /// <summary>Copies the picture to the clipboard (when that option is on) and returns the clipboard's change counter right after, for the link that may replace it later.</summary>
     private (bool Copied, bool Failed, uint? Sequence) CopyImage(BitmapSource bitmap, byte[] png)
     {
         if (!_settings.ScreenshotCopyImage) return (false, false, null);
         bool ok = ImageCopier(bitmap, png);
         return (ok, !ok, ok ? ClipboardSequence() : null);
-    }
-
-    private void ShowNudgeIfDue()
-    {
-        var now = UtcNow();
-        if (!CopiumNudge.IsDue(_settings, hasToken: false, now)) return;
-        bool shown = _toasts.ShowCopiumNudge(() => SetUpCopium(), () => CopiumNudge.Dismiss(_settings));
-        if (shown) CopiumNudge.MarkShown(_settings, now);
     }
 
     /// <summary>Where screenshots go: <see cref="Settings.ScreenshotsFolder"/>, else a <c>Screenshots</c> folder inside the clips folder (the library and the archive look at the clips folder's own files only).</summary>
@@ -975,6 +1037,25 @@ internal sealed class ScreenshotService
         if (string.IsNullOrWhiteSpace(path)) return false;
         string p = path.Trim().Replace('/', '\\');
         return p.StartsWith(@"\\", StringComparison.Ordinal) || IsDevicePath(p);
+    }
+
+    /// <summary>Test seam: the drive type of a root such as <c>Z:\</c> (<c>GetDriveType</c>; 4 = remote).</summary>
+    internal static Func<string, uint> DriveTypeOf { get; set; } = root => Windows.Win32.PInvoke.GetDriveType(root);
+    private const uint DriveRemote = 4;
+
+    /// <summary>
+    /// A folder on the network: a UNC or device path (<see cref="IsUnc"/>), or a path on a mapped network drive (<c>Z:\</c> that
+    /// <c>GetDriveType</c> reports as remote). Used where a folder in another copy of the settings is judged; a drive that cannot be
+    /// looked at counts as local.
+    /// </summary>
+    internal static bool IsNetworkFolder(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return false;
+        if (IsUnc(path)) return true;
+        string p = path.Trim();
+        if (p.Length < 2 || p[1] != ':' || !char.IsAsciiLetter(p[0])) return false;
+        try { return DriveTypeOf(p[..2] + "\\") == DriveRemote; }
+        catch (Exception) { return false; }
     }
 
     /// <summary>A history entry (or the toast's file) that may be opened: see <see cref="IsOpenableFile"/> for the current and earlier screenshot folders.</summary>

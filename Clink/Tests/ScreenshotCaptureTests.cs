@@ -26,7 +26,6 @@ internal static class ScreenshotCaptureTests
         public void ShowProblem(string title, string text) => Shown.Add("problem: " + title);
         public void ShowScreenshot(ScreenshotEntry entry, ScreenshotToastState state) => Shown.Add("screenshot: " + Path.GetFileName(entry.Path));
         public IScreenshotUploadToast ShowScreenshotUploading(ScreenshotEntry entry) { Shown.Add("uploading: " + Path.GetFileName(entry.Path)); return new Handle(this); }
-        public bool ShowCopiumNudge(Action setUp, Action dismiss) { Shown.Add("nudge"); return true; }
 
         private sealed class Handle : IScreenshotUploadToast
         {
@@ -36,6 +35,7 @@ internal static class ScreenshotCaptureTests
             public void Report(double fraction) { }
             public void Succeeded(string link, bool linkCopied) => _t.Shown.Add("shared: " + link + (linkCopied ? " (copied)" : ""));
             public void Failed() => _t.Shown.Add("upload failed");
+            public void Declined() => _t.Shown.Add("upload declined");
         }
     }
 

@@ -389,3 +389,5 @@ GetOpenClipboardWindow
 GetClipboardSequenceNumber
 OpenClipboard
 CloseClipboard
+// import folder check: a mapped network drive is a network folder too
+GetDriveType

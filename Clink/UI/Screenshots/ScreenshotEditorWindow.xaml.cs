@@ -283,6 +283,17 @@ public partial class ScreenshotEditorWindow : Window, ICaptureExcludedWindow
     /// <summary>The app is quitting (see <see cref="EditorWindowHost.ConfirmQuitAsync"/>). True = the quit may go on.</summary>
     internal async Task<bool> ResolveForQuitAsync(bool userInitiated)
     {
+        _resolvingQuit = true;   // a close that was deferred while a save ran must not ask a second question of its own
+        try { return await ResolveForQuitCoreAsync(userInitiated); }
+        finally { _resolvingQuit = false; }
+    }
+
+    private bool _resolvingQuit;
+    /// <summary>The quit's own question is being resolved: <see cref="RequestCloseAsync"/> stands aside (test seam).</summary>
+    internal bool ResolvingQuit => _resolvingQuit;
+
+    private async Task<bool> ResolveForQuitCoreAsync(bool userInitiated)
+    {
         for (int i = 0; _busy && i < 100; i++) await Task.Delay(50);   // a save under way finishes first
         if (_session == null) return true;
         if (Canvas.IsTextEditing) Canvas.CommitText();
@@ -312,6 +323,7 @@ public partial class ScreenshotEditorWindow : Window, ICaptureExcludedWindow
     internal async Task RequestCloseAsync()
     {
         if (_session == null) return;
+        if (_resolvingQuit) { _closeWhenIdle = false; return; }   // the quit asks (or saves) itself; a second question would double the prompt
         if (_busy) { _closeWhenIdle = true; return; }
         if (Canvas.IsTextEditing) Canvas.CommitText();
         if (_session.IsDirty)

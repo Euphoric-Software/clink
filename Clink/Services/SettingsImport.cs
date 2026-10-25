@@ -301,6 +301,8 @@ internal static class SettingsImport
         ("alerts", new[] { nameof(Settings.ClickSound), nameof(Settings.ClickVolume), nameof(Settings.ShowToast), nameof(Settings.ToastPosition), nameof(Settings.ToastClip), nameof(Settings.ToastShared), nameof(Settings.ToastRecording), nameof(Settings.ToastScreenshot), nameof(Settings.StatusDot), nameof(Settings.StatusDotPosition) }),
         ("archive", new[] { nameof(Settings.ArchiveEnabled), nameof(Settings.ArchivePath), nameof(Settings.ArchiveAfterDays), nameof(Settings.ArchiveWhenLocalExceedsGB) }),
         ("clips folder", new[] { nameof(Settings.ClipsFolder) }),
+        ("features", new[] { nameof(Settings.ClipsEnabled) }),
+        ("cloud sharing", new[] { nameof(Settings.CloudSharingEnabled) }),   // (only an incoming "off" counts: see KeepOurOwn / Differences)
         ("screenshots", new[] { nameof(Settings.ScreenshotsEnabled), nameof(Settings.ScreenshotsFolder), nameof(Settings.ScreenshotMode), nameof(Settings.ScreenshotCopyImage), nameof(Settings.ScreenshotLoupe), nameof(Settings.ScreenshotUpload), nameof(Settings.ScreenshotCopyLink) }),
         ("Copium token", Array.Empty<string>()),   // compared decrypted, below
         (UnusableTokenNote, Array.Empty<string>()),
@@ -326,7 +328,13 @@ internal static class SettingsImport
         || key.Equals(nameof(Settings.UpdateRepo), StringComparison.OrdinalIgnoreCase)
         || key.Equals(nameof(Settings.UseDevBuilds), StringComparison.OrdinalIgnoreCase)
         || key.Equals(nameof(Settings.CopiumImageUploadUrl), StringComparison.OrdinalIgnoreCase)   // where the token is sent: this machine's own choice, never another copy's
-        || key.Equals(nameof(Settings.ImportDeclined), StringComparison.OrdinalIgnoreCase);
+        || key.Equals(nameof(Settings.ImportDeclined), StringComparison.OrdinalIgnoreCase)
+        // consent and sharing controls: what this person agreed to on this machine is never another copy's to decide
+        || key.Equals(nameof(Settings.CloudSharingEnabled), StringComparison.OrdinalIgnoreCase)
+        || key.StartsWith("CopiumConsent", StringComparison.OrdinalIgnoreCase)
+        || key.StartsWith("CopiumNudge", StringComparison.OrdinalIgnoreCase)
+        || key.Equals("CopiumAutoUploadNoticeShown", StringComparison.OrdinalIgnoreCase)   // S6's one-time notice: gone, but a settings.json written by S6 still carries it
+        || key.Equals(nameof(Settings.ScreenshotEditorExcludeFromCapture), StringComparison.OrdinalIgnoreCase);
 
     private static readonly string[] s_folderKeys = { nameof(Settings.ScreenshotsFolder), nameof(Settings.ClipsFolder), nameof(Settings.ArchivePath) };
 
@@ -340,7 +348,7 @@ internal static class SettingsImport
         var kept = new List<string>();
         void One(string name, string? mine, string? their, Action<string?> set)
         {
-            if (!Screenshots.ScreenshotService.IsUnc(their)) return;
+            if (!Screenshots.ScreenshotService.IsNetworkFolder(their)) return;
             if (string.Equals(mine?.Trim(), their!.Trim(), StringComparison.OrdinalIgnoreCase)) return;
             set(mine);
             kept.Add(name);
@@ -395,9 +403,6 @@ internal static class SettingsImport
         || key.Equals(nameof(Settings.AudioSetupSeen), StringComparison.OrdinalIgnoreCase)
         || key.Equals(nameof(Settings.SeededHotkeyDefaults), StringComparison.OrdinalIgnoreCase)
         || key.Equals(nameof(Settings.ScreenshotEditor), StringComparison.OrdinalIgnoreCase)   // the editor's last-used colour and width
-        || key.StartsWith("CopiumNudge", StringComparison.OrdinalIgnoreCase)                    // how often the "link Copium" hint was shown: this installation's own counters
-        || key.Equals(nameof(Settings.CopiumAutoUploadNoticeShown), StringComparison.OrdinalIgnoreCase)   // told once per installation
-        || key.Equals(nameof(Settings.ScreenshotEditorExcludeFromCapture), StringComparison.OrdinalIgnoreCase)   // hidden, per installation
         || key.Equals(nameof(Settings.CopiumTokenProtected), StringComparison.OrdinalIgnoreCase);
 
     /// <summary>A settings key that an import offer names in the user's words or ignores: anything else would be listed as "other settings".</summary>
@@ -421,12 +426,21 @@ internal static class SettingsImport
         var ours = Settings.FromJson(ourJson);
         var theirs = Settings.FromJson(theirJson);
         guard?.Invoke(theirs);
+        // The consent is ours (IsOwnKey): the automatic upload is judged against it, not against the other copy's yes.
+        theirs.CopiumConsent = ours.CopiumConsent;
+        if (!theirs.CopiumConsent) theirs.ScreenshotUpload = false;
         KeepOurNetworkPaths(ours, theirs);   // as an import would: a network folder is not taken over, so it is no difference to offer
         var a = ours.ToElement().EnumerateObject().ToDictionary(p => p.Name, p => p.Value, StringComparer.OrdinalIgnoreCase);
         var b = theirs.ToElement().EnumerateObject().ToDictionary(p => p.Name, p => p.Value, StringComparer.OrdinalIgnoreCase);
         var labels = new HashSet<string>();
         foreach (string key in a.Keys.Concat(b.Keys).Distinct(StringComparer.OrdinalIgnoreCase))
         {
+            if (key.Equals(nameof(Settings.CloudSharingEnabled), StringComparison.OrdinalIgnoreCase))
+            {
+                // only an incoming "off" over our "on" is a change an import would make (see KeepOurOwn)
+                if (ours.CloudSharingEnabled && !theirs.CloudSharingEnabled) labels.Add("cloud sharing");
+                continue;
+            }
             if (IsVolatile(key)) continue;
             if (a.TryGetValue(key, out var x) && b.TryGetValue(key, out var y) && JsonSame(x, y)) continue;
             labels.Add(s_labels.FirstOrDefault(l => l.Keys.Contains(key, StringComparer.OrdinalIgnoreCase)).Label ?? OtherLabel);
@@ -642,6 +656,10 @@ internal static class SettingsImport
 
         foreach (string key in t.Select(p => p.Key).Where(IsOwnKey).ToList())
         {
+            // The kill switch is the one own key that can be tightened by a copy: an incoming "off" (an admin pre-provisioning a work
+            // machine) is kept, an incoming "on" never is (that needs the confirmation on this machine).
+            if (key.Equals(nameof(Settings.CloudSharingEnabled), StringComparison.OrdinalIgnoreCase)
+                && t[key] is JsonValue incoming && incoming.TryGetValue<bool>(out bool incomingOn) && !incomingOn) continue;
             if (Find(o, key) is { } mine) t[key] = mine.Value?.DeepClone();   // in place: the order of the keys stays theirs
             else t.Remove(key);
         }
@@ -652,12 +670,17 @@ internal static class SettingsImport
         // A network folder (UNC, device path) in the other copy is not taken over silently: ours stays (or the default, when we have none).
         foreach (string key in t.Select(p => p.Key).Where(k => s_folderKeys.Contains(k, StringComparer.OrdinalIgnoreCase)).ToList())
         {
-            if (t[key] is not JsonValue v || !v.TryGetValue<string>(out var value) || !Screenshots.ScreenshotService.IsUnc(value)) continue;
+            if (t[key] is not JsonValue v || !v.TryGetValue<string>(out var value) || !Screenshots.ScreenshotService.IsNetworkFolder(value)) continue;
             var mine = Find(o, key);
             if (mine is { Value: JsonValue mv } && mv.TryGetValue<string>(out var ourValue) && string.Equals(ourValue?.Trim(), value.Trim(), StringComparison.OrdinalIgnoreCase)) continue;   // the same as ours: nothing to refuse
             if (mine is { Value: not null }) t[key] = mine.Value.Value!.DeepClone(); else t.Remove(key);
             networkPathsKept?.Add(s_folderKeys.First(k => k.Equals(key, StringComparison.OrdinalIgnoreCase)));
         }
+
+        // The consent stays ours (above), so the automatic upload does not arrive switched on without our yes.
+        bool ourConsent = Find(o, nameof(Settings.CopiumConsent)) is { Value: JsonValue cv } && cv.TryGetValue<bool>(out bool yes) && yes;
+        if (!ourConsent && Find(t, nameof(Settings.ScreenshotUpload)) is { } su && su.Value is JsonValue sv && sv.TryGetValue<bool>(out bool sUp) && sUp)
+            t[su.Key] = false;
 
         if (keepOurToken)
         {

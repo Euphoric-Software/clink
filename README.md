@@ -71,9 +71,19 @@ replay length is yours to set, 45 seconds by default); press a key, hear a click
   in the background (slowly, oldest first, after N days and/or when the local folder is over N GB), or whenever you
   say so: *Archive now…* moves what is due, or every local clip, with progress and a result.
 * Shows which monitor it is capturing; click another one on the little map to switch.
-* Resizable borderless UI, dark or light with six accent colours: settings tabs (Capture · Clips · Alerts · App) with
-  the clips pane beside them when the window is wide, as a fifth tab (Library) when it is narrow. Lives in the tray
-  while you play.
+* **Sharing is opt-in.** Nothing is uploaded until you say yes once: the first time you share with a token saved (or press
+  an *Upload* button), Clink asks *Share with Copium?* and warns that **anything you upload is immediately publicly
+  accessible to anyone who has the link; links are not private and cannot be recalled by Clink**. *Not now* leaves it
+  at that, *Enable Copium sharing* agrees (Enter never does: *Not now* is the default button), and *Don't ask again* only
+  stops Clink asking on its own (sharing a clip or a screenshot yourself still asks until you say yes). Under
+  *App → Cloud sharing* a **kill switch** turns every upload off at once, including one that is running, hides the
+  sharing buttons and replaces the Copium section with a note; turning it back on is a two-step: a confirmation with the
+  same warning. An importing copy of the settings can switch it off, never on.
+* Resizable borderless UI, dark or light with six accent colours: settings tabs (Capture · Clips · Screenshots · Alerts ·
+  App) with the clips pane beside them when the window is wide, as a last tab (Library) when it is narrow. *App →
+  Features* switches **Clips** and **Screenshots** on or off, live; Clips off hides the Clips and Library tabs and the
+  recorder's settings (Capture keeps only the hotkeys) and does not start the recorder, and the last feature that is on
+  cannot be turned off. Lives in the tray while you play.
 
 ## Taking screenshots
 
@@ -91,16 +101,19 @@ A ShareX-style screenshot tool that lives next to the clip recorder (its own fol
 * **Editor tools**: select/move/resize, pen, line, arrow, freehand arrow, rectangle, text, crop, blur, pixelate, highlight,
   spotlight, magnify, smart erase, insert image (file, clipboard or a recent screenshot), brightness / contrast / sharpness;
   undo and redo for everything. Edit-last saves a new file and leaves the original alone.
-* **Copium upload**: with a Copium token (Clips → Copium) a saved screenshot is uploaded automatically (not a black capture,
-  and not the editor's *Save*; *Done* uploads) and, when nothing else was copied meanwhile, its link replaces the image on the
-  clipboard. The first automatic upload on an install says so once, and the *Uploading…* notification has a *Cancel* button.
-  The file is **always saved locally first**, so a failed upload loses nothing; without a token a short hint (at most three
-  times, once a day, *Don't show again*) offers to set Copium up. Both options are in the Screenshots tab (*Upload to Copium
-  when linked*, *Copy the link to the clipboard after uploading*); the *Screenshot saved* notification has its own switch and
-  duration under Alerts. If Copium turns a picture down (HTTP 415, or a 400 about the type) or rejects the token (401 / 403),
-  automatic uploads pause (until Clink restarts, or the token is changed) and the notification's *Upload* button still tries.
-  The notification's buttons are *Open | Edit | Upload or Copy link | Folder*; *Upload* shows only when a token is set and no
-  automatic upload follows.
+* **Copium upload** is opt-in and off by default: a saved screenshot is only ever uploaded when you press the
+  notification's *Upload* button, or after you switch on *Upload every screenshot to Copium automatically* in the
+  Screenshots tab (or tick *Also upload every screenshot I take automatically* in the *Share with Copium?* pop-up). The
+  token goes under *App → Copium* (shown only with cloud sharing on), and the first upload asks you to agree (see *Sharing is opt-in*
+  above). An automatic upload needs the setting, your yes, cloud sharing on and a token; its link replaces the image on
+  the clipboard when nothing else was copied meanwhile (*Copy the link to the clipboard after uploading*), and the
+  *Uploading…* notification has a *Cancel* button. The file is **always saved locally first**, so a failed upload loses
+  nothing. After your second screenshot on an install without a yes, up to two pop-ups, at least a day apart, may offer
+  sharing (never over a game or a full-screen application; *Don't ask again* stops them). If Copium turns a picture down (HTTP 415, or a 400 about the
+  type) or rejects the token (401, or a 403 about the token or with no reason), automatic uploads pause (until Clink
+  restarts, or the token is changed) and the notification's *Upload* button still tries. The notification's buttons are
+  *Open | Edit | Upload or Copy link | Folder*; *Upload* shows when a token is set, cloud sharing is on and no automatic
+  upload follows.
 * **Settings**: folder (default `Screenshots` inside the clips folder), copy image to clipboard, magnifier, after-capture mode,
   upload options. Files are named `Game yyyy-MM-dd HH-mm-ss.png` (the game only while it is being recorded).
 
@@ -113,7 +126,7 @@ A ShareX-style screenshot tool that lives next to the clip recorder (its own fol
 </tr>
 <tr>
 <td><a href="docs/screenshots/hotkeys.png"><img src="docs/screenshots/hotkeys.png" width="400" alt="Hotkeys: the main hotkey with its keys and what it saves, and more hotkeys for a shorter clip, share last clip and pause"></a><br><sub>Hotkeys: the main hotkey always saves the full replay; more hotkeys add shorter clips, share-last and pause / resume.</sub></td>
-<td><a href="docs/screenshots/clip-tab.png"><img src="docs/screenshots/clip-tab.png" width="400" alt="Clips tab with the Copium token and the storage settings, and the Shared list of shared clips"></a><br><sub>Clips tab: the Copium token and the storage settings, with <i>Archive now…</i>. Right: everything you shared, with its link.</sub></td>
+<td><a href="docs/screenshots/clip-tab.png"><img src="docs/screenshots/clip-tab.png" width="400" alt="Clips tab with the Copium token and the storage settings, and the Shared list of shared clips"></a><br><sub>App tab: the Copium token and the storage settings, with <i>Archive now…</i>. Right: everything you shared, with its link.</sub></td>
 </tr>
 <tr>
 <td><a href="docs/screenshots/alerts-tab.png"><img src="docs/screenshots/alerts-tab.png" width="400" alt="Alerts tab with toast switches and the status dot"></a><br><sub>Alerts tab: toasts and the status dot.</sub></td>
@@ -194,8 +207,10 @@ installed on the release channel. The choice is kept in `UseDevBuilds` in
    program that uses Alt+C itself loses it; pick other keys under *Capture → Hotkeys* if that matters. A file from
    before v0.2.5 with no hotkey for the full replay gets Alt+C for it (left unset when another hotkey already uses
    Alt+C) and says so once, in the footer and a tray balloon.
-3. Click **Share** (in the toast, the clip list or the trim editor). The clip is uploaded to Copium and the link is
-   copied. By default the copied link is the raw video file, so pasting it in Discord plays the video inline with no
+3. Click **Share** (in the toast, the clip list or the trim editor). The first time with a token saved, Clink asks
+   *Share with Copium?* (see *Sharing is opt-in*); after *Enable Copium sharing* the clip is uploaded to Copium and the link is
+   copied. With cloud sharing off nothing is uploaded and the Share buttons are hidden (a clip that already has a link
+   can still have it copied). The share hotkey over a game does not open the pop-up: it says *Sharing needs your OK once - open Clink and press Share*. By default the copied link is the raw video file, so pasting it in Discord plays the video inline with no
    embed card. If you turn on custom embeds on copium.pics, Copium's `link` becomes the share page instead; Clink
    just uses whatever Copium says to copy. A clip is uploaded once: pressing Share again (or the share hotkey) while
    it uploads waits for that upload. When an upload fails the toast and the clip row say why (*Copium rejected the
@@ -204,7 +219,7 @@ installed on the release channel. The choice is kept in `UseDevBuilds` in
    thumbnail, name and *size · length*; the length appears only when it is known). Drag the card into
    Discord, a browser upload box or an Explorer folder (the file is only ever copied, so the clip stays in your library),
    or press *Copy file* and paste with Ctrl+V; *Open folder* shows it in Explorer and *Set up Copium…* brings Clink's
-   window forward (the footer says where the token goes: *Clips → Copium*). The window floats above other windows so it
+   window forward (the footer says where the token goes: *App → Copium*). The window floats above other windows so it
    stays in reach while you bring the drop target forward, but goes behind a game that has the focus (and, opened over a
    game, appears at the toast position without taking the focus); it is hidden from screen capture like the toasts and
    shows no file path. The share hotkey (or `--share-last`) opens no window over a game or any other full-screen
@@ -239,8 +254,8 @@ installed on the release channel. The choice is kept in `UseDevBuilds` in
    second click on a clip that is already open brings its window forward.
 
 Copium: make an upload token under *ShareX & API* on copium.pics (it starts with `eup_`) and paste it in the
-Copium box (*Clips → Copium*). It is stored encrypted for your Windows user (DPAPI). Nothing is uploaded unless you press
-Share. Share checks a clip against the limits of the account you say you have: without Copium+ an upload may be at most
+Copium box (*App → Copium*, under *Cloud sharing*). It is stored encrypted for your Windows user (DPAPI). Nothing is uploaded
+unless you press Share (or Upload) and have agreed in the *Share with Copium?* pop-up (or you opted in to automatic screenshot uploads: *Upload every screenshot to Copium automatically*, which also needs that yes); saving a token asks once when you have not. Share checks a clip against the limits of the account you say you have: without Copium+ an upload may be at most
 **200 MB and 10 minutes** long, with Copium+ (tick *I have Copium+*) **2 GB and 60 minutes**. A clip over the limit is not
 uploaded; Share says so (*Over Copium's free limit (200 MB / 10 min)*, *Over Copium Plus's limit (2 GB / 60 min)*; the footer
 adds how big the clip is and what to do: trim it, or tick *I have Copium+* if you have it) and the toast's button reads
@@ -278,11 +293,15 @@ Copium Plus also ticks *I have Copium+*. The toast's button reads *Share* withou
   replay length. *Clip now* sits in the header (it saves the full replay) and the click sound under the list. A combo
   another row already has (the main one included), or a bare letter, digit or editing key (it would be eaten in every
   program), is refused with a hint and the box keeps listening; F-keys, ScrollLock and Pause work alone.
-* **Clips**: **Copium** - the upload token and the *I have Copium+* switch - and **Storage**: the local clips folder, the
-  archive location (*Browse…*, *Test*, *Archive now…*) and *Move clips there automatically* with its rules (below).
+* **Clips** (only with the Clips feature on): **Storage** - the local clips folder, the archive location (*Browse…*,
+  *Test*, *Archive now…*) and *Move clips there automatically* with its rules (below).
+* **Screenshots** (only with the Screenshots feature on): the folder, clipboard and magnifier options, *After capture*, and the
+  opt-in upload options.
 * **Alerts**: **Toasts** - the position and the four toast switches (Clip saved, Shared, Recording started, Screenshot saved) with their durations and a *Preview* button each;
   **Status dot** - the dot and its corner.
-* **App**: **Appearance** - *Dark* or *Light* and one of six accents (Cyan, the default; Blue, Violet, Pink, Orange,
+* **App**: **Features** - *Clips* and *Screenshots* on or off; **Cloud sharing** - the kill switch (off at once, on only after a
+  confirmation); **Copium** - the upload token, its status, *Get a token* and the *I have Copium+* switch (replaced by a
+  note while cloud sharing is off); **Appearance** - *Dark* or *Light* and one of six accents (Cyan, the default; Blue, Violet, Pink, Orange,
   Green), applied at once to every window that is open; **Updates** - auto-update, *Run at startup*, the version and
   *Check now*; **Settings** - where `settings.json` is kept, with an *Open folder* link, and, when they apply, the banners
   about a private copy of AppData and about settings another copy of Clink saved (see [Settings](#settings)).

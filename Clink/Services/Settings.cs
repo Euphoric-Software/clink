@@ -187,22 +187,28 @@ internal sealed class Settings
     public Clink.Screenshots.Editing.ScreenshotEditorOptions ScreenshotEditor { get; set; } = new();
     public bool ScreenshotCopyImage { get; set; } = true;
     public bool ScreenshotLoupe { get; set; } = true;
-    /// <summary>Upload a saved screenshot to Copium when a token is set (the file and the clipboard image are always done first). Without a token this only drives the "link your account" hint (<see cref="Clink.Screenshots.CopiumNudge"/>).</summary>
-    public bool ScreenshotUpload { get; set; } = true;
+    /// <summary>Upload every saved screenshot to Copium automatically. Off by default (sharing is opt-in); it only takes effect with <see cref="CopiumConsent"/>, <see cref="CloudSharingEnabled"/> and a token. The file and the clipboard image are always done first.</summary>
+    public bool ScreenshotUpload { get; set; } = false;
     /// <summary>After an upload, put the link on the clipboard (it replaces the image).</summary>
     public bool ScreenshotCopyLink { get; set; } = true;
     /// <summary>Hidden: an https URL on copium.pics (or a subdomain) that screenshots (images only, never clips) are uploaded to instead of <see cref="CopiumClient.UploadEndpoint"/>. Anything else is ignored with a warning. This machine's own key: never imported (the token travels with the request).</summary>
     public string? CopiumImageUploadUrl { get; set; }
-    /// <summary>The one-time notice before the first automatic upload ("Screenshots are uploaded to your Copium account automatically…") was shown. Per installation: never imported.</summary>
-    public bool CopiumAutoUploadNoticeShown { get; set; }
+    /// <summary>The user said yes in the "Share with Copium?" pop-up: uploads to Copium are allowed from this installation. Per installation: never imported.</summary>
+    public bool CopiumConsent { get; set; }
+    /// <summary>"Don't ask again" in the pop-up: no proactive prompts any more (an explicit share attempt still asks). Per installation: never imported.</summary>
+    public bool CopiumConsentDontAsk { get; set; }
+    /// <summary>When the pop-up was last shown unasked (<see cref="Clink.Screenshots.CopiumNudge"/>, the proactive scheduler). Per installation: never imported.</summary>
+    public DateTime? CopiumConsentPromptedUtc { get; set; }
+    /// <summary>How many times the pop-up was shown unasked (at most <see cref="Clink.Screenshots.CopiumNudge.MaxProactive"/>). Per installation: never imported.</summary>
+    public int CopiumConsentPromptCount { get; set; }
+    /// <summary>How many screenshots were saved on this installation, counted until the proactive prompt is decided (the prompt comes after the 2nd). Per installation: never imported.</summary>
+    public int CopiumConsentScreenshots { get; set; }
+    /// <summary>Global kill switch for every Copium upload (clips and screenshots). Off = nothing leaves this computer and the consent pop-up never shows. Per installation: never imported.</summary>
+    public bool CloudSharingEnabled { get; set; } = true;
+    /// <summary>Feature visibility: the clip replay buffer, recording and the clip library. Off = the engine is not started and its hotkeys, tray items and tabs are hidden.</summary>
+    public bool ClipsEnabled { get; set; } = true;
     /// <summary>Hidden (no UI): the screenshot editor window and its picture picker are kept out of screen captures and recordings. Per installation: never imported.</summary>
     public bool ScreenshotEditorExcludeFromCapture { get; set; } = true;
-    /// <summary>How many times the "link your Copium account" hint was shown (it stops at <see cref="Clink.Screenshots.CopiumNudge.MaxShown"/>). Per installation: never imported.</summary>
-    public int CopiumNudgeShown { get; set; }
-    /// <summary>The user chose "Don't show again" on the hint. Per installation: never imported.</summary>
-    public bool CopiumNudgeDismissed { get; set; }
-    /// <summary>When the hint was last shown (it shows at most once a day). Per installation: never imported.</summary>
-    public DateTime? CopiumNudgeLastShownUtc { get; set; }
     public ToastSetting ToastScreenshot { get; set; } = new() { Enabled = true, Seconds = 6 };
     /// <summary>
     /// The hotkey actions whose default binding was offered once (<see cref="SeedHotkeyDefaults"/>), whether or not it was added: a
@@ -535,7 +541,12 @@ internal sealed class Settings
         ScreenshotEditor.Normalize();
         ToastScreenshot ??= new ToastSetting { Enabled = true, Seconds = 6 };
         if (string.IsNullOrWhiteSpace(CopiumImageUploadUrl)) CopiumImageUploadUrl = null;
-        if (CopiumNudgeShown < 0) CopiumNudgeShown = 0;
+        if (CopiumConsentPromptCount < 0) CopiumConsentPromptCount = 0;
+        if (CopiumConsentScreenshots < 0) CopiumConsentScreenshots = 0;
+        // The automatic upload never exists without the user's yes (an S6-era or imported "true" cannot pre-arm it).
+        if (!CopiumConsent) ScreenshotUpload = false;
+        // At least one feature stays on (Screenshots when both were switched off by hand): the window would have no tabs otherwise.
+        if (!ClipsEnabled && !ScreenshotsEnabled) ScreenshotsEnabled = true;
         SeededHotkeyDefaults ??= new List<string>();
         SeededHotkeyDefaults.RemoveAll(a => string.IsNullOrWhiteSpace(a));
         EnsureHotkeyModel();

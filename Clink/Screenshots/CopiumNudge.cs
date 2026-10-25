@@ -3,65 +3,64 @@ using Clink.Services;
 namespace Clink.Screenshots;
 
 /// <summary>
-/// The "link your Copium account" hint after a screenshot was saved without a token: pure rules plus the counters in
-/// <see cref="Settings"/>. It never blocks or asks anything: a notification with two buttons (Set up Copium / Don't show again),
-/// shown at most <see cref="MaxShown"/> times in all and at most once every <see cref="MinGap"/>, and never again once dismissed.
+/// The proactive "Share with Copium?" pop-up (S7; it replaced the S6 toast hint): pure rules plus the counters in
+/// <see cref="Settings"/>. It is offered after the <see cref="AfterScreenshots"/>nd saved screenshot on an install that has not agreed
+/// to sharing and has not said "Don't ask again", at most <see cref="MaxProactive"/> times in all and at least <see cref="MinGap"/>
+/// apart, and never while cloud sharing is off. The pop-up itself and the "a game is in front" check belong to the caller.
 /// </summary>
 internal static class CopiumNudge
 {
-    public const int MaxShown = 3;
+    public const int AfterScreenshots = 2;
+    public const int MaxProactive = 2;
     public static readonly TimeSpan MinGap = TimeSpan.FromHours(24);
 
-    public const string Title = "Saved locally";
-    public const string Text = "Link your Copium account to share screenshots automatically";
-
     /// <summary>
-    /// True when the hint is due: only without a token, with upload on, not dismissed, shown fewer than <see cref="MaxShown"/> times and
-    /// not within <see cref="MinGap"/> of the last time. A last time in the FUTURE (the clock went back) shows nothing:
-    /// <see cref="IsDue"/> sets it to now, so the gap runs from here.
+    /// True when the pop-up is due. A last showing in the FUTURE (the clock went back) holds nothing back for ever:
+    /// <see cref="IsDue"/> starts the gap from now.
     /// </summary>
-    public static bool ShouldShow(bool hasToken, bool uploadEnabled, bool dismissed, int shownCount, DateTime? lastShownUtc, DateTime nowUtc)
+    public static bool ShouldPrompt(bool consent, bool dontAsk, bool cloudOn, int screenshots, int promptCount, DateTime? lastPromptUtc, DateTime nowUtc)
     {
-        if (hasToken || !uploadEnabled || dismissed || shownCount >= MaxShown) return false;
-        if (lastShownUtc is DateTime last)
-        {
-            var since = nowUtc - last.ToUniversalTime();
-            if (since < MinGap) return false;   // (negative too: see IsDue)
-        }
+        if (consent || dontAsk || !cloudOn) return false;
+        if (screenshots < AfterScreenshots || promptCount >= MaxProactive) return false;
+        if (lastPromptUtc is DateTime last && nowUtc - last.ToUniversalTime() < MinGap) return false;   // (a negative gap too: see IsDue)
         return true;
     }
 
-    /// <summary><see cref="ShouldShow"/> for the settings as they are now.</summary>
-    public static bool IsDue(Settings s, bool hasToken, DateTime nowUtc)
+    /// <summary><see cref="ShouldPrompt"/> for the settings as they are now.</summary>
+    public static bool IsDue(Settings s, DateTime nowUtc)
     {
-        // The clock went back past the last showing: it would hold the hint back until the clock caught up. Start the gap now instead.
-        if (s.CopiumNudgeLastShownUtc is DateTime last && last.ToUniversalTime() > nowUtc)
+        // The clock went back past the last showing: it would hold the pop-up back until the clock caught up. Start the gap now instead.
+        if (s.CopiumConsentPromptedUtc is DateTime last && last.ToUniversalTime() > nowUtc)
         {
-            s.CopiumNudgeLastShownUtc = nowUtc;
+            s.CopiumConsentPromptedUtc = nowUtc;
             Persist(s);
             return false;
         }
-        return ShouldShow(hasToken, s.ScreenshotUpload, s.CopiumNudgeDismissed, s.CopiumNudgeShown, s.CopiumNudgeLastShownUtc, nowUtc);
+        return ShouldPrompt(s.CopiumConsent, s.CopiumConsentDontAsk, s.CloudSharingEnabled, s.CopiumConsentScreenshots, s.CopiumConsentPromptCount, s.CopiumConsentPromptedUtc, nowUtc);
     }
 
-    /// <summary>Counts one showing (saved to the settings file; a disk problem is logged, never thrown).</summary>
-    public static void MarkShown(Settings s, DateTime nowUtc)
+    /// <summary>
+    /// A screenshot was saved: counted while the install is still undecided (the count stops at <see cref="AfterScreenshots"/> and is
+    /// saved only when it changes). Nothing is counted once sharing is agreed to or "Don't ask again" was chosen.
+    /// </summary>
+    public static void CountScreenshot(Settings s)
     {
-        s.CopiumNudgeShown = Math.Min(MaxShown, Math.Max(0, s.CopiumNudgeShown) + 1);
-        s.CopiumNudgeLastShownUtc = nowUtc;
+        if (s.CopiumConsent || s.CopiumConsentDontAsk || s.CopiumConsentScreenshots >= AfterScreenshots) return;
+        s.CopiumConsentScreenshots++;
         Persist(s);
     }
 
-    /// <summary>"Don't show again".</summary>
-    public static void Dismiss(Settings s)
+    /// <summary>Counts one unasked showing (saved to the settings file; a disk problem is logged, never thrown).</summary>
+    public static void MarkPrompted(Settings s, DateTime nowUtc)
     {
-        s.CopiumNudgeDismissed = true;
+        s.CopiumConsentPromptCount = Math.Min(MaxProactive, Math.Max(0, s.CopiumConsentPromptCount) + 1);
+        s.CopiumConsentPromptedUtc = nowUtc;
         Persist(s);
     }
 
     private static void Persist(Settings s)
     {
         try { s.Save(); }
-        catch (Exception ex) { Log.Warn("copium nudge: settings not saved: " + ex.Message); }
+        catch (Exception ex) { Log.Warn("copium consent: settings not saved: " + ex.Message); }
     }
 }

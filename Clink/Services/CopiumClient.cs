@@ -21,7 +21,8 @@ internal enum MediaKind { Video, Image }
 /// <summary>Upload client for copium.pics (https://copium.pics/developers).</summary>
 internal static class CopiumClient
 {
-    private static readonly HttpClient s_http = new() { Timeout = TimeSpan.FromMinutes(30) };
+    // No redirects: the bearer token must never follow a 3xx to another address (a 3xx is an error instead).
+    private static readonly HttpClient s_http = new(new SocketsHttpHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromMinutes(30) };
     public const string UploadEndpoint = "https://v.copium.pics/api/upload";
 
     /// <summary>Test seam: sends the request through this client instead of the shared one (a mock handler).</summary>
@@ -44,7 +45,7 @@ internal static class CopiumClient
     /// <summary>What kind of upload a file is: pictures by extension; everything else (clips, recordings) is a video.</summary>
     internal static MediaKind KindOf(string path) => ContentTypeFor(path).StartsWith("image/", StringComparison.Ordinal) ? MediaKind.Image : MediaKind.Video;
 
-    /// <summary><c>copium.pics</c> or a subdomain of it: the only hosts the token may be sent to and the only ones an answer may point at.</summary>
+    /// <summary><c>copium.pics</c> or a subdomain of it: the only hosts the token may be sent to (an answer's links may point anywhere: see <see cref="IsHttpsUrl"/>).</summary>
     internal static bool IsCopiumHost(string? host) =>
         !string.IsNullOrEmpty(host) && (host.Equals("copium.pics", StringComparison.OrdinalIgnoreCase) || host.EndsWith(".copium.pics", StringComparison.OrdinalIgnoreCase));
 
@@ -63,7 +64,7 @@ internal static class CopiumClient
     {
         uri = null!;
         if (string.IsNullOrWhiteSpace(url) || !Uri.TryCreate(url.Trim(), UriKind.Absolute, out var u)) return false;
-        if (u.Scheme != Uri.UriSchemeHttps || string.IsNullOrEmpty(u.Host)) return false;
+        if (u.Scheme != Uri.UriSchemeHttps || string.IsNullOrEmpty(u.Host) || !string.IsNullOrEmpty(u.UserInfo)) return false;   // (no "https://copium.pics@elsewhere" look-alike)
         uri = u;
         return true;
     }
@@ -118,7 +119,21 @@ internal static class CopiumClient
     /// the type / format / mime / extension / unsupported. Only that stops the automatic uploads for the session.
     /// </summary>
     internal static bool IsTypeRefusal(int code, string? errorText) =>
-        code == 415 || (code == 400 && !string.IsNullOrEmpty(errorText) && System.Text.RegularExpressions.Regex.IsMatch(errorText, "type|format|mime|extension|unsupported", System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant));
+        code == 415 || (code == 400 && !string.IsNullOrEmpty(errorText) && s_typeWords.IsMatch(errorText));
+
+    // whole words only: "type" alone (a "token type" error) or "format" inside another word must not pause the uploads
+    private static readonly System.Text.RegularExpressions.Regex s_typeWords = new(@"\b(file type|mime|unsupported|extension|image format)\b",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+    private static readonly System.Text.RegularExpressions.Regex s_authWords = new(@"\b(token|auth\w*)\b",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// The account's token was refused: HTTP 401, or a 403 with no error text at all (a bare refusal is the usual shape of a bad
+    /// key) or whose error text speaks of the token / authorization (not a bare "key": a storage or cache key is no token). Only that pauses the automatic uploads; any other 403
+    /// (a blocked file, a quota: it says so) is a plain refusal of that one upload.
+    /// </summary>
+    internal static bool IsTokenRejection(int code, string? errorText) =>
+        code == 401 || (code == 403 && (string.IsNullOrWhiteSpace(errorText) || s_authWords.IsMatch(errorText)));
 
     /// <summary>Uploads a clip or a picture. Returns the share info; <c>Link</c> is "the one to paste" (raw file unless the account has custom embeds on).</summary>
     /// <param name="imageEndpoint">The hidden image-host override (<see cref="Settings.CopiumImageUploadUrl"/>); used for pictures only (<see cref="EndpointFor"/>).</param>
@@ -167,6 +182,8 @@ internal static class CopiumClient
         {
             throw new TimeoutException($"Upload timed out after {http.Timeout.TotalMinutes:0} min - the connection is too slow or stalled", ex);
         }
+        // Redirects are never followed (the token would go with them): a 3xx is an error.
+        if (code >= 300 && code <= 399) throw new InvalidOperationException($"Copium sent an unexpected redirect (HTTP {code})");
         if (code < 200 || code > 299) throw new CopiumHttpException(code, ErrorMessage(code, body, noun), TryError(body));
         JsonDocument doc;
         try { doc = JsonDocument.Parse(body); }
@@ -189,13 +206,14 @@ internal static class CopiumClient
                 Log.Warn($"copium: HTTP {code} answer without a link: {Cap(body)}");
                 throw new InvalidOperationException($"Copium sent an unexpected answer (HTTP {code}, no link)");
             }
-            // The link is copied, shown and opened by the shell: only an https address on copium.pics is one (not file:, not another host).
-            if (!IsCopiumHttps(link, out _))
+            // The link is only copied and opened by the shell, so any absolute https address will do (a custom embed or CDN host);
+            // only the destination of the token is pinned (EndpointFor). Not file:, not http:, not relative.
+            if (!IsHttpsUrl(link, out _))
             {
-                Log.Warn($"copium: HTTP {code} answer with a link that is not an https copium.pics address: {Cap(link)}");
+                Log.Warn($"copium: HTTP {code} answer with a link that is not an https address: {Cap(link)}");
                 throw new InvalidOperationException($"Copium sent an unexpected answer (HTTP {code}, bad link)");
             }
-            string Safe(string value) => IsCopiumHttps(value, out _) ? value : "";
+            string Safe(string value) => IsHttpsUrl(value, out _) ? value : "";
             return new CopiumUpload(Get("id"), link, Safe(Get("url")), Safe(Get("pageUrl")), Safe(Get("thumbUrl")) is { Length: > 0 } th ? th : null, size);
         }
     }
@@ -209,7 +227,7 @@ internal static class CopiumClient
         if (noun != "Clip" && IsTypeRefusal(code, text)) return "Copium did not accept the image (" + msg + ")";
         return code switch
         {
-            401 or 403 => "Copium rejected the token (" + msg + ")",
+            _ when IsTokenRejection(code, text) => "Copium rejected the token (" + msg + ")",
             413 => noun + " is larger than your Copium upload limit (" + msg + ")",
             429 => "Too many uploads, wait a bit (" + msg + ")",
             >= 500 => "Copium is having trouble (" + msg + "), try again later",

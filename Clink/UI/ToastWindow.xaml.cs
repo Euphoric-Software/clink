@@ -136,17 +136,7 @@ internal sealed class Toasts : IScreenshotToasts
         public void Report(double fraction) => _owner.Post(() => _window?.SetUploadProgress(fraction));
         public void Succeeded(string link, bool linkCopied) => _owner.Post(() => _window?.UploadSucceeded(link, linkCopied));
         public void Failed() => _owner.Post(() => _window?.UploadFailed());
-    }
-
-    /// <summary>
-    /// The "link your Copium account" hint (kind "nudge"): Set up Copium / Don't show again. Follows the "Screenshot saved" switch;
-    /// false when that is off (nothing shown, so the caller does not count it).
-    /// </summary>
-    public bool ShowCopiumNudge(Action setUp, Action dismiss)
-    {
-        if (!_settings.ToastScreenshot.Enabled) return false;
-        Post(() => Add(new ToastWindow(this, "nudge", null, null, CopiumNudge.Title, CopiumNudge.Text, TimeSpan.FromSeconds(Math.Max(8, Duration(_settings.ToastScreenshot).TotalSeconds)), false, onSetup: setUp, onDismiss: dismiss)));
-        return true;
+        public void Declined() => _owner.Post(() => _window?.UploadDeclined());
     }
 
     /// <summary>
@@ -275,7 +265,6 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
     /// <summary>The screenshot a "screenshot" toast is about (Open / Folder act on its file).</summary>
     internal ScreenshotEntry? Shot { get; }
     internal bool IsDismissed => _dismissed;
-    private readonly Action? _onSetup, _onDismiss;   // the Copium hint's buttons
     private string? _shotLink;                        // the Copium link of a screenshot once it is uploaded
     private bool _uploading;                          // an upload of the screenshot is running: its button is Cancel
     private string? _subtitleBeforeUpload;
@@ -283,7 +272,7 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
     internal Action? CancelHandler { get; set; }
 
     internal ToastWindow(Toasts owner, string kind, ClipEntry? entry, string? link, string title, string subtitle, TimeSpan duration, bool preview, ScreenshotEntry? shot = null,
-        bool canUpload = false, Action? onSetup = null, Action? onDismiss = null)
+        bool canUpload = false)
     {
         InitializeComponent();
         _owner = owner;
@@ -291,24 +280,23 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         Entry = entry;
         Link = link;
         Shot = shot;
-        _onSetup = onSetup;
-        _onDismiss = onDismiss;
         _duration = duration;
         _preview = preview;
         TitleText.Text = Toasts.TitleFor(title);
         Subtitle.Text = subtitle;
         Subtitle.ToolTip = subtitle;
-        Dot.SetResourceReference(System.Windows.Shapes.Shape.FillProperty, kind switch { "shared" or "info" or "nudge" => "Accent", "recording" or "record" => "Danger", "problem" => "Warn", "paused" => "Muted", _ => "Good" });
-        if (kind == "problem" || kind == "nudge") Subtitle.TextWrapping = TextWrapping.Wrap;   // the reason is the point: all of it, not an ellipsis
-        NudgeButtons.Visibility = kind == "nudge" ? Visibility.Visible : Visibility.Collapsed;
+        Dot.SetResourceReference(System.Windows.Shapes.Shape.FillProperty, kind switch { "shared" or "info" => "Accent", "recording" or "record" => "Danger", "problem" => "Warn", "paused" => "Muted", _ => "Good" });
+        if (kind == "problem") Subtitle.TextWrapping = TextWrapping.Wrap;   // the reason is the point: all of it, not an ellipsis
         ClipButtons.Visibility = kind == "clip" ? Visibility.Visible : Visibility.Collapsed;
         SharedButtons.Visibility = kind == "shared" ? Visibility.Visible : Visibility.Collapsed;
         ScreenshotButtons.Visibility = kind == "screenshot" && shot != null ? Visibility.Visible : Visibility.Collapsed;
         if (kind == "screenshot" && shot != null)
         {
             if (!string.IsNullOrEmpty(shot.CopiumLink)) { _shotLink = shot.CopiumLink; ShowLinkButton(); }
-            else if (canUpload) ShotUploadButton.Visibility = Visibility.Visible;
+            else if (canUpload && CloudOn) ShotUploadButton.Visibility = Visibility.Visible;   // (cloud sharing off: no Upload button)
         }
+        // Cloud sharing off (Settings → App): nothing on a toast uploads. Existing links stay copyable.
+        if (kind == "clip" && !CloudOn) ShareButton.Visibility = Visibility.Collapsed;
         // "Share" alone without a token: the button then opens the share window (the file to drag), it does not upload.
         if (kind == "clip") ShareButton.Content = entry?.IsShared == true ? "Copy link" : AppController.Instance?.HasCopiumToken == true ? "Share to Copium" : "Share";
         _hide.Interval = duration;
@@ -366,11 +354,15 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         base.OnClosed(e);
     }
 
+    /// <summary>The cloud kill switch is on (or there is no controller, as in a preview made by a test).</summary>
+    private static bool CloudOn => AppController.Instance?.Settings.CloudSharingEnabled != false;
+
     private async void Share_Click(object sender, RoutedEventArgs e)
     {
         if (Entry == null || _busy || _preview) return;
         _busy = true;
         _hide.Stop();
+        var before = ShareButton.Content;
         ShareButton.IsEnabled = false;
         ShareButton.ToolTip = null;
         ShareButton.Content = "Uploading…";
@@ -381,6 +373,15 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         var app = AppController.Instance;
         if (app.LastShareOutcome == ShareOutcome.FileShareOpened) { Dismiss(); return; }   // no Copium token: the share window took over
         if (_dismissed) return;          // closed while it was uploading
+        if (app.LastShareOutcome == ShareOutcome.Declined)
+        {
+            // "Not now" in the Share with Copium? pop-up, or cloud sharing off: nothing failed. The button is as it was (or gone).
+            ShareButton.Content = before;
+            ShareButton.IsEnabled = true;
+            if (!CloudOn) ShareButton.Visibility = Visibility.Collapsed;
+            StartTimer();
+            return;
+        }
         // Short labels (the card is 330 wide); the full refusal or failure reason is the tooltip. The rare "could not open the share
         // window" (no token) is no upload failure: the subtitle below names it.
         ShareButton.Content = app.ShareRefusal != null ? (app.Settings.CopiumPlus ? "Over Plus limit" : "Over free limit")
@@ -512,6 +513,17 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         StartTimer();
     }
 
+    /// <summary>The upload was stopped because cloud sharing was turned off: back to the saved state, neutral, no Upload / Retry button.</summary>
+    internal void UploadDeclined()
+    {
+        _busy = false;
+        if (_dismissed || Shot == null) return;
+        EndUploadState();
+        TitleText.Text = Toasts.TitleFor("Screenshot saved");
+        ShotUploadButton.Visibility = Visibility.Collapsed;
+        StartTimer();
+    }
+
     private async void ShotUpload_Click(object sender, RoutedEventArgs e)
     {
         if (Shot == null || _preview) return;
@@ -526,11 +538,24 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         if (_busy) return;
         if (_shotLink is string link)
         {
-            AppController.Instance.CopyToClipboard(link);
+            AppController.Instance.CopyToClipboard(link);   // an existing link stays copyable whatever the kill switch says
             ShotUploadButton.Content = "Copied ✓";
             StartTimer();
             return;
         }
+        // Sharing is opt-in: the first Upload asks (the pop-up), and cloud sharing off refuses. The toast stays as it was when declined.
+        _busy = true;
+        _hide.Stop();
+        bool allowed;
+        try { allowed = await AppController.Instance.EnsureCopiumConsentAsync(ConsentContext.ScreenshotUploadManual); }
+        finally { _busy = false; }
+        if (!allowed)
+        {
+            if (!CloudOn && !_dismissed) ShotUploadButton.Visibility = Visibility.Collapsed;
+            StartTimer();
+            return;
+        }
+        if (_dismissed) return;
         BeginUpload();
         bool ok = false;
         try { ok = await AppController.Instance.Screenshots.UploadAsync(Shot, manual: true); }
@@ -539,18 +564,6 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         if (!_busy || _dismissed) return;
         if (ok && Shot.CopiumLink is string done) UploadSucceeded(done, false);
         else UploadFailed();
-    }
-
-    private void NudgeSetup_Click(object sender, RoutedEventArgs e)
-    {
-        if (!_preview) _onSetup?.Invoke();
-        Dismiss();
-    }
-
-    private void NudgeDismiss_Click(object sender, RoutedEventArgs e)
-    {
-        if (!_preview) _onDismiss?.Invoke();
-        Dismiss();
     }
 
     private void ShotOpen_Click(object sender, RoutedEventArgs e)

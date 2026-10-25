@@ -37,10 +37,6 @@
                         AutomationProperties.Name="Upload the screenshot to Copium" ToolTip="Upload the screenshot to Copium" />
                 <Button Content="Folder" Margin="8,0,0,0" Click="ShotFolder_Click" />
             </StackPanel>
-            <StackPanel x:Name="NudgeButtons" Grid.Row="2" Orientation="Horizontal" Margin="16,10,0,0" Visibility="Collapsed">
-                <Button Style="{StaticResource AccentButton}" Content="Set up Copium" Click="NudgeSetup_Click" AutomationProperties.Name="Set up Copium" ToolTip="Open Clink's Copium settings to add your token" />
-                <Button Content="Don't show again" Margin="8,0,0,0" Click="NudgeDismiss_Click" AutomationProperties.Name="Don't show this hint again" />
-            </StackPanel>
         </Grid>
     </Border>
 </Window>

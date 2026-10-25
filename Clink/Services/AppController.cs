@@ -20,7 +20,7 @@ internal enum RecordingState { Starting, Recording, WaitingForGame, Paused, Erro
 /// no Copium token (nothing failed); turned down for Copium's limits; failed (the upload, or no window over the game); or, rarely,
 /// the share window itself could not be opened (<see cref="AppController.ShareError"/> says so; no upload was tried).
 /// </summary>
-internal enum ShareOutcome { None, LinkCopied, Uploaded, FileShareOpened, Refused, Failed, WindowFailed }
+internal enum ShareOutcome { None, LinkCopied, Uploaded, FileShareOpened, Refused, Failed, WindowFailed, Declined }
 
 /// <summary>Owns the engine, settings, clip library, hotkeys, game detection, toasts, status dot, archive, tray icon and the single-instance pipe.</summary>
 internal sealed partial class AppController : IDisposable
@@ -107,7 +107,7 @@ internal sealed partial class AppController : IDisposable
     public bool IsManualRecording => !IsPaused && (Engine.IsRecording || _wantRecording);
 
     /// <summary>One line for the UI header: "Recording · Overwatch", "Recording 00:12 · Overwatch" (manual), "Waiting for a game…", "Paused", "Error", "Starting…".</summary>
-    public string StatusText => State switch
+    public string StatusText => !Settings.ClipsEnabled ? "Clips are off" : State switch
     {
         RecordingState.Paused => "Paused",
         _ when _wantRecording && !Engine.IsRecording => "Recording (resuming…)",   // between two parts of a recording
@@ -134,7 +134,7 @@ internal sealed partial class AppController : IDisposable
     private readonly SemaphoreSlim _engineGate = new(1, 1);   // Engine.Start / Stop are not thread-safe against each other
     private System.Windows.Forms.NotifyIcon? _tray;
     private System.Drawing.Icon? _trayIcon;     // the tray's icon at the taskbar's small-icon size (owned here, unlike SystemIcons)
-    private System.Windows.Forms.ToolStripMenuItem? _statusItem, _clipItem, _pauseItem, _updateItem, _importItem, _screenshotItem, _screenshotEditItem;
+    private System.Windows.Forms.ToolStripMenuItem? _statusItem, _clipItem, _pauseItem, _updateItem, _importItem, _screenshotItem, _screenshotEditItem, _shareLastItem, _openFolderItem;
     private DispatcherTimer? _timer;
     private StatusDotWindow? _dot;
     private static Mutex? s_mutex;
@@ -143,6 +143,7 @@ internal sealed partial class AppController : IDisposable
     private DateTime _clipRefusedAt = DateTime.MinValue;   // a clip turned down before any save started (not recording, --clip at startup)
     // Copium uploads in flight (UI thread); Announced: started by ShareLast, which reports a failure itself.
     private readonly Dictionary<ClipEntry, (Task<bool> Task, bool Announced)> _uploads = new(ReferenceEqualityComparer.Instance);
+    private readonly List<CancellationTokenSource> _uploadCancels = new();   // one per running clip upload (UI thread): the cloud kill switch cancels them
     private DateTime _lastClipAt = DateTime.MinValue;
     private int _startGen;
     private bool _starting;
@@ -329,6 +330,12 @@ internal sealed partial class AppController : IDisposable
             Screenshots.EditFile(editPath, explicitPath: true);
             return;
         }
+        // Clips switched off (Settings → App → Features): the clip commands say so instead of failing quietly.
+        if (!Settings.ClipsEnabled && IsClipsCommand(cmd))
+        {
+            ClipsOffNotice();
+            return;
+        }
         switch (cmd.Trim().ToLowerInvariant())
         {
             case "clip": ClipNow(); break;
@@ -351,12 +358,92 @@ internal sealed partial class AppController : IDisposable
     /// </summary>
     internal void RunStartupCommand(string cmd)
     {
+        if (!Settings.ClipsEnabled && IsClipsCommand(cmd)) { _ui.BeginInvoke(DispatcherPriority.ApplicationIdle, () => RunCommand(cmd)); return; }   // the notice
         if (cmd == "record") { QueueRecordingAtLaunch(); return; }
         if (cmd != "clip") { _ui.BeginInvoke(DispatcherPriority.ApplicationIdle, () => RunCommand(cmd)); return; }
         // Marked now, not at idle: a --share-last sent right behind this --clip can reach the pipe while Clink is still starting.
         _clipRefusedAt = DateTime.UtcNow;
         _ui.BeginInvoke(DispatcherPriority.ApplicationIdle, () => ShowBalloon("Clink started", "It was not running, so there was nothing to save yet. "
             + (GameOnly ? "It records while a game runs." : "It is recording now.")));
+    }
+
+    // ------------------------------------------------------------------ features (Settings → App → Features)
+
+    /// <summary>What the clip commands say while the Clips feature is off.</summary>
+    internal const string ClipsOffText = "Clips are turned off — Settings → App → Features";
+
+    /// <summary>A pipe / command-line command that needs the Clips feature (the replay buffer, recording, the clip library).</summary>
+    internal static bool IsClipsCommand(string cmd) => cmd.Trim().ToLowerInvariant() is "clip" or "trim" or "share" or "record" or "pause" or "resume";
+
+    /// <summary>The hotkey / tray / command line asked for a clip action while Clips is off: footer line, and a toast or balloon where the user is looking.</summary>
+    private void ClipsOffNotice()
+    {
+        Say(ClipsOffText);
+        NotifyProblem("Clips are off", ClipsOffText);
+    }
+
+    /// <summary>How many engine starts / stops were asked for (test aid: with Clips off none is).</summary>
+    internal int EngineStartGeneration => Volatile.Read(ref _startGen);
+
+    /// <summary>The features changed (a toggle in Settings → App → Features). Raised on the UI thread.</summary>
+    public event Action? FeaturesChanged;
+
+    /// <summary>
+    /// Turns the Clips feature (replay buffer, recording, clip library) on or off, live: off stops the engine (and any recording)
+    /// and unbinds its hotkeys, hides its tray items and status dot; on starts the engine again. The last feature that is on cannot
+    /// be turned off (false, nothing changed). A recording that was abandoned by a crash is still recovered at startup whatever
+    /// this says (harmless: it only adds a finished file to the library).
+    /// </summary>
+    public bool SetClipsEnabled(bool on)
+    {
+        if (Settings.ClipsEnabled == on) return true;
+        if (!on && !Settings.ScreenshotsEnabled) { Say("At least one feature has to stay on"); return false; }
+        Settings.ClipsEnabled = on;
+        Settings.Save();
+        Log.Info("features: Clips turned " + (on ? "on" : "off"));
+        if (on) StartEngine();
+        else
+        {
+            // A recording in progress is stopped properly first (the file is finished as a user stop, not cut by the engine going
+            // down), and the user is told: the recording ends with the feature.
+            bool recording = Engine.IsRecording || _wantRecording;
+            if (recording) StopRecording(userRequested: false);
+            EndRecordingWish(EngineStopCause.Pause);
+            _recordWhenReadyUntil = DateTime.MinValue;
+            if (Engine.IsRunning) StopEngine();
+            else { Interlocked.Increment(ref _startGen); _starting = false; }   // a start that has not run yet is cancelled
+            if (recording)
+            {
+                Say("Recording stopped");
+                Toasts.ShowNotice("Recording stopped", "Clips are turned off");
+            }
+        }
+        ApplyFeatures();
+        return true;
+    }
+
+    /// <summary>Test aid: the "a manual recording is wanted" flag.</summary>
+    internal bool WantRecordingForTests { get => _wantRecording; set => _wantRecording = value; }
+
+    /// <summary>Turns the screenshot tools on or off, live (see <see cref="SetClipsEnabled"/>). The last feature that is on cannot be turned off.</summary>
+    public bool SetScreenshotsEnabled(bool on)
+    {
+        if (Settings.ScreenshotsEnabled == on) return true;
+        if (!on && !Settings.ClipsEnabled) { Say("At least one feature has to stay on"); return false; }
+        Settings.ScreenshotsEnabled = on;
+        Settings.Save();
+        Log.Info("features: Screenshots turned " + (on ? "on" : "off"));
+        ApplyFeatures();
+        return true;
+    }
+
+    /// <summary>Hotkeys, tray, status dot and the window follow the features.</summary>
+    private void ApplyFeatures()
+    {
+        ReloadHotkeys();      // binds / unbinds the rows and updates the tray items
+        ApplyStatusDot();
+        RaiseStateChanged();
+        FeaturesChanged?.Invoke();
     }
 
     // ------------------------------------------------------------------ lifecycle
@@ -395,7 +482,8 @@ internal sealed partial class AppController : IDisposable
         SystemEvents.DisplaySettingsChanged += OnDisplayChanged;
         SystemEvents.PowerModeChanged += OnPowerModeChanged;
         if (Settings.RunAtStartup) SetRunAtStartup(true); // keep the Run entry pointing at wherever the exe lives now
-        if (GameOnly) { Log.Info("Recording mode: only while a game or custom app runs"); PollGame(); }
+        if (!Settings.ClipsEnabled) Log.Info("Clips are turned off (Settings → App → Features): the recorder is not started");
+        else if (GameOnly) { Log.Info("Recording mode: only while a game or custom app runs"); PollGame(); }
         else StartEngine();
         Archive.Start();
         ApplyStatusDot();
@@ -455,7 +543,7 @@ internal sealed partial class AppController : IDisposable
             Say("Recording not started: the recorder did not get ready");
             NotifyProblem("Recording not started", "The recorder did not get ready");
         }
-        bool wanted = !IsPaused && !_restarting && (!GameOnly || _gamePid != 0);
+        bool wanted = Settings.ClipsEnabled && !IsPaused && !_restarting && (!GameOnly || _gamePid != 0);
         int failedWait = Engine.DeviceLost ? 10 : 30;
         var backoff = TimeSpan.FromSeconds(Engine.Error == null ? 10 : failedWait << Math.Clamp(_startFailures - 1, 0, 2));
         if (wanted && !Engine.IsRunning && !_starting && now - _lastStartAt > backoff)
@@ -507,7 +595,7 @@ internal sealed partial class AppController : IDisposable
         {
             _gamePid = g.Pid; CurrentGame = g.Name; CurrentGameSource = g.Source; _gameStopAt = null;
             Log.Info($"Game detected: {g.Name} pid={g.Pid} ({g.Source})");
-            if (!IsPaused)
+            if (!IsPaused && Settings.ClipsEnabled)
             {
                 if (Engine.IsRunning && !_stopping) Toasts.ShowRecordingStarted(g.Name);     // always mode, or still in the grace period
                 else
@@ -907,6 +995,13 @@ internal sealed partial class AppController : IDisposable
     public void StartEngine()
     {
         _technicalRestartUntil = DateTime.MinValue;   // the restart that was waited for is here (or will not come: paused, restarting)
+        if (!Settings.ClipsEnabled)
+        {
+            // Clips are off (Settings → App → Features): the replay buffer is never started; one that runs is stopped.
+            if (Engine.IsRunning && !_stopping) { EndRecordingWish(EngineStopCause.Pause); StopEngine(); }
+            RaiseStateChanged();
+            return;
+        }
         if (IsPaused || _restarting) return;   // a restart is under way: the recorder was stopped for it and stays stopped
         if (GameOnly && _gamePid == 0)
         {
@@ -998,6 +1093,7 @@ internal sealed partial class AppController : IDisposable
 
     public void TogglePause()
     {
+        if (!Settings.ClipsEnabled) { ClipsOffNotice(); return; }
         IsPaused = !IsPaused;
         if (IsPaused) { EndRecordingWish(EngineStopCause.Pause); StopEngine(); Say("Recording paused"); }
         else
@@ -1022,7 +1118,7 @@ internal sealed partial class AppController : IDisposable
     {
         UpdateTray();
         if (_recordItem != null) _recordItem.Text = RecordItemText;
-        if (_dot != null && Settings.StatusDot) { try { _dot.Apply(State, IsManualRecording); } catch { } }
+        if (_dot != null && Settings.StatusDot && Settings.ClipsEnabled) { try { _dot.Apply(State, IsManualRecording); } catch { } }
         StateChanged?.Invoke();
     }
 
@@ -1087,7 +1183,9 @@ internal sealed partial class AppController : IDisposable
         {
             HotkeyCommand.Unknown => false,   // an action this version does not know does nothing when pressed: it must not swallow the key either
             var c when IsScreenshotCommand(c) => s.ScreenshotsEnabled,
-            _ => true,
+            // Clips off: the clip, pause, record and share-last rows stay in the list (and settings.json) but their keys go back to the system.
+            // (Cloud sharing off does not unbind share-last: the press says why nothing was shared.)
+            _ => s.ClipsEnabled,
         }).ToList();
 
     private static bool IsScreenshotCommand(HotkeyCommand c) => c is HotkeyCommand.Screenshot or HotkeyCommand.ScreenshotEditLast;
@@ -1156,6 +1254,7 @@ internal sealed partial class AppController : IDisposable
     /// <param name="seconds">Replay length to save; null = the replay-length slider (<see cref="Settings.BufferSeconds"/>).</param>
     public async void ClipNow(int? seconds = null)
     {
+        if (!Settings.ClipsEnabled) { ClipsOffNotice(); return; }
         if (_restarting || !Engine.IsRunning)
         {
             bool waiting = !IsPaused && GameOnly && _gamePid == 0;
@@ -1217,6 +1316,21 @@ internal sealed partial class AppController : IDisposable
     /// </summary>
     public async void ShareLast()
     {
+        // The hotkey, the tray item and --share-last: a notice instead of an upload while Clips is off or cloud sharing is off.
+        if (!Settings.ClipsEnabled) { ClipsOffNotice(); return; }
+        if (!Settings.CloudSharingEnabled)
+        {
+            // A clip that already has a link only has it copied (no network), so that stays possible; anything else is refused. A clip
+            // being saved right now (or just turned down) has no link yet.
+            var newest = Volatile.Read(ref _saving) == 1 || DateTime.UtcNow - _clipRefusedAt < TimeSpan.FromSeconds(3) ? null : NewestShareable();
+            if (newest == null || string.IsNullOrEmpty(newest.CopiumLink))
+            {
+                Say(CloudOffText);
+                Log.Info("share-last: cloud sharing is off");
+                NotifyProblem("Cloud sharing is off", CloudOffText, overGame: UserNotificationState.FullScreenInFront());
+                return;
+            }
+        }
         // "Clip, then share" (a Stream Deck multi-action, --clip then --share-last, two quick presses) means the clip being saved
         // right now: the library only gets it once the save is done, so wait for that save, however long it takes (a long replay
         // on a slow disk), and share what it saved, never the clip before it. A clip turned down before its save started (not
@@ -1235,21 +1349,25 @@ internal sealed partial class AppController : IDisposable
             Log.Info("share-last: the clip just pressed was not saved; nothing shared");
             return;
         }
-        else entry = Library.Entries.FirstOrDefault(e => !IsRecordingEntry(e) && (e.IsShared || e.IsArchived || e.Exists));   // (a recording is hours long: not what "share last clip" means)
+        else entry = NewestShareable();
         bool ok = false, joined = false, windowOpened = false;
         if (entry == null) Say("No clips to share yet");
         else
         {
             // A second press during the same upload gets the same result: the press that started it reports a failure, once.
             joined = _uploads.TryGetValue(entry, out var running) && running.Announced;
-            ok = await ShareAsync(entry, announce: true);
-            windowOpened = LastShareOutcome == ShareOutcome.FileShareOpened;   // no Copium token: the share window is the answer, not a problem
+            ok = await ShareAsync(entry, announce: true, context: ConsentContext.ShareLast);
+            // no Copium token: the share window is the answer, not a problem; the user's own "Not now" is not one either
+            windowOpened = LastShareOutcome is ShareOutcome.FileShareOpened or ShareOutcome.Declined;
         }
         // The hotkey, the tray item and --share-last have no UI of their own, and the window is usually in the tray, minimized or
         // behind the game: a refusal (or a failure) that only reached the footer would be invisible (NotifyProblem: a toast over
         // the game, a tray balloon otherwise).
         if (!ok && !joined && !windowOpened && LastNotice.Length > 0) NotifyProblem("Clip not uploaded", LastNotice, overGame: UserNotificationState.FullScreenInFront());
     }
+
+    /// <summary>The newest clip "share last clip" means (a recording is hours long: not that), or null.</summary>
+    private ClipEntry? NewestShareable() => Library.Entries.FirstOrDefault(e => !IsRecordingEntry(e) && (e.IsShared || e.IsArchived || e.Exists));
 
     /// <summary>
     /// Why a clip may not go to Copium with this account, or null when it fits: "Over Copium's free limit (200 MB / 10 min)"
@@ -1283,13 +1401,14 @@ internal sealed partial class AppController : IDisposable
     /// <see cref="ShareError"/>). Returns true only when a link was copied or the clip was uploaded.
     /// </summary>
     /// <param name="announce">From the hotkey / tray / --share-last, which have no progress UI of their own: unless the window is in front, a toast says the upload started; and no window opens over a game.</param>
-    public async Task<bool> ShareAsync(ClipEntry entry, IProgress<double>? progress = null, bool announce = false)
+    public async Task<bool> ShareAsync(ClipEntry entry, IProgress<double>? progress = null, bool announce = false, ConsentContext context = ConsentContext.ClipShare)
     {
         ShareRefusal = null;
         ShareError = null;
         LastShareOutcome = ShareOutcome.None;
         if (!string.IsNullOrEmpty(entry.CopiumLink))
         {
+            // An existing link is only copied (no network), so it stays available whatever the kill switch says.
             CopyToClipboard(entry.CopiumLink);
             Say("Link copied");
             Toasts.ShowShared(entry, entry.CopiumLink);
@@ -1297,12 +1416,52 @@ internal sealed partial class AppController : IDisposable
             return true;
         }
         string? token = Settings.CopiumToken;
+        // Sharing is opt-in and has a kill switch: cloud sharing off refuses (first, whatever else is true). With no token nothing
+        // can be uploaded, so there is nothing to agree to yet: the share window (the file to drag) opens without the pop-up, which
+        // comes when a token is saved or at the first real upload. With a token the first share asks and goes on only for "Enable".
+        if (!Settings.CloudSharingEnabled)
+        {
+            ShareError = CloudOffText;
+            Say(CloudOffText);
+            Consent.Notice(context, ConsentGate.CloudOffTitle, CloudOffText);
+            LastShareOutcome = ShareOutcome.Declined;
+            return false;
+        }
+        if (!string.IsNullOrWhiteSpace(token))
+        {
+            // The hotkey path over a game must not put a dialog on the picture: it says where to go instead.
+            if (announce && !Settings.CopiumConsent && GameOrFullScreenInFront())
+            {
+                ShareError = "Sharing needs your OK once — open Clink and press Share";
+                Say(ShareError);
+                LastShareOutcome = ShareOutcome.Failed;
+                return false;
+            }
+            if (!await EnsureCopiumConsentAsync(context))
+            {
+                if (!Settings.CloudSharingEnabled)
+                {
+                    ShareError = CloudOffText;
+                    Say(CloudOffText);
+                }
+                else Say("Not shared: sharing with Copium is not enabled");
+                LastShareOutcome = ShareOutcome.Declined;
+                return false;
+            }
+        }
+        if (!Settings.CloudSharingEnabled)   // (switched off while the pop-up was up)
+        {
+            ShareError = CloudOffText;
+            Say(CloudOffText);
+            LastShareOutcome = ShareOutcome.Declined;
+            return false;
+        }
         if (string.IsNullOrWhiteSpace(token))
         {
             // Nothing to upload to: hand over the file instead. The hotkey path over the game opens no window (it would land on the
             // picture): it says where to go, and the caller shows the line over the game. "Over the game" is the detected game, and
             // also a full-screen application the shell reports (a Direct3D game Clink did not detect, another full-screen program).
-            if (announce && (Hotkeys.GameInFront() || UserNotificationState.FullScreenInFront()))
+            if (announce && GameOrFullScreenInFront())
             {
                 ShareError = "No Copium token: open Clink to share the file";
                 Say(ShareError);
@@ -1318,6 +1477,13 @@ internal sealed partial class AppController : IDisposable
             }
             Say("Drag the clip where you want to share it");
             LastShareOutcome = ShareOutcome.FileShareOpened;
+            return false;
+        }
+        // Defence in depth: nothing is uploaded without the user's yes and with the kill switch off, whichever path got here.
+        if (!Settings.CopiumConsent)
+        {
+            Say("Not shared: sharing with Copium is not enabled");
+            LastShareOutcome = ShareOutcome.Declined;
             return false;
         }
         // Copium refuses clips over the account's limits (200 MB / 10 min free, 2 GB / 60 min with Copium+): say so now instead of uploading for a while and failing.
@@ -1341,6 +1507,9 @@ internal sealed partial class AppController : IDisposable
         var done = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         _uploads[entry] = (done.Task, announce);
         bool ok = false;
+        bool killed = false;   // stopped by the cloud kill switch: a neutral "not shared", not a failure
+        using var uploadCts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);   // this upload only: the cloud kill switch cancels it
+        _uploadCancels.Add(uploadCts);
         try
         {
             Say("Uploading to Copium…");
@@ -1349,7 +1518,7 @@ internal sealed partial class AppController : IDisposable
             string path = entry.Path;
             // Off the UI thread: opening an archived clip on an unreachable share blocks in the FileStream constructor for ~20 s.
             // The callers' Progress<T> were made on the UI thread and still report there.
-            var up = await Task.Run(() => CopiumClient.UploadAsync(token, path, title, progress, _cts.Token));
+            var up = await Task.Run(() => CopiumClient.UploadAsync(token, path, title, progress, uploadCts.Token));
             entry.CopiumLink = up.Link;
             entry.CopiumPageUrl = up.PageUrl;
             entry.CopiumId = up.Id;
@@ -1361,21 +1530,39 @@ internal sealed partial class AppController : IDisposable
         }
         catch (Exception ex)
         {
-            Log.Error("Copium upload", ex);
             ShareRefusal = null;   // another clip's Share may have been refused while this one was going up
-            ShareError = ex.Message;
-            Say("Upload failed: " + ex.Message);
+            if (uploadCts.IsCancellationRequested && !_cts.IsCancellationRequested && !Settings.CloudSharingEnabled)
+            {
+                Log.Info("Copium upload: cancelled, cloud sharing was turned off");
+                killed = true;
+                ShareError = CloudOffText;
+                Say("Not shared: cloud sharing is off");
+            }
+            else
+            {
+                Log.Error("Copium upload", ex);
+                ShareError = ex.Message;
+                Say("Upload failed: " + ex.Message);
+            }
         }
         finally
         {
             _uploads.Remove(entry);
-            LastShareOutcome = ok ? ShareOutcome.Uploaded : ShareOutcome.Failed;   // before the waiting asks continue, which read it
+            _uploadCancels.Remove(uploadCts);
+            LastShareOutcome = ok ? ShareOutcome.Uploaded : killed ? ShareOutcome.Declined : ShareOutcome.Failed;   // before the waiting asks continue, which read it
             done.SetResult(ok);
         }
         return ok;
     }
 
+    /// <summary>Test seam: the detected game, or a full-screen application, has the screen (no window or dialog may open over it).</summary>
+    internal Func<bool> GameOrFullScreenProbe { get; set; } = () => Hotkeys.GameInFront() || UserNotificationState.FullScreenInFront();
+    private bool GameOrFullScreenInFront() => GameOrFullScreenProbe();
+
     private readonly List<ShareWindow> _shareWindows = new();   // the open share windows (UI thread), one per clip
+
+    /// <summary>Test seam: opens the share window instead of the real one (a unit test must not put a window on the screen).</summary>
+    internal Func<ClipEntry, bool>? ShareWindowOpener { get; set; }
 
     /// <summary>
     /// Opens the share window for a clip: its file to drag into Discord, a browser upload box or a folder, Copy file, Open folder.
@@ -1387,6 +1574,7 @@ internal sealed partial class AppController : IDisposable
     /// </summary>
     public bool OpenShareWindow(ClipEntry entry)
     {
+        if (ShareWindowOpener is { } opener) return opener(entry);
         if (!_ui.CheckAccess()) return _ui.Invoke(() => OpenShareWindow(entry));
         try
         {
@@ -1424,12 +1612,13 @@ internal sealed partial class AppController : IDisposable
     /// <summary>The share window's "Set up Copium…": brings the main window forward and says where the token goes.</summary>
     public void ShowCopiumSetup()
     {
-        Say("Add your token under Clips → Copium");
+        if (!Settings.CloudSharingEnabled) { Say(CloudOffText); ShowRequested?.Invoke(); return; }   // there is no token box while sharing is off
+        Say("Add your token under App → Copium");
         ShowRequested?.Invoke();
         CopiumSetupRequested?.Invoke();
     }
 
-    /// <summary>Raised after <see cref="ShowRequested"/> by <see cref="ShowCopiumSetup"/>: the window selects the Copium tab and focuses the token box.</summary>
+    /// <summary>Raised after <see cref="ShowRequested"/> by <see cref="ShowCopiumSetup"/>: the window selects the App tab and focuses the token box.</summary>
     public event Action? CopiumSetupRequested;
 
     /// <summary>Asks the window to open the trim editor on a clip. False when no window has subscribed to <see cref="TrimRequested"/>.</summary>
@@ -1441,8 +1630,12 @@ internal sealed partial class AppController : IDisposable
         return true;
     }
 
+    /// <summary>Test seam: receives the text instead of the real clipboard.</summary>
+    internal Action<string>? ClipboardOverride { get; set; }
+
     public void CopyToClipboard(string text)
     {
+        if (ClipboardOverride is { } over) { over(text); return; }
         try { _ui.Invoke(() => Clipboard.SetDataObject(text, true)); }
         catch (Exception ex) { Log.Warn("clipboard: " + ex.Message); }
     }
@@ -1480,7 +1673,7 @@ internal sealed partial class AppController : IDisposable
         if (!_ui.CheckAccess()) { _ui.BeginInvoke(ApplyStatusDot); return; }
         try
         {
-            if (!Settings.StatusDot) { _dot?.Hide(); return; }
+            if (!Settings.StatusDot || !Settings.ClipsEnabled) { _dot?.Hide(); return; }
             _dot ??= new StatusDotWindow();
             _dot.Apply(State, IsManualRecording);
             _dot.Place(SelectedMonitor, Settings.StatusDotPosition);
@@ -1511,11 +1704,13 @@ internal sealed partial class AppController : IDisposable
             menu.Items.Add(_screenshotEditItem);
             _recordItem = new System.Windows.Forms.ToolStripMenuItem(RecordItemText, null, (_, _) => _ui.BeginInvoke(ToggleRecording));
             menu.Items.Add(_recordItem);
-            menu.Items.Add("Share last clip", null, (_, _) => _ui.BeginInvoke(ShareLast));
+            _shareLastItem = new System.Windows.Forms.ToolStripMenuItem("Share last clip", null, (_, _) => _ui.BeginInvoke(ShareLast));
+            menu.Items.Add(_shareLastItem);
             menu.Items.Add("Show Clink", null, (_, _) => ShowRequested?.Invoke());
             _pauseItem = new System.Windows.Forms.ToolStripMenuItem(IsPaused ? "Resume recording" : "Pause recording", null, (_, _) => TogglePause());
             menu.Items.Add(_pauseItem);
-            menu.Items.Add("Open clips folder", null, (_, _) => OpenFolder());
+            _openFolderItem = new System.Windows.Forms.ToolStripMenuItem("Open clips folder", null, (_, _) => OpenFolder());
+            menu.Items.Add(_openFolderItem);
             _updateItem = new System.Windows.Forms.ToolStripMenuItem("Update Clink", null, (_, _) => UpdateNow()) { Visible = false };
             menu.Items.Add(_updateItem);
             _importItem = new System.Windows.Forms.ToolStripMenuItem("Import settings…", null, (_, _) => _ui.BeginInvoke(AskToImport)) { Visible = false };
@@ -1531,6 +1726,7 @@ internal sealed partial class AppController : IDisposable
                 Icon = _trayIcon ?? System.Drawing.SystemIcons.Application,
             };
             _tray.MouseClick += (_, e) => { if (e.Button == System.Windows.Forms.MouseButtons.Left) ShowRequested?.Invoke(); };
+            ApplyTrayVisibility();
         }
         catch (Exception ex) { Log.Warn("tray: " + ex.Message); }
     }
@@ -1593,8 +1789,29 @@ internal sealed partial class AppController : IDisposable
     public void UpdateTrayHotkey()
     {
         if (_clipItem != null) _clipItem.Text = ClipTrayText;
-        if (_screenshotItem != null) { _screenshotItem.Text = ScreenshotTrayText; _screenshotItem.Visible = Settings.ScreenshotsEnabled; }
-        if (_screenshotEditItem != null) { _screenshotEditItem.Text = ScreenshotEditTrayText; _screenshotEditItem.Visible = Settings.ScreenshotsEnabled; }
+        if (_screenshotItem != null) _screenshotItem.Text = ScreenshotTrayText;
+        if (_screenshotEditItem != null) _screenshotEditItem.Text = ScreenshotEditTrayText;
+        ApplyTrayVisibility();
+    }
+
+    /// <summary>
+    /// Which tray items show, from the features and the kill switch: the clip, record, pause, open-folder items and the status line
+    /// need Clips; "Share last clip" needs Clips and cloud sharing; the screenshot items need Screenshots.
+    /// </summary>
+    internal static (bool Clips, bool Share, bool Screenshots) TrayVisibility(Settings s) =>
+        (s.ClipsEnabled, s.ClipsEnabled && s.CloudSharingEnabled, s.ScreenshotsEnabled);
+
+    private void ApplyTrayVisibility()
+    {
+        var (clips, share, screenshots) = TrayVisibility(Settings);
+        if (_statusItem != null) _statusItem.Visible = clips;
+        if (_clipItem != null) _clipItem.Visible = clips;
+        if (_recordItem != null) _recordItem.Visible = clips;
+        if (_pauseItem != null) _pauseItem.Visible = clips;
+        if (_openFolderItem != null) _openFolderItem.Visible = clips;
+        if (_shareLastItem != null) _shareLastItem.Visible = share;
+        if (_screenshotItem != null) _screenshotItem.Visible = screenshots;
+        if (_screenshotEditItem != null) _screenshotEditItem.Visible = screenshots;
     }
 
     public void ShowBalloon(string title, string text)
