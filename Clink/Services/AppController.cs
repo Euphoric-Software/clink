@@ -128,7 +128,7 @@ internal sealed partial class AppController : IDisposable
     private readonly SemaphoreSlim _engineGate = new(1, 1);   // Engine.Start / Stop are not thread-safe against each other
     private System.Windows.Forms.NotifyIcon? _tray;
     private System.Drawing.Icon? _trayIcon;     // the tray's icon at the taskbar's small-icon size (owned here, unlike SystemIcons)
-    private System.Windows.Forms.ToolStripMenuItem? _statusItem, _clipItem, _pauseItem, _updateItem, _importItem;
+    private System.Windows.Forms.ToolStripMenuItem? _statusItem, _clipItem, _pauseItem, _updateItem, _importItem, _screenshotItem;
     private DispatcherTimer? _timer;
     private StatusDotWindow? _dot;
     private static Mutex? s_mutex;
@@ -194,9 +194,10 @@ internal sealed partial class AppController : IDisposable
         return false;
     }
 
-    /// <summary>The pipe command a command line asks for: "clip" (--clip), "trim" (--trim-last), "share" (--share-last), or null.</summary>
+    /// <summary>The pipe command a command line asks for: "clip" (--clip), "trim" (--trim-last), "share" (--share-last), "record" (--record), "screenshot" (--screenshot), or null.</summary>
     public static string? CommandFromArgs(string[] args) =>
         args.Any(a => a.Equals("--clip", StringComparison.OrdinalIgnoreCase)) ? "clip"
+        : args.Any(a => a.Equals("--screenshot", StringComparison.OrdinalIgnoreCase)) ? "screenshot"
         : args.Any(a => a.Equals("--trim-last", StringComparison.OrdinalIgnoreCase)) ? "trim"
         : args.Any(a => a.Equals("--share-last", StringComparison.OrdinalIgnoreCase)) ? "share"
         : args.Any(a => a.Equals("--record", StringComparison.OrdinalIgnoreCase)) ? "record"   // toggles a manual recording (to a running Clink; a start finds the recorder not up yet and says so)
@@ -295,12 +296,13 @@ internal sealed partial class AppController : IDisposable
         }
     }
 
-    /// <summary>A control command from the pipe ("clip", "show", "trim", "share", "pause", "resume"). UI thread.</summary>
+    /// <summary>A control command from the pipe ("clip", "show", "trim", "share", "record", "screenshot", "pause", "resume"). UI thread.</summary>
     internal void RunCommand(string cmd)
     {
         switch (cmd.Trim().ToLowerInvariant())
         {
             case "clip": ClipNow(); break;
+            case "screenshot": Screenshots.CaptureRegion(Clink.Screenshots.ScreenshotTrigger.Cli); break;
             case "show": ShowRequested?.Invoke(); break;
             case "trim": TrimLastRequested?.Invoke(); break;
             case "share": ShareLast(); break;
@@ -773,7 +775,7 @@ internal sealed partial class AppController : IDisposable
     /// </summary>
     internal static List<string> RestartArguments(IEnumerable<string> args)
     {
-        var once = new[] { "--clip", "--trim-last", "--share-last", "--record", "--minimized", "--no-update" };
+        var once = new[] { "--clip", "--trim-last", "--share-last", "--record", "--screenshot", "--minimized", "--no-update" };
         var kept = WithoutAfterPid(DevOptions.WithoutSwitches(args)).Where(a => !once.Contains(a, StringComparer.OrdinalIgnoreCase)).ToList();
         if (!kept.Contains("--show", StringComparer.OrdinalIgnoreCase)) kept.Add("--show");
         kept.AddRange(DevSwitches());
@@ -991,9 +993,30 @@ internal sealed partial class AppController : IDisposable
     /// </summary>
     private void MigrateHotkeys()
     {
-        if (Settings.Migrated) { Settings.Save(); Log.Info("settings: migrated to schema 3"); }
+        if (Settings.Migrated)
+        {
+            Settings.Save();
+            if (Settings.SchemaMigrated) Log.Info("settings: migrated to schema 3");
+            if (Settings.OfferedHotkeyDefaults.Count > 0)
+                Log.Info($"settings: hotkey defaults offered ({string.Join(", ", Settings.OfferedHotkeyDefaults)}){(Settings.AddedHotkeyDefaults.Count > 0 ? $", added: {string.Join(", ", Settings.AddedHotkeyDefaults)}" : ", none added (their keys or actions were taken)")}");
+        }
         if (Settings.MainHotkeyAssigned) Say(_hotkeyNotice = "Alt+C now saves the full replay. Change it under Capture → Hotkeys");
         else if (Settings.MainHotkeyNeedsSetup) Say(_hotkeyNotice = "Set your main hotkey under Capture → Hotkeys: it saves the full replay");
+        // A key Clink just took over (bare PrintScreen used to be Windows' own screenshot): said once, like the main hotkey above.
+        if (SeededHotkeyNotice(Settings) is string seeded)
+        {
+            Say(seeded);
+            _hotkeyNotice = _hotkeyNotice == null ? seeded : _hotkeyNotice + "\n" + seeded;
+        }
+    }
+
+    /// <summary>What to tell the user about default hotkeys this load added as rows (<see cref="Settings.AddedHotkeyDefaults"/>); null when none was.</summary>
+    internal static string? SeededHotkeyNotice(Settings s)
+    {
+        if (!s.ScreenshotsEnabled || (IsDev && !DevHotkeys)) return null;   // no tools, or a --dev instance whose hook binds nothing: the key is not taken over
+        if (!s.AddedHotkeyDefaults.Contains("screenshot", StringComparer.OrdinalIgnoreCase)) return null;
+        string keys = ScreenshotHotkeyLabelFor(s.Hotkeys) ?? "PrintScreen";
+        return $"{keys} now takes a Clink screenshot — change it under Capture → Hotkeys";
     }
 
     /// <summary>
@@ -1001,7 +1024,22 @@ internal sealed partial class AppController : IDisposable
     /// unless started with <c>--dev-hotkeys</c>, so it never swallows a combo the real Clink (or a game) is waiting for. The hook is
     /// installed either way, which is all the hotkey editor's key capture needs.
     /// </summary>
-    private IReadOnlyList<HotkeyAction> ActiveHotkeys => IsDev && !DevHotkeys ? Array.Empty<HotkeyAction>() : Settings.Hotkeys;
+    private IReadOnlyList<HotkeyAction> ActiveHotkeys => IsDev && !DevHotkeys ? Array.Empty<HotkeyAction>() : BindableHotkeys(Settings);
+
+    /// <summary>
+    /// What the hook may bind: all of <see cref="Settings.Hotkeys"/>, except that with the screenshot tools off the screenshot rows
+    /// stay in the list (and in settings.json) but are not handed to the hook, so their keys (PrintScreen) are left to Windows. A
+    /// "screenshot-edit-last" row is never bound in this version (the editor comes later): it would swallow its key and do nothing.
+    /// </summary>
+    internal static IReadOnlyList<HotkeyAction> BindableHotkeys(Settings s) =>
+        s.Hotkeys.Where(h => CommandFor(h.Action) switch
+        {
+            HotkeyCommand.ScreenshotEditLast => false,
+            var c when IsScreenshotCommand(c) => s.ScreenshotsEnabled,
+            _ => true,
+        }).ToList();
+
+    private static bool IsScreenshotCommand(HotkeyCommand c) => c is HotkeyCommand.Screenshot or HotkeyCommand.ScreenshotEditLast;
 
     /// <summary>Re-reads <see cref="Settings.Hotkeys"/> after the list changed in the UI (an unset main hotkey and no other row means no hotkeys).</summary>
     public void ReloadHotkeys()
@@ -1023,20 +1061,42 @@ internal sealed partial class AppController : IDisposable
     /// <summary>"Clip now (F9)" for the tray menu, or just "Clip now" without a binding.</summary>
     private string ClipTrayText => ClipHotkeyLabel is string l ? $"Clip now ({l})" : "Clip now";
 
+    /// <summary>What a hotkey row does, by <see cref="HotkeyAction.Action"/> (see <see cref="CommandFor"/>).</summary>
+    internal enum HotkeyCommand { Clip, Pause, ShareLast, Record, Screenshot, ScreenshotEditLast, Unknown }
+
+    /// <summary>
+    /// The command of a hotkey row's action text (case-insensitive, trimmed). Null, blank and "clip" are the clip; "share" is
+    /// "share-last". Any other text is <see cref="HotkeyCommand.Unknown"/> and is ignored when pressed: before v0.4 it fell through to
+    /// saving a clip, so a typo in a hand-edited row clipped. (<see cref="Hotkeys.IsClip"/> still decides which rows are clip rows.)
+    /// </summary>
+    internal static HotkeyCommand CommandFor(string? action) => (action ?? "").Trim().ToLowerInvariant() switch
+    {
+        "" or "clip" => HotkeyCommand.Clip,
+        "pause" => HotkeyCommand.Pause,
+        "share-last" or "share" => HotkeyCommand.ShareLast,
+        "record" => HotkeyCommand.Record,
+        "screenshot" => HotkeyCommand.Screenshot,
+        "screenshot-edit-last" => HotkeyCommand.ScreenshotEditLast,
+        _ => HotkeyCommand.Unknown,
+    };
+
     private void OnHotkey(HotkeyAction a)
     {
-        switch ((a.Action ?? "clip").Trim().ToLowerInvariant())
+        switch (CommandFor(a.Action))
         {
-            case "pause":
+            case HotkeyCommand.Pause:
                 TogglePause();
                 // In a game nothing else shows it: a press by mistake would stop recording without a sign. A resume with a game
                 // running gets its "Recording started" toast once the engine is up.
                 if (!MainWindowInFront && Settings.ToastRecording.Enabled && (IsPaused || CurrentGame == null))
                     Toasts.ShowNotice(IsPaused ? "Recording paused" : "Recording resumed", IsPaused ? $"Press {a.Keys} to resume" : GameOnly ? "Waiting for a game" : "Replay buffer restarted", paused: IsPaused);
                 break;
-            case "share-last": case "share": ShareLast(); break;
-            case "record": ToggleRecording(); break;
-            default: ClipNow(a.Seconds > 0 ? a.Seconds : null); break;
+            case HotkeyCommand.ShareLast: ShareLast(); break;
+            case HotkeyCommand.Record: ToggleRecording(); break;
+            case HotkeyCommand.Screenshot: Screenshots.CaptureRegion(Clink.Screenshots.ScreenshotTrigger.Hotkey); break;
+            case HotkeyCommand.ScreenshotEditLast: Log.Info($"hotkey: {a.Keys}: editing the last screenshot is not in this version; ignored"); break;
+            case HotkeyCommand.Clip: ClipNow(a.Seconds > 0 ? a.Seconds : null); break;
+            default: Log.Warn($"hotkey: unknown action '{a.Action}' on {a.Keys}: ignored"); break;
         }
     }
 
@@ -1388,6 +1448,9 @@ internal sealed partial class AppController : IDisposable
             menu.Items.Add(new System.Windows.Forms.ToolStripSeparator());
             _clipItem = new System.Windows.Forms.ToolStripMenuItem(ClipTrayText, null, (_, _) => _ui.BeginInvoke(() => ClipNow()));
             menu.Items.Add(_clipItem);
+            _screenshotItem = new System.Windows.Forms.ToolStripMenuItem(ScreenshotTrayText, null, (_, _) => _ui.BeginInvoke(() => Screenshots.CaptureRegion(Clink.Screenshots.ScreenshotTrigger.Tray)))
+                { Visible = Settings.ScreenshotsEnabled };
+            menu.Items.Add(_screenshotItem);
             _recordItem = new System.Windows.Forms.ToolStripMenuItem(RecordItemText, null, (_, _) => _ui.BeginInvoke(ToggleRecording));
             menu.Items.Add(_recordItem);
             menu.Items.Add("Share last clip", null, (_, _) => _ui.BeginInvoke(ShareLast));
@@ -1469,7 +1532,11 @@ internal sealed partial class AppController : IDisposable
         }
     }
 
-    public void UpdateTrayHotkey() { if (_clipItem != null) _clipItem.Text = ClipTrayText; }
+    public void UpdateTrayHotkey()
+    {
+        if (_clipItem != null) _clipItem.Text = ClipTrayText;
+        if (_screenshotItem != null) { _screenshotItem.Text = ScreenshotTrayText; _screenshotItem.Visible = Settings.ScreenshotsEnabled; }
+    }
 
     public void ShowBalloon(string title, string text)
     {

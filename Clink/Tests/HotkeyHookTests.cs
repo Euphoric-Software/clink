@@ -221,6 +221,43 @@ internal static class HotkeyHookTests
         Check.Null(d.Binding);
     }
 
+    // ------------------------------------------------------------------ bare PrintScreen (the default screenshot key)
+
+    private const int PrintScreen = 0x2C;
+
+    [UnitTest]
+    public static void Bare_PrintScreen_is_named_fires_and_is_eaten_down_and_up_so_Windows_never_sees_it()
+    {
+        Check.Equal("PrintScreen", Hotkeys.KeyName(PrintScreen));
+        Check.Equal("PrintScreen", new HotkeyBinding { Vk = PrintScreen }.ToString(), "no modifier in the label");
+        Check.Equal("Shift+PrintScreen", new HotkeyBinding { Vk = PrintScreen, Shift = true }.ToString());
+
+        var shot = Bind(PrintScreen, action: "screenshot");
+        var down = Decide(Press(PrintScreen), new[] { shot });
+        Is(Hotkeys.KeyVerdict.Fire, down, "a binding without modifiers is allowed");
+        Check.True(ReferenceEquals(shot, down.Binding));
+        Check.False(down.Mask, "no Alt, no mask");
+        // the hook records the eaten press; its release is then eaten too, and a held key's auto-repeat fires nothing again
+        Is(Hotkeys.KeyVerdict.EatRepeat, Decide(Press(PrintScreen, swallowed: true), new[] { shot }));
+        Is(Hotkeys.KeyVerdict.EatRelease, Decide(Release(PrintScreen, swallowed: true), new[] { shot }), "the key-up never reaches Windows' own PrintScreen handling");
+        Is(Hotkeys.KeyVerdict.Pass, Decide(Release(PrintScreen), new[] { shot }), "a release whose press was not eaten goes on");
+
+        // Shift+PrintScreen (edit last, later) is a different binding: the exact combo wins
+        var edit = Bind(PrintScreen, shift: true, action: "screenshot-edit-last");
+        var both = new[] { shot, edit };
+        Check.True(ReferenceEquals(edit, Decide(Press(PrintScreen, shift: true), both).Binding));
+        Check.True(ReferenceEquals(shot, Decide(Press(PrintScreen), both).Binding));
+        // no binding on the key: it goes to Windows
+        Is(Hotkeys.KeyVerdict.Pass, Decide(Press(PrintScreen), new[] { Bind(F9) }));
+    }
+
+    [UnitTest]
+    public static void A_capture_takes_a_bare_PrintScreen_so_it_can_be_chosen_in_the_hotkey_editor()
+    {
+        Is(Hotkeys.KeyVerdict.Capture, Decide(Press(PrintScreen), capture: true), "PrintScreen alone is neither a typing key nor the system's");
+        Is(Hotkeys.KeyVerdict.Capture, Decide(Press(PrintScreen, shift: true), capture: true));
+    }
+
     // ------------------------------------------------------------------ matching (as before)
 
     [UnitTest]

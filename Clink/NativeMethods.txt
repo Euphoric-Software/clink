@@ -368,3 +368,23 @@ MFCreateMFByteStreamOnStream
 MFCreateSourceReaderFromByteStream
 MF_BYTESTREAM_CONTENT_TYPE
 STGTY
+
+// ---- screenshots (Screenshots/Sources/GdiScreenshotSource.cs, UI/Screenshots/RegionOverlayWindow): GDI screen copy, pointer position ----
+GetDC
+ReleaseDC
+CreateCompatibleDC
+DeleteDC
+CreateDIBSection
+SelectObject
+BitBlt
+BITMAPINFO
+BITMAPINFOHEADER
+DIB_USAGE
+ROP_CODE
+GetCursorPos
+SetCursorPos
+GdiFlush
+// clipboard: a busy clipboard is not waited for (Screenshots/ScreenshotClipboard.cs); the unit test holds it open
+GetOpenClipboardWindow
+OpenClipboard
+CloseClipboard

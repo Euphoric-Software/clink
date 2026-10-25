@@ -18,7 +18,7 @@ public partial class HotkeyListEditor : UserControl
     private static readonly (string label, string value)[] s_actions =
     {
         ("Clip", "clip"), ("Pause / resume", "pause"), ("Share last clip", "share-last"),
-        ("Start / stop recording", "record"),
+        ("Start / stop recording", "record"), ("Take screenshot", "screenshot"),
     };
     private static readonly int[] s_lengths = { 5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 300, 600, 900, 1200, 1800, 2700, 3600 };
     private static readonly int[] s_newLengths = { 30, 15, 10, 5 };   // what "Add hotkey" starts on: the longest of these that is shorter than the replay
@@ -310,7 +310,7 @@ public partial class HotkeyListEditor : UserControl
         // A bare letter, digit or editing key would be eaten in every program from then on: not taken, still listening.
         () => Dispatcher.BeginInvoke(() =>
         {
-            if (ReferenceEquals(_capturing, button)) Hint("Letters, digits and editing keys need Ctrl or Alt; F-keys, ScrollLock and Pause work alone.");
+            if (ReferenceEquals(_capturing, button)) Hint("Letters, digits and editing keys need Ctrl or Alt; F-keys, PrintScreen, ScrollLock and Pause work alone.");
         }));
 
     /// <summary>Shows why the last keys were not taken, under the row being captured (the main hotkey's, or the rows'), or hides it (null).</summary>

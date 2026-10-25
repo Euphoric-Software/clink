@@ -29,6 +29,10 @@
                 <Button x:Name="CopyButton" Style="{StaticResource AccentButton}" Content="Copy link" Click="Copy_Click" />
                 <Button Content="Open" Margin="8,0,0,0" Click="Open_Click" />
             </StackPanel>
+            <StackPanel x:Name="ScreenshotButtons" Grid.Row="2" Orientation="Horizontal" Margin="16,10,0,0" Visibility="Collapsed">
+                <Button Style="{StaticResource AccentButton}" Content="Open" MinWidth="72" Click="ShotOpen_Click" />
+                <Button Content="Folder" Margin="8,0,0,0" Click="ShotFolder_Click" />
+            </StackPanel>
         </Grid>
     </Border>
 </Window>

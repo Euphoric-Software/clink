@@ -295,9 +295,10 @@ internal static class SettingsImport
         ("recording mode", new[] { nameof(Settings.RecordingMode), nameof(Settings.CustomApps) }),
         ("hotkeys", new[] { nameof(Settings.Hotkey), nameof(Settings.Hotkeys) }),
         ("audio", new[] { nameof(Settings.TrackDesktop), nameof(Settings.TrackGame), nameof(Settings.TrackMic), nameof(Settings.TrackVoice), nameof(Settings.AllDeviceId), nameof(Settings.GameProcess), nameof(Settings.MicDeviceId), nameof(Settings.VoiceApp) }),
-        ("alerts", new[] { nameof(Settings.ClickSound), nameof(Settings.ClickVolume), nameof(Settings.ShowToast), nameof(Settings.ToastPosition), nameof(Settings.ToastClip), nameof(Settings.ToastShared), nameof(Settings.ToastRecording), nameof(Settings.StatusDot), nameof(Settings.StatusDotPosition) }),
+        ("alerts", new[] { nameof(Settings.ClickSound), nameof(Settings.ClickVolume), nameof(Settings.ShowToast), nameof(Settings.ToastPosition), nameof(Settings.ToastClip), nameof(Settings.ToastShared), nameof(Settings.ToastRecording), nameof(Settings.ToastScreenshot), nameof(Settings.StatusDot), nameof(Settings.StatusDotPosition) }),
         ("archive", new[] { nameof(Settings.ArchiveEnabled), nameof(Settings.ArchivePath), nameof(Settings.ArchiveAfterDays), nameof(Settings.ArchiveWhenLocalExceedsGB) }),
         ("clips folder", new[] { nameof(Settings.ClipsFolder) }),
+        ("screenshots", new[] { nameof(Settings.ScreenshotsEnabled), nameof(Settings.ScreenshotsFolder), nameof(Settings.ScreenshotMode), nameof(Settings.ScreenshotCopyImage), nameof(Settings.ScreenshotLoupe) }),
         ("Copium token", Array.Empty<string>()),   // compared decrypted, below
         (UnusableTokenNote, Array.Empty<string>()),
         ("Copium+", new[] { nameof(Settings.CopiumPlus) }),
@@ -332,7 +333,12 @@ internal static class SettingsImport
         IsOwnKey(key)
         || key.Equals(nameof(Settings.SchemaVersion), StringComparison.OrdinalIgnoreCase)
         || key.Equals(nameof(Settings.AudioSetupSeen), StringComparison.OrdinalIgnoreCase)
+        || key.Equals(nameof(Settings.SeededHotkeyDefaults), StringComparison.OrdinalIgnoreCase)
         || key.Equals(nameof(Settings.CopiumTokenProtected), StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>A settings key that an import offer names in the user's words or ignores: anything else would be listed as "other settings".</summary>
+    internal static bool HasLabelOrIsVolatile(string key) =>
+        IsVolatile(key) || s_labels.Any(l => l.Keys.Contains(key, StringComparer.OrdinalIgnoreCase));
 
     /// <summary>
     /// What taking <paramref name="theirJson"/> over would change in <paramref name="ourJson"/>, as labels in the user's words
