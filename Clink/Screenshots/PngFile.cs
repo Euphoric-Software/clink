@@ -41,6 +41,27 @@ internal static class PngFile
         }
     }
 
+    /// <summary>The largest picture <see cref="Decode"/> reads: 16384 px on a side and 100 megapixels (an untrusted file must not make the app allocate gigabytes).</summary>
+    public const int MaxSide = 16384;
+    public const long MaxPixels = 100_000_000;
+
+    /// <summary>
+    /// Reads a PNG file into a <see cref="BgraImage"/> (straight alpha). Null when the file is not a PNG, cannot be decoded, or is
+    /// larger than <see cref="MaxSide"/> / <see cref="MaxPixels"/>; the size is checked from the header before any pixel is decoded.
+    /// Safe on a worker thread.
+    /// </summary>
+    public static Clink.Screenshots.Imaging.BgraImage? Decode(string path)
+    {
+        var size = ReadSize(path);
+        if (size is not { } s || s.Width > MaxSide || s.Height > MaxSide || (long)s.Width * s.Height > MaxPixels) return null;
+        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        var decoder = new PngBitmapDecoder(fs, BitmapCreateOptions.PreservePixelFormat | BitmapCreateOptions.IgnoreColorProfile, BitmapCacheOption.OnLoad);
+        if (decoder.Frames.Count == 0) return null;
+        var frame = decoder.Frames[0];
+        if (frame.PixelWidth != s.Width || frame.PixelHeight != s.Height) return null;
+        return Clink.Screenshots.Imaging.BgraImage.From(frame);
+    }
+
     /// <summary>The pixel size of a PNG file from its header, or null when it cannot be read. Does not decode the pixels.</summary>
     public static (int Width, int Height)? ReadSize(string path)
     {

@@ -321,18 +321,40 @@ internal static class ScreenshotServiceTests
         using var opened = new ManualResetEventSlim();
         using var release = new ManualResetEventSlim();
         bool held = false;
+        string owner = "unknown";
         var holder = new Thread(() =>
         {
-            for (int i = 0; i < 20 && !held; i++) { held = global::Windows.Win32.PInvoke.OpenClipboard(default); if (!held) Thread.Sleep(50); }
-            opened.Set();
-            release.Wait(10_000);
-            if (held) global::Windows.Win32.PInvoke.CloseClipboard();
+            try
+            {
+                for (int i = 0; i < 200 && !held; i++) { held = global::Windows.Win32.PInvoke.OpenClipboard(default); if (!held) Thread.Sleep(50); }
+                if (!held)
+                {
+                    try
+                    {
+                        var w = global::Windows.Win32.PInvoke.GetOpenClipboardWindow();
+                        if (!w.IsNull)
+                        {
+                            global::Windows.Win32.PInvoke.GetWindowThreadProcessId(w, out uint pid);
+                            string name; try { name = System.Diagnostics.Process.GetProcessById((int)pid).ProcessName; } catch { name = "?"; }
+                            owner = $"{name} (pid {pid})";
+                        }
+                        else owner = "a program with no clipboard window";
+                    }
+                    catch { }
+                }
+            }
+            finally
+            {
+                opened.Set();
+                if (held) release.Wait(30_000);
+                if (held) global::Windows.Win32.PInvoke.CloseClipboard();
+            }
         }) { IsBackground = true };
         holder.Start();
         try
         {
-            opened.Wait(5_000);
-            if (!held) Check.Skip("another program kept the clipboard open");
+            opened.Wait(15_000);
+            if (!held) Check.Fail($"could not open the clipboard for 10 s; held by {owner}");
             var img = Picture(4, 3).ForceOpaque();
             var sw = System.Diagnostics.Stopwatch.StartNew();
             bool copied = ScreenshotClipboard.Copy(img.ToBitmapSource(), PngFile.Encode(img.ToBitmapSource()));
@@ -383,6 +405,68 @@ internal static class ScreenshotServiceTests
         Check.False(ScreenshotService.IsOpenable(@"D:\Shots\a.png", ""));
     }
 
+    [UnitTest]
+    public static void The_open_rule_refuses_streams_devices_and_links_and_knows_earlier_screenshot_folders()
+    {
+        var folders = new[] { @"D:\Shots", @"E:\Old shots\" };
+        Check.True(ScreenshotService.IsOpenable(@"D:\Shots\a.png", folders));
+        Check.True(ScreenshotService.IsOpenable(@"E:\Old shots\2025\b.PNG", folders), "a folder that was the screenshots folder once");
+        Check.False(ScreenshotService.IsOpenable(@"F:\Elsewhere\c.png", folders));
+        Check.False(ScreenshotService.IsOpenable(@"D:\Shots\a.png:evil.exe", folders), "an alternate data stream after the name");
+        Check.False(ScreenshotService.IsOpenable(@"D:\Shots\a.png:Zone.Identifier", folders));
+        Check.False(ScreenshotService.IsOpenable(@"D:\Shots\a.png::$DATA", folders));
+        Check.False(ScreenshotService.IsOpenable(@"D:\Shots\a:b.png", folders), "a colon in a name");
+        Check.False(ScreenshotService.IsOpenable(@"\\?\D:\Shots\a.png", folders), "a device path");
+        Check.False(ScreenshotService.IsOpenable(@"\\.\D:\Shots\a.png", folders));
+        Check.False(ScreenshotService.IsOpenable(@"D:\Shots\a.png", Array.Empty<string>()), "no folder at all");
+        Check.False(ScreenshotService.IsOpenable(@"D:\Shots\a.png", new[] { "", "relative" }), "unusable folders are skipped");
+        Check.True(ScreenshotService.IsOpenable(@"C:\anywhere\mine.png", (IEnumerable<string>?)null), "a path the user typed: anywhere");
+        Check.False(ScreenshotService.IsOpenable(@"C:\anywhere\mine.txt", (IEnumerable<string>?)null));
+        Check.False(ScreenshotService.IsOpenable(@"C:\anywhere\mine.png:s", (IEnumerable<string>?)null));
+    }
+
+    [UnitTest]
+    public static void The_file_rule_wants_an_existing_regular_png_not_a_directory_or_a_link()
+    {
+        using var dir = new TempDir();
+        string good = dir.File("shot.png");
+        File.WriteAllBytes(good, new byte[] { 1 });
+        Directory.CreateDirectory(dir.File("folder.png"));
+        Check.True(ScreenshotService.IsOpenableFile(good, new[] { dir.Path }));
+        Check.True(ScreenshotService.IsExplicitEditable(good), "explicit: anywhere");
+        Check.False(ScreenshotService.IsOpenableFile(dir.File("missing.png"), new[] { dir.Path }), "gone");
+        Check.False(ScreenshotService.IsOpenableFile(dir.File("folder.png"), new[] { dir.Path }), "a directory called .png");
+        Check.False(ScreenshotService.IsOpenableFile(good, new[] { dir.File("other") }), "outside the folders");
+        Check.False(ScreenshotService.IsExplicitEditable(@"shot.png"), "relative");
+        Check.False(ScreenshotService.IsExplicitEditable(null));
+        string link = dir.File("link.png");
+        try
+        {
+            File.CreateSymbolicLink(link, good);
+            Check.False(ScreenshotService.IsOpenableFile(link, new[] { dir.Path }), "a symbolic link");
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException) { /* no right to make links on this machine: the rest was checked */ }
+    }
+
+    [UnitTest]
+    public static void History_remembers_every_folder_screenshots_were_saved_to()
+    {
+        using var dir = new TempDir();
+        string oldFolder = dir.File("old"), newFolder = dir.File("new");
+        Directory.CreateDirectory(oldFolder);
+        Directory.CreateDirectory(newFolder);
+        string file = dir.File("screenshots.json");
+        var h = new ScreenshotHistory(file, null);
+        h.NoteRoot(oldFolder);
+        File.WriteAllBytes(Path.Combine(newFolder, "a.png"), new byte[] { 1 });
+        h.Add(new ScreenshotEntry { Path = Path.Combine(newFolder, "a.png"), Created = DateTime.Now });
+        var reread = new ScreenshotHistory(file, null);
+        Check.True(reread.Roots.Contains(oldFolder, StringComparer.OrdinalIgnoreCase), "the earlier folder survives a restart");
+        Check.True(reread.Roots.Contains(newFolder, StringComparer.OrdinalIgnoreCase));
+        h.NoteRoot(oldFolder.ToUpperInvariant());
+        Check.Equal(2, new ScreenshotHistory(file, null).Roots.Count, "a folder is recorded once, any case");
+    }
+
     // ------------------------------------------------------------------ hotkeys and the command line
 
     [UnitTest]
@@ -429,8 +513,8 @@ internal static class ScreenshotServiceTests
         s.Hotkeys.Add(new HotkeyAction { Keys = new HotkeyBinding { Vk = 0x2C, Shift = true }, Action = "screenshot-edit-last" });
         s.Hotkeys.Add(new HotkeyAction { Keys = new HotkeyBinding { Vk = 0x79 }, Action = "pause" });
         int rows = s.Hotkeys.Count;
-        Check.Equal(new[] { "clip", "screenshot", "pause" }, AppController.BindableHotkeys(s).Select(h => h.Action).ToArray(),
-            "on: everything is bound but edit-last, which does nothing yet and would swallow Shift+PrintScreen");
+        Check.Equal(new[] { "clip", "screenshot", "screenshot-edit-last", "pause" }, AppController.BindableHotkeys(s).Select(h => h.Action).ToArray(),
+            "on: everything is bound, edit-last too (it opens the editor)");
         s.ScreenshotsEnabled = false;
         Check.Equal(new[] { "clip", "pause" }, AppController.BindableHotkeys(s).Select(h => h.Action).ToArray());
         Check.Equal(rows, s.Hotkeys.Count, "the rows are still in settings");

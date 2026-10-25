@@ -629,3 +629,16 @@ Review-driven changes:
 - LooksBlack warns only for a whole-monitor black or when a game is present.
 - Alerts-tab toast row and upload UI deferred to S6.
 - WGC HDR source = S7, pending the user's HDR check.
+
+## S3 implementation notes (editor window, vector tools, edit-after, edit-last)
+
+Deviations from the text above, all deliberate:
+- `Adjustments` is `AdjustmentValues` (the pixel library has a type of that name in `Clink.Screenshots.Imaging`); `BackgroundMask` is not in the records (it needs `AlphaMask`; the A9 seam is unused in v1). `DocumentState` carries a `NextId` so ids stay unique across undo.
+- `RasterComposer` is more than a passthrough: the adjustment stage (`Adjuster`) and the op mapping (`OpFor`, `IRasterOp`: `Affects`, `ReadMargin`, `Apply(src, dst, area)`) are seams; it caches the adjusted base and the output of every op (the below-cache) and `Compose(state, dirty)` recomputes only the dirty rectangle (inflated by each op's read margin) from the first changed op up. S4 fills the seams and adds the background compute; tests drive it with a made-up op.
+- A rectangle outline is hit on its border (not its whole box), so what lies inside a big rectangle stays selectable.
+- Chaikin corner cutting conserves the sum of the turning angles (each corner is split into smaller turns of the same sign); what it removes is sharpness. The tests assert the largest turn and the bending energy (sum of squared angles), not the plain sum.
+- Freehand arrow direction window: `D = min(max(3 * headLength, 12), 40% of the stroke)`, but at least min(12, stroke length) so a 15-30 px stroke does not fit a line to 3 points.
+- Export: shapes render together (tiled above 8192 px, byte-identical to a single render); every text note renders on a render target of its own on a 32-px lattice of document coordinates, because WPF's text rasterizer is not translation invariant in the last bit (1 level in a few glyph pixels at a tile edge). The result is blended in z-order, so a text note can sit between two shapes.
+- Edit-after: Done saves (PNG, history, clipboard, toast); Esc / Discard / closing an unedited new capture saves nothing; closing with edits asks Save / Discard / Keep editing (Yes / No / Cancel). Save (Ctrl+S) keeps the editor open and, after the first time, replaces the file of that session; the original of an edited screenshot is never overwritten. Done on an untouched screenshot that came from a file just closes (no duplicate file).
+- Opening a history entry needs: fully qualified, `.png`, no `:` after the drive letter, no `\\?\` / `\\.\`, an existing regular file (no directory, no link), inside the current screenshots folder or any folder screenshots were ever saved to (`ScreenshotHistory.Roots`: kept in `screenshots.json`, plus the folders of the entries). `--screenshot-edit <path.png>` (made absolute by the sending process, carried over the pipe as `screenshot-edit <path>`) is allowed anywhere but must be a readable PNG within 16384 px per side and 100 MP.
+- Seeding: `screenshot-edit-last` = Shift+PrintScreen, per action (an install that already offered `screenshot` gets this one on its next start, with its own notice).

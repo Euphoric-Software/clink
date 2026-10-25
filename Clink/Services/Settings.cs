@@ -67,7 +67,7 @@ internal sealed class HotkeyBinding
 internal sealed class HotkeyAction
 {
     public HotkeyBinding Keys { get; set; } = new();
-    /// <summary>clip | pause | share-last | record | screenshot (screenshot-edit-last follows); see <c>AppController.CommandFor</c>. Anything else is ignored (and logged) when pressed.</summary>
+    /// <summary>clip | pause | share-last | record | screenshot | screenshot-edit-last; see <c>AppController.CommandFor</c>. Anything else is ignored (and logged) when pressed.</summary>
     public string Action { get; set; } = "clip";
     public int Seconds { get; set; } = 0;
     /// <summary>Keys inside this hotkey that this version does not know (written by a newer Clink): kept and written back, like <see cref="Settings.Unknown"/>.</summary>
@@ -181,8 +181,10 @@ internal sealed class Settings
     public bool ScreenshotsEnabled { get; set; } = true;
     /// <summary>Where screenshots are saved; null = a <c>Screenshots</c> folder inside <see cref="ClipsFolder"/> (resolved when used).</summary>
     public string? ScreenshotsFolder { get; set; }
-    /// <summary>none | before | after (<see cref="Clink.Screenshots.ScreenshotModes"/>): what happens after the region is picked. Only "none" (save at once) exists yet.</summary>
+    /// <summary>none | before | after (<see cref="Clink.Screenshots.ScreenshotModes"/>): what happens after the region is picked. "none" saves at once; "after" opens the editor on the picture first; "before" (editing on the screen) is not in this version and acts like "none".</summary>
     public string ScreenshotMode { get; set; } = Clink.Screenshots.ScreenshotModes.None;
+    /// <summary>The screenshot editor's last-used tool options (colour, width, text size / backdrop): the next editor opens the way the last one was left.</summary>
+    public Clink.Screenshots.Editing.ScreenshotEditorOptions ScreenshotEditor { get; set; } = new();
     public bool ScreenshotCopyImage { get; set; } = true;
     public bool ScreenshotLoupe { get; set; } = true;
     public ToastSetting ToastScreenshot { get; set; } = new() { Enabled = true, Seconds = 6 };
@@ -513,6 +515,8 @@ internal sealed class Settings
         // A relative path (a hand edit, an import) would resolve against the current directory, which is System32 at sign-in: the default instead.
         else if (!IsFullPath(ScreenshotsFolder.Trim())) ScreenshotsFolder = null;
         ScreenshotMode = Clink.Screenshots.ScreenshotModes.Normalize(ScreenshotMode);
+        ScreenshotEditor ??= new Clink.Screenshots.Editing.ScreenshotEditorOptions();
+        ScreenshotEditor.Normalize();
         ToastScreenshot ??= new ToastSetting { Enabled = true, Seconds = 6 };
         SeededHotkeyDefaults ??= new List<string>();
         SeededHotkeyDefaults.RemoveAll(a => string.IsNullOrWhiteSpace(a));
@@ -531,10 +535,11 @@ internal sealed class Settings
     /// </summary>
     internal static bool SeedDefaults { get; set; } = true;
 
-    /// <summary>The default hotkeys a version offers once, as (action, keys): bare PrintScreen takes a screenshot. (screenshot-edit-last, Shift+PrintScreen, follows with the editor.)</summary>
+    /// <summary>The default hotkeys a version offers once, as (action, keys): bare PrintScreen takes a screenshot, Shift+PrintScreen edits the last one.</summary>
     internal static IEnumerable<(string Action, HotkeyBinding Keys)> HotkeyDefaultsToSeed()
     {
         yield return ("screenshot", new HotkeyBinding { Vk = 0x2C });   // VK_SNAPSHOT
+        yield return ("screenshot-edit-last", new HotkeyBinding { Shift = true, Vk = 0x2C });
     }
 
     /// <summary>

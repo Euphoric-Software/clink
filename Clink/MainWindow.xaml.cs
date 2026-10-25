@@ -271,6 +271,8 @@ public partial class MainWindow : Window
         ScreenshotFolderBox.Text = ScreenshotService.FolderFor(s);
         ScreenshotCopyCheck.IsChecked = s.ScreenshotCopyImage;
         ScreenshotLoupeCheck.IsChecked = s.ScreenshotLoupe;
+        ScreenshotModeCombo.SelectedItem = ScreenshotModeCombo.Items.OfType<ComboBoxItem>().FirstOrDefault(i => (string?)i.Tag == s.ScreenshotMode)
+            ?? ScreenshotModeCombo.Items[0];
         UpdateScreenshotTab();
 
         Fill(ToastPositionCombo, new[]
@@ -1271,8 +1273,20 @@ public partial class MainWindow : Window
         ScreenshotOptions.IsEnabled = s.ScreenshotsEnabled;
         ScreenshotOptions.Opacity = s.ScreenshotsEnabled ? 1 : 0.55;
         string? keys = AppController.ScreenshotHotkeyLabelFor(s.Hotkeys);
+        string? editKeys = AppController.ScreenshotEditHotkeyLabelFor(s.Hotkeys);
         ScreenshotHotkeyHint.Text = (keys != null ? $"Hotkey: {keys} takes a screenshot. " : "No hotkey is set for screenshots. ")
-            + "The default is PrintScreen. Change it under Capture → Hotkeys.";
+            + (editKeys != null ? $"{editKeys} edits the last one. " : "No hotkey is set for editing the last one. ")
+            + "The defaults are PrintScreen and Shift+PrintScreen. Change them under Capture → Hotkeys.";
+    }
+
+    private void ScreenshotModeChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_loading || e.OriginalSource != ScreenshotModeCombo) return;
+        if (ScreenshotModeCombo.SelectedItem is ComboBoxItem { Tag: string mode, IsEnabled: true })
+        {
+            _app.Settings.ScreenshotMode = ScreenshotModes.Normalize(mode);
+            _app.Settings.Save();
+        }
     }
 
     private void ScreenshotsEnabledChanged(object sender, RoutedEventArgs e)

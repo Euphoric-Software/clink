@@ -97,18 +97,18 @@ internal static class ScreenshotSettingsTests
     {
         using var dir = new TempDir();
         var fresh = LoadFrom(dir, null);
-        Check.Equal(new[] { "Alt+C clip 0", "PrintScreen screenshot 0" }, Rows(fresh));
-        Check.Equal(new[] { "screenshot" }, fresh.SeededHotkeyDefaults.ToArray());
+        Check.Equal(new[] { "Alt+C clip 0", "PrintScreen screenshot 0", "Shift+PrintScreen screenshot-edit-last 0" }, Rows(fresh));
+        Check.Equal(new[] { "screenshot", "screenshot-edit-last" }, fresh.SeededHotkeyDefaults.ToArray());
         Check.True(fresh.Migrated, "so the caller saves it");
         fresh.Save();
 
         var again = Settings.Load();
-        Check.Equal(new[] { "Alt+C clip 0", "PrintScreen screenshot 0" }, Rows(again), "a second load adds nothing");
+        Check.Equal(new[] { "Alt+C clip 0", "PrintScreen screenshot 0", "Shift+PrintScreen screenshot-edit-last 0" }, Rows(again), "a second load adds nothing");
         Check.False(again.Migrated, "and has nothing to save");
 
         using var dir2 = new TempDir();
         var existing = LoadFrom(dir2, SchemaThreeFile);
-        Check.Equal(new[] { "Alt+C clip 0", "Shift+F9 clip 30", "PrintScreen screenshot 0" }, Rows(existing), "appended after the user's rows; the main is untouched");
+        Check.Equal(new[] { "Alt+C clip 0", "Shift+F9 clip 30", "PrintScreen screenshot 0", "Shift+PrintScreen screenshot-edit-last 0" }, Rows(existing), "appended after the user's rows; the main is untouched");
         Check.True(existing.Migrated);
         Check.False(existing.MainHotkeyAssigned || existing.MainHotkeyNeedsSetup, "no main-hotkey notice");
         existing.Save();
@@ -131,16 +131,16 @@ internal static class ScreenshotSettingsTests
         foreach (var (name, json, expected) in new (string, string, string[])[]
         {
             // v0.1: one Hotkey, no list: the main is that key
-            ("schema 1", """{ "Hotkey": { "Ctrl": true, "Vk": 120 } }""", new[] { "Ctrl+F9 clip 0", "PrintScreen screenshot 0" }),
+            ("schema 1", """{ "Hotkey": { "Ctrl": true, "Vk": 120 } }""", new[] { "Ctrl+F9 clip 0", "PrintScreen screenshot 0", "Shift+PrintScreen screenshot-edit-last 0" }),
             // v0.2: a full-replay row below a shorter one is promoted to the main
             ("schema 2, promoted", """{ "Hotkeys": [ { "Keys": { "Shift": true, "Vk": 120 }, "Action": "clip", "Seconds": 30 }, { "Keys": { "Ctrl": true, "Vk": 121 }, "Action": "clip", "Seconds": 0 } ] }""",
-                new[] { "Ctrl+F10 clip 0", "Shift+F9 clip 30", "PrintScreen screenshot 0" }),
+                new[] { "Ctrl+F10 clip 0", "Shift+F9 clip 30", "PrintScreen screenshot 0", "Shift+PrintScreen screenshot-edit-last 0" }),
             // v0.2: no full-replay row: the main is added on Alt+C (MainHotkeyAssigned)
             ("schema 2, assigned", """{ "Hotkeys": [ { "Keys": { "Shift": true, "Vk": 120 }, "Action": "clip", "Seconds": 30 } ] }""",
-                new[] { "Alt+C clip 0", "Shift+F9 clip 30", "PrintScreen screenshot 0" }),
+                new[] { "Alt+C clip 0", "Shift+F9 clip 30", "PrintScreen screenshot 0", "Shift+PrintScreen screenshot-edit-last 0" }),
             // v0.2: Alt+C is taken by a pause row: the main is left unset (MainHotkeyNeedsSetup)
             ("schema 2, needs setup", """{ "Hotkeys": [ { "Keys": { "Alt": true, "Vk": 67 }, "Action": "pause", "Seconds": 0 } ] }""",
-                new[] { "unset clip 0", "Alt+C pause 0", "PrintScreen screenshot 0" }),
+                new[] { "unset clip 0", "Alt+C pause 0", "PrintScreen screenshot 0", "Shift+PrintScreen screenshot-edit-last 0" }),
         })
         {
             using var plainDir = new TempDir();
@@ -148,10 +148,10 @@ internal static class ScreenshotSettingsTests
             using var dir = new TempDir();
             var s = LoadFrom(dir, json);
             Check.Equal(expected, Rows(s), name);
-            Check.Equal(Rows(plain).Concat(new[] { "PrintScreen screenshot 0" }).ToArray(), Rows(s), name + ": the hotkey model's rows, then the PrintScreen row");
+            Check.Equal(Rows(plain).Concat(new[] { "PrintScreen screenshot 0", "Shift+PrintScreen screenshot-edit-last 0" }).ToArray(), Rows(s), name + ": the hotkey model's rows, then the PrintScreen rows");
             Check.Equal((plain.MainHotkeyAssigned, plain.MainHotkeyNeedsSetup), (s.MainHotkeyAssigned, s.MainHotkeyNeedsSetup), name + ": the main-hotkey notices are unchanged");
             Check.True(s.SchemaMigrated && s.Migrated, name + ": an older file is migrated");
-            Check.Equal(new[] { "screenshot" }, s.AddedHotkeyDefaults.ToArray(), name);
+            Check.Equal(new[] { "screenshot", "screenshot-edit-last" }, s.AddedHotkeyDefaults.ToArray(), name);
             Check.NotNull(AppController.SeededHotkeyNotice(s), name + ": the user is told about PrintScreen");
 
             s.Save();
@@ -175,7 +175,7 @@ internal static class ScreenshotSettingsTests
         Check.Equal("PrintScreen now takes a Clink screenshot — change it under Capture → Hotkeys", AppController.SeededHotkeyNotice(s));
         Check.True(s.Migrated, "saved once");
         Check.False(s.SchemaMigrated, "but it is no schema migration: the log says the defaults were offered");
-        Check.Equal(new[] { "screenshot" }, s.OfferedHotkeyDefaults.ToArray());
+        Check.Equal(new[] { "screenshot", "screenshot-edit-last" }, s.OfferedHotkeyDefaults.ToArray());
         s.Save();
         Check.Null(AppController.SeededHotkeyNotice(Settings.Load()), "not again on the next start");
 
@@ -185,13 +185,13 @@ internal static class ScreenshotSettingsTests
                 { "Keys": { "Alt": true, "Vk": 67 }, "Action": "clip", "Seconds": 0 },
                 { "Keys": { "Vk": 44 }, "Action": "record", "Seconds": 0 } ] }
             """);
-        Check.Equal(new[] { "screenshot" }, taken.OfferedHotkeyDefaults.ToArray(), "offered");
-        Check.Equal(0, taken.AddedHotkeyDefaults.Count, "but PrintScreen was theirs");
-        Check.Null(AppController.SeededHotkeyNotice(taken), "nothing taken over, nothing to say");
+        Check.Equal(new[] { "screenshot", "screenshot-edit-last" }, taken.OfferedHotkeyDefaults.ToArray(), "offered");
+        Check.Equal(new[] { "screenshot-edit-last" }, taken.AddedHotkeyDefaults.ToArray(), "but PrintScreen was theirs; Shift+PrintScreen was free");
+        Check.Equal("Shift+PrintScreen now edits your last Clink screenshot — change it under Capture → Hotkeys", AppController.SeededHotkeyNotice(taken), "only the key that was taken is announced");
 
         using var dir3 = new TempDir();
         var off = LoadFrom(dir3, SchemaThreeFile);
-        Check.Equal(new[] { "screenshot" }, off.AddedHotkeyDefaults.ToArray(), "seeded as before");
+        Check.Equal(new[] { "screenshot", "screenshot-edit-last" }, off.AddedHotkeyDefaults.ToArray(), "seeded as before");
         off.ScreenshotsEnabled = false;
         Check.Null(AppController.SeededHotkeyNotice(off), "tools off: no notice");
     }
@@ -205,11 +205,11 @@ internal static class ScreenshotSettingsTests
                 { "Keys": { "Alt": true, "Vk": 67 }, "Action": "clip", "Seconds": 0 },
                 { "Keys": { "Vk": 44 }, "Action": "record", "Seconds": 0 } ] }
             """);
-        Check.Equal(new[] { "Alt+C clip 0", "PrintScreen record 0" }, Rows(s), "their PrintScreen stays what it was");
-        Check.Equal(new[] { "screenshot" }, s.SeededHotkeyDefaults.ToArray(), "offered once, even though it could not be added");
+        Check.Equal(new[] { "Alt+C clip 0", "PrintScreen record 0", "Shift+PrintScreen screenshot-edit-last 0" }, Rows(s), "their PrintScreen stays what it was");
+        Check.Equal(new[] { "screenshot", "screenshot-edit-last" }, s.SeededHotkeyDefaults.ToArray(), "offered once, even though it could not be added");
         s.Hotkeys.RemoveAt(1);
         s.Save();
-        Check.Equal(new[] { "Alt+C clip 0" }, Rows(Settings.Load()), "freeing the key later does not bring the offer back");
+        Check.Equal(new[] { "Alt+C clip 0", "Shift+PrintScreen screenshot-edit-last 0" }, Rows(Settings.Load()), "freeing the key later does not bring the offer back");
     }
 
     [UnitTest]
@@ -221,8 +221,8 @@ internal static class ScreenshotSettingsTests
                 { "Keys": { "Alt": true, "Vk": 67 }, "Action": "clip", "Seconds": 0 },
                 { "Keys": { "Ctrl": true, "Vk": 44 }, "Action": "Screenshot", "Seconds": 0 } ] }
             """);
-        Check.Equal(new[] { "Alt+C clip 0", "Ctrl+PrintScreen Screenshot 0" }, Rows(s), "no second screenshot row");
-        Check.Equal(1, s.SeededHotkeyDefaults.Count);
+        Check.Equal(new[] { "Alt+C clip 0", "Ctrl+PrintScreen Screenshot 0", "Shift+PrintScreen screenshot-edit-last 0" }, Rows(s), "no second screenshot row");
+        Check.Equal(2, s.SeededHotkeyDefaults.Count);
     }
 
     [UnitTest]
@@ -230,8 +230,8 @@ internal static class ScreenshotSettingsTests
     {
         using var dir = new TempDir();
         var s = LoadFrom(dir, SchemaThreeFile);
-        Check.Equal(3, s.Hotkeys.Count);
-        s.Hotkeys.RemoveAt(2);   // the user removes the PrintScreen row in the hotkey editor
+        Check.Equal(4, s.Hotkeys.Count);
+        s.Hotkeys.RemoveRange(2, 2);   // the user removes the PrintScreen rows in the hotkey editor
         s.Save();
         for (int i = 0; i < 3; i++)
         {
@@ -240,10 +240,15 @@ internal static class ScreenshotSettingsTests
             Check.False(reloaded.Migrated);
             reloaded.Save();
         }
-        // a settings file that already lists the action as offered never gets it
-        var listed = LoadFrom(dir, SchemaThreeFile.Replace("\"SchemaVersion\": 3,", "\"SchemaVersion\": 3, \"SeededHotkeyDefaults\": [\"screenshot\"],"));
+        // a settings file that already lists the actions as offered never gets them
+        var listed = LoadFrom(dir, SchemaThreeFile.Replace("\"SchemaVersion\": 3,", "\"SchemaVersion\": 3, \"SeededHotkeyDefaults\": [\"screenshot\", \"screenshot-edit-last\"],"));
         Check.Equal(2, listed.Hotkeys.Count);
         Check.False(listed.Migrated, "nothing changed, nothing to save");
+        // a file from the first screenshot version lists only "screenshot": the newer action is offered once
+        var s1 = LoadFrom(dir, SchemaThreeFile.Replace("\"SchemaVersion\": 3,", "\"SchemaVersion\": 3, \"SeededHotkeyDefaults\": [\"screenshot\"],"));
+        Check.Equal(new[] { "Alt+C clip 0", "Shift+F9 clip 30", "Shift+PrintScreen screenshot-edit-last 0" }, Rows(s1), "edit-last is added, screenshot is not");
+        Check.Equal(new[] { "screenshot-edit-last" }, s1.AddedHotkeyDefaults.ToArray());
+        Check.True(s1.Migrated, "saved once");
     }
 
     [UnitTest]
@@ -253,7 +258,7 @@ internal static class ScreenshotSettingsTests
         var s = new Settings();
         s.Normalize();
         Check.Equal(new[] { "Alt+C clip 0" }, Rows(s), "Normalize alone adds nothing");
-        Check.Equal(new[] { "Alt+C clip 0", "PrintScreen screenshot 0" }, Rows(Settings.FromJson("{}")), "FromJson reads a copy as Load would");
+        Check.Equal(new[] { "Alt+C clip 0", "PrintScreen screenshot 0", "Shift+PrintScreen screenshot-edit-last 0" }, Rows(Settings.FromJson("{}")), "FromJson reads a copy as Load would");
 
         Settings.SeedDefaults = false;   // the seam the test runner uses
         Check.Equal(new[] { "Alt+C clip 0" }, Rows(Settings.FromJson("{}")));
@@ -264,14 +269,13 @@ internal static class ScreenshotSettingsTests
     {
         using var dir = new TempDir();
         var s = LoadFrom(dir, null);
-        s.Hotkeys.Add(new HotkeyAction { Keys = new HotkeyBinding { Ctrl = true, Shift = true, Vk = 0x2C }, Action = "screenshot-edit-last" });
         s.ScreenshotsEnabled = false;
         s.ScreenshotMode = "after";
         s.ScreenshotsFolder = @"E:\Shots";
         s.ScreenshotLoupe = false;
         s.Save();
         var back = Settings.Load();
-        Check.Equal(new[] { "Alt+C clip 0", "PrintScreen screenshot 0", "Ctrl+Shift+PrintScreen screenshot-edit-last 0" }, Rows(back));
+        Check.Equal(new[] { "Alt+C clip 0", "PrintScreen screenshot 0", "Shift+PrintScreen screenshot-edit-last 0" }, Rows(back));
         Check.False(back.ScreenshotsEnabled);
         Check.Equal("after", back.ScreenshotMode);
         Check.Equal(@"E:\Shots", back.ScreenshotsFolder);
@@ -321,6 +325,8 @@ internal static class ScreenshotSettingsTests
             s => s.ScreenshotCopyImage = false, s => s.ScreenshotLoupe = false,
         })
             Check.Equal(new[] { "screenshots" }, SettingsImport.Differences(Json(), Json(change)).ToArray());
+        // the editor's last-used colour and width say nothing: two installs do not differ over them
+        Check.Equal(0, SettingsImport.Differences(Json(), Json(s => { s.ScreenshotEditor.Width = 9; s.ScreenshotEditor.TextBackdrop = "box"; })).Count());
         Check.Equal(new[] { "alerts" }, SettingsImport.Differences(Json(), Json(s => s.ToastScreenshot.Seconds = 12)).ToArray());
         Check.Equal(new[] { "alerts" }, SettingsImport.Differences(Json(), Json(s => s.ToastScreenshot.Enabled = false)).ToArray());
         Check.Equal(0, SettingsImport.Differences(Json(), Json(s => s.SeededHotkeyDefaults.Add("screenshot"))).Count, "which defaults were offered says nothing");

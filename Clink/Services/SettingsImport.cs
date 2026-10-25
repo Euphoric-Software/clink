@@ -298,7 +298,7 @@ internal static class SettingsImport
         ("alerts", new[] { nameof(Settings.ClickSound), nameof(Settings.ClickVolume), nameof(Settings.ShowToast), nameof(Settings.ToastPosition), nameof(Settings.ToastClip), nameof(Settings.ToastShared), nameof(Settings.ToastRecording), nameof(Settings.ToastScreenshot), nameof(Settings.StatusDot), nameof(Settings.StatusDotPosition) }),
         ("archive", new[] { nameof(Settings.ArchiveEnabled), nameof(Settings.ArchivePath), nameof(Settings.ArchiveAfterDays), nameof(Settings.ArchiveWhenLocalExceedsGB) }),
         ("clips folder", new[] { nameof(Settings.ClipsFolder) }),
-        ("screenshots", new[] { nameof(Settings.ScreenshotsEnabled), nameof(Settings.ScreenshotsFolder), nameof(Settings.ScreenshotMode), nameof(Settings.ScreenshotCopyImage), nameof(Settings.ScreenshotLoupe) }),
+        ("screenshots", new[] { nameof(Settings.ScreenshotsEnabled), nameof(Settings.ScreenshotsFolder), nameof(Settings.ScreenshotMode),nameof(Settings.ScreenshotCopyImage), nameof(Settings.ScreenshotLoupe) }),
         ("Copium token", Array.Empty<string>()),   // compared decrypted, below
         (UnusableTokenNote, Array.Empty<string>()),
         ("Copium+", new[] { nameof(Settings.CopiumPlus) }),
@@ -334,6 +334,7 @@ internal static class SettingsImport
         || key.Equals(nameof(Settings.SchemaVersion), StringComparison.OrdinalIgnoreCase)
         || key.Equals(nameof(Settings.AudioSetupSeen), StringComparison.OrdinalIgnoreCase)
         || key.Equals(nameof(Settings.SeededHotkeyDefaults), StringComparison.OrdinalIgnoreCase)
+        || key.Equals(nameof(Settings.ScreenshotEditor), StringComparison.OrdinalIgnoreCase)   // the editor's last-used colour and width
         || key.Equals(nameof(Settings.CopiumTokenProtected), StringComparison.OrdinalIgnoreCase);
 
     /// <summary>A settings key that an import offer names in the user's words or ignores: anything else would be listed as "other settings".</summary>

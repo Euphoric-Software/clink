@@ -369,10 +369,11 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
     {
         if (Shot != null && !_preview && System.IO.File.Exists(Shot.Path))
         {
-            // Shell-executed only as a .png in the screenshots folder: a path from the history file must never start a program.
-            if (!ScreenshotService.IsOpenable(Shot.Path, ScreenshotService.FolderFor(AppController.Instance.Settings)))
+            // Shell-executed only as a .png inside the current screenshots folder or a folder screenshots were recorded as saved to
+            // (never a folder that only a history entry names, nor a network path while the folder is local): a path from the history file must never start a program.
+            if (!AppController.Instance.Screenshots.IsOpenableEntry(Shot.Path))
             {
-                Log.Warn("screenshot: not opened: not a .png in the screenshots folder");
+                Log.Warn("screenshot: not opened: not a .png in a screenshots folder");
                 AppController.Instance.Say("Could not open the screenshot: it is not in the screenshots folder");
             }
             else
@@ -381,6 +382,13 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
                 catch (Exception ex) { AppController.Instance.Say("Could not open the screenshot: " + ex.Message); }
             }
         }
+        Dismiss();
+    }
+
+    private void ShotEdit_Click(object sender, RoutedEventArgs e)
+    {
+        // The service checks the file (a screenshot of this app, a readable .png) and opens the editor, or says why not.
+        if (Shot != null && !_preview) AppController.Instance.Screenshots.EditFile(Shot.Path);
         Dismiss();
     }
 

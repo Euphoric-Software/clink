@@ -19,6 +19,7 @@ public partial class HotkeyListEditor : UserControl
     {
         ("Clip", "clip"), ("Pause / resume", "pause"), ("Share last clip", "share-last"),
         ("Start / stop recording", "record"), ("Take screenshot", "screenshot"),
+        ("Edit last screenshot", "screenshot-edit-last"),
     };
     private static readonly int[] s_lengths = { 5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 300, 600, 900, 1200, 1800, 2700, 3600 };
     private static readonly int[] s_newLengths = { 30, 15, 10, 5 };   // what "Add hotkey" starts on: the longest of these that is shorter than the replay

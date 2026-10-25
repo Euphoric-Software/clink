@@ -41,6 +41,8 @@ internal sealed class ScreenshotHistory
     private sealed class FileModel
     {
         public List<ScreenshotEntry>? Entries { get; set; }
+        /// <summary>Every folder screenshots were saved to, so an old screenshot stays openable after the folder setting changed.</summary>
+        public List<string>? Roots { get; set; }
         [JsonExtensionData] public Dictionary<string, JsonElement>? Unknown { get; set; }
     }
 
@@ -49,6 +51,43 @@ internal sealed class ScreenshotHistory
     private readonly string? _rebuildFolder;
     private List<ScreenshotEntry>? _entries;   // newest first; null until loaded
     private Dictionary<string, JsonElement>? _unknown;
+    private List<string> _roots = new();
+
+    /// <summary>At most this many save folders are remembered.</summary>
+    public const int MaxRoots = 16;
+
+    /// <summary>
+    /// Every folder a screenshot was saved to (the oldest first), as recorded by <see cref="NoteRoot"/> / <see cref="Add"/>: the folder
+    /// of an entry in the file is not a root. The file is hand-editable, so a root in it is not proof of anything: a forged local root
+    /// only exposes the regular <c>.png</c> files under it to the editor, and network (UNC) roots are filtered out by
+    /// <c>ScreenshotService.KnownFolders</c> unless the current folder is one. The app may open a PNG inside any root, not only in the
+    /// folder that is set now.
+    /// </summary>
+    public IReadOnlyList<string> Roots
+    {
+        get
+        {
+            lock (_gate)
+            {
+                EnsureLoaded();
+                return new List<string>(_roots);
+            }
+        }
+    }
+
+    /// <summary>Records <paramref name="folder"/> as a screenshots folder (written with the file when it is new).</summary>
+    public void NoteRoot(string folder)
+    {
+        if (string.IsNullOrWhiteSpace(folder)) return;
+        lock (_gate)
+        {
+            EnsureLoaded();
+            if (_roots.Contains(folder, StringComparer.OrdinalIgnoreCase)) return;
+            _roots.Add(folder);
+            if (_roots.Count > MaxRoots) _roots.RemoveRange(0, _roots.Count - MaxRoots);
+            try { Save(); } catch (Exception ex) { Log.Warn("screenshots: history could not be saved: " + ex.Message); }
+        }
+    }
 
     /// <summary>The history file of the current settings folder.</summary>
     public static string DefaultFile => System.IO.Path.Combine(Settings.Dir, "screenshots.json");
@@ -80,6 +119,16 @@ internal sealed class ScreenshotHistory
             var list = EnsureLoaded();
             list.RemoveAll(e => PathsEqual(e.Path, entry.Path));
             list.Insert(0, entry);
+            try
+            {
+                string? dir = System.IO.Path.GetDirectoryName(entry.Path);
+                if (!string.IsNullOrEmpty(dir) && !_roots.Contains(dir, StringComparer.OrdinalIgnoreCase))
+                {
+                    _roots.Add(dir);
+                    if (_roots.Count > MaxRoots) _roots.RemoveRange(0, _roots.Count - MaxRoots);
+                }
+            }
+            catch (ArgumentException) { }
             if (list.Count > Limit) list.RemoveRange(Limit, list.Count - Limit);
             Save();
         }
@@ -114,6 +163,7 @@ internal sealed class ScreenshotHistory
             else
             {
                 _unknown = model.Unknown;
+                _roots = (model.Roots ?? new()).Where(r => !string.IsNullOrWhiteSpace(r)).Take(MaxRoots).ToList();
                 loaded = (model.Entries ?? new()).Where(e => e != null && !string.IsNullOrWhiteSpace(e.Path)).ToList();
             }
         }
@@ -125,13 +175,27 @@ internal sealed class ScreenshotHistory
         if (rebuild) loaded = ScanFolder();
         // A file the user deleted is no longer a screenshot.
         int before = loaded.Count;
-        loaded = loaded.Where(e => { try { return File.Exists(e.Path); } catch { return false; } }).Take(Limit).ToList();
+        // (A network path is not probed while the folder in use is a local one: a hand-edited file cannot make the app reach out to a
+        // server; such an entry is kept as it is and can never be opened, see ScreenshotService.KnownFolders.)
+        loaded = loaded.Where(e => (IsUnc(e.Path) && !IsUnc(_rebuildFolder)) || SafeExists(e.Path)).Take(Limit).ToList();
         _entries = loaded;
         if (rebuild && loaded.Count > 0 || before != loaded.Count && before > 0)
         {
             try { Save(); } catch (Exception ex) { Log.Warn("screenshots: history could not be saved: " + ex.Message); }
         }
         return _entries;
+    }
+
+    private static bool SafeExists(string path)
+    {
+        try { return File.Exists(path); } catch { return false; }
+    }
+
+    private static bool IsUnc(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return false;
+        string p = path.Trim();
+        return p.StartsWith(@"\\", StringComparison.Ordinal) || p.StartsWith("//", StringComparison.Ordinal);
     }
 
     private List<ScreenshotEntry> ScanFolder()
@@ -155,7 +219,7 @@ internal sealed class ScreenshotHistory
     {
         string? dir = System.IO.Path.GetDirectoryName(_file);
         if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-        var model = new FileModel { Entries = _entries, Unknown = _unknown };
+        var model = new FileModel { Entries = _entries, Roots = _roots.Count > 0 ? _roots : null, Unknown = _unknown };
         AtomicFile.WriteAllText(_file, JsonSerializer.Serialize(model, s_json));
     }
 }

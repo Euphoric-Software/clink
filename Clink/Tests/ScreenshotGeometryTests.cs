@@ -543,4 +543,252 @@ internal static class ScreenshotGeometryTests
         third.Confirm();
         Check.Equal(0, committed3.Count, "finished is final");
     }
+
+    // ------------------------------------------------------------------ editor geometry: arrows, smoothing, hit testing, toolbar placement
+
+    /// <summary>A hand-drawn stroke: a point every 3 px along <paramref name="dir"/> with random sideways jitter (deterministic by seed).</summary>
+    private static List<System.Windows.Point> HandStroke(System.Windows.Point from, System.Windows.Vector dir, double length, int seed, double jitter)
+    {
+        var rnd = new Random(seed);
+        var perp = new System.Windows.Vector(-dir.Y, dir.X);
+        var pts = new List<System.Windows.Point>();
+        for (double d = 0; d <= length; d += 3)
+            pts.Add(from + dir * d + perp * ((rnd.NextDouble() - 0.5) * 2 * jitter));
+        return pts;
+    }
+
+    private static double Degrees(System.Windows.Vector a, System.Windows.Vector b) => Math.Abs(System.Windows.Vector.AngleBetween(a, b));
+
+    [UnitTest]
+    public static void A_freehand_arrow_head_points_the_way_the_hand_was_going_despite_jitter()
+    {
+        foreach (var (name, dir) in new[]
+        {
+            ("east", new System.Windows.Vector(1, 0)),
+            ("north-east", new System.Windows.Vector(Math.Sqrt(0.5), -Math.Sqrt(0.5))),
+            ("south-west", new System.Windows.Vector(-Math.Sqrt(0.5), Math.Sqrt(0.5))),
+            ("north", new System.Windows.Vector(0, -1)),
+        })
+        {
+            for (int seed = 1; seed <= 25; seed++)
+            {
+                var pts = HandStroke(new System.Windows.Point(100, 100), dir, 240, seed, 1.5);
+                var got = ArrowGeometry.FreehandDirection(pts, 4);
+                Check.True(got.HasValue, $"{name} seed {seed}: a head");
+                double off = Degrees(dir, got!.Value);
+                Check.True(off <= 5, $"{name} seed {seed}: {off:0.0} degrees off the truth");
+                Check.Near(1.0, got.Value.Length, 1e-9, "a unit vector");
+            }
+        }
+    }
+
+    [UnitTest]
+    public static void A_freehand_arrow_follows_the_final_leg_of_an_L_shaped_stroke()
+    {
+        var pts = new List<System.Windows.Point>();
+        for (int x = 0; x <= 100; x += 3) pts.Add(new System.Windows.Point(x, 0));
+        for (int y = -3; y >= -60; y -= 3) pts.Add(new System.Windows.Point(100, y));
+        var dir = ArrowGeometry.FreehandDirection(pts, 4)!.Value;
+        Check.True(Degrees(new System.Windows.Vector(0, -1), dir) <= 5, "north, not the diagonal from start to end");
+    }
+
+    [UnitTest]
+    public static void A_short_freehand_stroke_uses_first_to_last_and_a_dot_has_no_head()
+    {
+        var shortStroke = new[] { new System.Windows.Point(0, 0), new System.Windows.Point(3, 1), new System.Windows.Point(6, 2) };   // 6.3 px, shorter than the 18 px head
+        var d = ArrowGeometry.FreehandDirection(shortStroke, 4)!.Value;
+        var expected = new System.Windows.Vector(6, 2) / new System.Windows.Vector(6, 2).Length;
+        Check.Near(expected.X, d.X, 1e-9);
+        Check.Near(expected.Y, d.Y, 1e-9);
+
+        Check.Null(ArrowGeometry.FreehandDirection(new[] { new System.Windows.Point(5, 5), new System.Windows.Point(6, 5.5) }, 4), "1.1 px: a dot");
+        Check.Null(ArrowGeometry.FreehandDirection(new[] { new System.Windows.Point(5, 5) }, 4), "one point");
+        Check.Null(ArrowGeometry.FreehandDirection(Array.Empty<System.Windows.Point>(), 4));
+        var dot = ArrowGeometry.Freehand(new[] { new System.Windows.Point(5, 5), new System.Windows.Point(6, 5.5) }, 4);
+        Check.False(dot.HasHead);
+        Check.True(dot.Shaft.Length > 0, "the dot is still drawn");
+        Check.False(ArrowGeometry.Straight(new System.Windows.Point(0, 0), new System.Windows.Point(1, 0), 4, arrow: true).HasHead, "a straight arrow under 2 px has no head either");
+    }
+
+    [UnitTest]
+    public static void The_arrow_head_is_max_10_or_4_and_a_half_widths_long_with_a_25_degree_half_angle()
+    {
+        Check.Equal(10.0, ArrowGeometry.HeadLength(1));
+        Check.Equal(10.0, ArrowGeometry.HeadLength(2));
+        Check.Near(13.5, ArrowGeometry.HeadLength(3));
+        Check.Near(45.0, ArrowGeometry.HeadLength(10));
+        var (tip, left, right) = ArrowGeometry.Head(new System.Windows.Point(100, 50), new System.Windows.Vector(1, 0), 4);
+        double half = 18 * Math.Tan(25 * Math.PI / 180);
+        Check.Equal(new System.Windows.Point(100, 50), tip);
+        Check.Near(82, left.X, 1e-9);
+        Check.Near(82, right.X, 1e-9);
+        Check.Near(Math.Abs(left.Y - 50), half, 1e-9);
+        Check.Near(Math.Abs(right.Y - 50), half, 1e-9);
+        Check.Near(50.0, Degrees(left - tip, right - tip), 1e-6, "25 degrees either side of the shaft");
+    }
+
+    [UnitTest]
+    public static void The_arrow_shaft_stops_inside_the_head_so_it_does_not_poke_through()
+    {
+        var straight = ArrowGeometry.Straight(new System.Windows.Point(0, 0), new System.Windows.Point(100, 0), 4, arrow: true);
+        Check.True(straight.HasHead);
+        Check.Near(100 - 0.8 * 18, straight.Shaft[^1].X, 1e-9);
+        Check.Equal(new System.Windows.Point(100, 0), straight.Tip);
+        var plain = ArrowGeometry.Straight(new System.Windows.Point(0, 0), new System.Windows.Point(100, 0), 4, arrow: false);
+        Check.False(plain.HasHead);
+        Check.Equal(new System.Windows.Point(100, 0), plain.Shaft[^1], "a plain line goes all the way");
+
+        var pts = new List<System.Windows.Point>();
+        for (int x = 0; x <= 200; x += 4) pts.Add(new System.Windows.Point(x, 0));
+        var free = ArrowGeometry.Freehand(pts, 4);
+        Check.True(free.HasHead);
+        Check.Near(200 - 0.8 * 18, free.Shaft[^1].X, 1e-6, "cut at L - 0.8 * head length");
+        Check.Equal(new System.Windows.Point(200, 0), free.Tip, "the head is at the end of the stroke");
+        Check.Near(0.0, free.Shaft[0].X, 1e-9, "and the shaft starts where the stroke did");
+    }
+
+    [UnitTest]
+    public static void Resampling_walks_the_polyline_at_even_arc_length_and_keeps_the_end()
+    {
+        var res = ArrowGeometry.Resample(new[] { new System.Windows.Point(0, 0), new System.Windows.Point(10, 0), new System.Windows.Point(10, 10) }, 2);
+        Check.Equal(11, res.Count, "0, 2, ..., 20 along the path");
+        Check.Equal(new System.Windows.Point(10, 2), res[6]);
+        Check.Equal(new System.Windows.Point(10, 10), res[^1]);
+        var odd = ArrowGeometry.Resample(new[] { new System.Windows.Point(0, 0), new System.Windows.Point(5, 0) }, 2);
+        Check.Equal(new System.Windows.Point(5, 0), odd[^1], "the last point is always there");
+        Check.Equal(4, odd.Count);
+        Check.Equal(7.0, ArrowGeometry.Length(new[] { new System.Windows.Point(0, 0), new System.Windows.Point(3, 4), new System.Windows.Point(3, 6) }));
+    }
+
+    [UnitTest]
+    public static void Chaikin_smoothing_keeps_the_ends_and_reduces_the_total_turning()
+    {
+        var zigzag = new List<System.Windows.Point>();
+        for (int i = 0; i < 12; i++) zigzag.Add(new System.Windows.Point(i * 10, i % 2 == 0 ? 0 : 6));
+        var smooth = StrokeSmoothing.Chaikin(zigzag, 2);
+        Check.Equal(zigzag[0], smooth[0], "start kept");
+        Check.Equal(zigzag[^1], smooth[^1], "end kept");
+        Check.True(smooth.Count > zigzag.Count);
+        // Corner cutting keeps the sum of the turning angles (each corner is split into smaller turns of the same sign) but takes the
+        // sharpness out: the largest turn and the bending energy (the sum of the squared angles) fall.
+        Check.Near(StrokeSmoothing.TotalTurning(zigzag), StrokeSmoothing.TotalTurning(smooth), 1e-6, "the sum of the angles is kept");
+        Check.True(StrokeSmoothing.MaxTurning(smooth) < 0.6 * StrokeSmoothing.MaxTurning(zigzag), "the sharpest corner is rounded");
+        Check.True(StrokeSmoothing.BendingEnergy(smooth) < 0.5 * StrokeSmoothing.BendingEnergy(zigzag), "less bending");
+
+        // a hand-drawn line: the jitter turns the path back and forth; smoothing takes the sharpness of that away
+        var shaky = HandStroke(new System.Windows.Point(0, 0), new System.Windows.Vector(1, 0), 300, 7, 1.5);
+        var calm = StrokeSmoothing.Chaikin(shaky, 2);
+        Check.Equal(shaky[0], calm[0]);
+        Check.Equal(shaky[^1], calm[^1]);
+        Check.True(StrokeSmoothing.BendingEnergy(calm) < 0.5 * StrokeSmoothing.BendingEnergy(shaky), $"bending {StrokeSmoothing.BendingEnergy(shaky):0.0} -> {StrokeSmoothing.BendingEnergy(calm):0.0}");
+        Check.True(StrokeSmoothing.BendingEnergy(StrokeSmoothing.Chaikin(shaky, 3)) <= StrokeSmoothing.BendingEnergy(calm) + 1e-9, "more iterations, no more bending");
+        var line = new[] { new System.Windows.Point(0, 0), new System.Windows.Point(10, 10), new System.Windows.Point(20, 20) };
+        foreach (var p in StrokeSmoothing.Chaikin(line, 2)) Check.Near(p.X, p.Y, 1e-9, "a straight line stays on its line");
+        Check.Equal(2, StrokeSmoothing.Chaikin(new[] { new System.Windows.Point(0, 0), new System.Windows.Point(5, 5) }, 2).Count, "two points: nothing to cut");
+        Check.Equal(0, StrokeSmoothing.Chaikin(Array.Empty<System.Windows.Point>(), 2).Count);
+
+        var dense = new[] { new System.Windows.Point(0, 0), new System.Windows.Point(0.2, 0), new System.Windows.Point(0.4, 0), new System.Windows.Point(5, 0), new System.Windows.Point(5.1, 0) };
+        var thin = StrokeSmoothing.Decimate(dense, 1);
+        Check.Equal(new[] { new System.Windows.Point(0, 0), new System.Windows.Point(5, 0), new System.Windows.Point(5.1, 0) }, thin.ToArray(), "close points dropped, the last kept");
+    }
+
+    // ---- hit testing
+
+    private static readonly Func<Clink.Screenshots.Editing.TextNote, System.Windows.Rect> NoText = _ => System.Windows.Rect.Empty;
+
+    private static Clink.Screenshots.Editing.DocumentState EmptyDoc() => Clink.Screenshots.Editing.DocumentState.Create(new BgraImage(200, 200));
+
+    private static System.Windows.Media.Color Red => System.Windows.Media.Colors.Red;
+
+    [UnitTest]
+    public static void The_pick_distance_is_a_fixed_number_of_screen_DIPs_so_it_shrinks_when_zoomed_in()
+    {
+        var doc = EmptyDoc().Add(new Clink.Screenshots.Editing.LineShape(0, new System.Windows.Point(0, 50), new System.Windows.Point(100, 50), Red, 4, false), out var line);
+        // scale = DIPs per picture pixel. At 1 the tolerance is 4/2 + 6 = 8 px.
+        Check.Near(8.0, HitTest.Tolerance(4, 1));
+        Check.True(HitTest.HitObject(line, new System.Windows.Point(50, 57), 1, NoText), "7 px away at 100%");
+        Check.False(HitTest.HitObject(line, new System.Windows.Point(50, 59), 1, NoText), "9 px away at 100%");
+        // zoomed in 4x: 6 DIP is only 1.5 picture pixels
+        Check.Near(3.5, HitTest.Tolerance(4, 4));
+        Check.False(HitTest.HitObject(line, new System.Windows.Point(50, 57), 4, NoText), "the same 7 px is far away at 400%");
+        Check.True(HitTest.HitObject(line, new System.Windows.Point(50, 53), 4, NoText), "3 px at 400%");
+        // zoomed out to 25%: 6 DIP is 24 picture pixels
+        Check.True(HitTest.HitObject(line, new System.Windows.Point(50, 75), 0.25, NoText), "25 px at 25%");
+        Check.False(HitTest.HitObject(line, new System.Windows.Point(120, 50), 1, NoText), "past the end");
+        Check.Near(5.0, HitTest.DistanceToSegment(new System.Windows.Point(103, 54), new System.Windows.Point(0, 50), new System.Windows.Point(100, 50)), 1e-9, "distance to the end point");
+        Check.Near(3.0, HitTest.DistanceToPolyline(new System.Windows.Point(5, 3), new[] { new System.Windows.Point(0, 0), new System.Windows.Point(10, 0) }));
+    }
+
+    [UnitTest]
+    public static void The_topmost_object_wins_and_the_vector_band_is_above_the_raster_band()
+    {
+        var doc = EmptyDoc();
+        doc = doc.Add(new Clink.Screenshots.Editing.BlurRegion(0, new RectI(10, 10, 100, 100), 4, false, 8), out var blur);   // raster band
+        doc = doc.Add(new Clink.Screenshots.Editing.LineShape(0, new System.Windows.Point(0, 50), new System.Windows.Point(100, 50), Red, 4, false), out var first);
+        doc = doc.Add(new Clink.Screenshots.Editing.RectOutline(0, new System.Windows.Rect(20, 30, 60, 40), Red, 4), out var second);
+        var p = new System.Windows.Point(50, 50);   // on the line; inside the rectangle (not on its border), inside the blur box
+        Check.Equal(first.Id, HitTest.Topmost(doc, p, 1, NoText)!.Id, "a rectangle outline is hit on its border only: the line under its interior is reachable");
+        var onBorder = new System.Windows.Point(20, 50);
+        Check.Equal(second.Id, HitTest.Topmost(doc, onBorder, 1, NoText)!.Id, "where both are hit, the one added later is on top");
+        doc = doc.Reorder(second.Id, int.MinValue);
+        Check.Equal(first.Id, HitTest.Topmost(doc, onBorder, 1, NoText)!.Id, "sent to the back: the line is on top now");
+        Check.Equal(blur.Id, HitTest.Topmost(doc, new System.Windows.Point(100, 100), 1, NoText)!.Id, "only the raster object is there");
+        Check.Null(HitTest.Topmost(doc, new System.Windows.Point(190, 190), 1, NoText));
+    }
+
+    [UnitTest]
+    public static void Handles_of_the_selected_object_win_over_whatever_lies_on_top()
+    {
+        var doc = EmptyDoc();
+        doc = doc.Add(new Clink.Screenshots.Editing.RectOutline(0, new System.Windows.Rect(20, 20, 40, 40), Red, 2), out var rect);
+        doc = doc.Add(new Clink.Screenshots.Editing.LineShape(0, new System.Windows.Point(40, 60), new System.Windows.Point(100, 60), Red, 6, false), out var line);
+        var corner = new System.Windows.Point(60, 60);   // the rectangle's bottom-right handle, with the line running across it
+        Check.Equal(line.Id, HitTest.Hit(doc, null, corner, 1, NoText).Object!.Id, "nothing selected: the object on top");
+        var hit = HitTest.Hit(doc, rect, corner, 1, NoText);
+        Check.Equal(Handle.BottomRight, hit.Handle);
+        Check.Equal(rect.Id, hit.Object!.Id);
+        // the reach is in DIPs too
+        Check.Equal(Handle.BottomRight, HitTest.Hit(doc, rect, new System.Windows.Point(66, 60), 1, NoText).Handle, "6 px at 100% (7 DIP reach)");
+        Check.Equal(Handle.None, HitTest.Hit(doc, rect, new System.Windows.Point(66, 60), 4, NoText).Handle, "6 px is 24 DIP at 400%");
+        // a line offers its two ends, a pen stroke none
+        Check.Equal(2, HitTest.HandlesOf(line).Count);
+        Check.Equal(Handle.End, HitTest.Hit(doc, line, new System.Windows.Point(99, 60), 1, NoText).Handle);
+        Check.Equal(8, HitTest.HandlesOf(rect).Count);
+        var pen = new Clink.Screenshots.Editing.PenStroke(1, System.Collections.Immutable.ImmutableArray.Create(new System.Windows.Point(0, 0), new System.Windows.Point(9, 9)), Red, 3);
+        Check.Equal(0, HitTest.HandlesOf(pen).Count, "freehand: move only");
+    }
+
+    [UnitTest]
+    public static void Resizing_a_rectangle_keeps_the_opposite_side_flips_past_it_and_can_keep_the_proportions()
+    {
+        var r = new System.Windows.Rect(20, 20, 40, 20);
+        Check.Equal(new System.Windows.Rect(20, 20, 60, 30), HitTest.ResizeRect(r, Handle.BottomRight, new System.Windows.Point(80, 50), false));
+        Check.Equal(new System.Windows.Rect(10, 20, 50, 20), HitTest.ResizeRect(r, Handle.Left, new System.Windows.Point(10, 999), false), "an edge handle moves one side only");
+        Check.Equal(new System.Windows.Rect(60, 20, 20, 20), HitTest.ResizeRect(r, Handle.Left, new System.Windows.Point(80, 5), false), "dragged past the right side: flipped");
+        var kept = HitTest.ResizeRect(r, Handle.BottomRight, new System.Windows.Point(100, 45), keepAspect: true);
+        Check.Near(2.0, kept.Width / kept.Height, 1e-9, "2:1 stays 2:1");
+        Check.Near(20, kept.X); Check.Near(20, kept.Y);
+        Check.True(HitTest.ResizeRect(r, Handle.BottomRight, new System.Windows.Point(20, 20), false, minSize: 5).Width >= 5, "never collapses");
+        var fromTopLeft = HitTest.ResizeRect(r, Handle.TopLeft, new System.Windows.Point(0, 0), keepAspect: true);
+        Check.Near(60, fromTopLeft.Right); Check.Near(40, fromTopLeft.Bottom);
+    }
+
+    [UnitTest]
+    public static void The_toolbar_goes_below_the_selection_else_above_else_inside_and_stays_in_the_work_area()
+    {
+        var work = new RectI(0, 0, 1920, 1040);
+        var bar = (Width: 500, Height: 48);
+        Check.Equal((100, 508), ToolbarPlacement.Place(new RectI(100, 200, 300, 300), bar, work), "below, left-aligned, 8 px gap");
+        Check.Equal((100, 444), ToolbarPlacement.Place(new RectI(100, 500, 300, 520), bar, work), "below does not fit: above, top - 8 - 48");
+        Check.Equal((0, 974), ToolbarPlacement.Place(new RectI(0, 20, 1920, 1010), bar, work), "neither fits: inside, at the bottom");
+        // clamped sideways: the selection is near the right edge, the toolbar is wider than what is left
+        Check.Equal((1420, 508), ToolbarPlacement.Place(new RectI(1800, 200, 100, 300), bar, work), "right edge");
+        // a work area with a negative origin (a monitor to the left of the primary)
+        var left = new RectI(-1920, -200, 1920, 1080);
+        Check.Equal((-1920, 308), ToolbarPlacement.Place(new RectI(-1950, 100, 200, 200), bar, left), "left edge of a negative work area");
+        // a toolbar wider than the work area sits at its left edge
+        Check.Equal(0, ToolbarPlacement.Place(new RectI(100, 100, 100, 100), (3000, 48), work).X);
+        // and vertically never above the top of the work area
+        Check.Equal(0, ToolbarPlacement.Place(new RectI(0, 0, 1920, 1040), (500, 2000), work).Y);
+    }
 }
