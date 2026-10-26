@@ -20,23 +20,27 @@ replay length is yours to set, 45 seconds by default); press a key, hear a click
   display's SDR white level, so clips look like the game instead of grey and washed out.
 * GPU-only pipeline: capture → compute-shader NV12 convert → NVENC/AMF/QuickSync H.264 (or HEVC, or AV1 where the
   GPU can). Frames never touch the CPU.
-* Multi-track audio in every clip. Track 1 is always a **mix of game + mic + voice chat**, so Discord, browsers and
+* Multi-track audio in every clip. Track 1 is always **All audio**: everything you hear (except Clink's own sounds)
+  plus your mic, for every clip and recording whether or not a game was detected, so Discord, browsers and
   every player that only plays the first track hear everything (it is also the only track marked as enabled, so
-  QuickTime and iPhones do not play all of them at once). The parts are also saved as their own tracks, and the
+  QuickTime and iPhones do not play all of them at once). The parts are optionally saved as their own tracks, and the
   source of each is picked in the window:
-  1. **Mix** – game + mic + voice, always first
+  1. **All audio** – everything you hear except Clink, plus the mic, always first (on Windows builds before 20348,
+     which have no per-process capture, it uses the system loopback, which includes Clink's own sounds)
   2. **Game** – only the game's own audio (Windows per-process capture). Auto-detects the fullscreen app on the captured
      monitor (or the game-library / custom app Clink detected, windowed or not), or pick a running app, or pick an audio device instead (a virtual input such as Wave Link's "Game", or the
      loopback of any output); falls back to "everything except your voice app" until a game is detected
   3. **Mic** – the default microphone (it follows Windows when you change the default device) or any other capture
      device
   4. **Voice chat** – Discord / TeamSpeak / Slack / Mumble / Zoom / Skype found automatically, any running app, or an audio
-     device (off as a separate track by default; always part of the mix)
+     device (off as a separate track by default; only that app)
   5. **Desktop** (optional) – everything you hear from an output device (the default one follows Windows too), or an
-     audio input (a Wave Link / VoiceMeeter mix, a virtual cable), as an extra track
+     audio input (a Wave Link / VoiceMeeter mix, a virtual cable), as an extra track (All audio already has everything you
+     hear; Desktop is for keeping one device on its own). Known limitation, under test: an audio router
+     (VoiceMeeter, Wave Link, Sonar) may be captured twice in All audio
 * Click a clip to play it in Clink's own player; its **✂ Trim** switch turns it into the trim editor: cut start/end
-  without re-encoding the video, set the volume of every audio track (the Game, Mic and Voice sliders also shape *All
-  audio*, live), then save or save-and-share.
+  without re-encoding the video, set the volume of every audio track (the Mic slider also shapes *All
+  audio*, live; the Game and Voice sliders change only their own tracks), then save or save-and-share.
 * **Records only while a game runs** (default) or always. Games are detected by a fullscreen/borderless window on the
   captured monitor, by living in a known game-library folder (Steam, Epic, Riot, Battle.net, Ubisoft, EA, GOG, Xbox,
   Rockstar), or by being on your custom-apps list; while nothing runs the capture, encoder and RAM buffer are stopped.
@@ -137,7 +141,7 @@ A ShareX-style screenshot tool that lives next to the clip recorder (its own fol
 <td><a href="docs/screenshots/narrow.png"><img src="docs/screenshots/narrow.png" width="240" alt="The window at its narrow size, with Library as the fifth tab and its Local, Shared and Trimmed lists"></a><br><sub>Narrow window: the clip list becomes the Library tab.</sub></td>
 </tr>
 <tr>
-<td><a href="docs/screenshots/player.png"><img src="docs/screenshots/player.png" width="400" alt="The player with preview, seek bar, the Trim switch and per-track Listen and volume"></a><br><sub>Player (a click on a clip): a seek bar, and a Listen pill and volume for every audio track; Game, Mic and Voice change <i>All audio</i>, live.</sub></td>
+<td><a href="docs/screenshots/player.png"><img src="docs/screenshots/player.png" width="400" alt="The player with preview, seek bar, the Trim switch and per-track Listen and volume"></a><br><sub>Player (a click on a clip): a seek bar, and a Listen pill and volume for every audio track; the Mic slider changes <i>All audio</i>, live.</sub></td>
 <td><a href="docs/screenshots/trim-editor.png"><img src="docs/screenshots/trim-editor.png" width="400" alt="Trim editor with preview, timeline and per-track volume"></a><br><sub>Trim editor (the <i>✂ Trim</i> switch): in / out on the timeline, per-track include and volume, Save or Save &amp; share.</sub></td>
 </tr>
 <tr>
@@ -230,11 +234,15 @@ installed on the release channel. The choice is kept in `UseDevBuilds` in
    and a volume slider; *Open in default player* (top right) hands the file to your system's player. The **✂ Trim**
    switch next to Play turns the same window into the **trim editor**, and back, without losing anything: drag the in/out
    handles (or press I / O at the playhead), and tick which tracks to keep. Every audio track has its own include
-   toggle and volume, which you hear in the preview and which are baked into the saved file. **All audio** (the mix,
-   track 1) follows the **Game, Mic and Voice sliders**: it is rebuilt from those tracks, live in the preview and in the
-   saved file, and with every slider at 100 % the baked mix is used untouched. A source's include box only decides
-   whether its own track is saved; its slider always shapes All audio. Desktop is never part of All audio. Voice is not
-   saved as a track of its own by default, so it is only inside All audio: its volume cannot be changed there, and
+   toggle and volume, which you hear in the preview and which are baked into the saved file. **All audio** (track 1)
+   follows the **Mic slider**: the mic is taken out of (or added to) the baked audio exactly, live in the preview and in
+   the saved file, with a tiny residue on very loud passages because of the soft knee; the **Game and Voice sliders
+   change only their own tracks**, and with every slider at 100 % the baked track is used untouched. (Clips recorded
+   before this change have a *Mix* as track 1, game + mic + voice, and all three sliders shape it as before: it is
+   rebuilt from those tracks.) Unticking All audio when you keep other tracks shows a note that players will then play
+   only the first kept track. A source's include box only decides
+   whether its own track is saved; its slider always shapes All audio. Desktop is never part of All audio. On an old clip, Voice is not
+   saved as a track of its own by default, so it is only inside its Mix: its volume cannot be changed there, and
    turning Game or Mic down takes it out of the baked mix again, which can leave a faint trace of it (tick *Voice chat*
    under *Capture → Audio tracks* to keep it as a track). Taking a source out of the mix only cancels when the tracks
    are in step to the sample: a recording of this version and a trim of one keep every track's place exactly (the file
@@ -391,8 +399,8 @@ and writes a clip to that folder, the clips folder by default, and prints what i
 Foundation reads it and again as Clink does, with the edit lists hidden; optional decoded frame; `--levels` also
 prints the RMS and peak level of every audio track),
 `--trim <in> <out> <start> <end> [--gain Name=value]... [--drop Name]...` (the editor's cut without the window:
-`--gain Game=0.5` or `Game=50%` sets a track's volume the way its slider does, so Game, Mic and Voice shape All audio as
-well, and `--drop Voice` leaves a track out; the names are the file's own: Mix, Game, Mic, Voice, Desktop). The last
+`--gain Game=0.5` or `Game=50%` sets a track's volume the way its slider does, so the Mic (and, on an old clip, Game and Voice) shape All audio as
+well, and `--drop Voice` leaves a track out; the names are the file's own: All (or Mix on an old clip), Game, Mic, Voice, Desktop). The last
 three can run next to a running Clink, and so can `--unittest` (see [Testing](#testing)). The hidden `--after-pid <pid>`
 is Clink's own: it puts it on the command line of the Clink it restarts into (after an import or an update), and that
 one waits for the old process to end, at most 10 s, before it takes the single-instance mutex.

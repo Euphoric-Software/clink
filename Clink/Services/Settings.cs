@@ -102,7 +102,7 @@ internal sealed class Settings
     public bool CaptureCursor { get; set; } = SettingsDefaults.CaptureCursor;
     /// <summary>The v1 single hotkey. Since v0.2.5 it mirrors the keys of <see cref="Hotkeys"/>[0], the main hotkey, whenever those are set.</summary>
     public HotkeyBinding Hotkey { get; set; } = SettingsDefaults.MainHotkey();
-    public bool TrackDesktop { get; set; } = false;             // extra "Desktop" track (everything you hear); track 1 is always the game+mic+voice mix
+    public bool TrackDesktop { get; set; } = false;             // extra "Desktop" track (one output device or input on its own); track 1 is always "All audio" (everything you hear except Clink, plus the mic)
     public bool TrackGame { get; set; } = true;
     public bool TrackMic { get; set; } = true;
     public bool TrackVoice { get; set; } = false;

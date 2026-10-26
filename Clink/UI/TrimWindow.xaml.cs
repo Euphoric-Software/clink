@@ -254,7 +254,8 @@ public partial class TrimWindow : Window
         {
             int index = i;
             string name = names != null && !string.IsNullOrWhiteSpace(names[i]) ? names[i] : $"Audio {i + 1}";
-            string label = _roles[i] == TrackRole.Mix ? "All audio (mix)" : name;   // the file keeps the name "Mix"
+            bool firstMix = i == 0 && MixPlan.IsMix(_roles[i]);
+            string label = firstMix ? "All audio (mix)" : name;   // the file keeps the name "Mix"
             bool feeds = MixPlan.FeedsMix(_roles, i);
             var grid = new Grid { Margin = new Thickness(0, 2, 0, 2) };
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -283,8 +284,10 @@ public partial class TrimWindow : Window
             {
                 Content = "Listen", GroupName = "TrimMonitor", Style = (Style)FindResource("MonitorRadio"),
                 VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 0, 0),
-                ToolTip = _roles[i] == TrackRole.Mix && remix
-                    ? "Play All audio in the preview, with the Game, Mic and Voice volumes below applied. Players play one track at a time, usually this one"
+                ToolTip = firstMix && remix
+                    ? _roles[i] == TrackRole.All
+                        ? "Play All audio in the preview, with the Mic volume below applied. Players play one track at a time, usually this one"
+                        : "Play All audio in the preview, with the Game, Mic and Voice volumes below applied. Players play one track at a time, usually this one"
                     : "Play this track in the preview. Players play one track at a time (usually the first), so the preview does too",
             };
             listen.Checked += (_, _) => { _monitor = index; SyncPlayerMix(); };
@@ -296,7 +299,7 @@ public partial class TrimWindow : Window
                 Minimum = 0, Maximum = 200, Value = 100, Width = 170, SmallChange = 5, LargeChange = 25,
                 IsMoveToPointEnabled = true, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 8, 0),
                 ToolTip = feeds ? $"{name}'s volume, in its own track and inside All audio (right-click resets to 100%)"
-                    : _roles[i] == TrackRole.Mix && remix ? "All audio's volume (right-click resets to 100%)"
+                    : firstMix && remix ? "All audio's volume (right-click resets to 100%)"
                     : "Volume in the saved clip (right-click resets to 100%)",
             };
             var percent = new TextBlock { Text = "100%", FontFamily = new FontFamily("Consolas"), Width = 44, TextAlignment = TextAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
@@ -325,12 +328,17 @@ public partial class TrimWindow : Window
     {
         if (_rows.Count == 0) return;   // no audio, or no preview: the hint already says so
         // The sources this clip's All audio can be rebuilt from (Game, Mic, Voice: whichever of them the file has as tracks).
-        var sources = MixPlan.CanRemix(_roles) ? new[] { TrackRole.Game, TrackRole.Mic, TrackRole.Voice }.Where(r => Array.IndexOf(_roles, r) >= 0).ToArray() : Array.Empty<TrackRole>();
+        var sources = MixPlan.CanRemix(_roles) ? MixPlan.SourceIndexes(_roles).Select(i => _roles[i]).ToArray() : Array.Empty<TrackRole>();
         string names = JoinNames(sources, "and");
+        // On an All clip only the Mic is inside All audio: the other tracks' sliders change just their own track.
+        var alone = sources.Length > 0 && _roles[0] == TrackRole.All
+            ? _roles.Where(r => r is TrackRole.Game or TrackRole.Voice).ToArray() : Array.Empty<TrackRole>();
+        string aloneTrim = alone.Length > 0 ? $" · {JoinNames(alone, "and")} change{(alone.Length > 1 ? "" : "s")} only {(alone.Length > 1 ? "their own tracks" : "its own track")}" : "";
+        string alonePlay = alone.Length > 0 ? $" · the {JoinNames(alone, "and")} slider{(alone.Length > 1 ? "s change" : " changes")} only {(alone.Length > 1 ? "their own tracks" : "its own track")}" : "";
         TracksHint.Text = _trimMode
-            ? sources.Length > 0 ? $"Ticked tracks are saved at their volume · Listen picks what you hear · {names} also shape{(sources.Length > 1 ? "" : "s")} All audio"
+            ? sources.Length > 0 ? $"Ticked tracks are saved at their volume · Listen picks what you hear · {names} also shape{(sources.Length > 1 ? "" : "s")} All audio{aloneTrim}"
                                  : "Ticked tracks are saved, each at its volume · Listen picks the one you hear (players play one track, usually the first)"
-            : sources.Length > 0 ? $"Listen picks what you hear · the {names} slider{(sources.Length > 1 ? "s change" : " changes")} All audio, live"
+            : sources.Length > 0 ? $"Listen picks what you hear · the {names} slider{(sources.Length > 1 ? "s change" : " changes")} All audio, live{alonePlay}"
                                  : "Listen picks the track you hear (players play one track, usually the first) · the sliders set its volume";
         TracksHint.ToolTip = TracksHint.Text;
     }
@@ -356,17 +364,21 @@ public partial class TrimWindow : Window
         string? baked = null;
         if (missing.Length > 0)
         {
-            var present = new[] { TrackRole.Game, TrackRole.Mic, TrackRole.Voice }.Where(r => !missing.Contains(r) && !_unlined.Contains(r)).ToArray();
+            var present = MixPlan.SourceIndexes(_roles).Select(i => _roles[i]).Where(r => !missing.Contains(r) && !_unlined.Contains(r)).ToArray();
             bool many = missing.Length > 1;
             baked = $"{JoinNames(missing, "and")} {(many ? "are" : "is")} only inside All audio (not saved as {(many ? "tracks" : "a track")} of {(many ? "their" : "its")} own), "
                 + $"so {(many ? "their volumes" : "its volume")} cannot be changed. Turning {JoinNames(present, "or")} down takes it out of the baked mix again, which can leave a faint trace of it.";
         }
-        if (older == null && baked == null)
+        // The first track (All audio) unticked while others stay: a player then plays the first kept track alone (a note, not a dialog).
+        string? dropped = null;
+        if (_trimMode && MixPlan.FirstTrackDropped(_roles, _rows.Select(r => r.Included).ToArray()) is int first && first < _rows.Count)
+            dropped = $"All audio is left out: players will play only {_rows[first].Name}.";
+        if (older == null && baked == null && dropped == null)
         {
             MixNote.Visibility = Visibility.Collapsed;
             return;
         }
-        MixNote.Text = older == null ? baked! : baked == null ? older : older + " " + baked;
+        MixNote.Text = string.Join(" ", new[] { older, baked, dropped }.Where(t => t != null));
         MixNote.Visibility = Visibility.Visible;
     }
 
@@ -424,6 +436,7 @@ public partial class TrimWindow : Window
         if (index >= _rows.Count) return;
         RefreshRows();
         EnsureMonitor();
+        UpdateMixNote();
         SyncPlayerMix();
     }
 
@@ -454,6 +467,7 @@ public partial class TrimWindow : Window
         RefreshRows();
         EnsureMonitor();
         UpdateTracksHint();
+        UpdateMixNote();
         SyncPlayerMix();
         if (trim && _openGen > 0) StartKeyframeScan();
         UpdateTexts(CurrentPosition);

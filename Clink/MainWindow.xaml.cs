@@ -467,7 +467,7 @@ public partial class MainWindow : Window
             CodecDescription.Text = $"{info.Name} is {info.Reason}; recording uses {fallback?.Name ?? "H.264"} instead. {info.Name} – {info.Description}";
     }
 
-    private int AudioTrackCount() => _app.AudioTrackCount;   // the mix is always track 1; the same count the engine's bitrate is resolved with
+    private int AudioTrackCount() => _app.AudioTrackCount;   // All audio is always track 1; the same count the engine's bitrate is resolved with
 
     /// <summary>
     /// The readout under the replay-length slider in the Capturing card (§10, the only place size and RAM are shown): per-minute / per-clip sizes
@@ -723,7 +723,7 @@ public partial class MainWindow : Window
 
     private void UpdateAudioEnabled()
     {
-        // Game, mic and voice are always captured for the mix, so their pickers stay live; only the optional Desktop track's does not.
+        // The Game, Mic and Voice pickers stay live (the choice is kept while a track is off); only the optional Desktop track's follows its checkbox.
         if (AllDeviceCombo == null || TrackDesktopCheck == null) return;
         AllDeviceCombo.IsEnabled = TrackDesktopCheck.IsChecked == true;
     }

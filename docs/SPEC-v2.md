@@ -18,7 +18,7 @@ are kept as written, as the record of the v0.2.0 to v0.2.4 design.
   - **Capture**: monitor map + label, resolution, FPS, bitrate, codec, size estimates, recording mode (see §5).
   - **Clip**: hotkeys list (see §7), replay-length slider (§6), click sound, capture cursor, run at startup,
     Copium token.
-  - **Audio**: the per-track rows with source pickers, as they are today (Mix row first, then Game / Mic / Voice chat with
+  - **Audio**: the per-track rows with source pickers, as they are today (All audio row first, then Game / Mic / Voice chat with
     app-or-device pickers, then the optional Desktop track).
   - **Alerts**: toast settings and the status dot (§8).
   - **Updates** (small group on the Clip tab or Alerts tab): auto-update on/off, current version, "check now", and the
@@ -374,7 +374,18 @@ What the app does since v0.2.5. Where this section and §§1, 3, 6, 9 and 10 dif
   double click on a row does not land its second click on the video or a button; a click that began on another row does
   not play this one (the pressed row is forgotten on every left-button release in the pane, handled or not, on every new
   press, and when the pointer leaves).
-- **All audio follows the sliders.** Track 1 (the Mix) is baked at record time, so the Game, Mic and Voice sliders used to
+- **Track 1 is All audio.** A new clip's first track is named `All`: everything you hear except Clink (process loopback that
+  excludes Clink's own process tree) plus the Mic, for every clip and recording and regardless of game detection. The optional
+  Game, Mic, Voice and Desktop tracks follow; Game, Voice and Desktop no longer feed track 1 and are captured only when their
+  own track is saved, the Mic is always captured because it feeds All. Where per-process loopback is missing (Windows builds
+  before 20348) All uses the system loopback, which includes Clink's own sounds (the status line says *system loopback
+  (includes Clink sounds)*). Known limitation, unverified and under test: an audio router (VoiceMeeter, Wave Link, Sonar) may
+  be captured twice in All. Older clips keep a `Mix` (Game + Mic + Voice) as track 1 and behave as described below.
+  On an `All` clip only the Mic slider shapes All (`MixPlan.Feeds`: Mic only, always the delta mode, never a rebuild): the
+  exact delta leaves a tiny residue on very loud passages because of the soft knee; the Game and Voice sliders change only
+  their own tracks. Unticking track 1 while keeping other tracks shows a note in the trim editor (`MixPlan.FirstTrackDropped`)
+  that players will play only the first kept track.
+- **All audio follows the sliders (Mix clips).** Track 1 (the Mix) is baked at record time, so the Game, Mic and Voice sliders used to
   change only their own tracks, never what the Mix contains. A plan (`MixPlan`, pure; the roles come from the track names
   in the file, trusted only for a file Clink wrote, whose video trak is named `Video`) now decides what the preview plays
   and what the export renders:
@@ -389,7 +400,7 @@ What the app does since v0.2.5. Where this section and §§1, 3, 6, 9 and 10 dif
   - With every source at 100 % the baked Mix is used untouched, in the preview and in the file. A source's include box
     decides only whether its own track is saved; its slider always shapes All audio. Desktop and any other track stand
     alone: Desktop is never part of All audio. A clip whose names are not Clink's (a v0.1.0 clip's *All audio*, other
-    tools' files) behaves as before. The Mix row is labelled *All audio (mix)* (the file keeps the name `Mix`).
+    tools' files) behaves as before. The first row is labelled *All audio (mix)* (the file keeps the name `Mix` or `All`).
   - The tracks of a Clink file start at different instants (an edit list per track). Media Foundation applies those edit
     lists on Windows Server 2025 (GitHub's windows-latest) and ignores them on Windows 11, so a reader that took every
     stream to start at 0 and added the offset itself moved a track twice there. Clink therefore reads a clip's audio

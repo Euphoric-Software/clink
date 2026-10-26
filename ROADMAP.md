@@ -47,6 +47,9 @@ Things that were asked for or came up while building, roughly in the order they'
       output id from an older settings file still works).
 - [x] **All audio follows the Game / Mic / Voice sliders** (v0.2.5): in the player and the trim editor, live and in the
       saved file (the mix is rebuilt from those tracks; Desktop never feeds it).
+- [x] **Track 1 is "All audio"**: everything you hear except Clink, plus the mic, for every clip regardless of game
+      detection; Game / Mic / Voice / Desktop are optional own tracks. Only the Mic slider shapes All on a new clip; older
+      clips keep their game + mic + voice Mix. Open: check audio routers (VoiceMeeter, Wave Link, Sonar) are not captured twice.
 - [ ] Per-track gain and a mono-mic option.
 - [ ] Mix-down presets for sharing (e.g. "game + mic only" when uploading).
 
