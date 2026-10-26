@@ -1,4 +1,4 @@
-﻿# Clink
+# Clink
 
 Windows replay-buffer clipper. .NET 10 WPF app using Windows Graphics Capture,
 D3D11 and Media Foundation for capture/encode; clips are MP4 (clk1 brand).
@@ -10,7 +10,7 @@ D3D11 and Media Foundation for capture/encode; clips are MP4 (clk1 brand).
 
 ## Tests
 - In-exe: `Clink.exe --unittest [filter]`
-- 381 in-exe tests pass (as of commit 0eeca0a)
+- 394 in-exe tests pass (as of commit d4f6439)
 - Env: `CLINK_TESTS_NO_SKIP=1` (fail on skipped), `CLINK_EMULATE_ELST=1` (edit-list emulation)
 
 ## Misc

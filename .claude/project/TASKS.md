@@ -17,3 +17,5 @@
 - [ ] GUI-check the footer popup with a build using `-p:UpdateRepo=owner/repo`
 - [ ] Optional hardening: split release-dev.yml into a read-only build/test job and a separate publish job
 
+## Capture border
+- [x] Report/explain WGC yellow border: states, log lines, one-time toast, Capture-tab status + Settings link (d4f6439, branch claude/yellow-outline-recording-c2cb2e, not pushed)

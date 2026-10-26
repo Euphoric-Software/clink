@@ -89,3 +89,12 @@ Verified: Debug+Release forced rebuilds 0 warnings/0 errors; `--unittest` 381 pa
 Launched: feature/dev-channel merged to main at c72fb2d; `dev` branch created at c72fb2d and pushed (also feature/dev-channel at 49dbc77).
 First dev build: run https://github.com/jason-tucker/clink/actions/runs/40130530774, 2m52s, success. Prerelease v0.3.1-dev.1 (targetCommitish c72fb2d) verified: assets Clink.exe 31,537,088 B + Clink.exe.sha256 76 B; sha256 matches; embedded ProductVersion 0.3.1-dev.1+c72fb2d... OK; downloaded exe not executed. Stable releases/latest still v0.3.0; release.yml not triggered by the dev tag.
 Remaining: user installs the first dev build by hand once (download Clink.exe from the prerelease, replace the running exe, then tick Dev Build); popup enabled-state GUI check; optional release-dev.yml job split.
+
+## Capture border (branch claude/yellow-outline-recording-c2cb2e, commit d4f6439)
+- MonitorCapture reports a CaptureBorderState (Hidden, UnsupportedOs, Denied, SetFailed, Unconfirmed) via pure DecideBorder, with a per-start bounded borderless access request and once-per-outcome "Capture border: ..." log lines.
+- Engine raises CaptureBorderDetermined; AppController shows a one-time toast (Settings.CaptureBorderNoticeShown, volatile in SettingsImport).
+- Capture tab shows a status line plus "Open Windows setting" link for the Denied state.
+- 13 new tests in Tests/CaptureBorderTests.cs.
+- Verified: Debug+Release 0 warnings/errors; --unittest 394 pass (also NO_SKIP and EMULATE_ELST); --selftest 5 logged "Capture border: hidden (access Allowed)", 0 dropped frames.
+- Windows facts: the borderless APIs exist from build 20348, so no Windows 10 consumer build has them. Setting: Settings > Privacy & security > Screenshot borders, switches "Screenshot border settings access", "Let apps turn off the screenshot border", "Let desktop apps turn off the screenshot border". Link: ms-settings:privacy-graphicscapturewithoutborder. Another app capturing the same display with the border on brings it back.
+- Remaining: Denied/UnsupportedOs UI not seen live; toast duration tied to ToastRecording; branch not pushed/merged.
