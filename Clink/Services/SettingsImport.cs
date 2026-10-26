@@ -12,13 +12,13 @@ namespace Clink.Services;
 /// The settings another Clink saved in the private copy of AppData that Windows keeps for a packaged app (see
 /// <see cref="AppDataRedirect"/>), found by <see cref="SettingsImport.FindForeignCopies"/>.
 /// </summary>
-/// <param name="Package">The package family name: "Claude_pzs8sxrjxfjjc".</param>
+/// <param name="Package">The package family name: "Contoso.Notes_pzs8sxrjxfjjc".</param>
 /// <param name="Folder">That copy's Clink folder: "...\Packages\&lt;Package&gt;\LocalCache\Roaming\Clink".</param>
 /// <param name="SavedUtc">When its settings.json was last written.</param>
 /// <param name="Differences">What taking it over would change, in the user's words ("video quality", "hotkeys"); empty until compared.</param>
 internal sealed record ForeignSettings(string Package, string Folder, DateTime SavedUtc, IReadOnlyList<string> Differences)
 {
-    /// <summary>"Claude".</summary>
+    /// <summary>"Notes" for "Contoso.Notes_pzs8sxrjxfjjc".</summary>
     public string FriendlyName => AppDataRedirect.FriendlyNameOf(Package);
     public string SettingsPath => Path.Combine(Folder, "settings.json");
     public string ClipsPath => Path.Combine(Folder, "clips.json");
@@ -43,18 +43,18 @@ internal sealed record ImportResult(string? BackupPath, string? ClipsProblem, IR
 /// <summary>
 /// Windows keeps a private copy of %APPDATA% and %LOCALAPPDATA% for an app that runs from a package (MSIX): every write the app
 /// or a process it starts makes there lands in <c>%LOCALAPPDATA%\Packages\&lt;package&gt;\LocalCache\{Roaming,Local}</c>, and every read
-/// sees that copy first. A Clink started from such an app (the Claude desktop app's agents did) therefore keeps its settings
+/// sees that copy first. A Clink started from such an app (an agent such an app runs, say) therefore keeps its settings
 /// where a Clink started from Explorer or the Start menu never looks. <see cref="Detect"/> tells which one this process is.
 /// </summary>
 internal static class AppDataRedirect
 {
-    // \\?\C:\Users\x\AppData\Local\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Clink\settings.json -> Claude_pzs8sxrjxfjjc
+    // \\?\C:\Users\x\AppData\Local\Packages\Contoso.Notes_pzs8sxrjxfjjc\LocalCache\Roaming\Clink\settings.json -> Contoso.Notes_pzs8sxrjxfjjc
     private static readonly Regex s_package = new(@"\\AppData\\Local\\Packages\\(?<pkg>[^\\]+)\\LocalCache\\(?:Roaming|Local)\\",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
-    /// <summary>The package whose private AppData this process sees ("Claude_pzs8sxrjxfjjc"), or null when it sees the real one.</summary>
+    /// <summary>The package whose private AppData this process sees ("Contoso.Notes_pzs8sxrjxfjjc"), or null when it sees the real one.</summary>
     public static string? Package { get; private set; }
-    /// <summary>"Claude": the package name without the publisher part; null when not redirected.</summary>
+    /// <summary>"Notes": the package name without the publisher part; null when not redirected.</summary>
     public static string? FriendlyName { get; private set; }
     /// <summary>Where the settings folder really is (the redirected path) when <see cref="Package"/> is set.</summary>
     public static string? FinalFolder { get; private set; }
@@ -102,7 +102,7 @@ internal static class AppDataRedirect
         return m.Success ? m.Groups["pkg"].Value : null;
     }
 
-    /// <summary>"Claude_pzs8sxrjxfjjc" -> "Claude"; "Microsoft.WindowsTerminal_8wekyb3d8bbwe" -> "WindowsTerminal".</summary>
+    /// <summary>"Contoso.Notes_pzs8sxrjxfjjc" -> "Notes"; "Microsoft.WindowsTerminal_8wekyb3d8bbwe" -> "WindowsTerminal".</summary>
     public static string FriendlyNameOf(string package)
     {
         int us = package.IndexOf('_');

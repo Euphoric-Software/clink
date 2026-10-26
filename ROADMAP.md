@@ -19,7 +19,7 @@ Things that were asked for or came up while building, roughly in the order they'
 - [x] **No silent misses** (v0.2.4): a clip or share that does not happen says why over the game (Clink toast) or in a
       tray balloon; a recorder that fails to start is retried with a backoff and reported once.
 - [x] **GPU reset recovery** (v0.2.4): a driver crash / TDR is detected and capture restarts on a fresh device.
-- [x] **Settings that survive** (v0.2.5): a Clink started from inside another app (the Claude desktop app) keeps its
+- [x] **Settings that survive** (v0.2.5): a Clink started from inside another app (a Store/MSIX desktop app, say) keeps its
       settings in that app's private AppData, which a Clink started from Explorer never sees; v0.2.5 detects that, takes
       the copy over on a first start or offers it (tray, App tab), and a settings file with a bad value, or keys from a
       newer Clink, no longer costs anything.

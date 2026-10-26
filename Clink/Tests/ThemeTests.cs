@@ -6,7 +6,7 @@ using Clink.UI;
 
 namespace Clink.Tests;
 
-/// <summary>Themes: every theme and accent has every token, unknown ids fall back to Dark / Cyan, the text stays readable (WCAG contrast), Palette.xaml matches the code.</summary>
+/// <summary>Themes: every theme and accent has every token, unknown ids fall back to Dark / Spark Blue, the text stays readable (WCAG contrast), Palette.xaml matches the code.</summary>
 internal static class ThemeTests
 {
     // ------------------------------------------------------------------ WCAG 2.x contrast of two opaque sRGB colours
@@ -39,13 +39,13 @@ internal static class ThemeTests
     public static void IdsAreTheOnesSettingsDocuments()
     {
         Check.Equal(new[] { "dark", "light" }, ThemeManager.Themes.Select(t => t.Id).ToArray());
-        Check.Equal(new[] { "cyan", "blue", "violet", "pink", "orange", "green" }, ThemeManager.Accents.Select(a => a.Id).ToArray());
+        Check.Equal(new[] { "spark", "blue", "violet", "pink", "orange", "green" }, ThemeManager.Accents.Select(a => a.Id).ToArray());
         Check.Equal("dark", SettingsDefaults.Theme, "a fresh install is Dark");
-        Check.Equal("cyan", SettingsDefaults.Accent, "a fresh install is Cyan");
+        Check.Equal("spark", SettingsDefaults.Accent, "a fresh install is Spark Blue");
         Check.True(ThemeManager.Themes.Concat(ThemeManager.Accents).All(c => c.Label.Length > 0 && c.Id == c.Id.ToLowerInvariant()), "labels to show, lower-case ids to store");
         Check.Equal("Light", ThemeManager.Themes[1].Label);
         Check.Equal("Violet", ThemeManager.AccentLabel("violet"));
-        Check.Equal("Cyan", ThemeManager.AccentLabel("no such accent"));
+        Check.Equal("Spark Blue", ThemeManager.AccentLabel("no such accent"));
     }
 
     // ------------------------------------------------------------------ tokens
@@ -79,17 +79,17 @@ internal static class ThemeTests
     }
 
     [UnitTest]
-    public static void UnknownIdsFallBackToDarkCyan()
+    public static void UnknownIdsFallBackToDarkSpark()
     {
-        var darkCyan = ThemeManager.Tokens("dark", "cyan");
-        foreach (string? bad in new string?[] { null, "", "  ", "neon", "darkest", "cyan!" })
+        var darkSpark = ThemeManager.Tokens("dark", "spark");
+        foreach (string? bad in new string?[] { null, "", "  ", "neon", "darkest", "cyan!", "spark!" })
         {
             Check.Equal("dark", ThemeManager.NormalizeTheme(bad), $"theme '{bad}'");
-            Check.Equal("cyan", ThemeManager.NormalizeAccent(bad), $"accent '{bad}'");
-            Check.Equal(darkCyan, ThemeManager.Tokens(bad, bad), $"both '{bad}'");
+            Check.Equal("spark", ThemeManager.NormalizeAccent(bad), $"accent '{bad}'");
+            Check.Equal(darkSpark, ThemeManager.Tokens(bad, bad), $"both '{bad}'");
         }
         // one unknown id only replaces its own half
-        Check.Equal(ThemeManager.Tokens("light", "cyan"), ThemeManager.Tokens("light", "neon"));
+        Check.Equal(ThemeManager.Tokens("light", "spark"), ThemeManager.Tokens("light", "neon"));
         Check.Equal(ThemeManager.Tokens("dark", "violet"), ThemeManager.Tokens("neon", "violet"));
         // hand-edited settings.json: case and spaces do not matter
         Check.Equal("light", ThemeManager.NormalizeTheme(" LIGHT "));
@@ -98,20 +98,38 @@ internal static class ThemeTests
     }
 
     [UnitTest]
-    public static void DarkCyanIsTheBrandPalette()
+    public static void DarkSparkIsTheBrandPalette()
     {
-        // Midnight, Slate, Electric Cyan, Blue Cyan and Cool White from the brand board
-        var t = ThemeManager.Tokens("dark", "cyan");
-        Check.Equal(RgbColor(0x0A0E14), t["Bg"], "Midnight");
-        Check.Equal(RgbColor(0x1A1F2B), t["Panel"], "Slate");
-        Check.Equal(RgbColor(0x22D3EE), t["Accent"], "Electric Cyan");
-        Check.Equal(RgbColor(0x3B82F6), t["Accent2"], "Blue Cyan");
-        Check.Equal(RgbColor(0xEAF2FF), t["Fg"], "Cool White");
-        Check.Equal(RgbColor(0x0A0E14), t["OnAccent"], "dark text on the accent fill");
-        Check.Equal(RgbColor(0x3B82F6), ThemeManager.Tokens("dark", "blue")["Accent"], "the Blue accent is Blue Cyan");
-        Check.Equal(RgbColor(0x0891B2), ThemeManager.Tokens("light", "cyan")["Accent"], "Cyan on Light");
-        Check.Equal(RgbColor(0xF4F6FA), ThemeManager.Tokens("light", "cyan")["Bg"]);
-        Check.Equal(RgbColor(0x0A0E14), ThemeManager.Tokens("light", "cyan")["Fg"]);
+        // Deep, Charcoal, Spark Blue and Light from the Euphoric Software brand
+        var t = ThemeManager.Tokens("dark", "spark");
+        Check.Equal(RgbColor(0x1B1D24), t["Bg"], "Deep");
+        Check.Equal(RgbColor(0x272932), t["Panel"], "Charcoal");
+        Check.Equal(RgbColor(0x363946), t["Border"], "Border");
+        Check.Equal(RgbColor(0x6F9CC4), t["Accent"], "Spark Blue");
+        Check.Equal(RgbColor(0x8EB1D2), t["Accent2"], "pale Spark Blue");
+        Check.Equal(RgbColor(0xE9EBF2), t["Fg"], "Light");
+        Check.Equal(RgbColor(0x9EA4B3), t["Muted"], "Muted");
+        Check.Equal(RgbColor(0x1B1D24), t["OnAccent"], "dark text on the accent fill");
+        Check.Equal(RgbColor(0x3B82F6), ThemeManager.Tokens("dark", "blue")["Accent"], "the Blue accent is unchanged");
+        Check.Equal(RgbColor(0x44739C), ThemeManager.Tokens("light", "spark")["Accent"], "Spark Blue on Light");
+        Check.Equal(RgbColor(0x365F85), ThemeManager.Tokens("light", "spark")["Accent2"]);
+        Check.Equal(RgbColor(0xF4F5F8), ThemeManager.Tokens("light", "spark")["Bg"]);
+        Check.Equal(RgbColor(0x272932), ThemeManager.Tokens("light", "spark")["Fg"]);
+    }
+
+    [UnitTest]
+    public static void LegacyCyanIsSparkBlue()
+    {
+        Check.Equal("spark", ThemeManager.NormalizeAccent("cyan"));
+        Check.Equal("spark", ThemeManager.NormalizeAccent(" CYAN "));
+        Check.False(ThemeManager.Accents.Any(a => a.Id == "cyan"), "cyan is not offered any more");
+        Check.Equal("Spark Blue", ThemeManager.AccentLabel("cyan"));
+        foreach (var theme in ThemeManager.Themes)
+            Check.Equal(ThemeManager.Tokens(theme.Id, "spark"), ThemeManager.Tokens(theme.Id, "cyan"), theme.Id + ": cyan paints as spark");
+        Check.Equal("spark", ThemeManager.UpgradeAccent("Cyan"));
+        Check.Equal("violet", ThemeManager.UpgradeAccent("violet"));
+        Check.Equal("neon", ThemeManager.UpgradeAccent("neon"));
+        Check.Equal(null, ThemeManager.UpgradeAccent(null));
     }
 
     [UnitTest]
@@ -126,7 +144,7 @@ internal static class ThemeTests
             foreach (var accent in ThemeManager.Accents)
                 Check.NotEqual(ThemeManager.Tokens(theme.Id, accent.Id)["Accent"], ThemeManager.Tokens(theme.Id, accent.Id)["AccentDim"], $"{theme.Id}/{accent.Id}: AccentDim differs from Accent");
         }
-        Check.NotEqual(ThemeManager.AccentColor("cyan", "dark"), ThemeManager.AccentColor("cyan", "light"), "a swatch shows its colour in the theme it is on");
+        Check.NotEqual(ThemeManager.AccentColor("spark", "dark"), ThemeManager.AccentColor("spark", "light"), "a swatch shows its colour in the theme it is on");
     }
 
     // ------------------------------------------------------------------ contrast
@@ -172,6 +190,12 @@ internal static class ThemeTests
                 double ratio = Contrast(t[colour], t["Panel"]);
                 Check.True(ratio >= 3.0, $"{theme}/{accent}: {colour} on Panel is {ratio.ToString("0.00", CultureInfo.InvariantCulture)}:1, needs 3:1");
             }
+            // Accent2 is link and status text: 4.5:1 on the window and on cards
+            foreach (string panel in new[] { "Bg", "Panel" })
+            {
+                double ratio = Contrast(t["Accent2"], t[panel]);
+                Check.True(ratio >= 4.5, $"{theme}/{accent}: Accent2 on {panel} is {ratio.ToString("0.00", CultureInfo.InvariantCulture)}:1, needs 4.5:1 (Accent2 is link and status text)");
+            }
         }
     }
 
@@ -213,11 +237,11 @@ internal static class ThemeTests
     // ------------------------------------------------------------------ the resources the app carries
 
     [UnitTest]
-    public static void PaletteXamlIsDarkCyan()
+    public static void PaletteXamlIsDarkSpark()
     {
         // App.xaml merges UI/Palette.xaml first; until ThemeManager.Apply replaces it, that is the palette. It must say what the code says.
         var xaml = (ResourceDictionary)Application.LoadComponent(new Uri("/Clink;component/ui/palette.xaml", UriKind.Relative));
-        var built = ThemeManager.Build("dark", "cyan");
+        var built = ThemeManager.Build("dark", "spark");
         Check.Equal(built["BgColor"], xaml["BgColor"], "BgColor");
         foreach (string name in ThemeManager.TokenNames)
         {
@@ -264,10 +288,10 @@ internal static class ThemeTests
 
             ThemeManager.Apply("nonsense", null);
             Check.Equal("dark", ThemeManager.Theme, "an unknown theme is Dark");
-            Check.Equal("cyan", ThemeManager.Accent, "no accent is Cyan");
+            Check.Equal("spark", ThemeManager.Accent, "no accent is Spark Blue");
             Check.True(ThemeManager.IsDark);
             Check.Equal(2, raised);
-            Check.Equal(ThemeManager.Tokens("dark", "cyan")["Panel"], ((SolidColorBrush)app.Resources["Panel"]).Color, "Panel back to Slate");
+            Check.Equal(ThemeManager.Tokens("dark", "spark")["Panel"], ((SolidColorBrush)app.Resources["Panel"]).Color, "Panel back to Charcoal");
             Check.NotNull(app.Resources["Card"], "Theme.xaml's styles are still there");
         }
         finally

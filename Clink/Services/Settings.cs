@@ -24,7 +24,7 @@ internal static class SettingsDefaults
     public const string RecordingMode = "game";
     public const int BufferSeconds = 45;
     public const string Theme = "dark";
-    public const string Accent = "cyan";
+    public const string Accent = "spark";
 
     /// <summary>The main hotkey of a fresh install, and of a settings file that has no hotkey saving the full replay: Alt+C.</summary>
     public static HotkeyBinding MainHotkey() => new() { Alt = true, Vk = 0x43 };
@@ -169,7 +169,7 @@ internal sealed class Settings
     // ---- v3 (v0.2.5) ----
     /// <summary>dark | light</summary>
     public string Theme { get; set; } = SettingsDefaults.Theme;
-    /// <summary>cyan | blue | violet | pink | orange | green</summary>
+    /// <summary>spark | blue | violet | pink | orange | green ("cyan", the default before the rebrand, is read as spark)</summary>
     public string Accent { get; set; } = SettingsDefaults.Accent;
     /// <summary>
     /// The copies of the settings that another Clink saved in a packaged app's private AppData (SettingsImport) which the user turned
@@ -538,6 +538,7 @@ internal sealed class Settings
         SizeTarget ??= SettingsDefaults.SizeTarget;
         if (string.IsNullOrWhiteSpace(Theme)) Theme = SettingsDefaults.Theme;
         if (string.IsNullOrWhiteSpace(Accent)) Accent = SettingsDefaults.Accent;
+        else Accent = Clink.UI.ThemeManager.UpgradeAccent(Accent) ?? SettingsDefaults.Accent;
         if (string.IsNullOrWhiteSpace(ClipsFolder)) ClipsFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "Clink");
         if (string.IsNullOrWhiteSpace(ScreenshotsFolder)) ScreenshotsFolder = null;
         // A relative path (a hand edit, an import) would resolve against the current directory, which is System32 at sign-in: the default instead.

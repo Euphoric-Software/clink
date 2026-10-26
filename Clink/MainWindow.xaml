@@ -548,7 +548,7 @@
                                         <TextBlock x:Name="SettingsDirText" Style="{StaticResource MutedText}" Margin="2,0,0,0" Text="" />
                                         <Button x:Name="SettingsFolderButton" Style="{StaticResource LinkButton}" Content="Open folder" FontSize="12" HorizontalAlignment="Left" Margin="0,4,0,0"
                                                 Click="SettingsFolder_Click" ToolTip="Open the folder that holds settings.json, the clip index and the log in Explorer" />
-                                        <!-- Clink was started from inside a packaged app (the Claude desktop app): Windows keeps a private copy of AppData for it (AppDataRedirect) -->
+                                        <!-- Clink was started from inside a packaged app (an MSIX/Store desktop app, say): Windows keeps a private copy of AppData for it (AppDataRedirect) -->
                                         <Border x:Name="RedirectBanner" Margin="0,10,0,0" Padding="10,8" CornerRadius="8" BorderThickness="1" Visibility="Collapsed"
                                                 BorderBrush="{DynamicResource Warn}" Background="{DynamicResource WarnTint}">
                                             <TextBlock x:Name="RedirectText" FontSize="12" Text="" />

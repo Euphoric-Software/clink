@@ -129,7 +129,7 @@ internal static class SettingsTests
         Check.Equal("game", s.RecordingMode);
         Check.Equal(45, s.BufferSeconds);
         Check.Equal("dark", s.Theme);
-        Check.Equal("cyan", s.Accent);
+        Check.Equal("spark", s.Accent);
         Check.Equal(new[] { "Alt+C clip 0" }, Rows(s));
         Check.Equal("Alt+C", s.Hotkey.ToString());
         Check.Equal("Alt+C", s.MainHotkey.Keys.ToString());
@@ -170,9 +170,26 @@ internal static class SettingsTests
         Check.Equal("game", s.RecordingMode);
         Check.Equal("none", s.SizeTarget);
         Check.Equal("dark", s.Theme);
-        Check.Equal("cyan", s.Accent);
+        Check.Equal("spark", s.Accent);
         Check.Equal(30, s.Fps);
         Check.Equal(45, s.BufferSeconds);   // missing key: the new default
+    }
+
+    [UnitTest]
+    public static void A_saved_cyan_accent_loads_as_spark()
+    {
+        using var dir = new TempDir();
+        Check.Equal("spark", LoadFrom(dir, """{ "Accent": "cyan" }""").Accent);
+        Check.Equal("Violet", Settings.FromJson("""{ "Accent": "Violet" }""").Accent);
+        var differences = SettingsImport.Differences("""{ "Accent": "cyan" }""", """{ "Accent": "spark" }""");
+        Check.Equal(Array.Empty<string>(), differences.ToArray(), "cyan and spark are the same accent");
+
+        // a stored "cyan" is written back as "spark" (current schema, so this is the plain load-and-save path)
+        var stored = LoadFrom(dir, $$"""{ "SchemaVersion": {{Settings.CurrentSchema}}, "Accent": "cyan" }""");
+        Check.Equal("spark", stored.Accent);
+        stored.Save();
+        using var saved = JsonDocument.Parse(File.ReadAllText(dir.File("settings.json")));
+        Check.Equal("spark", saved.RootElement.GetProperty("Accent").GetString());
     }
 
     [UnitTest]
@@ -211,7 +228,7 @@ internal static class SettingsTests
         Check.Equal("top-left", s.ToastPosition);
         Check.Equal("\\\\nas\\clips\\Clink", s.ArchivePath);
         Check.Equal("dark", s.Theme);
-        Check.Equal("cyan", s.Accent);
+        Check.Equal("spark", s.Accent);
 
         // ... the hotkeys: no row saved the full replay, so the main is Alt+C and the two rows stay what they were
         Check.Equal(new[] { "Alt+C clip 0", "ScrollLock clip 10", "unset clip 15" }, Rows(s));
@@ -234,7 +251,7 @@ internal static class SettingsTests
         }
         Check.Equal(3, after.RootElement.GetProperty("SchemaVersion").GetInt32());
         Check.Equal("dark", after.RootElement.GetProperty("Theme").GetString());
-        Check.Equal("cyan", after.RootElement.GetProperty("Accent").GetString());
+        Check.Equal("spark", after.RootElement.GetProperty("Accent").GetString());
 
         // the saved file is in shape: loading it again changes nothing and announces nothing
         var again = Settings.Load();

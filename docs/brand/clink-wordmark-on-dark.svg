@@ -1,15 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1506 560" width="1506" height="560" role="img" aria-label="Clink">
-  <title>Clink</title>
-  <!-- Clink wordmark for dark backgrounds. Monoline: every stroke is 92 wide with round caps and joins.
-       C: ring centre (280,280), centreline r 214 (outer 260, inner 168), opening to the right, cap centres at +/-33.7 deg; dot r 76.5, concentric.
-       link: stems on x 585.5 / 724 / 857.5 + 1091 / 1225.5, baseline 532, x-height 189 (n arch overshoots to 182), l ascender 55, k ascender 83.
-       Colours match clink-icon.svg: ring #36CAFA, white #FCFCFC. For light backgrounds use clink-wordmark-on-light.svg. -->
-  <g fill="none" stroke-width="92" stroke-linecap="round" stroke-linejoin="round">
-    <path stroke="#36CAFA" d="M458.04 161.26A214 214 0 1 0 458.04 398.74"/>
-    <path stroke="#FCFCFC" d="M585.5 101V486M724 235V486M857.5 235V486M857.5 284.5C963.5 195.5 1091 207 1091 353.5V486M1225.5 129V486M1440 229L1297.7 354.7L1431.2 486"/>
-  </g>
-  <g fill="#FCFCFC">
-    <circle cx="280" cy="280" r="76.5"/>
-    <circle cx="724" cy="128" r="46"/>
-  </g>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1506 560" width="1506" height="560" role="img" aria-label="Clink by Euphoric Software">
+<title>Clink by Euphoric Software — brand wordmark (dark)</title>
+<g fill="none" stroke-width="92" stroke-linecap="round" stroke-linejoin="round">
+<path d="M458.04 161.26A214 214 0 1 0 458.04 398.74" stroke="#6F9CC4"/>
+<path d="M585.5 101V486M724 235V486M857.5 235V486M857.5 284.5C963.5 195.5 1091 207 1091 353.5V486M1225.5 129V486M1440 229L1297.7 354.7L1431.2 486" stroke="#E9EBF2"/>
+</g>
+<circle cx="724" cy="128" r="46" fill="#E9EBF2"/>
+<path d="M280.000 154.000 C300.570 225.820 334.450 258.580 401.000 280.000 C332.030 302.680 299.360 336.700 280.000 406.000 C260.640 336.700 227.970 302.680 159.000 280.000 C225.550 258.580 259.430 225.820 280.000 154.000 Z M280.000 224.560 C289.051 256.161 303.958 270.575 333.240 280.000 C302.893 289.979 288.518 304.948 280.000 335.440 C271.482 304.948 257.107 289.979 226.760 280.000 C256.042 270.575 270.949 256.161 280.000 224.560 Z" fill="#E9EBF2" fill-rule="evenodd"/>
 </svg>

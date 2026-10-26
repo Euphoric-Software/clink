@@ -135,8 +135,8 @@ internal static class DevFolderTests
         foreach (string path in new[]
         {
             packages,
-            Path.Combine(packages, "Claude_pzs8sxrjxfjjc"),
-            Path.Combine(packages, "Claude_pzs8sxrjxfjjc", "LocalCache", "Roaming", "Clink-dev"),
+            Path.Combine(packages, "Contoso.Notes_pzs8sxrjxfjjc"),
+            Path.Combine(packages, "Contoso.Notes_pzs8sxrjxfjjc", "LocalCache", "Roaming", "Clink-dev"),
             Path.Combine(packages, "Foo_abc", "LocalState", "dev"),
             packages.ToUpperInvariant() + @"\Foo_abc",
             Path.Combine(packages, "Foo_abc").Replace('\\', '/'),

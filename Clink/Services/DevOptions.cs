@@ -245,7 +245,7 @@ internal sealed record DevOptions(string Folder, bool BindHotkeys)
                     ? $"the data folder is the real Clink's settings folder ({Settings.RealDir}): a --dev instance needs a folder of its own"
                     : $"{name} is the real Clink's settings folder ({Settings.RealDir}): a --dev instance needs a folder of its own");
             if (local.Length > 0 && Within(path, System.IO.Path.Combine(local, "Packages")))
-                throw new ArgumentException($"{name} is under %LOCALAPPDATA%\\Packages, where Windows keeps the private copies of AppData that packaged apps (the Claude desktop app, say) get: a --dev instance needs a folder of its own somewhere else");
+                throw new ArgumentException($"{name} is under %LOCALAPPDATA%\\Packages, where Windows keeps the private copies of AppData that packaged apps (an MSIX/Store desktop app, say) get: a --dev instance needs a folder of its own somewhere else");
             if (AppDataRedirect.PackageFromFinalPath(path + "\\") is { } package)
                 throw new ArgumentException($"{name} is inside {package}'s private copy of AppData: a --dev instance needs a folder of its own somewhere else (the Temp folder is fine)");
             if (IsRoot(path))

@@ -14,7 +14,7 @@
             </StackPanel>
         </DataTemplate>
 
-        <!-- Accent2, not Accent: the accent as text measures under 4.5:1 on the light theme for Cyan and Orange; Accent2 reads on both -->
+        <!-- Accent2, not Accent: the accent as text fails 4.5:1 on the light theme for several accents (e.g. Orange, Pink); Accent2 reads on both -->
         <Style x:Key="StatusText" TargetType="TextBlock" BasedOn="{StaticResource MutedText}">
             <Setter Property="Foreground" Value="{DynamicResource Accent2}" />
             <Setter Property="TextTrimming" Value="CharacterEllipsis" />

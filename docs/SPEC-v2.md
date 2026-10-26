@@ -138,7 +138,7 @@ What the app does since v0.2.5. Where this section and §§1, 3, 6, 9 and 10 dif
 
 - A fresh install starts with: resolution **1080p**, **60** fps, **20** Mbps, codec **H.264**, size target **None**,
   capture cursor **on**, recording mode **game** (only while a game or custom app runs), replay length **45 s**, theme
-  **Dark** with the **Cyan** accent, and main hotkey **Alt+C** (§11.2). They live in one place (`SettingsDefaults`): the
+  **Dark** with the **Spark Blue** accent, and main hotkey **Alt+C** (§11.2). They live in one place (`SettingsDefaults`): the
   `Settings` initializers, `Normalize()` and the UI's fallbacks all read it. An existing `settings.json` keeps every value
   it has: a default only fills in a key the file does not have, so changing one never changes what someone chose. (A v0.1
   file never had `SizeTarget`, so it now gets `none` where it used to get `copium200`.)
@@ -146,7 +146,7 @@ What the app does since v0.2.5. Where this section and §§1, 3, 6, 9 and 10 dif
   start, is saved once at start in the new layout; that first save keeps the old file as `settings.pre-v3.json` (once: an
   existing copy is never overwritten) next to the usual `settings.json.bak`. Saving always writes 3, even over a higher
   number from a newer Clink, because once this version has rewritten the file the number must describe what is in it.
-- New keys: `SchemaVersion`, `Theme` (`dark` | `light`), `Accent` (`cyan` | `blue` | `violet` | `pink` | `orange` | `green`)
+- New keys: `SchemaVersion`, `Theme` (`dark` | `light`), `Accent` (`spark` | `blue` | `violet` | `pink` | `orange` | `green`)
   and `ImportDeclined` (§11.9).
 - Loading is tolerant. The keys are bound one by one, so a value of the wrong kind (`"Fps": "sixty"`,
   `"BufferSeconds": [1]`, a null for a number) keeps its default and costs nothing else. It is logged and said once at
@@ -442,33 +442,33 @@ What the app does since v0.2.5. Where this section and §§1, 3, 6, 9 and 10 dif
 
 ### 11.8 Themes and the App tab
 
-- Two settings, `Theme` (Dark | Light) and `Accent` (Cyan, Blue, Violet, Pink, Orange, Green): twelve looks. The App
+- Two settings, `Theme` (Dark | Light) and `Accent` (Spark Blue, Blue, Violet, Pink, Orange, Green): twelve looks. The App
   tab's *Appearance* card has the theme pills and six accent swatches. A choice is saved and applied **at once to every
   window that is open**: the main window, the player and trim editor, the share window, the archive dialog, the toasts, the
   status dot and the owner-drawn controls (monitor map, replay-length slider, timeline). The saved choice is applied at
-  start, before any window exists; an unknown id means Dark or Cyan. *System* (follow Windows) is not offered yet (ROADMAP).
+  start, before any window exists; an unknown id means Dark or Spark Blue. `cyan`, the default before the Euphoric Software rebrand, is read as `spark`: a one-time deliberate exception to the rule above that a default never changes what someone chose, because every existing settings file holds the old default. *System* (follow Windows) is not offered yet (ROADMAP).
 - `ThemeManager` builds a dictionary of frozen brushes, one per token plus `BgColor`, and puts it in place of the first merged
-  dictionary of the application's resources (`UI/Palette.xaml` holds the default, Dark / Cyan). Every colour reference in
+  dictionary of the application's resources (`UI/Palette.xaml` holds the default, Dark / Spark Blue). Every colour reference in
   XAML is a `DynamicResource` (a guard test fails on a `StaticResource` of a palette token) and code that sets a brush sets a
-  resource reference, so open windows repaint. Dark is the brand palette (Midnight, Slate, Electric Cyan, Blue Cyan, Cool White).
+  resource reference, so open windows repaint. Dark is the brand palette (Deep, Charcoal, Spark Blue, Link Blue, Light).
 - Fonts: the interface is *Inter, Segoe UI Variable Text, Segoe UI*; headings and window titles are *Sora, Segoe UI Variable
   Display, Segoe UI*. Nothing is bundled or downloaded, so a machine without Inter and Sora falls back to Segoe UI Variable /
   Segoe UI (ROADMAP). Primary buttons are the accent with `OnAccent` text; secondary buttons are `Panel2` with a `Border`
   outline that turns `Accent2` on hover; toggles are the accent when on and `Panel3` when off; the selected tab (the clips pane's
   too) is filled with the accent; links and the keyboard focus ring use `Accent2`. Contrast is tested: text at least
-  4.5:1 on its fill or panel, the accent and `Accent2` on `Panel` at least 3:1.
+  4.5:1 on its fill or panel, the accent and `Accent2` on `Panel` at least 3:1, `Accent2` at least 4.5:1 on `Bg` and `Panel`.
 - Tokens (the same for every accent):
 
   | token | use | Dark | Light |
   |-------|-----|------|-------|
-  | `Bg` (and `BgColor`) | window | `#0A0E14` | `#F4F6FA` |
-  | `Panel` | cards, tab strip, toasts | `#1A1F2B` | `#FFFFFF` |
-  | `Panel2` | inputs, buttons, combos | `#232A37` | `#EEF0F3` |
-  | `Panel3` | hover, slider track, chips | `#2E3645` | `#E2E5EA` |
-  | `Border` | outlines | `#2A3240` | `#D3D7DE` |
-  | `Fg` | text | `#EAF2FF` | `#0A0E14` |
-  | `Muted` | secondary text, ticks | `#8A94A6` | `#5E6571` |
-  | `Accent2` | links, focus rings, the played part of the seek bar, a secondary button's hover | `#3B82F6` | `#2563EB` |
+  | `Bg` (and `BgColor`) | window | `#1B1D24` | `#F4F5F8` |
+  | `Panel` | cards, tab strip, toasts | `#272932` | `#FFFFFF` |
+  | `Panel2` | inputs, buttons, combos | `#30333E` | `#EEF0F4` |
+  | `Panel3` | hover, slider track, chips | `#3B3E4B` | `#E2E5EC` |
+  | `Border` | outlines | `#363946` | `#D6DBE4` |
+  | `Fg` | text | `#E9EBF2` | `#272932` |
+  | `Muted` | secondary text, ticks | `#9EA4B3` | `#5B6373` |
+  | `Accent2` | links, focus rings, the played part of the seek bar, a secondary button's hover | `#8EB1D2` | `#365F85` |
   | `Good` | recording, ok | `#5EDB8A` | `#15803D` |
   | `Warn` | warnings; `WarnTint` is Warn at 12 % (banners) | `#F2C94C` | `#A16207` |
   | `Danger` | errors, RAM over half; `DangerTint` is Danger at 44 % (the RAM limit on the slider) | `#F26B6B` | `#C73A3A` |
@@ -477,38 +477,40 @@ What the app does since v0.2.5. Where this section and §§1, 3, 6, 9 and 10 dif
 
   | accent | Dark | Light |
   |--------|------|-------|
-  | cyan | `#22D3EE` `#1B6F84` `#0A0E14` | `#0891B2` `#BDE6F4` `#0A0E14` |
-  | blue | `#3B82F6` `#2F5D9E` `#0A0E14` | `#2563EB` `#C9DAFB` `#FFFFFF` |
-  | violet | `#B49CFF` `#5E4B9E` `#0A0E14` | `#7C3AED` `#DDD1FB` `#FFFFFF` |
-  | pink | `#F78FC6` `#9E4A78` `#0A0E14` | `#DB2777` `#F8CFE3` `#FFFFFF` |
-  | orange | `#FFB15E` `#9E6A2F` `#0A0E14` | `#D97706` `#F8DDBA` `#0A0E14` |
-  | green | `#6EE7A0` `#2F8F5B` `#0A0E14` | `#15803D` `#C6EBD3` `#FFFFFF` |
+  | spark | `#6F9CC4` `#3D5A78` `#1B1D24` | `#44739C` `#C5D7E7` `#FFFFFF` |
+  | blue | `#3B82F6` `#2F5D9E` `#1B1D24` | `#2563EB` `#C9DAFB` `#FFFFFF` |
+  | violet | `#B49CFF` `#5E4B9E` `#1B1D24` | `#7C3AED` `#DDD1FB` `#FFFFFF` |
+  | pink | `#F78FC6` `#9E4A78` `#1B1D24` | `#DB2777` `#F8CFE3` `#FFFFFF` |
+  | orange | `#FFB15E` `#9E6A2F` `#1B1D24` | `#D97706` `#F8DDBA` `#1B1D24` |
+  | green | `#6EE7A0` `#2F8F5B` `#1B1D24` | `#15803D` `#C6EBD3` `#FFFFFF` |
 
-  On Light, `OnAccent` is Midnight for Cyan and Orange because white reads only 3.7:1 and 3.2:1 on them.
+  On Light, white text on every accent but Orange (white reads 3.2:1 there; Deep instead). Spark Blue on Light is `#44739C` because white on `#4D7EA8` is 4.3:1.
 
 ### 11.9 Settings kept in a packaged app's private AppData
 
-- Windows keeps a private copy of `%APPDATA%` and `%LOCALAPPDATA%` for an app that runs from a package (the Claude desktop
-  app's agents are one). A Clink such an app started kept its settings in
+- Windows keeps a private copy of `%APPDATA%` and `%LOCALAPPDATA%` for an app that runs from a package (a Store/MSIX desktop
+  app, for example). A Clink such an app started kept its settings in
   `%LOCALAPPDATA%\Packages\<package>\LocalCache\Roaming\Clink`, where a Clink started from Explorer or the Start menu never
   looks. (This, not a schema change, is how v0.2.4's settings seemed to be lost.)
 - `AppDataRedirect.Detect()` creates a file in the settings folder and asks `GetFinalPathNameByHandle` where Windows really
   put it: opening the folder tells nothing, it exists in the real AppData too and opens as the real one. A redirected Clink
-  says once per start *Clink was started from inside Claude: Windows keeps a private copy of its settings for that app, so
+  says once per start *Clink was started from inside <app>: Windows keeps a private copy of its settings for that app, so
   changes made now are not seen by Clink started from Explorer or the Start menu*, and shows it as a banner under *App →
   Settings*. It is not run in a `--dev` instance.
+  (*<app>* in these messages is the packaged app's name as Clink shows it: the package name without its publisher id, e.g.
+  *Notes* for `Contoso.Notes_<publisher id>`.)
 - A **first start** of a real Clink (no `settings.json` or `.bak` yet) that is not itself inside a packaged app takes over
   the newest copy another Clink saved in a package's private AppData, before anything reads the settings: its `settings.json`
   as it is, and its clip index merged into ours (every clip once, ours first; the other copy only fills what ours leaves
   empty: Copium link, page and id, archive time, audio tracks, length, trim source). It says *Imported the settings Clink
-  saved while started from inside Claude (2026-10-21 14:32)*.
+  saved while started from inside <app> (2026-10-21 14:32)*.
 - A Clink that already has settings is **never changed unasked**. After start it looks, on a worker, for a copy that differs
   (this installation's own settings are no difference: where the window sits, the updater's state, `LastUpdateCheck`,
   `UpdateRepo` and which copies were turned down; nor are `AudioSetupSeen` and `SchemaVersion`; the Copium token is
   compared decrypted, and nothing is logged but the names of what differs) and offers it: one tray balloon (*Settings
   from another copy of Clink found: right-click the tray icon to import*), the tray item *Import settings saved
-  2026-10-21 14:32 (Claude copy)…* and a banner under *App → Settings* (*Clink also has settings saved … by a copy
-  started from inside Claude (video quality, hotkeys, …)* with *Use those settings* and *Dismiss*). The tray item asks,
+  2026-10-21 14:32 (<app> copy)…* and a banner under *App → Settings* (*Clink also has settings saved … by a copy
+  started from inside <app> (video quality, hotkeys, …)* with *Use those settings* and *Dismiss*). The tray item asks,
   listing what differs: *Yes* imports and restarts Clink (`--show`), *No* keeps the current settings and stops offering
   that copy, *Cancel* decides later. *Dismiss* and *No* write `ImportDeclined` (`<package>|<ticks of the time that copy
   was saved>`, one per package): that copy is offered again only once it has been saved again.

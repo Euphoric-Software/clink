@@ -154,7 +154,7 @@ A ShareX-style screenshot tool that lives next to the clip recorder (its own fol
 </tr>
 </table>
 
-All screenshots are of Clink itself (the dark theme with the default cyan accent unless a caption says otherwise), rendered from synthetic clips (no real games or accounts).
+All screenshots are of Clink itself (the dark theme with the default accent unless a caption says otherwise), rendered from synthetic clips (no real games or accounts). They predate the Euphoric Software rebrand and show the earlier cyan palette.
 
 ## Installing & updating
 
@@ -301,7 +301,7 @@ Copium Plus also ticks *I have Copium+*. The toast's button reads *Share* withou
   **Status dot** - the dot and its corner.
 * **App**: **Features** - *Clips* and *Screenshots* on or off; **Cloud sharing** - the kill switch (off at once, on only after a
   confirmation); **Copium** - the upload token, its status, *Get a token* and the *I have Copium+* switch (replaced by a
-  note while cloud sharing is off); **Appearance** - *Dark* or *Light* and one of six accents (Cyan, the default; Blue, Violet, Pink, Orange,
+  note while cloud sharing is off); **Appearance** - *Dark* or *Light* and one of six accents (Spark Blue, the default; Blue, Violet, Pink, Orange,
   Green), applied at once to every window that is open; **Updates** - auto-update, *Run at startup*, the version and
   *Check now*; **Settings** - where `settings.json` is kept, with an *Open folder* link, and, when they apply, the banners
   about a private copy of AppData and about settings another copy of Clink saved (see [Settings](#settings)).
@@ -428,7 +428,7 @@ install starts with:
 | Recording | `RecordingMode` | `game`: only while a game or custom app runs |
 | Replay length | `BufferSeconds` | 45 |
 | Main hotkey | `Hotkeys[0]` | Alt+C, the full replay |
-| Theme and accent | `Theme` / `Accent` | `dark` / `cyan` |
+| Theme and accent | `Theme` / `Accent` | `dark` / `spark` |
 
 The audio track pickers (*Capture → Audio tracks*) store
 `AllDeviceId` (the Desktop track: `out:<id>` or a bare id = that output's loopback, `in:<id>` = a capture device) /
@@ -444,7 +444,7 @@ is Copium's free limit, 200 MB / 10 min, and `copiumplus` Copium Plus's, 2 GB / 
 `ToastPosition`, `ToastClip` / `ToastShared` / `ToastRecording` (`{ Enabled, Seconds }`), `StatusDot` /
 `StatusDotPosition`, `ArchiveEnabled` (the automatic moves: *Move clips there automatically*) / `ArchivePath` /
 `ArchiveAfterDays` / `ArchiveWhenLocalExceedsGB` and the window position and size. The v3 keys are `SchemaVersion`,
-`Theme` (`dark` | `light`), `Accent` (`cyan` | `blue` | `violet` | `pink` | `orange` | `green`) and `ImportDeclined` (the
+`Theme` (`dark` | `light`), `Accent` (`spark` | `blue` | `violet` | `pink` | `orange` | `green`; `cyan`, the default before the rebrand, is read as `spark`) and `ImportDeclined` (the
 copies of another Clink's settings you turned down, `<package>|<time>`, one per package). Things not in the UI:
 
 | key | default | what |
@@ -466,7 +466,7 @@ main one: it is not replaced by another full-replay row below it. Key code `0xE8
 Alt menu mask, AutoHotkey's too) and is never a hotkey.
 
 **Started from inside another app.** Windows keeps a private copy of `%APPDATA%` and `%LOCALAPPDATA%` for an app that
-runs from a package (the Claude desktop app is one): a Clink it starts, an agent running `Clink.exe` for instance, writes
+runs from a package (a Store/MSIX desktop app, for example): a Clink it starts, an agent running `Clink.exe` for instance, writes
 its settings, clip index and log to `%LOCALAPPDATA%\Packages\<package>\LocalCache\Roaming\Clink`, where a Clink started
 from Explorer or the Start menu never looks, so what you changed there seems lost. v0.2.5 notices (one notice at start,
 and a banner under *App → Settings*) and, for a Clink that is not itself inside such an app:
@@ -474,14 +474,17 @@ and a banner under *App → Settings*) and, for a Clink that is not itself insid
 * on its **first start**, with no settings of its own, it takes over the newest copy it finds before anything reads
   settings: `settings.json` as it is and the clip index merged (every clip once; Copium links, archive times, audio
   tracks and the like fill in what yours leaves empty), and says *Imported the settings Clink saved while started from
-  inside Claude (2026-10-21 14:32)*;
+  inside <app> (2026-10-21 14:32)*;
 * **otherwise** it never changes your settings unasked. It looks, after start, for a copy that differs (this
   installation's own settings do not count: where the window sits, the update state, which copies you turned down; the
   Copium token is compared decrypted and never logged) and offers it: one tray balloon (*Settings from another copy of
-  Clink found: right-click the tray icon to import*), the tray item *Import settings saved 2026-10-21 14:32 (Claude
+  Clink found: right-click the tray icon to import*), the tray item *Import settings saved 2026-10-21 14:32 (<app>
   copy)…*, which lists what differs and asks (*Yes* imports and restarts Clink, *No* keeps yours and stops offering that
   copy until it is saved again, *Cancel* decides later), and the banner under *App → Settings* with *Use those settings*
   and *Dismiss*.
+
+In those messages *<app>* stands for the name of the packaged app as Clink shows it: the package name without its
+publisher id, e.g. *Notes* for a package named `Contoso.Notes_<publisher id>`.
 
 **What an import does.** It keeps what it replaces as `settings.pre-import.json`, or the next free
 `settings.pre-import.1.json`, `.2.json`, …: an earlier backup is never overwritten, and if the current settings cannot be
@@ -619,3 +622,5 @@ audio tracks line up without guesswork. Clips are muxed by Clink's own small ISO
 N AAC tracks with names, edit lists for sub-frame alignment).
 
 See [ROADMAP.md](ROADMAP.md) for what's next.
+
+Clink is made by Euphoric Software.

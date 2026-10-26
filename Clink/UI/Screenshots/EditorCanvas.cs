@@ -411,7 +411,8 @@ internal sealed class EditorCanvas : FrameworkElement
         }
     }
 
-    private Brush AccentBrush => TryFindResource("Accent") as Brush ?? Brushes.DeepSkyBlue;
+    private static readonly Brush s_accentFallback = Frozen(new SolidColorBrush(Color.FromRgb(0x6F, 0x9C, 0xC4)));
+    private Brush AccentBrush => TryFindResource("Accent") as Brush ?? s_accentFallback;
 
     private void RedrawOverlay()
     {

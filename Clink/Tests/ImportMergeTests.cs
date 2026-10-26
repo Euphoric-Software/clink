@@ -291,7 +291,7 @@ internal static class ImportMergeTests
             s.WindowX = 100; s.WindowY = 200; s.WindowWidth = 900; s.WindowHeight = 700;
             s.LastUpdateCheck = new DateTime(2026, 10, 20, 8, 0, 0, DateTimeKind.Utc);
             s.UpdateRepo = "me/mine"; s.PendingUpdateVersion = "0.2.9"; s.PendingUpdateSha256 = new string('a', 64);
-            s.ImportDeclined = "Claude_x|5";
+            s.ImportDeclined = "Notes_x|5";
         })).Save();
         string theirsText = Json(s =>
         {
@@ -318,7 +318,7 @@ internal static class ImportMergeTests
         Check.Equal("me/mine", after.UpdateRepo);
         Check.Equal("0.2.9", after.PendingUpdateVersion);
         Check.Equal(new string('a', 64), after.PendingUpdateSha256);
-        Check.Equal("Claude_x|5", after.ImportDeclined, "which copies were turned down is ours");
+        Check.Equal("Notes_x|5", after.ImportDeclined, "which copies were turned down is ours");
 
         // the same copy is not offered again for the values it was not allowed to change
         SettingsImport.PackagesRoot = root.File("Packages");
