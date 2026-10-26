@@ -19,3 +19,4 @@
 
 ## Capture border
 - [x] Report/explain WGC yellow border: states, log lines, one-time toast, Capture-tab status + Settings link (d4f6439, branch claude/yellow-outline-recording-c2cb2e, not pushed)
+- [x] Border notice: "Don't show again" button, Open setting button on Denied, Alerts-tab Reset (91a47ad); merged to main and dev
