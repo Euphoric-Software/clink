@@ -1,4 +1,4 @@
-﻿# Clink
+# Clink
 
 Windows replay-buffer clipper. .NET 10 WPF app using Windows Graphics Capture,
 D3D11 and Media Foundation for capture/encode; clips are MP4 (clk1 brand).

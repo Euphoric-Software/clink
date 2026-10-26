@@ -1,4 +1,4 @@
-﻿# Tasks
+# Tasks
 
 - [x] Step 1: Mp4Muxer progressive mode + journal + Recover + tests
 - [x] Step 2 (b9591c5): Engine/ClipWriter.cs -> incremental writer (AddVideo/AddAudio/Finish), Write stays a wrapper; existing tests green
