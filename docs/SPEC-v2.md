@@ -377,12 +377,12 @@ What the app does since v0.2.5. Where this section and §§1, 3, 6, 9 and 10 dif
 - **Track 1 is All audio.** A new clip's first track is named `All`: everything you hear except Clink (process loopback that
   excludes Clink's own process tree) plus the Mic, for every clip and recording and regardless of game detection. The optional
   Game, Mic, Voice and Desktop tracks follow; Game, Voice and Desktop no longer feed track 1 and are captured only when their
-  own track is saved, the Mic is always captured because it feeds All. Where per-process loopback is missing (Windows builds
-  before 20348) All uses the system loopback, which includes Clink's own sounds (the status line says *system loopback
+  own track is saved, the Mic is always captured because it feeds All. Per-process loopback needs Windows 10 2004 (build 19041) or later; on older builds or unsupported systems All uses the system loopback, which includes Clink's own sounds (the status line says *system loopback
   (includes Clink sounds)*). Known limitation, unverified and under test: an audio router (VoiceMeeter, Wave Link, Sonar) may
   be captured twice in All. Older clips keep a `Mix` (Game + Mic + Voice) as track 1 and behave as described below.
   On an `All` clip only the Mic slider shapes All (`MixPlan.Feeds`: Mic only, always the delta mode, never a rebuild): the
-  exact delta leaves a tiny residue on very loud passages because of the soft knee; the Game and Voice sliders change only
+  Mic comes out of All leaving a faint trace of it (the tracks were coded separately as AAC), slightly more on very loud
+  passages because of the soft knee; the Game and Voice sliders change only
   their own tracks. Unticking track 1 while keeping other tracks shows a note in the trim editor (`MixPlan.FirstTrackDropped`)
   that players will play only the first kept track.
 - **All audio follows the sliders (Mix clips).** Track 1 (the Mix) is baked at record time, so the Game, Mic and Voice sliders used to
@@ -398,8 +398,8 @@ What the app does since v0.2.5. Where this section and §§1, 3, 6, 9 and 10 dif
     trace of it (a synthetic clip left 0.1 % of the game tone, −57 dB). The editor says which source is only inside All audio
     and cannot be changed, and that taking another one out can leave that trace.
   - With every source at 100 % the baked Mix is used untouched, in the preview and in the file. A source's include box
-    decides only whether its own track is saved; its slider always shapes All audio. Desktop and any other track stand
-    alone: Desktop is never part of All audio. A clip whose names are not Clink's (a v0.1.0 clip's *All audio*, other
+    decides only whether its own track is saved; its slider shapes All audio only for a Mix clip, or the Mic on an All clip. Desktop and any other track stand
+    alone: the Desktop track never feeds All audio (All already contains everything you hear). A clip whose names are not Clink's (a v0.1.0 clip's *All audio*, other
     tools' files) behaves as before. The first row is labelled *All audio (mix)* (the file keeps the name `Mix` or `All`).
   - The tracks of a Clink file start at different instants (an edit list per track). Media Foundation applies those edit
     lists on Windows Server 2025 (GitHub's windows-latest) and ignores them on Windows 11, so a reader that took every

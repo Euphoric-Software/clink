@@ -87,6 +87,9 @@ internal abstract unsafe class WasapiSource : IDisposable
         _ => null,
     };
 
+    /// <summary>Whether a failed Initialize is retried with the device's mix format: endpoint sources yes, process loopback (no auto-convert, no mix format) no.</summary>
+    internal bool RetriesInitializeWithMixFormat => AllowAutoConvert;
+
     private void Start()
     {
         Client = Activate();
@@ -102,6 +105,9 @@ internal abstract unsafe class WasapiSource : IDisposable
         }
         else
         {
+            // A process-loopback client has no mix format (GetMixFormat answers E_NOTIMPL), so retrying would replace the real
+            // Initialize error with that one and make a transient failure look like "not supported". Report the original.
+            if (!RetriesInitializeWithMixFormat) hr.Check($"IAudioClient.Initialize ({Name})");
             // Fall back to the device's mix format and convert ourselves.
             ComUtil.Release(ref Client);
             Client = Activate();

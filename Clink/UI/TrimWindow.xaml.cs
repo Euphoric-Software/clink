@@ -51,7 +51,7 @@ public partial class TrimWindow : Window
     private sealed class TrackRow
     {
         public string Name = "";    // the track's name in the file: the export keeps it
-        public string Label = "";   // what the row shows (the Mix is "All audio (mix)")
+        public string Label = "";   // what the row shows (track 1, a Mix or an All, is "All audio (mix)")
         public CheckBox Include = null!;
         public TextBlock NameText = null!;   // the name where the player has no Include box
         public RadioButton Listen = null!;
@@ -255,7 +255,7 @@ public partial class TrimWindow : Window
             int index = i;
             string name = names != null && !string.IsNullOrWhiteSpace(names[i]) ? names[i] : $"Audio {i + 1}";
             bool firstMix = i == 0 && MixPlan.IsMix(_roles[i]);
-            string label = firstMix ? "All audio (mix)" : name;   // the file keeps the name "Mix"
+            string label = firstMix ? "All audio (mix)" : name;   // the file keeps its own name, "Mix" or "All"
             bool feeds = MixPlan.FeedsMix(_roles, i);
             var grid = new Grid { Margin = new Thickness(0, 2, 0, 2) };
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });

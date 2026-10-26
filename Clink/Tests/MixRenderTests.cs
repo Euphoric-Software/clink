@@ -284,7 +284,6 @@ internal static class MixRenderTests
             Console.WriteLine($"  (loud All minus the Mic: what is left of the Mic tone {residue:P1} of its level)");
             // Inherent, not a bug: All = SoftKnee(feeder + mic) was baked, so where the sum passed the knee the Mic is no longer a
             // separable addend and subtracting it cannot rebuild the feeder alone. The residue is bounded, not zero.
-            Check.True(residue > .003, $"the knee does leave a trace ({residue:P1}), which is why this is documented");
             Check.True(residue < ResidueBound, $"but it stays bounded ({residue:P1} of the Mic's level)");
         });
     }

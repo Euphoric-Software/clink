@@ -86,14 +86,32 @@ internal static unsafe class AudioTrackPlanTests
         Check.False(AudioTrackPlan.FallBackToEndpoint(true, false, 1, NotImpl), "supported: one 'not implemented' is not yet enough");
         Check.True(AudioTrackPlan.FallBackToEndpoint(true, false, 2, NotImpl), "supported, but activation keeps saying not implemented");
         Check.True(AudioTrackPlan.FallBackToEndpoint(true, false, 7, NotSupported), "or not supported");
+        const int UnsupportedFormat = unchecked((int)0x88890008), InvalidArg = unchecked((int)0x80070057);
+        Check.False(AudioTrackPlan.FallBackToEndpoint(true, false, 1, UnsupportedFormat), "one unsupported format is not yet enough");
+        Check.True(AudioTrackPlan.FallBackToEndpoint(true, false, 2, UnsupportedFormat), "supported, but the format keeps being refused");
+        Check.False(AudioTrackPlan.FallBackToEndpoint(true, false, 1, InvalidArg), "one invalid argument is not yet enough");
+        Check.True(AudioTrackPlan.FallBackToEndpoint(true, false, 2, InvalidArg), "supported, but the arguments keep being refused");
         Check.False(AudioTrackPlan.FallBackToEndpoint(true, true, 5, NotImpl), "running: nothing to fall back from");
         Check.True(AudioTrackPlan.IsNotSupportedError(NotImpl) && !AudioTrackPlan.IsNotSupportedError(Timeout));
     }
 
     [UnitTest]
-    public static void Process_loopback_support_follows_the_Windows_build()
+    public static void Process_loopback_needs_Windows_10_2004_or_later()
     {
-        Check.Equal(OperatingSystem.IsWindowsVersionAtLeast(10, 0, 20348), AudioTrackPlan.ProcessLoopbackSupported());
+        Check.False(AudioTrackPlan.ProcessLoopbackSupported(19040), "1909 and older");
+        Check.True(AudioTrackPlan.ProcessLoopbackSupported(19041), "2004, the app minimum");
+        Check.True(AudioTrackPlan.ProcessLoopbackSupported(19045));
+        Check.True(AudioTrackPlan.ProcessLoopbackSupported(20348));
+        Check.True(AudioTrackPlan.ProcessLoopbackSupported(22631));
+    }
+
+    [UnitTest]
+    public static void Only_endpoint_sources_retry_Initialize_with_the_mix_format()
+    {
+        using var endpoint = new EndpointSource(true, null, "x");
+        using var process = new ProcessSource(1, false, "x");
+        Check.True(endpoint.RetriesInitializeWithMixFormat, "endpoint sources keep the mix-format retry");
+        Check.False(process.RetriesInitializeWithMixFormat, "process loopback reports its own Initialize error");
     }
 
     [UnitTest]

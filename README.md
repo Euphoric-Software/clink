@@ -14,7 +14,7 @@ replay length is yours to set, 45 seconds by default); press a key, hear a click
 <sub>Recording a game: capture settings and audio tracks on the left, your clips on the right. More under
 [Screenshots of Clink](#screenshots-of-clink); the screenshot tool itself is under [Taking screenshots](#taking-screenshots).</sub>
 
-* Single `Clink.exe`, no installer, no background services. Needs the .NET 10 Desktop Runtime (Windows 10 2004+ / Windows 11; HDR and per-process audio need Windows 11).
+* Single `Clink.exe`, no installer, no background services. Needs the .NET 10 Desktop Runtime (Windows 10 2004+ / Windows 11; HDR needs Windows 11).
 * Captures with Windows Graphics Capture, so borderless **and** exclusive-fullscreen games work.
 * **HDR done right**: on an HDR display it captures the FP16 scRGB frame and tone-maps it on the GPU using the
   display's SDR white level, so clips look like the game instead of grey and washed out.
@@ -25,9 +25,9 @@ replay length is yours to set, 45 seconds by default); press a key, hear a click
   every player that only plays the first track hear everything (it is also the only track marked as enabled, so
   QuickTime and iPhones do not play all of them at once). The parts are optionally saved as their own tracks, and the
   source of each is picked in the window:
-  1. **All audio** – everything you hear except Clink, plus the mic, always first (on Windows builds before 20348,
-     which have no per-process capture, it uses the system loopback, which includes Clink's own sounds)
-  2. **Game** – only the game's own audio (Windows per-process capture). Auto-detects the fullscreen app on the captured
+  1. **All audio** – everything you hear except Clink, plus the mic, always first (per-process capture needs Windows 10 2004
+     (build 19041) or later; on an older or unsupported system it uses the system loopback, which includes Clink's own sounds)
+  2. **Game** – only the game's own audio (Windows per-process capture, Windows 10 2004+; older systems cannot isolate a game). Auto-detects the fullscreen app on the captured
      monitor (or the game-library / custom app Clink detected, windowed or not), or pick a running app, or pick an audio device instead (a virtual input such as Wave Link's "Game", or the
      loopback of any output); falls back to "everything except your voice app" until a game is detected
   3. **Mic** – the default microphone (it follows Windows when you change the default device) or any other capture
@@ -235,13 +235,13 @@ installed on the release channel. The choice is kept in `UseDevBuilds` in
    switch next to Play turns the same window into the **trim editor**, and back, without losing anything: drag the in/out
    handles (or press I / O at the playhead), and tick which tracks to keep. Every audio track has its own include
    toggle and volume, which you hear in the preview and which are baked into the saved file. **All audio** (track 1)
-   follows the **Mic slider**: the mic is taken out of (or added to) the baked audio exactly, live in the preview and in
-   the saved file, with a tiny residue on very loud passages because of the soft knee; the **Game and Voice sliders
+   follows the **Mic slider**: the mic is taken out of (or added to) the baked audio live in the preview and in
+   the saved file, leaving only a faint trace of it (the tracks were coded separately as AAC; slightly more on very loud passages); the **Game and Voice sliders
    change only their own tracks**, and with every slider at 100 % the baked track is used untouched. (Clips recorded
    before this change have a *Mix* as track 1, game + mic + voice, and all three sliders shape it as before: it is
    rebuilt from those tracks.) Unticking All audio when you keep other tracks shows a note that players will then play
    only the first kept track. A source's include box only decides
-   whether its own track is saved; its slider always shapes All audio. Desktop is never part of All audio. On an old clip, Voice is not
+   whether its own track is saved; its slider shapes All audio only on an old clip's Mix, or the Mic on an All clip. The Desktop track never feeds All audio (All already contains everything you hear). On an old clip, Voice is not
    saved as a track of its own by default, so it is only inside its Mix: its volume cannot be changed there, and
    turning Game or Mic down takes it out of the baked mix again, which can leave a faint trace of it (tick *Voice chat*
    under *Capture → Audio tracks* to keep it as a track). Taking a source out of the mix only cancels when the tracks

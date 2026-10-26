@@ -195,7 +195,7 @@
                                             <TextBlock Grid.Row="0" Grid.Column="1" Style="{StaticResource MutedText}" VerticalAlignment="Center" Margin="9,4" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
                                                        Text="Everything you hear + your mic (always track 1)" />
 
-                                            <CheckBox x:Name="TrackGameCheck" Grid.Row="1" Content="Game" Checked="AudioChanged" Unchecked="AudioChanged" ToolTip="Also save the game audio on its own track (the detected game only)" />
+                                            <CheckBox x:Name="TrackGameCheck" Grid.Row="1" Content="Game" Checked="AudioChanged" Unchecked="AudioChanged" ToolTip="Also save the game audio on its own track: the detected game; with no game detected, everything except the voice app (or except Clink when no voice app is running)" />
                                             <ComboBox x:Name="GameCombo" Grid.Row="1" Grid.Column="1" SelectionChanged="AudioSourceChanged" DropDownOpened="GameCombo_DropDownOpened"
                                                       ToolTip="Where game audio comes from: detect the fullscreen app on the captured monitor, pick a running app, or pick an audio device (an input like Wave Link's Game mix, or what plays on an output)" />
 

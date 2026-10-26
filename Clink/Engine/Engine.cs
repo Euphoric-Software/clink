@@ -544,7 +544,7 @@ internal sealed unsafe class Engine : IDisposable
                     return new AudioTrackStatus(t.Name, up, why);
                 }
                 string? detail = t.Source == null ? "waiting for app" : t.Source.IsRunning ? t.Source.Detail : t.Source.LastError;
-                if (!t.Enabled) detail = detail == null ? "mix only" : detail + ", mix only";
+                if (!t.Enabled) detail = detail == null ? "in All only" : detail + ", in All only";
                 return new AudioTrackStatus(t.Name, t.Source?.IsRunning == true, detail);
             }).ToList();
         return new EngineStats(_encoder?.EncoderName ?? "", _encoder?.FramesIn ?? 0, _encoder?.FramesOut ?? 0,

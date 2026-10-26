@@ -22,11 +22,14 @@ internal static class AudioTrackPlan
     /// <summary>Failed process-loopback starts, with an error that says the OS lacks it, after which the feeder switches to endpoint loopback.</summary>
     public const int FallbackFailures = 2;
 
-    /// <summary>First Windows build with process loopback capture (Windows 11 and Server 2022; Windows 10 has the API but not the capture).</summary>
-    public const int ProcessLoopbackBuild = 20348;
+    /// <summary>First Windows build with process loopback capture (Windows 10 2004, which is also the app's minimum).</summary>
+    public const int ProcessLoopbackBuild = 19041;
+
+    /// <summary>A Windows of this build can capture the audio of a process tree (or everything except it).</summary>
+    public static bool ProcessLoopbackSupported(int build) => build >= ProcessLoopbackBuild;
 
     /// <summary>This Windows can capture the audio of a process tree (or everything except it).</summary>
-    public static bool ProcessLoopbackSupported() => OperatingSystem.IsWindowsVersionAtLeast(10, 0, ProcessLoopbackBuild);
+    public static bool ProcessLoopbackSupported() => ProcessLoopbackSupported(Environment.OSVersion.Version.Build);
 
     /// <summary>The specs in engine order: All first, then the feeder, then the optional tracks in written order (Game, Mic, Voice, Desktop).</summary>
     public static IReadOnlyList<AudioTrackSpec> Plan(bool game, bool mic, bool voice, bool desktop)
@@ -61,7 +64,9 @@ internal static class AudioTrackPlan
         or 0x80004002   // E_NOINTERFACE
         or 0x80040154   // REGDB_E_CLASSNOTREG
         or 0x80070032   // HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED)
-        or 0x80070078;  // HRESULT_FROM_WIN32(ERROR_CALL_NOT_IMPLEMENTED)
+        or 0x80070078   // HRESULT_FROM_WIN32(ERROR_CALL_NOT_IMPLEMENTED)
+        or 0x88890008   // AUDCLNT_E_UNSUPPORTED_FORMAT (the fixed format is refused every time)
+        or 0x80070057;  // E_INVALIDARG (likewise deterministic for fixed parameters)
 
     /// <summary>The All row of the status: running means the feeder is, whatever the mic does; otherwise why not.</summary>
     public static (bool Running, string Detail) AllStatus(bool feederRunning, string? feederError, bool endpointFallback)
