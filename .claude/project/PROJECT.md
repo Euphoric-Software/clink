@@ -14,6 +14,12 @@ D3D11 and Media Foundation for capture/encode; clips are MP4 (clk1 brand).
 - Env: `CLINK_TESTS_NO_SKIP=1` (fail on skipped), `CLINK_EMULATE_ELST=1` (edit-list emulation)
 
 ## Misc
-- Version: `<Version>` in `Clink/Clink.csproj` (currently 0.3.0)
+- Version: `<Version>` in `Clink/Clink.csproj` (currently 0.3.1; main at v0.3.1, dev line v0.3.2-dev.N)
 - CI: `.github/workflows/build.yml`; `.github/workflows/release-dev.yml` (dev prereleases on push to `dev`)
 - Remote push policy: manual (ask before any push)
+
+## Chat / session naming
+- Title every Claude session `v<target version> <Topic>`, e.g. `v0.3.2 Yellow Outline Recording Indicator`.
+- Target version = the next stable Clink version the branch ships in: csproj `<Version>` if the branch bumps it, otherwise latest stable release + 1 patch (release-dev.yml uses the same rule).
+- Omit the `-dev.N` suffix: release-dev.yml assigns N from the workflow run number / last N+1 at build time, so it is not known when a chat starts.
+- Pass this title as the session `name`/`title` whenever a coordinator starts a session.
