@@ -1,7 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" width="20" height="20" role="img" aria-label="Clink">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-label="Clink">
   <title>Clink</title>
-  <!-- Clink app icon, pixel-hinted for 20 px: ring outer 7 / inner 5, dot r 2. Same structure as clink-icon.svg. -->
-  <path fill="#111111" d="M6.28 0H13.72C17.6 0 20 2.4 20 6.28V13.72C20 17.6 17.6 20 13.72 20H6.28C2.4 20 0 17.6 0 13.72V6.28C0 2.4 2.4 0 6.28 0Z"/>
-  <path fill="#36CAFA" d="M16.15 6.66A7 7 0 1 0 16.15 13.34A1 1 0 0 0 15.75 11.98A1 1 0 0 0 14.39 12.39A5 5 0 1 1 14.39 7.61A1 1 0 0 0 15.75 8.02A1 1 0 0 0 16.15 6.66Z"/>
-  <circle fill="#FCFCFC" cx="10" cy="10" r="2"/>
+  <!-- Clink app icon, small-size cut for the 20 px frame (tools\make-icon.ps1): clink-icon.svg with the spark filled solid, because its hollow centre turns grey below 36 px. -->
+  <path fill="#272932" d="M321.6 0H702.4C901.3 0 1024 122.7 1024 321.6V702.4C1024 901.3 901.3 1024 702.4 1024H321.6C122.7 1024 0 901.3 0 702.4V321.6C0 122.7 122.7 0 321.6 0Z"/>
+  <path fill="#6F9CC4" d="M818.27 345.71A348.5 348.5 0 1 0 818.27 678.29A54.5 54.5 0 0 0 796.38 604.39A54.5 54.5 0 0 0 722.48 626.28A239.5 239.5 0 1 1 722.48 397.72A54.5 54.5 0 0 0 796.38 419.61A54.5 54.5 0 0 0 818.27 345.71Z"/>
+  <path fill="#E9EBF2" d="M512.000 363.000 C535.630 447.930 574.550 486.670 651.000 512.000 C571.770 538.820 534.240 579.050 512.000 661.000 C489.760 579.050 452.230 538.820 373.000 512.000 C449.450 486.670 488.370 447.930 512.000 363.000 Z"/>
 </svg>

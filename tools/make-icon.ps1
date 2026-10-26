@@ -9,8 +9,8 @@
 #                                 taskbar and large icons at 225 / 250 %. 128 and 256 cover the big Explorer views.
 #   docs\brand\clink-icon-512.png the same art as a transparent 512 px PNG
 #
-# For each size n it renders docs\brand\clink-icon-<n>.svg if that file exists (the pixel-hinted cuts for 16, 20, 24 and 28), otherwise
-# the master docs\brand\clink-icon.svg. Only a small SVG subset is read: <svg viewBox>, <path d fill> and <circle cx cy r fill>,
+# For each size n it renders docs\brand\clink-icon-<n>.svg if that file exists (the small-size cuts for 16, 20, 24, 28, 30 and 32, spark
+# filled solid), otherwise the master docs\brand\clink-icon.svg. Only a small SVG subset is read: <svg viewBox>, <path d fill [fill-rule]> and <circle cx cy r fill>,
 # painted in document order; <title>, <desc>, <metadata> and comments are skipped; anything else is an error.
 # Each size is drawn at n x Supersample and box-filtered down, which gives exact edge coverage (WPF's own 1x anti-aliasing is
 # off by up to 77 levels on edge pixels). The output is byte-identical between runs.
@@ -68,7 +68,7 @@ function Render([string]$svgPath, [int]$size) {
         if ($n.LocalName -in 'title', 'desc', 'metadata') { continue }
         $brush = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.ColorConverter]::ConvertFromString($n.fill))
         switch ($n.LocalName) {
-            'path' { $g = [System.Windows.Media.Geometry]::Parse($n.d) }
+            'path' { $rule = if ($n.GetAttribute('fill-rule') -eq 'evenodd') { 'F0 ' } else { 'F1 ' }; $g = [System.Windows.Media.Geometry]::Parse($rule + $n.d) }
             'circle' { $g = New-Object System.Windows.Media.EllipseGeometry (New-Object System.Windows.Point (Num $n.cx), (Num $n.cy)), (Num $n.r), (Num $n.r) }
             default { throw "unsupported SVG element <$($n.LocalName)> in $svgPath" }
         }

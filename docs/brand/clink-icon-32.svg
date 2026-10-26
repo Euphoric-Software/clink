@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-label="Clink">
+  <title>Clink</title>
+  <!-- Clink app icon, small-size cut for the 32 px frame (tools\make-icon.ps1): clink-icon.svg with the spark filled solid, because its hollow centre turns grey below 36 px. -->
+  <path fill="#272932" d="M321.6 0H702.4C901.3 0 1024 122.7 1024 321.6V702.4C1024 901.3 901.3 1024 702.4 1024H321.6C122.7 1024 0 901.3 0 702.4V321.6C0 122.7 122.7 0 321.6 0Z"/>
+  <path fill="#6F9CC4" d="M818.27 345.71A348.5 348.5 0 1 0 818.27 678.29A54.5 54.5 0 0 0 796.38 604.39A54.5 54.5 0 0 0 722.48 626.28A239.5 239.5 0 1 1 722.48 397.72A54.5 54.5 0 0 0 796.38 419.61A54.5 54.5 0 0 0 818.27 345.71Z"/>
+  <path fill="#E9EBF2" d="M512.000 363.000 C535.630 447.930 574.550 486.670 651.000 512.000 C571.770 538.820 534.240 579.050 512.000 661.000 C489.760 579.050 452.230 538.820 373.000 512.000 C449.450 486.670 488.370 447.930 512.000 363.000 Z"/>
+</svg>

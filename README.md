@@ -154,7 +154,7 @@ A ShareX-style screenshot tool that lives next to the clip recorder (its own fol
 </tr>
 </table>
 
-All screenshots are of Clink itself (the dark theme with the default cyan accent unless a caption says otherwise), rendered from synthetic clips (no real games or accounts).
+All screenshots are of Clink itself (the dark theme with the default accent unless a caption says otherwise), rendered from synthetic clips (no real games or accounts). They predate the Euphoric Software rebrand and show the earlier cyan palette.
 
 ## Installing & updating
 
@@ -301,7 +301,7 @@ Copium Plus also ticks *I have Copium+*. The toast's button reads *Share* withou
   **Status dot** - the dot and its corner.
 * **App**: **Features** - *Clips* and *Screenshots* on or off; **Cloud sharing** - the kill switch (off at once, on only after a
   confirmation); **Copium** - the upload token, its status, *Get a token* and the *I have Copium+* switch (replaced by a
-  note while cloud sharing is off); **Appearance** - *Dark* or *Light* and one of six accents (Cyan, the default; Blue, Violet, Pink, Orange,
+  note while cloud sharing is off); **Appearance** - *Dark* or *Light* and one of six accents (Spark Blue, the default; Blue, Violet, Pink, Orange,
   Green), applied at once to every window that is open; **Updates** - auto-update, *Run at startup*, the version and
   *Check now*; **Settings** - where `settings.json` is kept, with an *Open folder* link, and, when they apply, the banners
   about a private copy of AppData and about settings another copy of Clink saved (see [Settings](#settings)).
@@ -428,7 +428,7 @@ install starts with:
 | Recording | `RecordingMode` | `game`: only while a game or custom app runs |
 | Replay length | `BufferSeconds` | 45 |
 | Main hotkey | `Hotkeys[0]` | Alt+C, the full replay |
-| Theme and accent | `Theme` / `Accent` | `dark` / `cyan` |
+| Theme and accent | `Theme` / `Accent` | `dark` / `spark` |
 
 The audio track pickers (*Capture → Audio tracks*) store
 `AllDeviceId` (the Desktop track: `out:<id>` or a bare id = that output's loopback, `in:<id>` = a capture device) /
@@ -444,7 +444,7 @@ is Copium's free limit, 200 MB / 10 min, and `copiumplus` Copium Plus's, 2 GB / 
 `ToastPosition`, `ToastClip` / `ToastShared` / `ToastRecording` (`{ Enabled, Seconds }`), `StatusDot` /
 `StatusDotPosition`, `ArchiveEnabled` (the automatic moves: *Move clips there automatically*) / `ArchivePath` /
 `ArchiveAfterDays` / `ArchiveWhenLocalExceedsGB` and the window position and size. The v3 keys are `SchemaVersion`,
-`Theme` (`dark` | `light`), `Accent` (`cyan` | `blue` | `violet` | `pink` | `orange` | `green`) and `ImportDeclined` (the
+`Theme` (`dark` | `light`), `Accent` (`spark` | `blue` | `violet` | `pink` | `orange` | `green`; `cyan`, the default before the rebrand, is read as `spark`) and `ImportDeclined` (the
 copies of another Clink's settings you turned down, `<package>|<time>`, one per package). Things not in the UI:
 
 | key | default | what |
@@ -619,3 +619,5 @@ audio tracks line up without guesswork. Clips are muxed by Clink's own small ISO
 N AAC tracks with names, edit lists for sub-frame alignment).
 
 See [ROADMAP.md](ROADMAP.md) for what's next.
+
+Clink is made by Euphoric Software.
