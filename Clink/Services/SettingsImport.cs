@@ -404,6 +404,7 @@ internal static class SettingsImport
         || key.Equals(nameof(Settings.AudioSetupSeen), StringComparison.OrdinalIgnoreCase)
         || key.Equals(nameof(Settings.SeededHotkeyDefaults), StringComparison.OrdinalIgnoreCase)
         || key.Equals(nameof(Settings.ScreenshotEditor), StringComparison.OrdinalIgnoreCase)   // the editor's last-used colour and width
+        || key.Equals(nameof(Settings.CaptureBorderNoticeDismissed), StringComparison.OrdinalIgnoreCase)
         || key.Equals(nameof(Settings.CopiumTokenProtected), StringComparison.OrdinalIgnoreCase);
 
     /// <summary>A settings key that an import offer names in the user's words or ignores: anything else would be listed as "other settings".</summary>

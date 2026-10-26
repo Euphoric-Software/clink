@@ -90,6 +90,8 @@ internal sealed unsafe class Engine : IDisposable
     public bool DeviceLost { get; private set; }
     public string? GameName => _gameName;
     public event Action? StateChanged;
+    /// <summary>Capture is up and the yellow border outcome is known (state, detail). Raised on the recorder's thread, once per start.</summary>
+    public event Action<CaptureBorderState, string>? CaptureBorderDetermined;
 
     public EngineConfig Config => _cfg;
 
@@ -146,6 +148,7 @@ internal sealed unsafe class Engine : IDisposable
             _d3d = D3DDevice.CreateForMonitor(m.Handle);
             Log.Info($"D3D device on {_d3d.AdapterName}; monitor {m.Label} HDR={m.IsHdr} sdrWhite={m.SdrWhiteNits}nits");
             _capture = new MonitorCapture(_d3d, m.Handle, m.IsHdr, _cfg.CaptureCursor, _cfg.Fps);
+            try { CaptureBorderDetermined?.Invoke(_capture.BorderState, _capture.BorderDetail); } catch (Exception ex) { Log.Warn("capture border: " + ex.Message); }
             _converter = new FrameConverter(_d3d, _cfg.OutWidth, _cfg.OutHeight)
             {
                 IsHdr = m.IsHdr, SdrWhiteNits = m.SdrWhiteNits, Knee = _cfg.HdrKnee, Peak = _cfg.HdrPeak,

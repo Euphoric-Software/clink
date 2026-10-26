@@ -1,4 +1,4 @@
-# State
+﻿# State
 
 ## In progress
 Manual start/stop recording (branch `feature/manual-recording`).
@@ -149,3 +149,12 @@ GIF/video from the screenshot tool, scrolling capture, delayed capture, auto/rep
 
 ## Next action
 Merge to dev (slice 8) and record the dev build tag; then user manual checks.
+## Capture border (branch claude/yellow-outline-recording-c2cb2e, commit d4f6439)
+- MonitorCapture reports a CaptureBorderState (Hidden, UnsupportedOs, Denied, SetFailed, Unconfirmed) via pure DecideBorder, with a per-start bounded borderless access request and once-per-outcome "Capture border: ..." log lines.
+- Engine raises CaptureBorderDetermined; AppController shows a toast once per app launch until the user presses "Don't show again" (Settings.CaptureBorderNoticeDismissed, volatile in SettingsImport, default off). Denied toasts also have an "Open setting" button (AppController.OpenCaptureBorderSetting, shared with the Capture tab link).
+- Alerts tab has Reset "Don't show again" (ResetDismissedNotices: closes open border toasts via Toasts.CloseKind, clears flags, re-shows or confirms in the footer). Commit 91a47ad.
+- Capture tab shows a status line plus "Open Windows setting" link for the Denied state.
+- 13 new tests in Tests/CaptureBorderTests.cs.
+- Verified: Debug+Release 0 warnings/errors; --unittest 394 pass (also NO_SKIP and EMULATE_ELST); --selftest 5 logged "Capture border: hidden (access Allowed)", 0 dropped frames.
+- Windows facts: the borderless APIs exist from build 20348, so no Windows 10 consumer build has them. Setting: Settings > Privacy & security > Screenshot borders, switches "Screenshot border settings access", "Let apps turn off the screenshot border", "Let desktop apps turn off the screenshot border". Link: ms-settings:privacy-graphicscapturewithoutborder. Another app capturing the same display with the border on brings it back.
+- Remaining: Denied/UnsupportedOs UI not seen live; toast duration tied to ToastRecording; toast buttons and Reset not seen live (unit tests + review only). Border work fast-forwarded to main and merged into dev (which keeps the screenshots feature); screenshots stay out of main.

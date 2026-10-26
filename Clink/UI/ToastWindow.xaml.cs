@@ -149,6 +149,17 @@ internal sealed class Toasts : IScreenshotToasts
         Add(new ToastWindow(this, "problem", null, null, title, text, TimeSpan.FromSeconds(seconds), false));
     });
 
+    /// <summary>
+    /// A warning the user can silence: "Don't show again" runs <paramref name="dontShowAgain"/> and closes the toast; "Open setting"
+    /// (only when <paramref name="openSetting"/> is given) runs that and leaves the toast open. The text wraps, at least 10 s.
+    /// Shown whatever the switches say; the ✕ just closes it.
+    /// </summary>
+    public void ShowBorderNotice(string title, string text, Action dontShowAgain, Action? openSetting) => Post(() =>
+    {
+        var seconds = Math.Max(10, Duration(_settings.ToastRecording).TotalSeconds);
+        Add(new ToastWindow(this, "border", null, null, title, text, TimeSpan.FromSeconds(seconds), false) { DontShowAction = dontShowAgain, OpenSettingAction = openSetting });
+    });
+
     /// <summary>Re-stacks the open toasts after one changed its height.</summary>
     internal void Relayout() => Post(Layout);
 
@@ -176,6 +187,9 @@ internal sealed class Toasts : IScreenshotToasts
 
     /// <summary>Fades every open toast out (each closes when its fade ends); nothing is re-stacked for them.</summary>
     public void CloseAll() => Post(() => { foreach (var t in _open.ToList()) t.Dismiss(); _open.Clear(); });
+
+    /// <summary>Fades out every open toast of one kind (e.g. "border"); the others stay.</summary>
+    public void CloseKind(string kind) => Post(() => { foreach (var t in _open.Where(x => x.Kind == kind).ToList()) t.Dismiss(); });
 
     private void Post(Action a)
     {
@@ -270,6 +284,9 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
     private string? _subtitleBeforeUpload;
     /// <summary>What the Cancel button of a running upload does (set by the upload handle).</summary>
     internal Action? CancelHandler { get; set; }
+    internal Action? DontShowAction { get; init; }
+    internal Action? OpenSettingAction { get => _openSetting; init { _openSetting = value; OpenSettingButton.Visibility = value != null ? Visibility.Visible : Visibility.Collapsed; } }
+    private Action? _openSetting;
 
     internal ToastWindow(Toasts owner, string kind, ClipEntry? entry, string? link, string title, string subtitle, TimeSpan duration, bool preview, ScreenshotEntry? shot = null,
         bool canUpload = false)
@@ -285,8 +302,9 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         TitleText.Text = Toasts.TitleFor(title);
         Subtitle.Text = subtitle;
         Subtitle.ToolTip = subtitle;
-        Dot.SetResourceReference(System.Windows.Shapes.Shape.FillProperty, kind switch { "shared" or "info" => "Accent", "recording" or "record" => "Danger", "problem" => "Warn", "paused" => "Muted", _ => "Good" });
-        if (kind == "problem") Subtitle.TextWrapping = TextWrapping.Wrap;   // the reason is the point: all of it, not an ellipsis
+        Dot.SetResourceReference(System.Windows.Shapes.Shape.FillProperty, kind switch { "shared" or "info" => "Accent", "recording" or "record" => "Danger", "problem" or "border" => "Warn", "paused" => "Muted", _ => "Good" });
+        if (kind is "problem" or "border") Subtitle.TextWrapping = TextWrapping.Wrap;   // the reason is the point: all of it, not an ellipsis
+        NoticeButtons.Visibility = kind == "border" ? Visibility.Visible : Visibility.Collapsed;
         ClipButtons.Visibility = kind == "clip" ? Visibility.Visible : Visibility.Collapsed;
         SharedButtons.Visibility = kind == "shared" ? Visibility.Visible : Visibility.Collapsed;
         ScreenshotButtons.Visibility = kind == "screenshot" && shot != null ? Visibility.Visible : Visibility.Collapsed;
@@ -610,6 +628,19 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
             else AppController.Instance.OpenScreenshotsFolder();
         }
         Dismiss();
+    }
+
+    private void DontShow_Click(object sender, RoutedEventArgs e)
+    {
+        try { DontShowAction?.Invoke(); }
+        catch (Exception ex) { Log.Warn("Don't show again: " + ex.Message); }
+        Dismiss();
+    }
+
+    private void OpenSetting_Click(object sender, RoutedEventArgs e)
+    {
+        try { OpenSettingAction?.Invoke(); }
+        catch (Exception ex) { Log.Warn("Open setting: " + ex.Message); }
     }
 
     private void Close_Click(object sender, RoutedEventArgs e) => Dismiss();

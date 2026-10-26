@@ -1,4 +1,4 @@
-# Tasks
+﻿# Tasks
 
 - [x] Step 1: Mp4Muxer progressive mode + journal + Recover + tests
 - [x] Step 2 (b9591c5): Engine/ClipWriter.cs -> incremental writer (AddVideo/AddAudio/Finish), Write stays a wrapper; existing tests green
@@ -82,3 +82,6 @@
 - [ ] Real-upload verification with a valid token; Copium image size limit unknown
 - [ ] Dev build #3 (slices 6-7): pending this push
 - Next: merge S8 to dev; user manual checks
+## Capture border
+- [x] Report/explain WGC yellow border: states, log lines, one-time toast, Capture-tab status + Settings link (d4f6439, branch claude/yellow-outline-recording-c2cb2e, not pushed)
+- [x] Border notice: "Don't show again" button, Open setting button on Denied, Alerts-tab Reset (91a47ad); merged to main and dev

@@ -37,6 +37,10 @@
                         AutomationProperties.Name="Upload the screenshot to Copium" ToolTip="Upload the screenshot to Copium" />
                 <Button Content="Folder" Margin="8,0,0,0" Click="ShotFolder_Click" />
             </StackPanel>
+            <StackPanel x:Name="NoticeButtons" Grid.Row="2" Orientation="Horizontal" Margin="16,10,0,0" Visibility="Collapsed">
+                <Button x:Name="DontShowButton" Style="{StaticResource SmallButton}" Content="Don't show again" Click="DontShow_Click" />
+                <Button x:Name="OpenSettingButton" Style="{StaticResource SmallButton}" Content="Open setting" Margin="8,0,0,0" Click="OpenSetting_Click" />
+            </StackPanel>
         </Grid>
     </Border>
 </Window>
