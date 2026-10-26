@@ -8,6 +8,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 using Clink.Audio;
+using Clink.Capture;
 using Clink.Native;
 using Clink.Services;
 using Clink.UI;
@@ -74,6 +75,8 @@ public partial class MainWindow : Window
         };
 
         _app.StateChanged += RefreshStatus;
+        _app.CaptureBorderChanged += RefreshBorderText;
+        RefreshBorderText();
         // Long notices (a Share refusal, an update problem) stay up long enough to read; the footer's tooltip has the full text.
         _app.Notice += msg => Dispatcher.BeginInvoke(() => { FooterText.Text = msg; _noticeUntil = DateTime.UtcNow.AddSeconds(Math.Clamp(msg.Length / 15.0, 4, 10)); });
         _app.ClipSaved += _ => Dispatcher.BeginInvoke(() => Clips.Refresh());
@@ -832,6 +835,31 @@ public partial class MainWindow : Window
     private void ImportDismiss_Click(object sender, RoutedEventArgs e)
     {
         if (SettingsImport.Pending is { } copy) SettingsImport.Decline(_app.Settings, copy);   // PendingChanged then hides the banner (and the tray item)
+    }
+
+    /// <summary>The Capture tab's yellow-border line: hidden until the first capture start has reported.</summary>
+    private void RefreshBorderText()
+    {
+        string d = _app.CaptureBorderDetail;
+        string? text = !_app.CaptureBorderKnown ? null : _app.CaptureBorder switch
+        {
+            CaptureBorderState.Hidden => "Yellow capture border: hidden by Clink.",
+            CaptureBorderState.UnsupportedOs => "Yellow capture border: shown. Windows 11 or newer is needed to hide it.",
+            CaptureBorderState.Denied => "Yellow capture border: shown. Windows didn't let Clink hide it. In Settings > Privacy & security > Screenshot borders, turn on \"Screenshot border settings access\", \"Let apps turn off the screenshot border\" and \"Let desktop apps turn off the screenshot border\", then pause and resume recording from the tray.",
+            CaptureBorderState.Unconfirmed => $"Yellow capture border: probably hidden (could not confirm: {d}).",
+            _ => $"Yellow capture border: could not be hidden ({d}).",
+        };
+        BorderText.Text = text ?? "";
+        BorderPanel.Visibility = text == null ? Visibility.Collapsed : Visibility.Visible;
+        BorderSettingsLink.Visibility = text != null && _app.CaptureBorder == CaptureBorderState.Denied ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private const string BorderSettingsUri = "ms-settings:privacy-graphicscapturewithoutborder";
+
+    private void BorderSettingsLink_Click(object sender, RoutedEventArgs e)
+    {
+        try { Process.Start(new ProcessStartInfo(BorderSettingsUri) { UseShellExecute = true }); }
+        catch (Exception ex) { Log.Warn("Could not open " + BorderSettingsUri + ": " + ex.Message); }
     }
 
     // ------------------------------------------------------------------ updates

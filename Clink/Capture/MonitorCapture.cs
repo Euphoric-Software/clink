@@ -17,6 +17,9 @@ using Clink.Native;
 
 namespace Clink.Capture;
 
+/// <summary>Outcome of asking Windows to hide the yellow capture border.</summary>
+internal enum CaptureBorderState { Hidden, UnsupportedOs, Denied, SetFailed, Unconfirmed }
+
 /// <summary>
 /// Captures one monitor with Windows.Graphics.Capture and keeps the most recent frame in a GPU texture.
 /// Works with borderless and exclusive-fullscreen games. On HDR displays it captures FP16 scRGB so the
@@ -106,23 +109,82 @@ internal sealed unsafe class MonitorCapture : IDisposable
         finally { PInvoke.WindowsDeleteString(cls); }
     }
 
-    private static void TrySetBorderless(GraphicsCaptureSession session)
+    /// <summary>Whether the yellow capture border Windows draws around a captured monitor was hidden for this capture, and why not.</summary>
+    public CaptureBorderState BorderState { get; private set; }
+    /// <summary>The access status name or the exception message behind <see cref="BorderState"/>; empty when there is nothing to add.</summary>
+    public string BorderDetail { get; private set; } = "";
+
+    // The Borderless access request is made on every capture start (never cached: the user may flip the Windows switches at any time);
+    // only the logging is de-duplicated per process.
+    private static readonly object s_borderLogLock = new();
+    private static string? s_borderLogged;
+
+    /// <summary>The access status name ("Allowed", "DeniedBySystem", "DeniedByUser", "Timeout", "Error: ..."), or null when the API is absent.</summary>
+    private static string? RequestBorderAccess()
     {
         try
         {
-            if (Windows.Foundation.Metadata.ApiInformation.IsPropertyPresent("Windows.Graphics.Capture.GraphicsCaptureSession", "IsBorderRequired"))
+            if (!Windows.Foundation.Metadata.ApiInformation.IsTypePresent("Windows.Graphics.Capture.GraphicsCaptureAccess")) return null;
+            // Unpackaged desktop apps are granted this without a prompt; the call just needs to happen.
+            var task = GraphicsCaptureAccess.RequestAccessAsync(GraphicsCaptureAccessKind.Borderless).AsTask();
+            return task.Wait(2000) ? task.Result.ToString() : "Timeout";
+        }
+        catch (AggregateException ae) when (ae.InnerException != null) { return "Error: " + ae.InnerException.Message; }
+        catch (Exception ex) { return "Error: " + ex.Message; }
+    }
+
+    /// <summary>
+    /// The pure decision behind <see cref="BorderState"/>. <paramref name="accessStatus"/> is the Borderless access status name, or
+    /// "Timeout" / "Error: ..." when the request did not complete, or null when it was not made. <paramref name="setException"/> is what
+    /// setting IsBorderRequired threw (null: it worked or was not tried). A successful set proves nothing when access is denied
+    /// (Windows ignores the value and draws the border), so only Allowed + a successful set is Hidden.
+    /// </summary>
+    internal static (CaptureBorderState State, string Detail) DecideBorder(bool propertyPresent, bool accessTypePresent, string? accessStatus, Exception? setException)
+    {
+        if (!propertyPresent) return (CaptureBorderState.UnsupportedOs, "");
+        string status = accessTypePresent ? accessStatus ?? "" : "";
+        // Denied wins over a thrown set: it is the actionable cause, and the set is attempted regardless.
+        if (status is "DeniedBySystem" or "DeniedByUser" or "UserPromptRequired" or "NotDeclaredByApp") return (CaptureBorderState.Denied, status);
+        if (setException != null) return (CaptureBorderState.SetFailed, setException.Message);
+        if (!accessTypePresent) return (CaptureBorderState.Unconfirmed, "GraphicsCaptureAccess unavailable");
+        if (status == "Allowed") return (CaptureBorderState.Hidden, status);
+        if (status.StartsWith("Error: ", StringComparison.Ordinal)) return (CaptureBorderState.Unconfirmed, status.Substring(7));
+        return (CaptureBorderState.Unconfirmed, status.Length > 0 ? status : "Unknown");
+    }
+
+    private void TrySetBorderless(GraphicsCaptureSession session)
+    {
+        bool propertyPresent = false, accessPresent = false;
+        string? access = null;
+        Exception? failure = null;
+        try
+        {
+            propertyPresent = Windows.Foundation.Metadata.ApiInformation.IsPropertyPresent("Windows.Graphics.Capture.GraphicsCaptureSession", "IsBorderRequired");
+            if (propertyPresent)
             {
-                try
-                {
-                    // Unpackaged desktop apps are granted this without a prompt; the call just needs to happen once.
-                    var op = GraphicsCaptureAccess.RequestAccessAsync(GraphicsCaptureAccessKind.Borderless);
-                    op.AsTask().Wait(2000);
-                }
-                catch { }
+                access = RequestBorderAccess();
+                accessPresent = access != null;
                 session.IsBorderRequired = false;
             }
         }
-        catch { /* older OS: yellow border stays */ }
+        catch (Exception ex) { failure = ex; }
+        (BorderState, BorderDetail) = DecideBorder(propertyPresent, accessPresent, access, failure);
+
+        string line = BorderState + ": " + BorderDetail;
+        lock (s_borderLogLock)
+        {
+            if (s_borderLogged == line) return;
+            s_borderLogged = line;
+        }
+        if (BorderState == CaptureBorderState.Hidden) { Log.Info($"Capture border: hidden (access {BorderDetail})"); return; }
+        string why = BorderState switch
+        {
+            CaptureBorderState.Denied => " - Settings > Privacy & security > Screenshot borders: turn on 'Screenshot border settings access', 'Let apps turn off the screenshot border' and 'Let desktop apps turn off the screenshot border'",
+            CaptureBorderState.UnsupportedOs => " - needs Windows 11",
+            CaptureBorderState.Unconfirmed => " - set succeeded, access unknown",
+            _ => "",
+        };
+        Log.Warn($"Capture border: {BorderState}{(BorderDetail.Length > 0 ? " (" + BorderDetail + ")" : "")}{why}");
     }
 
     private void OnFrameArrived(Direct3D11CaptureFramePool sender, object args)

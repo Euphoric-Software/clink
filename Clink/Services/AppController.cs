@@ -6,6 +6,7 @@ using System.Windows;
 using System.Windows.Threading;
 using Microsoft.Win32;
 using Clink.Audio;
+using Clink.Capture;
 using Clink.Engine;
 using Clink.Native;
 using Clink.UI;
@@ -351,6 +352,7 @@ internal sealed partial class AppController : IDisposable
         // window's codec list and the first engine start find the answer ready instead of probing on the UI thread.
         Task.Run(() => { try { _ = Capabilities.Codecs; } catch (Exception ex) { Log.Warn("codec probe: " + ex.Message); } });
         Engine.StateChanged += () => _ui.BeginInvoke(RaiseStateChanged);
+        Engine.CaptureBorderDetermined += (state, detail) => { try { _ui.BeginInvoke(() => OnCaptureBorder(state, detail)); } catch (Exception ex) { Log.Warn("capture border: " + ex.Message); } };
         // Once, for the one engine this controller owns. Raised on the recorder's thread: only ever BeginInvoke here (an Invoke
         // would deadlock against a UI thread that waits for the recording to finish: StopRecordingForExit, Engine.Dispose).
         Engine.RecordingStopped += result => { try { _ui.BeginInvoke(() => OnRecordingEnded(result)); } catch (Exception ex) { Log.Warn("recording end: " + ex.Message); } };
@@ -970,6 +972,37 @@ internal sealed partial class AppController : IDisposable
         LastNotice = msg;
         Log.Info("notice: " + msg);
         Notice?.Invoke(msg);
+    }
+
+    /// <summary>Whether Windows' yellow capture border is hidden, as of the last capture start (Hidden until one reports).</summary>
+    public CaptureBorderState CaptureBorder { get; private set; }
+    public string CaptureBorderDetail { get; private set; } = "";
+    public bool CaptureBorderKnown { get; private set; }
+    public event Action? CaptureBorderChanged;
+
+    /// <summary>
+    /// The engine reported the border outcome (UI thread). When it stays, a toast says so once per installation
+    /// (<see cref="Settings.CaptureBorderNoticeShown"/>); the Capture tab's status line always shows it. The toast is one line, so
+    /// it is short and the detail lives on that line and in the log.
+    /// </summary>
+    internal static bool ShouldNotify(CaptureBorderState state, bool alreadyShown) =>
+        state is not (CaptureBorderState.Hidden or CaptureBorderState.Unconfirmed) && !alreadyShown;
+
+    private void OnCaptureBorder(CaptureBorderState state, string detail)
+    {
+        CaptureBorder = state;
+        CaptureBorderDetail = detail;
+        CaptureBorderKnown = true;
+        CaptureBorderChanged?.Invoke();
+        if (!ShouldNotify(state, Settings.CaptureBorderNoticeShown)) return;
+        Settings.CaptureBorderNoticeShown = true;
+        Settings.Save();
+        if (state == CaptureBorderState.UnsupportedOs)
+            Toasts.ShowNotice("Yellow border around the screen?", "Windows 11 is needed to hide it. Not in your clips.");
+        else if (state == CaptureBorderState.Denied)
+            Toasts.ShowNotice("Yellow border around the screen?", "Allow Clink to hide it: see the Capture tab.");
+        else
+            Toasts.ShowNotice("Couldn't hide the capture border", "Clips are unaffected. Details: Capture tab, log.");
     }
 
     /// <summary>Updates the tray tooltip / menu and the status dot, then raises <see cref="StateChanged"/>. UI thread.</summary>

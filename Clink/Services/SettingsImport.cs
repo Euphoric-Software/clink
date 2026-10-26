@@ -332,6 +332,7 @@ internal static class SettingsImport
         IsOwnKey(key)
         || key.Equals(nameof(Settings.SchemaVersion), StringComparison.OrdinalIgnoreCase)
         || key.Equals(nameof(Settings.AudioSetupSeen), StringComparison.OrdinalIgnoreCase)
+        || key.Equals(nameof(Settings.CaptureBorderNoticeShown), StringComparison.OrdinalIgnoreCase)
         || key.Equals(nameof(Settings.CopiumTokenProtected), StringComparison.OrdinalIgnoreCase);
 
     /// <summary>

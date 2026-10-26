@@ -136,6 +136,12 @@
                                             <TextBlock x:Name="SizeNote" Style="{StaticResource Hint}" Margin="0,3,0,0" Text="" Visibility="Collapsed" />
                                         </StackPanel>
                                         <CheckBox x:Name="CursorCheck" Content="Capture cursor" Margin="2,12,0,0" Checked="QualityChanged" Unchecked="QualityChanged" ToolTip="Record the mouse pointer too" />
+                                        <StackPanel x:Name="BorderPanel" Margin="2,8,0,0" Visibility="Collapsed"
+                                                    ToolTip="Windows draws a yellow border around any screen being captured. It is never in your clips. Another app capturing the same screen with the border on can bring it back.">
+                                            <TextBlock x:Name="BorderText" Style="{StaticResource MutedText}" Text="" TextWrapping="Wrap" />
+                                            <Button x:Name="BorderSettingsLink" Style="{StaticResource LinkButton}" Content="Open Windows setting" HorizontalAlignment="Left"
+                                                    Margin="-4,2,0,0" FontSize="12" Visibility="Collapsed" Click="BorderSettingsLink_Click" />
+                                        </StackPanel>
                                     </StackPanel>
                                 </Border>
 
