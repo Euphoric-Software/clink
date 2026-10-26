@@ -981,12 +981,14 @@ internal sealed partial class AppController : IDisposable
     public event Action? CaptureBorderChanged;
 
     /// <summary>
-    /// The engine reported the border outcome (UI thread). When it stays, a toast says so once per installation
-    /// (<see cref="Settings.CaptureBorderNoticeShown"/>); the Capture tab's status line always shows it. The toast is one line, so
-    /// it is short and the detail lives on that line and in the log.
+    /// The engine reported the border outcome (UI thread). When it stays, a toast says so once per app launch until the user
+    /// presses "Don't show again" (<see cref="Settings.CaptureBorderNoticeDismissed"/>); the Capture tab's status line always shows
+    /// it. The toast is short and the detail lives on that line and in the log.
     /// </summary>
-    internal static bool ShouldNotify(CaptureBorderState state, bool alreadyShown) =>
-        state is not (CaptureBorderState.Hidden or CaptureBorderState.Unconfirmed) && !alreadyShown;
+    internal static bool ShouldNotify(CaptureBorderState state, bool dismissed, bool shownThisRun) =>
+        state is not (CaptureBorderState.Hidden or CaptureBorderState.Unconfirmed) && !dismissed && !shownThisRun;
+
+    private bool _borderNoticeShownThisRun;
 
     private void OnCaptureBorder(CaptureBorderState state, string detail)
     {
@@ -994,15 +996,39 @@ internal sealed partial class AppController : IDisposable
         CaptureBorderDetail = detail;
         CaptureBorderKnown = true;
         CaptureBorderChanged?.Invoke();
-        if (!ShouldNotify(state, Settings.CaptureBorderNoticeShown)) return;
-        Settings.CaptureBorderNoticeShown = true;
-        Settings.Save();
+        if (!ShouldNotify(state, Settings.CaptureBorderNoticeDismissed, _borderNoticeShownThisRun)) return;
+        ShowBorderToast(state);
+    }
+
+    private void ShowBorderToast(CaptureBorderState state)
+    {
+        _borderNoticeShownThisRun = true;
+        Action dontShowAgain = () => { Settings.CaptureBorderNoticeDismissed = true; Settings.Save(); };
         if (state == CaptureBorderState.UnsupportedOs)
-            Toasts.ShowNotice("Yellow border around the screen?", "Windows 11 is needed to hide it. Not in your clips.");
+            Toasts.ShowBorderNotice("Yellow border around the screen?", "Windows 11 is needed to hide it. Not in your clips.", dontShowAgain, null);
         else if (state == CaptureBorderState.Denied)
-            Toasts.ShowNotice("Yellow border around the screen?", "Allow Clink to hide it: see the Capture tab.");
+            Toasts.ShowBorderNotice("Yellow border around the screen?", "Allow it in Windows settings, then pause/resume.", dontShowAgain, OpenCaptureBorderSetting);
         else
-            Toasts.ShowNotice("Couldn't hide the capture border", "Clips are unaffected. Details: Capture tab, log.");
+            Toasts.ShowBorderNotice("Couldn't hide the capture border", "Clips are unaffected. Details: Capture tab, log.", dontShowAgain, null);
+    }
+
+    /// <summary>Opens Windows' "Screenshot borders" settings page.</summary>
+    internal static void OpenCaptureBorderSetting()
+    {
+        const string uri = "ms-settings:privacy-graphicscapturewithoutborder";
+        try { Process.Start(new ProcessStartInfo(uri) { UseShellExecute = true }); }
+        catch (Exception ex) { Log.Warn("Could not open " + uri + ": " + ex.Message); }
+    }
+
+    /// <summary>Brings back every notice the user dismissed with "Don't show again"; the border notice shows right away if it applies.</summary>
+    public void ResetDismissedNotices()
+    {
+        Settings.CaptureBorderNoticeDismissed = false;
+        _borderNoticeShownThisRun = false;
+        Settings.Save();
+        Toasts.CloseKind("border");
+        if (CaptureBorderKnown && ShouldNotify(CaptureBorder, false, false)) ShowBorderToast(CaptureBorder);
+        else Say("Dismissed notices will show again.");
     }
 
     /// <summary>Updates the tray tooltip / menu and the status dot, then raises <see cref="StateChanged"/>. UI thread.</summary>

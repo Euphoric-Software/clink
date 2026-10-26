@@ -153,8 +153,8 @@ internal sealed class Settings
     public bool CopiumPlus { get; set; }
     /// <summary>The "Set up your audio" banner on the Capture tab was dismissed (the audio group was hovered over or an audio option changed); it never shows again.</summary>
     public bool AudioSetupSeen { get; set; }
-    /// <summary>The one-time "yellow border" notice was shown (the border could not be hidden); it never shows again on this installation.</summary>
-    public bool CaptureBorderNoticeShown { get; set; }
+    /// <summary>The user pressed "Don't show again" on the "yellow border" notice (the border could not be hidden). Until then it shows once per app launch; Reset in the settings clears it.</summary>
+    public bool CaptureBorderNoticeDismissed { get; set; }
     /// <summary>Archive (NAS / share / second drive): clips move there in the background after N days and/or when the local folder exceeds N GB (whichever first).</summary>
     public bool ArchiveEnabled { get; set; }
     public string? ArchivePath { get; set; }

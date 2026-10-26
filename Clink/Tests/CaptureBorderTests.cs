@@ -97,17 +97,14 @@ internal static class CaptureBorderTests
     }
 
     [UnitTest]
-    public static void The_border_toast_is_skipped_for_Hidden_and_Unconfirmed_and_shown_once_otherwise()
+    public static void The_border_toast_shows_once_per_run_until_dismissed_and_never_for_Hidden_or_Unconfirmed()
     {
-        foreach (var s in new[] { CaptureBorderState.Hidden, CaptureBorderState.Unconfirmed })
+        foreach (var s in new[] { CaptureBorderState.Hidden, CaptureBorderState.Unconfirmed, CaptureBorderState.Denied, CaptureBorderState.UnsupportedOs, CaptureBorderState.SetFailed })
         {
-            Check.False(AppController.ShouldNotify(s, false));
-            Check.False(AppController.ShouldNotify(s, true));
-        }
-        foreach (var s in new[] { CaptureBorderState.Denied, CaptureBorderState.UnsupportedOs, CaptureBorderState.SetFailed })
-        {
-            Check.True(AppController.ShouldNotify(s, false));
-            Check.False(AppController.ShouldNotify(s, true));
+            bool quiet = s is CaptureBorderState.Hidden or CaptureBorderState.Unconfirmed;
+            foreach (var dismissed in new[] { false, true })
+                foreach (var shown in new[] { false, true })
+                    Check.Equal(!quiet && !dismissed && !shown, AppController.ShouldNotify(s, dismissed, shown));
         }
     }
 
@@ -117,9 +114,9 @@ internal static class CaptureBorderTests
         using var dir = new TempDir();
         Settings.DirOverride = dir.Path;
         var s = Settings.Load();
-        Check.False(s.CaptureBorderNoticeShown);
-        s.CaptureBorderNoticeShown = true;
+        Check.False(s.CaptureBorderNoticeDismissed);
+        s.CaptureBorderNoticeDismissed = true;
         s.Save();
-        Check.True(Settings.Load().CaptureBorderNoticeShown);
+        Check.True(Settings.Load().CaptureBorderNoticeDismissed);
     }
 }

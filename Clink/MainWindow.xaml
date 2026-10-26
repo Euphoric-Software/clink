@@ -390,6 +390,14 @@
                                             <Button Grid.Row="2" Grid.Column="3" Style="{StaticResource SmallButton}" Content="Preview" Tag="recording" Click="ToastPreview_Click" VerticalAlignment="Center" />
                                         </Grid>
                                         <TextBlock Style="{StaticResource Hint}" Margin="2,4,0,0" Text="Each toast has its own switch and how long it stays (1–30 s). Hovering a toast keeps it open." />
+                                        <Grid Margin="0,10,0,0">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <Button Style="{StaticResource SmallButton}" Content="Reset &quot;Don't show again&quot;" Click="ResetNotices_Click" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Column="1" Style="{StaticResource MutedText}" Margin="10,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap" Text="Shows dismissed warnings, such as the yellow capture border notice, again." />
+                                        </Grid>
                                     </StackPanel>
                                 </Border>
 

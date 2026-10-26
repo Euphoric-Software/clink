@@ -854,13 +854,9 @@ public partial class MainWindow : Window
         BorderSettingsLink.Visibility = text != null && _app.CaptureBorder == CaptureBorderState.Denied ? Visibility.Visible : Visibility.Collapsed;
     }
 
-    private const string BorderSettingsUri = "ms-settings:privacy-graphicscapturewithoutborder";
+    private void BorderSettingsLink_Click(object sender, RoutedEventArgs e) => AppController.OpenCaptureBorderSetting();
 
-    private void BorderSettingsLink_Click(object sender, RoutedEventArgs e)
-    {
-        try { Process.Start(new ProcessStartInfo(BorderSettingsUri) { UseShellExecute = true }); }
-        catch (Exception ex) { Log.Warn("Could not open " + BorderSettingsUri + ": " + ex.Message); }
-    }
+    private void ResetNotices_Click(object sender, RoutedEventArgs e) => _app.ResetDismissedNotices();
 
     // ------------------------------------------------------------------ updates
 
