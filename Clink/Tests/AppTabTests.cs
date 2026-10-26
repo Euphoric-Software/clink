@@ -8,14 +8,14 @@ namespace Clink.Tests;
 internal static class AppTabTests
 {
     private static ForeignSettings Copy(params string[] differences) => new(
-        "Claude_pzs8sxrjxfjjc", @"C:\Users\Player\AppData\Local\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Clink",
+        "Contoso.Notes_pzs8sxrjxfjjc", @"C:\Users\Player\AppData\Local\Packages\Contoso.Notes_pzs8sxrjxfjjc\LocalCache\Roaming\Clink",
         new DateTime(2026, 10, 21, 18, 32, 5, DateTimeKind.Utc), differences);
 
     [UnitTest]
     public static void The_import_banner_names_the_copy_when_it_was_saved_and_what_would_change()
     {
         var copy = Copy("video quality", "replay length", "hotkeys");
-        Check.Equal($"Clink also has settings saved {copy.SavedLocalText} by a copy started from inside Claude (video quality, replay length, hotkeys)",
+        Check.Equal($"Clink also has settings saved {copy.SavedLocalText} by a copy started from inside Notes (video quality, replay length, hotkeys)",
             MainWindow.ImportBannerText(copy));
     }
 
@@ -23,7 +23,7 @@ internal static class AppTabTests
     public static void The_import_banner_has_no_brackets_when_nothing_is_listed()
     {
         var copy = Copy();
-        Check.Equal($"Clink also has settings saved {copy.SavedLocalText} by a copy started from inside Claude", MainWindow.ImportBannerText(copy));
+        Check.Equal($"Clink also has settings saved {copy.SavedLocalText} by a copy started from inside Notes", MainWindow.ImportBannerText(copy));
     }
 
     // Every colour in a window has to be a DynamicResource: a StaticResource keeps the brush it found when the window loaded, so

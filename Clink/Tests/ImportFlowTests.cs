@@ -415,7 +415,7 @@ internal static class ImportFlowTests
         Settings.DirOverride = dir.Path;
 
         var imported = Existing(dir);
-        imported.ImportedFrom = new ForeignSettings("Claude_x", "x", DateTime.UtcNow, Array.Empty<string>());
+        imported.ImportedFrom = new ForeignSettings("Notes_x", "x", DateTime.UtcNow, Array.Empty<string>());
         Check.False(SettingsImport.CanOffer(imported, isDev: false), "a start that has just taken a copy over has nothing left to offer");
 
         // a dev instance looks only where --packages-root says
@@ -441,7 +441,7 @@ internal static class ImportFlowTests
         Check.False(app.CanOfferImport, "a dev instance with no --packages-root");
         SettingsImport.PackagesRoot = dir.File("fake-packages");
         Check.True(app.CanOfferImport, "and with one");
-        existing.ImportedFrom = new ForeignSettings("Claude_x", "x", DateTime.UtcNow, Array.Empty<string>());
+        existing.ImportedFrom = new ForeignSettings("Notes_x", "x", DateTime.UtcNow, Array.Empty<string>());
         Check.False(app.CanOfferImport);
     }
 

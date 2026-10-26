@@ -221,7 +221,7 @@ internal static class DevModeTests
         using var home = new TempDir();
         using var root = new TempDir();
         var theirs = Realistic();
-        string folder = root.File(@"Packages\Claude_x\LocalCache\Roaming\Clink");
+        string folder = root.File(@"Packages\Notes_x\LocalCache\Roaming\Clink");
         Directory.CreateDirectory(folder);
         File.WriteAllText(Path.Combine(folder, "settings.json"), theirs.ToJson());
         Settings.DirOverride = home.Path;
@@ -263,7 +263,7 @@ internal static class DevModeTests
 
         // and Scan uses the guard it is given: with it nothing is left to offer once only the guarded settings differ
         using var root = new TempDir();
-        string folder = root.File(@"Packages\Claude_x\LocalCache\Roaming\Clink");
+        string folder = root.File(@"Packages\Notes_x\LocalCache\Roaming\Clink");
         Directory.CreateDirectory(folder);
         var onlyGuarded = Realistic();   // differs from ours in nothing but what the guards change
         File.WriteAllText(Path.Combine(folder, "settings.json"), onlyGuarded.ToJson());

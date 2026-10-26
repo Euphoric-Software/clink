@@ -496,7 +496,7 @@ internal sealed partial class AppController : IDisposable
         if (Settings.LoadProblem is string unread) { Say(unread); ShowBalloon(Settings.FileWasSkipped ? "Clink settings not loaded" : "Clink settings partly read", unread); }
         // The footer line of MigrateHotkeys is easy to miss when Clink starts in the tray; this is a hotkey it just claimed or left unset.
         if (_hotkeyNotice is string hotkeyNotice) ShowBalloon("Clink hotkey", hotkeyNotice);
-        // Where the settings live. A Clink started from inside a packaged app (the Claude desktop app) sees that app's private copy of
+        // Where the settings live. A Clink started from inside a packaged app (an MSIX/Store desktop app, say) sees that app's private copy of
         // AppData, so says so; a real one took another copy's settings over on a first start (App.RunNormal), or looks for a copy
         // worth offering (the tray item, below).
         if (AppDataRedirect.Notice is string redirected) Say(redirected);
@@ -716,7 +716,7 @@ internal sealed partial class AppController : IDisposable
 
     /// <summary>
     /// <see cref="SettingsImport"/> found (or lost) a copy of the settings, saved inside a packaged app's private AppData, that differs
-    /// from these: the tray menu gets (or loses) "Import settings saved … (Claude copy)…", and the first time per start one balloon
+    /// from these: the tray menu gets (or loses) "Import settings saved … (<app> copy)…", and the first time per start one balloon
     /// says so. UI thread.
     /// </summary>
     private void OnImportPending()

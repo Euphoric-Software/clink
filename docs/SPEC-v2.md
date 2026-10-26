@@ -488,27 +488,29 @@ What the app does since v0.2.5. Where this section and §§1, 3, 6, 9 and 10 dif
 
 ### 11.9 Settings kept in a packaged app's private AppData
 
-- Windows keeps a private copy of `%APPDATA%` and `%LOCALAPPDATA%` for an app that runs from a package (the Claude desktop
-  app's agents are one). A Clink such an app started kept its settings in
+- Windows keeps a private copy of `%APPDATA%` and `%LOCALAPPDATA%` for an app that runs from a package (a Store/MSIX desktop
+  app, for example). A Clink such an app started kept its settings in
   `%LOCALAPPDATA%\Packages\<package>\LocalCache\Roaming\Clink`, where a Clink started from Explorer or the Start menu never
   looks. (This, not a schema change, is how v0.2.4's settings seemed to be lost.)
 - `AppDataRedirect.Detect()` creates a file in the settings folder and asks `GetFinalPathNameByHandle` where Windows really
   put it: opening the folder tells nothing, it exists in the real AppData too and opens as the real one. A redirected Clink
-  says once per start *Clink was started from inside Claude: Windows keeps a private copy of its settings for that app, so
+  says once per start *Clink was started from inside <app>: Windows keeps a private copy of its settings for that app, so
   changes made now are not seen by Clink started from Explorer or the Start menu*, and shows it as a banner under *App →
   Settings*. It is not run in a `--dev` instance.
+  (*<app>* in these messages is the packaged app's name as Clink shows it: the package name without its publisher id, e.g.
+  *Notes* for `Contoso.Notes_<publisher id>`.)
 - A **first start** of a real Clink (no `settings.json` or `.bak` yet) that is not itself inside a packaged app takes over
   the newest copy another Clink saved in a package's private AppData, before anything reads the settings: its `settings.json`
   as it is, and its clip index merged into ours (every clip once, ours first; the other copy only fills what ours leaves
   empty: Copium link, page and id, archive time, audio tracks, length, trim source). It says *Imported the settings Clink
-  saved while started from inside Claude (2026-10-21 14:32)*.
+  saved while started from inside <app> (2026-10-21 14:32)*.
 - A Clink that already has settings is **never changed unasked**. After start it looks, on a worker, for a copy that differs
   (this installation's own settings are no difference: where the window sits, the updater's state, `LastUpdateCheck`,
   `UpdateRepo` and which copies were turned down; nor are `AudioSetupSeen` and `SchemaVersion`; the Copium token is
   compared decrypted, and nothing is logged but the names of what differs) and offers it: one tray balloon (*Settings
   from another copy of Clink found: right-click the tray icon to import*), the tray item *Import settings saved
-  2026-10-21 14:32 (Claude copy)…* and a banner under *App → Settings* (*Clink also has settings saved … by a copy
-  started from inside Claude (video quality, hotkeys, …)* with *Use those settings* and *Dismiss*). The tray item asks,
+  2026-10-21 14:32 (<app> copy)…* and a banner under *App → Settings* (*Clink also has settings saved … by a copy
+  started from inside <app> (video quality, hotkeys, …)* with *Use those settings* and *Dismiss*). The tray item asks,
   listing what differs: *Yes* imports and restarts Clink (`--show`), *No* keeps the current settings and stops offering
   that copy, *Cancel* decides later. *Dismiss* and *No* write `ImportDeclined` (`<package>|<ticks of the time that copy
   was saved>`, one per package): that copy is offered again only once it has been saved again.

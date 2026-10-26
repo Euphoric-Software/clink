@@ -931,7 +931,7 @@ public partial class MainWindow : Window
         else Dispatcher.BeginInvoke(RefreshSettingsBanners);
     }
 
-    /// <summary>"Clink also has settings saved 2026-10-21 14:32 by a copy started from inside Claude (video quality, hotkeys)".</summary>
+    /// <summary>"Clink also has settings saved 2026-10-21 14:32 by a copy started from inside <app> (video quality, hotkeys)".</summary>
     internal static string ImportBannerText(ForeignSettings copy)
     {
         string what = copy.Differences.Count > 0 ? $" ({string.Join(", ", copy.Differences)})" : "";

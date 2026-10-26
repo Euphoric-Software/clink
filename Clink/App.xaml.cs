@@ -163,7 +163,7 @@ public partial class App : System.Windows.Application
         Log.Init(Settings.Dir);
         if (previous != null) Log.Info($"restart: the Clink with pid {previous} {(previousGone ? "has ended" : "was still running after 10 s")}");
 
-        // Is this Clink running inside a packaged app (the Claude desktop app), so that the AppData it reads and writes is that app's
+        // Is this Clink running inside a packaged app (an MSIX/Store desktop app, say), so that the AppData it reads and writes is that app's
         // private copy? A --dev instance keeps everything in its own folder: nothing to find out.
         if (dev == null) AppDataRedirect.Detect();
 

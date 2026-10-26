@@ -8,7 +8,7 @@ namespace Clink.Tests;
 /// <summary>Redirected AppData (a packaged app's private copy), finding another copy's settings, saying what they would change, taking them over.</summary>
 internal static class SettingsImportTests
 {
-    private const string Claude = @"\\?\C:\Users\Jason\AppData\Local\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Clink\settings.json";
+    private const string Redirected = @"\\?\C:\Users\Jason\AppData\Local\Packages\Contoso.Notes_pzs8sxrjxfjjc\LocalCache\Roaming\Clink\settings.json";
 
     // ------------------------------------------------------------------ helpers
 
@@ -53,9 +53,9 @@ internal static class SettingsImportTests
     [UnitTest]
     public static void A_final_path_inside_a_packages_LocalCache_names_the_package()
     {
-        Check.Equal("Claude_pzs8sxrjxfjjc", AppDataRedirect.PackageFromFinalPath(Claude));
-        Check.Equal("Claude_pzs8sxrjxfjjc", AppDataRedirect.PackageFromFinalPath(@"\\?\C:\Users\Jason\AppData\Local\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Local\Clink\updates\Clink-0.2.4.exe"));
-        Check.Equal("claude_pzs8sxrjxfjjc", AppDataRedirect.PackageFromFinalPath(Claude.ToLowerInvariant()), "Windows paths ignore case");
+        Check.Equal("Contoso.Notes_pzs8sxrjxfjjc", AppDataRedirect.PackageFromFinalPath(Redirected));
+        Check.Equal("Contoso.Notes_pzs8sxrjxfjjc", AppDataRedirect.PackageFromFinalPath(@"\\?\C:\Users\Jason\AppData\Local\Packages\Contoso.Notes_pzs8sxrjxfjjc\LocalCache\Local\Clink\updates\Clink-0.2.4.exe"));
+        Check.Equal("contoso.notes_pzs8sxrjxfjjc", AppDataRedirect.PackageFromFinalPath(Redirected.ToLowerInvariant()), "Windows paths ignore case");
         Check.Equal("Microsoft.WindowsTerminal_8wekyb3d8bbwe", AppDataRedirect.PackageFromFinalPath(@"\\?\D:\Users\x\AppData\Local\Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalCache\Roaming\Clink"));
     }
 
@@ -73,18 +73,18 @@ internal static class SettingsImportTests
     [UnitTest]
     public static void The_friendly_name_is_the_package_without_the_publisher()
     {
-        Check.Equal("Claude", AppDataRedirect.FriendlyNameOf("Claude_pzs8sxrjxfjjc"));
+        Check.Equal("Notes", AppDataRedirect.FriendlyNameOf("Contoso.Notes_pzs8sxrjxfjjc"));
         Check.Equal("WindowsTerminal", AppDataRedirect.FriendlyNameOf("Microsoft.WindowsTerminal_8wekyb3d8bbwe"));
         Check.Equal("Foo", AppDataRedirect.FriendlyNameOf("Foo_abc"));
         Check.Equal("NoPublisher", AppDataRedirect.FriendlyNameOf("NoPublisher"));
-        Check.Equal("Claude", new ForeignSettings("Claude_pzs8sxrjxfjjc", "x", DateTime.UtcNow, Array.Empty<string>()).FriendlyName);
+        Check.Equal("Notes", new ForeignSettings("Contoso.Notes_pzs8sxrjxfjjc", "x", DateTime.UtcNow, Array.Empty<string>()).FriendlyName);
     }
 
     [UnitTest]
     public static void The_redirect_notice_says_who_and_why()
     {
-        Check.Equal("Clink was started from inside Claude: Windows keeps a private copy of its settings for that app, so changes made now are not seen by Clink started from Explorer or the Start menu",
-            AppDataRedirect.NoticeFor("Claude"));
+        Check.Equal("Clink was started from inside Notes: Windows keeps a private copy of its settings for that app, so changes made now are not seen by Clink started from Explorer or the Start menu",
+            AppDataRedirect.NoticeFor("Notes"));
         Check.Null(AppDataRedirect.Notice, "nothing is detected until Detect has run");
     }
 
@@ -179,7 +179,7 @@ internal static class SettingsImportTests
             s.WindowX = -1500; s.WindowY = 350; s.WindowWidth = 1346; s.WindowHeight = 793;
             s.LastUpdateCheck = new DateTime(2026, 10, 21, 18, 32, 30, DateTimeKind.Utc);
             s.PendingUpdateVersion = "0.2.4"; s.PendingUpdateSha256 = new string('0', 64);
-            s.SchemaVersion = 2; s.AudioSetupSeen = true; s.ImportDeclined = "Claude_x|1";
+            s.SchemaVersion = 2; s.AudioSetupSeen = true; s.ImportDeclined = "Notes_x|1";
         });
         Check.Equal(0, SettingsImport.Differences(ours, theirs).Count);
         Check.Equal(0, SettingsImport.Differences(theirs, ours).Count);
@@ -417,7 +417,7 @@ internal static class SettingsImportTests
         SettingsImport.PackagesRoot = PackagesOf(root);
         var now = DateTime.UtcNow;
         FakeCopy(root, "Same_1", Json(), savedUtc: now.AddHours(-1));                                        // newest, but the same as ours
-        string folder = FakeCopy(root, "Claude_x", Json(s => { s.Codec = "hevc"; s.BufferSeconds = 48; }), savedUtc: now.AddHours(-2));
+        string folder = FakeCopy(root, "Notes_x", Json(s => { s.Codec = "hevc"; s.BufferSeconds = 48; }), savedUtc: now.AddHours(-2));
         FakeCopy(root, "Older_3", Json(s => s.Fps = 30), savedUtc: now.AddHours(-3));
 
         int raised = 0;
@@ -430,7 +430,7 @@ internal static class SettingsImportTests
             PumpUi();   // the event is raised on the UI thread
             var pending = SettingsImport.Pending;
             Check.NotNull(pending);
-            Check.Equal("Claude_x", pending!.Package);
+            Check.Equal("Notes_x", pending!.Package);
             Check.Equal(new[] { "video quality", "replay length" }, pending.Differences.ToArray());
             Check.Equal(1, raised);
 
@@ -456,7 +456,7 @@ internal static class SettingsImportTests
             File.SetLastWriteTimeUtc(Path.Combine(folder, "settings.json"), now.AddMinutes(-5));
             SettingsImport.Scan(ours).Wait();
             PumpUi();
-            Check.Equal("Claude_x", SettingsImport.Pending?.Package);
+            Check.Equal("Notes_x", SettingsImport.Pending?.Package);
             Check.Equal(ours.ImportDeclined, Settings.Load().ImportDeclined, "the refusal survives a restart");
         }
         finally { SettingsImport.PendingChanged -= count; }
@@ -484,7 +484,7 @@ internal static class SettingsImportTests
         using var root = new TempDir();
         var ours = LoadFrom(home, Json());
         SettingsImport.PackagesRoot = PackagesOf(root);
-        FakeCopy(root, "Claude_x", Json(s => s.Codec = "hevc"));
+        FakeCopy(root, "Notes_x", Json(s => s.Codec = "hevc"));
         SettingsImport.Scan(ours).Wait();
         var pending = SettingsImport.Pending!;
         Check.NotNull(pending);
@@ -505,7 +505,7 @@ internal static class SettingsImportTests
         var theirs = Settings.FromJson("{}");
         theirs.CopiumToken = "secret-token-three";
         theirs.ArchivePath = @"\\secret-nas\clips";
-        FakeCopy(root, "Claude_x", theirs.ToJson());
+        FakeCopy(root, "Notes_x", theirs.ToJson());
         var logged = new System.Collections.Concurrent.ConcurrentQueue<string>();
         void Collect(string line) => logged.Enqueue(line);
         Log.Line += Collect;
