@@ -1,4 +1,4 @@
-﻿# State
+# State
 
 ## In progress
 Manual start/stop recording (branch `feature/manual-recording`).
@@ -86,9 +86,69 @@ Run the manual test script; then Step 5 (see TASKS.md).
 ## Dev Build channel (branch `feature/dev-channel`, commit 0eeca0a, from v0.3.0 / 7d26007)
 Done: ReleaseVersion, Updater channel logic (stable unchanged; dev lists releases), Settings.UseDevBuilds/PendingUpdateFrom, footer version popup, release-dev.yml, release.yml ignores v*-dev.* tags, 7 UpdaterChannel tests.
 Verified: Debug+Release forced rebuilds 0 warnings/0 errors; `--unittest` 381 passed/0 failed/0 skipped on both configs, also with CLINK_TESTS_NO_SKIP=1 and CLINK_EMULATE_ELST=1; two senior reviews (ship), findings fixed; GUI popup smoke passed once in an isolated `--dev` instance (disabled-controls state).
-Launched: feature/dev-channel merged to main at c72fb2d; `dev` branch created at c72fb2d and pushed (also feature/dev-channel at 49dbc77).
+Launched: feature/dev-channel merged to main at c72fb2d; `dev` exists on origin (c72fb2d, v0.3.1-dev.1 published); `dev` is now 2 commits behind `main` (3f66291 v0.3.1).
 First dev build: run https://github.com/jason-tucker/clink/actions/runs/40130530774, 2m52s, success. Prerelease v0.3.1-dev.1 (targetCommitish c72fb2d) verified: assets Clink.exe 31,537,088 B + Clink.exe.sha256 76 B; sha256 matches; embedded ProductVersion 0.3.1-dev.1+c72fb2d... OK; downloaded exe not executed. Stable releases/latest still v0.3.0; release.yml not triggered by the dev tag.
 Remaining: user installs the first dev build by hand once (download Clink.exe from the prerelease, replace the running exe, then tick Dev Build); popup enabled-state GUI check; optional release-dev.yml job split.
+
+## Screenshots (branch feature/screenshots, from main 3f66291 v0.3.1)
+Progress: S1 2cb39b0 (capture, overlay, PNG, clipboard, toast, tab, `screenshot` hotkey = bare PrintScreen, `--screenshot`, tray; docs 043467b). S3 f7aeb3f (editor window, vector tools, edit-after, edit-last, `screenshot-edit-last` seeded Shift+PrintScreen, `--screenshot-edit-last`, `--screenshot-edit <png>`). S2 merged at 0d1dc6f (pixel library in Clink/Screenshots/Imaging; worktree branch `worktree-agent-ac33d7baec9c3d8a6` tip 41962cb kept, not deleted; worktree left in place). S2 and S3 each went through two senior-review rounds.
+Verified (merged tree): Debug and Release `--no-incremental` 0 warnings/0 errors; `--unittest` 572 passed/0 failed/0 skipped (Debug plain, Debug NO_SKIP, Release NO_SKIP); `ScreenshotImaging` 54, `ScreenshotEditor` 37. S3 alone was 518; S1 453.
+NOT verified: any human GUI run of the editor; real PrintScreen hook delivery; Snipping Tool suppression; HDR; exclusive fullscreen. Desktop-dependent tests (GDI monitor capture, busy clipboard) first run on a GitHub runner with the first dev push.
+Delivery plan: fast-forward `dev` to `main`, merge `feature/screenshots`, push `dev` -> release-dev.yml -> 0.3.2-dev.N. Push needs user approval.
+
+Manual GUI test list (run on `Clink.exe --dev <folder> --dev-hotkeys`; never the installed Clink)
+S1: Ctrl/Print-Screen overlay on every monitor without visible jump; drag -> PNG in `<ClipsFolder>\Screenshots` sized as the label; paste into Paint pixel-identical; toast Open/Folder; Esc/right-click save nothing; Enter = whole monitor; mixed-DPI and negative-coordinate monitors; cross-monitor rect; tray item and `--screenshot`; seeded hotkey row appears once and deleting it survives restart; unknown hand-edited action logs and does not clip; HDR result noted here (decides S7); exclusive-fullscreen black toast; overlay absent from a replay clip saved right after.
+S3: each tool (select, pen, line, arrow, freehand arrow, rectangle, text, crop) at 100% and 200%; undo/redo of each; text UX incl. right-click menu then Esc/Ctrl+C/Space must NOT close the editor; saved PNG equals the 100% view; Ctrl+C paste into Paint and Discord; "Save edits?" on Esc/Alt+F4/X with Yes/No/Cancel; Shift+PrintScreen reopens the live document, after a restart opens the flattened PNG; toast Edit button, tray "Edit last screenshot", `--screenshot-edit <png>`; both seeded hotkey rows present; memory after 10 editor sessions; Alt+Space then drag draws, not pans; tray Quit with unsaved edits, all three answers; thick short freehand arrow export matches screen; small 200% screen still shows Done.
+S4 done (77530e1): composer v2, RasterOps, blur/pixelate/highlight/spotlight/magnify/smart erase tools, insert image picker + paste, adjustments flyout; two senior-review rounds. Verified: Debug and Release 0 warnings; `--unittest` 622 passed/0 failed/0 skipped (Debug plain, Debug NO_SKIP, Release NO_SKIP).
+Release perf at 4K: first compose ~180-195 ms; spotlight move ~9 ms; levels rebuild ~170 ms; drag under spotlight ~18 ms; LUT 4-6 ms; LUT over cached sharpened base 3-4 ms. Honest memory: 158 MB display composer + 84 MB blur planes + 63 MB sharpen composer.
+S4 manual GUI list (add to the lists above): each raster tool incl. handles/undo; spotlight drag on a 4K capture with and without gradient; brightness/contrast drag with a spotlight present (<=120 ms stale blur then snap); sharpness slider (sharpening appears when the slider rests); smart erase on a gradient background and on text over a flat panel; magnify outline + dashed source frame absent from the PNG; Ctrl+V from Paint (CF_DIB, must paste opaque) and from a browser; insert a large JPEG and drag immediately; `I` picker with a long history/missing files; edit-last reopen of a document with blur must never flash un-redacted; 50-object status warning; memory in Task Manager after 10 sessions; small 200%-DPI screen shows all three toolbar rows + Done.
+S5 done (5ea3308): mode "before" ("Edit on screen") inside the capture overlay: shared EditorSession/EditorCanvas at 1:1, crop handles, floating toolbar, Enter/Done/Esc ladder, cross-monitor fallback to the editor window. Two senior-review rounds. Verified: Debug and Release 0 warnings; `--unittest` 650 passed/0 failed/0 skipped (Debug plain, Debug NO_SKIP, Release NO_SKIP); 28 new tests; no BOM changes on touched files.
+
+## Dev manual checklist (user, dev build; use `--dev <folder> --dev-hotkeys` or the installed dev build knowingly)
+- S1 capture: overlay on every monitor without visible jump; drag -> PNG sized as the label; paste into Paint identical; PrintScreen works and Snipping Tool is suppressed; Esc/right-click save nothing; Enter = whole monitor; mixed-DPI/negative-coordinate monitors; HDR look noted (decides S7); exclusive-fullscreen black toast.
+- S3 editor: every vector tool at 100% and 200%, text UX (context menu then Esc must not close), undo/redo, save equals view, Ctrl+C paste, "Save edits?" prompts, Shift+PrintScreen edit-last (live and after restart), toast Edit button, tray item.
+- S4 raster: blur/pixelate/highlight/spotlight (drag on 4K)/magnify/smart erase, brightness/contrast/sharpness, insert image (picker + paste from Paint and browser), edit-last of a blurred document never shows un-redacted, memory after 10 sessions.
+- S5 overlay editing: set mode "Edit on screen"; toolbar placement at all screen edges and small/200% screens; crop handles; Esc ladder (gesture -> deselect -> tool -> cancel); Enter and Done save one cropped PNG with outside annotations clipped; Cancel button; cross-monitor drag opens the editor window with hint; insert dialogs while overlay is up; idle notice after 20 min; replay clip saved during/after overlay editing contains no overlay or toolbar.
+
+S6 done (56bb20d, branch feature/screenshots): Copium PNG upload path, toast actions (Open | Edit | Upload/Copy link | Folder, progress/Cancel/Retry), Copium nudge, settings rows + Alerts "Screenshot saved" switch, export compose/encode off the UI thread, AI background-remover seam (unavailable), security hardening. Two senior-review rounds plus a security review. Verified: Debug and Release 0 warnings; `--unittest` 699 passed/0 failed/0 skipped (Debug plain, Debug NO_SKIP, Release NO_SKIP); 49 new tests; no BOM changes; secrets scan clean (only eup_test fakes). NOT verified: a real upload to Copium; elevated-run pipe client.
+
+S7 done (4df4efa, branch feature/screenshots): sharing opt-in with Copium consent dialog (public-link warning), global "Allow cloud sharing" kill switch, Clips/Screenshots feature visibility, S6 leftovers. Three review rounds. Verified: Debug and Release 0 warnings; `--unittest` 736 passed/0 failed/0 skipped (Debug plain, Debug NO_SKIP, Release NO_SKIP); 37 new tests; no BOM changes; secrets scan clean (only eup_secret test fake). NOT verified: a real upload to Copium with a valid token; GUI walk-through of consent/kill switch.
+
+## Dev channel push
+Merge of feature/screenshots into dev pushed on 2026-10-25 (authorized "A"). Result: dev 77705f5 (merge, slices 1-5), run 40168176731 success, prerelease v0.3.2-dev.2. Slices 6-7 pushed to dev (merge 0173405): run 40214902237 success, prerelease v0.3.2-dev.3 (Clink.exe asset). Standing policy: dev pushes after reviewed slices need no further approval; main always asks.
+
+## S7 follow-ups
+- Recording: queued-notice / `async void` stop ordering when Clips is turned off while recording
+- Bare 403 vs plan limits (not treated as token problem)
+- Share window not updated live after a kill-switch flip
+- Tab-to-Enable then Enter in the consent dialog agrees
+- Capture-excluded consent dialog is invisible in screen shares
+- Real-upload verification with a valid token; Copium image size limit unknown
+
+S8 done (6795381, branch feature/screenshots): library pane Clips | Screenshots primary switch (hidden when one feature is off), Local | Shared levels, Trimmed as a filter chip; screenshot rows with worker-decoded thumbnails, Edit/Open/Folder/Upload or Copy link/Open page, Delete to Recycle Bin (SHFileOperation), Remove from list for shared entries; live refresh; keyboard navigation; UIA names; last feature/level remembered. Two review rounds plus touch-up. Verified: Debug and Release 0 warnings; `--unittest` 763 passed/0 failed/0 skipped (Debug plain, Debug NO_SKIP, Release NO_SKIP); 27 new tests; no BOM changes; secrets scan clean.
+
+**Screenshot tools iteration 1 complete (S1-S8).**
+
+## S8 follow-ups
+- Keyboard Tab walk through row buttons not GUI-verified
+- Shell second confirmation (cannot be recycled) untested
+- `EditorOpen` / `ListNotUpdated` paths untested
+- Thumbnail memory for 500 rows not measured
+- Tampered history roots: residual risk
+- Junctions inside the screenshots folder are followed
+
+## User open manual checks
+- HDR look of captures (decides the S7 WGC source slot)
+- PrintScreen over a game
+- First real Copium PNG upload (valid token)
+- Consent dialog look; kill switch; Features toggles
+- Library pane in both themes and at several widths
+
+## Deferred scope
+GIF/video from the screenshot tool, scrolling capture, delayed capture, auto/repeat capture, AI background remover, WGC HDR source.
+
+## Next action
+Merged to main (this commit's successor); stable release `v0.4.0` pending user confirmation. Dev builds: `v0.3.2-dev.4` (screenshots slice 8, run 40222994035) and `v0.3.2-dev.5` (capture border merged, run 40255107733, 776/0/0). Follow-ups: deterministic busy-clipboard test, user manual checks (HDR, PrintScreen over a game, real Copium upload, consent/kill switch, library pane).
 
 ## Capture border (branch claude/yellow-outline-recording-c2cb2e, commit d4f6439)
 - MonitorCapture reports a CaptureBorderState (Hidden, UnsupportedOs, Denied, SetFailed, Unconfirmed) via pure DecideBorder, with a per-start bounded borderless access request and once-per-outcome "Capture border: ..." log lines.
@@ -96,6 +156,6 @@ Remaining: user installs the first dev build by hand once (download Clink.exe fr
 - Alerts tab has Reset "Don't show again" (ResetDismissedNotices: closes open border toasts via Toasts.CloseKind, clears flags, re-shows or confirms in the footer). Commit 91a47ad.
 - Capture tab shows a status line plus "Open Windows setting" link for the Denied state.
 - 13 new tests in Tests/CaptureBorderTests.cs.
-- Verified: Debug+Release 0 warnings/errors; --unittest 394 pass (also NO_SKIP and EMULATE_ELST); --selftest 5 logged "Capture border: hidden (access Allowed)", 0 dropped frames.
+- Verified: Debug+Release 0 warnings/errors; --unittest 394 pass on its own branch / 776 on dev (also NO_SKIP and EMULATE_ELST); --selftest 5 logged "Capture border: hidden (access Allowed)", 0 dropped frames.
 - Windows facts: the borderless APIs exist from build 20348, so no Windows 10 consumer build has them. Setting: Settings > Privacy & security > Screenshot borders, switches "Screenshot border settings access", "Let apps turn off the screenshot border", "Let desktop apps turn off the screenshot border". Link: ms-settings:privacy-graphicscapturewithoutborder. Another app capturing the same display with the border on brings it back.
 - Remaining: Denied/UnsupportedOs UI not seen live; toast duration tied to ToastRecording; toast buttons and Reset not seen live (unit tests + review only). Border work fast-forwarded to main and merged into dev (which keeps the screenshots feature); screenshots stay out of main.

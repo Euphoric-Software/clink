@@ -85,7 +85,30 @@ Things that were asked for or came up while building, roughly in the order they'
 - [ ] **Bundle the Inter and Sora fonts**: the interface asks for them by name, but they are used only where they are
       installed; otherwise Windows falls back to Segoe UI Variable / Segoe UI.
 
+## Screenshots
+
+- [x] **Screenshot tools, iteration 1**: region capture over a frozen desktop (mixed DPI, multi monitor), PNG to its own
+      folder and history, clipboard, notification with Edit / Upload / Copy link / Folder; the editor (vector and raster
+      tools, adjustments, insert image, undo) as a window or right on the screen; edit-last; Copium upload with the link on
+      the clipboard, the "link your account" hint, the settings and the AI background-remover seam (no model yet).
+- [x] **Opt-in sharing, kill switch and Features (S7)**: nothing is uploaded until the user agrees once in the *Share with
+      Copium?* pop-up (with the public-links warning; Enter never agrees); *App → Cloud sharing* turns every upload off at
+      once (running ones too) and back on only after a confirmation; *App → Features* switches Clips and Screenshots on or
+      off live; the Copium token moved to the App tab. Replaces the S6 "a token means automatic upload", its one-time
+      notice and once-a-day hint.
+- [ ] **GIF / video from the screenshot tool**: drag a region and record it (the region picker already returns a result a
+      recorder could use).
+- [ ] **Scrolling capture** (long web pages, chats).
+- [ ] **Delayed capture** (a countdown, for menus and tooltips).
+- [ ] **Auto / repeat capture** (every N seconds, or on a change).
+- [ ] **Windows Graphics Capture source for HDR** (S7): GDI clips HDR highlights; the seam (`IScreenshotSource`) is there,
+      and the same source would be the fallback for an all-black exclusive-fullscreen frame.
+- [ ] **AI background remover**: `IBackgroundRemover` is in place and unavailable. Needs an on-demand model download (https,
+      pinned SHA-256, consent showing size and licence) and a runtime decision; RMBG-1.4 is non-commercial (never the
+      default), u2net / ISNet / MODNet (Apache-2.0) and BiRefNet (MIT) are permissive.
+- [ ] Edits made on screen are lost on a quit / Windows sign-out (the editor window saves a copy; the overlay does not yet).
+- [ ] A screenshot history window (today: the last 24 in the insert-image picker, and Edit last).
+
 ## Later, maybe
 
-- [ ] Screenshots (ShareX-style) with the same Copium share flow — explicitly low priority; video is the point.
 - [ ] Replace-on-share ("keep only the trimmed version").

@@ -87,9 +87,11 @@
 
                 <TabControl x:Name="Tabs">
                     <!-- ===================================================== Capture -->
-                    <TabItem Header="Capture">
+                    <TabItem x:Name="CaptureTab" Header="Capture">
                         <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,0,4,0">
                             <StackPanel Margin="0,0,0,4">
+                                <!-- the recorder's settings: collapsed while the Clips feature is off, so only HOTKEYS (screenshots need them) remains -->
+                                <StackPanel x:Name="ClipSettingsPanel">
                                 <TextBlock Style="{StaticResource H}" Text="CAPTURING" Margin="0,10,0,6" />
                                 <Border Style="{StaticResource Card}">
                                     <StackPanel>
@@ -250,8 +252,9 @@
                                         </Grid>
                                     </StackPanel>
                                 </Border>
+                                </StackPanel>
 
-                                <Grid Margin="0,14,0,6">
+                                <Grid x:Name="HotkeysHeader" Margin="0,14,0,6">
                                     <TextBlock Style="{StaticResource H}" Text="HOTKEYS" Margin="0" VerticalAlignment="Center" />
                                     <Button x:Name="ClipNowButton" Style="{StaticResource AccentButton}" Content="Clip now" Click="ClipNow_Click" Padding="12,4" HorizontalAlignment="Right" />
                                 </Grid>
@@ -261,37 +264,17 @@
                                         <CheckBox x:Name="ClickSoundCheck" Content="Click sound" Margin="2,10,0,0" Checked="MiscChanged" Unchecked="MiscChanged" ToolTip="A short click when a hotkey saves a clip" />
                                     </StackPanel>
                                 </Border>
+                                <TextBlock x:Name="ClipsOffHotkeyHint" Style="{StaticResource Hint}" Margin="2,8,0,0" TextWrapping="Wrap" Visibility="Collapsed"
+                                           Text="Clips are off (App → Features): the clip, record and share rows do nothing until you turn them on again." />
                             </StackPanel>
                         </ScrollViewer>
                     </TabItem>
 
                     <!-- ===================================================== Clips (the Copium and Storage settings; the list of clips is the Library) -->
-                    <TabItem Header="Clips">
+                    <TabItem x:Name="CopiumTab" Header="Clips">
                         <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,0,4,0">
                             <StackPanel Margin="0,0,0,4">
-                                <TextBlock Style="{StaticResource H}" Text="COPIUM" Margin="0,10,0,6" />
-                                <Border Style="{StaticResource Card}">
-                                    <StackPanel>
-                                        <Grid>
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="Auto" />
-                                            </Grid.ColumnDefinitions>
-                                            <PasswordBox x:Name="TokenBox" PasswordChanged="Token_Changed" ToolTip="Upload token (starts with eup_) from copium.pics → ShareX &amp; API" />
-                                            <Button x:Name="TokenSaveButton" Grid.Column="1" Content="Save" Margin="8,0,0,0" Click="TokenSave_Click" />
-                                        </Grid>
-                                        <StackPanel Orientation="Horizontal" Margin="2,8,0,0">
-                                            <TextBlock x:Name="CopiumStatus" Style="{StaticResource MutedText}" Text="Not connected" VerticalAlignment="Center" />
-                                            <Button Style="{StaticResource LinkButton}" Content="Get a token" Click="CopiumSite_Click" Margin="8,0,0,0" FontSize="12" />
-                                        </StackPanel>
-                                        <CheckBox x:Name="CopiumPlusCheck" Content="I have Copium+ (bigger uploads)" Margin="2,10,0,0" Checked="CopiumPlusChanged" Unchecked="CopiumPlusChanged"
-                                                  ToolTip="Copium free uploads may be at most 200 MB and 10 min long, Copium Plus uploads 2 GB and 60 min. Share checks a clip against the limits of the account you tick here and refuses a bigger one" />
-                                        <TextBlock Style="{StaticResource Hint}" Margin="2,6,0,0"
-                                                   Text="Share uploads the clip and copies the link. By default the link is the raw video file (plays inline in Discord, no embed card) unless you turn on custom embeds on copium.pics. Copium free uploads are limited to 200 MB and 10 min, Copium Plus to 2 GB and 60 min; the size targets under Capture keep clips under those. Without a token, Share opens a window you can drag the clip from (into Discord, a browser or a folder)." />
-                                    </StackPanel>
-                                </Border>
-
-                                <TextBlock Style="{StaticResource H}" Text="STORAGE" Margin="0,14,0,6" />
+                                <TextBlock Style="{StaticResource H}" Text="STORAGE" Margin="0,10,0,6" />
                                 <Border Style="{StaticResource Card}">
                                     <StackPanel>
                                         <TextBlock Style="{StaticResource FieldLabel}" Text="Local clips folder (clips are always written here first)" />
@@ -347,6 +330,55 @@
                         </ScrollViewer>
                     </TabItem>
 
+                    <!-- ===================================================== Screenshots (a separate subsystem: its own folder and history, never a clip) -->
+                    <TabItem x:Name="ScreenshotsTab" Header="Screenshots">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,0,4,0">
+                            <StackPanel Margin="0,0,0,4">
+                                <TextBlock Style="{StaticResource H}" Text="SCREENSHOTS" Margin="0,10,0,6" />
+                                <Border Style="{StaticResource Card}">
+                                    <StackPanel>
+                                        <StackPanel x:Name="ScreenshotOptions">
+                                            <TextBlock Style="{StaticResource FieldLabel}" Margin="2,0,0,3" Text="Screenshots folder" />
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBox x:Name="ScreenshotFolderBox" LostFocus="ScreenshotFolderBox_LostFocus" KeyDown="PathBox_KeyDown"
+                                                         ToolTip="Where screenshots are saved (PNG). Empty = a Screenshots folder inside the clips folder" />
+                                                <Button Grid.Column="1" Content="Browse…" Margin="6,0,0,0" Click="BrowseScreenshots_Click" />
+                                                <Button Grid.Column="2" Style="{StaticResource GlyphButton}" Content="&#xE8B7;" Margin="6,0,0,0" Click="OpenScreenshots_Click" ToolTip="Open the folder" />
+                                            </Grid>
+                                            <CheckBox x:Name="ScreenshotCopyCheck" Content="Copy the image to the clipboard" Margin="2,12,0,0" Checked="ScreenshotOptionChanged" Unchecked="ScreenshotOptionChanged"
+                                                      ToolTip="Paste it straight into Paint, Discord, Word or a browser" />
+                                            <CheckBox x:Name="ScreenshotLoupeCheck" Content="Show a magnifier while choosing the area" Margin="2,10,0,0" Checked="ScreenshotOptionChanged" Unchecked="ScreenshotOptionChanged"
+                                                      ToolTip="An 8x zoom of the pixels around the pointer, with their position and colour" />
+                                            <TextBlock Style="{StaticResource FieldLabel}" Margin="2,12,0,3" Text="After capture" />
+                                            <ComboBox x:Name="ScreenshotModeCombo" SelectionChanged="ScreenshotModeChanged" HorizontalAlignment="Left" MinWidth="240"
+                                                      AutomationProperties.Name="After capture" ToolTip="What happens when you have chosen the area" />
+                                            <!-- (the items come from ScreenshotModes.Choices) -->
+                                            <CheckBox x:Name="ScreenshotUploadCheck" Content="Upload every screenshot to Copium automatically" Margin="2,14,0,0" Checked="ScreenshotOptionChanged" Unchecked="ScreenshotOptionChanged"
+                                                      ToolTipService.ShowOnDisabled="True" AutomationProperties.Name="Upload every screenshot to Copium automatically"
+                                                      ToolTip="Off by default. After a screenshot is saved (and copied), upload it to Copium; the link is public. Turning this on asks for your OK first. The file is always saved here first; a failed upload loses nothing" />
+                                            <TextBlock x:Name="ScreenshotCloudOffHint" Style="{StaticResource Hint}" Margin="26,2,0,0" TextWrapping="Wrap" Visibility="Collapsed"
+                                                       Text="Cloud sharing is off — enable it under App → Cloud sharing" />
+                                            <StackPanel x:Name="ScreenshotTokenHint" Orientation="Horizontal" Margin="26,2,0,0">
+                                                <TextBlock Style="{StaticResource Hint}" Text="No Copium token yet." VerticalAlignment="Center" />
+                                                <Button Style="{StaticResource LinkButton}" Content="Add one under App → Copium" Click="ScreenshotTokenLink_Click" Margin="6,0,0,0" FontSize="12" />
+                                            </StackPanel>
+                                            <CheckBox x:Name="ScreenshotCopyLinkCheck" Content="Copy the link to the clipboard after uploading" Margin="26,10,0,0" Checked="ScreenshotOptionChanged" Unchecked="ScreenshotOptionChanged"
+                                                      ToolTipService.ShowOnDisabled="True" AutomationProperties.Name="Copy the link to the clipboard after uploading"
+                                                      ToolTip="The link replaces the image on the clipboard once the upload is done" />
+                                            <TextBlock Style="{StaticResource Hint}" Margin="2,10,0,0" TextWrapping="Wrap" Text="Screenshots are always saved locally. Nothing is uploaded unless you ask for it with a notification's Upload button or switch on automatic upload above." />
+                                            <TextBlock x:Name="ScreenshotHotkeyHint" Style="{StaticResource Hint}" Margin="2,12,0,0" TextWrapping="Wrap" />
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </TabItem>
+
                     <!-- ===================================================== Alerts -->
                     <TabItem Header="Alerts">
                         <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,0,4,0">
@@ -373,6 +405,7 @@
                                                 <RowDefinition Height="34" />
                                                 <RowDefinition Height="34" />
                                                 <RowDefinition Height="34" />
+                                                <RowDefinition Height="34" />
                                             </Grid.RowDefinitions>
                                             <CheckBox x:Name="ToastClipCheck" Grid.Row="0" Content="Clip saved" VerticalAlignment="Center" Checked="ToastChanged" Unchecked="ToastChanged" />
                                             <Slider x:Name="ToastClipSlider" Grid.Row="0" Grid.Column="1" Style="{StaticResource ToastSlider}" ValueChanged="ToastChanged" />
@@ -383,6 +416,11 @@
                                             <Slider x:Name="ToastSharedSlider" Grid.Row="1" Grid.Column="1" Style="{StaticResource ToastSlider}" ValueChanged="ToastChanged" />
                                             <TextBlock x:Name="ToastSharedLabel" Grid.Row="1" Grid.Column="2" Style="{StaticResource MutedText}" VerticalAlignment="Center" Text="4 s" />
                                             <Button Grid.Row="1" Grid.Column="3" Style="{StaticResource SmallButton}" Content="Preview" Tag="shared" Click="ToastPreview_Click" VerticalAlignment="Center" />
+
+                                            <CheckBox x:Name="ToastScreenshotCheck" Grid.Row="3" Content="Screenshot saved" VerticalAlignment="Center" Checked="ToastChanged" Unchecked="ToastChanged" />
+                                            <Slider x:Name="ToastScreenshotSlider" Grid.Row="3" Grid.Column="1" Style="{StaticResource ToastSlider}" ValueChanged="ToastChanged" />
+                                            <TextBlock x:Name="ToastScreenshotLabel" Grid.Row="3" Grid.Column="2" Style="{StaticResource MutedText}" VerticalAlignment="Center" Text="6 s" />
+                                            <Button Grid.Row="3" Grid.Column="3" Style="{StaticResource SmallButton}" Content="Preview" Tag="screenshot" Click="ToastPreview_Click" VerticalAlignment="Center" />
 
                                             <CheckBox x:Name="ToastRecordingCheck" Grid.Row="2" Content="Recording started" VerticalAlignment="Center" Checked="ToastChanged" Unchecked="ToastChanged" />
                                             <Slider x:Name="ToastRecordingSlider" Grid.Row="2" Grid.Column="1" Style="{StaticResource ToastSlider}" ValueChanged="ToastChanged" />
@@ -420,10 +458,63 @@
                     </TabItem>
 
                     <!-- ===================================================== App (how Clink looks, how it updates, where it keeps its settings) -->
-                    <TabItem Header="App">
+                    <TabItem x:Name="AppTab" Header="App">
                         <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,0,4,0">
                             <StackPanel Margin="0,0,0,4">
-                                <TextBlock Style="{StaticResource H}" Text="APPEARANCE" Margin="0,10,0,6" />
+                                <TextBlock Style="{StaticResource H}" Text="FEATURES" Margin="0,10,0,6" />
+                                <Border Style="{StaticResource Card}">
+                                    <StackPanel>
+                                        <CheckBox x:Name="FeatureClipsCheck" Content="Clips" Margin="2,0,0,0" Checked="FeatureChanged" Unchecked="FeatureChanged"
+                                                  ToolTipService.ShowOnDisabled="True" AutomationProperties.Name="Clips"
+                                                  ToolTip="Replay buffer, recording, clip library. Off: the recorder is not started and its hotkeys, tray items and tabs are hidden" />
+                                        <TextBlock Style="{StaticResource Hint}" Margin="26,1,0,0" Text="replay buffer, recording, clip library" />
+                                        <CheckBox x:Name="FeatureScreenshotsCheck" Content="Screenshots" Margin="2,10,0,0" Checked="FeatureChanged" Unchecked="FeatureChanged"
+                                                  ToolTipService.ShowOnDisabled="True" AutomationProperties.Name="Screenshots"
+                                                  ToolTip="Off: the screenshot hotkeys are not bound (the keys go back to Windows), the tray items and the Screenshots tab are hidden, and --screenshot does nothing" />
+                                        <TextBlock Style="{StaticResource Hint}" Margin="26,1,0,0" Text="region capture, editor, screenshot library" />
+                                        <TextBlock x:Name="FeaturesHint" Style="{StaticResource Hint}" Margin="2,8,0,0" TextWrapping="Wrap" Visibility="Collapsed"
+                                                   Text="At least one feature has to stay on, so the last one cannot be turned off." />
+                                    </StackPanel>
+                                </Border>
+
+                                <TextBlock Style="{StaticResource H}" Text="CLOUD SHARING" Margin="0,14,0,6" />
+                                <Border Style="{StaticResource Card}">
+                                    <StackPanel>
+                                        <CheckBox x:Name="CloudSharingCheck" Content="Allow cloud sharing (Copium uploads for clips and screenshots)" Margin="2,0,0,0"
+                                                  Checked="CloudSharingChanged" Unchecked="CloudSharingChanged" AutomationProperties.Name="Allow cloud sharing"
+                                                  ToolTip="Off: nothing is uploaded, the sharing buttons are hidden and the Copium token section is replaced by a note. Turning it back on asks you to confirm" />
+                                        <TextBlock Style="{StaticResource Hint}" Margin="26,4,0,0" TextWrapping="Wrap"
+                                                   Text="Turn this off on a work or shared computer. Screenshots and clips are still saved locally and copied to the clipboard. Turning it off also stops uploads that are running." />
+                                    </StackPanel>
+                                </Border>
+
+                                <TextBlock Style="{StaticResource H}" Text="COPIUM" Margin="0,14,0,6" />
+                                <!-- cloud sharing off (above): the token section is replaced by one line; the token itself is kept, not shown or editable -->
+                                <Border x:Name="CopiumCloudOffCard" Style="{StaticResource Card}" Visibility="Collapsed">
+                                    <TextBlock Style="{StaticResource MutedText}" TextWrapping="Wrap" Text="Cloud sharing is off — enable it under App → Cloud sharing" />
+                                </Border>
+                                <Border x:Name="CopiumCard" Style="{StaticResource Card}">
+                                    <StackPanel>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <PasswordBox x:Name="TokenBox" PasswordChanged="Token_Changed" ToolTip="Upload token (starts with eup_) from copium.pics → ShareX &amp; API" />
+                                            <Button x:Name="TokenSaveButton" Grid.Column="1" Content="Save" Margin="8,0,0,0" Click="TokenSave_Click" />
+                                        </Grid>
+                                        <StackPanel Orientation="Horizontal" Margin="2,8,0,0">
+                                            <TextBlock x:Name="CopiumStatus" Style="{StaticResource MutedText}" Text="Not connected" VerticalAlignment="Center" />
+                                            <Button Style="{StaticResource LinkButton}" Content="Get a token" Click="CopiumSite_Click" Margin="8,0,0,0" FontSize="12" />
+                                        </StackPanel>
+                                        <CheckBox x:Name="CopiumPlusCheck" Content="I have Copium+ (bigger uploads)" Margin="2,10,0,0" Checked="CopiumPlusChanged" Unchecked="CopiumPlusChanged"
+                                                  ToolTip="Copium free uploads may be at most 200 MB and 10 min long, Copium Plus uploads 2 GB and 60 min. Share checks a clip against the limits of the account you tick here and refuses a bigger one" />
+                                        <TextBlock Style="{StaticResource Hint}" Margin="2,6,0,0"
+                                                   Text="Nothing is uploaded until you say yes the first time you share, and cloud sharing can be turned off above. Anything you upload is public to anyone who has the link. Share uploads the clip and copies the link. By default the link is the raw video file (plays inline in Discord, no embed card) unless you turn on custom embeds on copium.pics. Copium free uploads are limited to 200 MB and 10 min, Copium Plus to 2 GB and 60 min; the size targets under Capture keep clips under those. Without a token, Share opens a window you can drag the clip from (into Discord, a browser or a folder)." />
+                                    </StackPanel>
+                                </Border>
+
+                                <TextBlock Style="{StaticResource H}" Text="APPEARANCE" Margin="0,14,0,6" />
                                 <Border Style="{StaticResource Card}">
                                     <StackPanel>
                                         <!-- The choices are built in code from ThemeManager.Themes / Accents (MainWindow.BuildAppearanceChoices), so the ids and labels live in one place -->

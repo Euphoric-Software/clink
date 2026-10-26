@@ -9,6 +9,7 @@ using Windows.Win32.Foundation;
 using Windows.Win32.Graphics.Gdi;
 using Windows.Win32.UI.WindowsAndMessaging;
 using Clink.Native;
+using Clink.Screenshots;
 using Clink.Services;
 
 namespace Clink.UI;
@@ -19,7 +20,7 @@ namespace Clink.UI;
 /// (<see cref="Settings.ToastClip"/> etc.), at one of 8 positions on the captured monitor's work area (<see cref="Settings.ToastPosition"/>, 16 px margin). Several toasts stack, the newest nearest the chosen edge; each fades in
 /// (180 ms) and fades out (260 ms) before it closes, and the rest re-stack once it has. All methods may be called from any thread.
 /// </summary>
-internal sealed class Toasts
+internal sealed class Toasts : IScreenshotToasts
 {
     private const int Margin = 16, Gap = 8;
 
@@ -88,6 +89,57 @@ internal sealed class Toasts
     });
 
     /// <summary>
+    /// "Screenshot saved" (kind "screenshot", green dot) with the size and what happened to the clipboard, and Open / Folder buttons.
+    /// Follows the "Screenshot saved" switch (<see cref="Settings.ToastScreenshot"/>). The picture itself is not shown: the toast stays small.
+    /// </summary>
+    public void ShowScreenshot(ScreenshotEntry entry, ScreenshotToastState state) => Post(() =>
+    {
+        if (!_settings.ToastScreenshot.Enabled) return;
+        Add(new ToastWindow(this, "screenshot", null, null, "Screenshot saved", ScreenshotService.Subtitle(entry, state), Duration(_settings.ToastScreenshot), false, entry, state.CanUpload));
+    });
+
+    /// <summary>
+    /// An upload of a screenshot began: the "Screenshot saved" toast that is still up for it turns into "Uploading…" with the
+    /// percentage on its button (one is made when it is gone); the handle then shows the result. Silent when the toast is switched off.
+    /// </summary>
+    public IScreenshotUploadToast ShowScreenshotUploading(ScreenshotEntry entry)
+    {
+        var handle = new UploadToast(this, entry);
+        Post(handle.Attach);
+        return handle;
+    }
+
+    private sealed class UploadToast : IScreenshotUploadToast
+    {
+        private readonly Toasts _owner;
+        private readonly ScreenshotEntry _entry;
+        private ToastWindow? _window;
+
+        public UploadToast(Toasts owner, ScreenshotEntry entry) { _owner = owner; _entry = entry; }
+
+        /// <summary>The service's cancel for this upload (the toast's Cancel button calls it on the UI thread).</summary>
+        public Action? OnCancel { get; set; }
+
+        public void Attach()
+        {
+            if (!_owner._settings.ToastScreenshot.Enabled) return;
+            _window = _owner._open.LastOrDefault(w => !w.IsDismissed && w.Shot != null && string.Equals(w.Shot.Path, _entry.Path, StringComparison.OrdinalIgnoreCase));
+            if (_window == null)
+            {
+                _window = new ToastWindow(_owner, "screenshot", null, null, "Screenshot saved", ScreenshotService.Subtitle(_entry, default), Duration(_owner._settings.ToastScreenshot), false, _entry);
+                _owner.Add(_window);
+            }
+            _window.CancelHandler = () => OnCancel?.Invoke();
+            _window.BeginUpload();
+        }
+
+        public void Report(double fraction) => _owner.Post(() => _window?.SetUploadProgress(fraction));
+        public void Succeeded(string link, bool linkCopied) => _owner.Post(() => _window?.UploadSucceeded(link, linkCopied));
+        public void Failed() => _owner.Post(() => _window?.UploadFailed());
+        public void Declined() => _owner.Post(() => _window?.UploadDeclined());
+    }
+
+    /// <summary>
     /// Why something asked for from the hotkey / tray did not happen ("Clip not saved", "Clip not uploaded" and the reason): no
     /// buttons, the text wraps, at least 8 s. Shown whatever the switches say: the caller only asks when nothing else would show it.
     /// </summary>
@@ -111,7 +163,7 @@ internal sealed class Toasts
     /// <summary>Re-stacks the open toasts after one changed its height.</summary>
     internal void Relayout() => Post(Layout);
 
-    /// <summary>Shows a sample toast of a kind ("clip" | "shared" | "recording") with the current position and duration, ignoring the enable switch.</summary>
+    /// <summary>Shows a sample toast of a kind ("clip" | "shared" | "recording" | "screenshot") with the current position and duration, ignoring the enable switch.</summary>
     public void Preview(string kind) => Post(() =>
     {
         var sample = new ClipEntry { Path = "Overwatch 2026-10-20 21-04-11.mp4", Game = "Overwatch", Duration = 90, Size = 190_000_000, Created = DateTime.Now };
@@ -122,6 +174,10 @@ internal sealed class Toasts
                 break;
             case "recording":
                 Add(new ToastWindow(this, "recording", null, null, "Recording started", "Overwatch", Duration(_settings.ToastRecording), true));
+                break;
+            case "screenshot":
+                var shot = new ScreenshotEntry { Path = "Screenshot 2026-10-20 21-04-11.png", Width = 2560, Height = 1440, Size = 1_200_000, Created = DateTime.Now };
+                Add(new ToastWindow(this, "screenshot", null, null, "Screenshot saved", ScreenshotService.Subtitle(shot, new ScreenshotToastState(true, false)), Duration(_settings.ToastScreenshot), true, shot, canUpload: true));
                 break;
             default:
                 Add(new ToastWindow(this, "clip", sample, null, "Clip saved", ClipSubtitle(sample), Duration(_settings.ToastClip), true));
@@ -220,17 +276,27 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
     internal string Kind { get; } = "clip";
     internal ClipEntry? Entry { get; }
     internal string? Link { get; }
+    /// <summary>The screenshot a "screenshot" toast is about (Open / Folder act on its file).</summary>
+    internal ScreenshotEntry? Shot { get; }
+    internal bool IsDismissed => _dismissed;
+    private string? _shotLink;                        // the Copium link of a screenshot once it is uploaded
+    private bool _uploading;                          // an upload of the screenshot is running: its button is Cancel
+    private string? _subtitleBeforeUpload;
+    /// <summary>What the Cancel button of a running upload does (set by the upload handle).</summary>
+    internal Action? CancelHandler { get; set; }
     internal Action? DontShowAction { get; init; }
     internal Action? OpenSettingAction { get => _openSetting; init { _openSetting = value; OpenSettingButton.Visibility = value != null ? Visibility.Visible : Visibility.Collapsed; } }
     private Action? _openSetting;
 
-    internal ToastWindow(Toasts owner, string kind, ClipEntry? entry, string? link, string title, string subtitle, TimeSpan duration, bool preview)
+    internal ToastWindow(Toasts owner, string kind, ClipEntry? entry, string? link, string title, string subtitle, TimeSpan duration, bool preview, ScreenshotEntry? shot = null,
+        bool canUpload = false)
     {
         InitializeComponent();
         _owner = owner;
         Kind = kind;
         Entry = entry;
         Link = link;
+        Shot = shot;
         _duration = duration;
         _preview = preview;
         TitleText.Text = Toasts.TitleFor(title);
@@ -241,6 +307,14 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         NoticeButtons.Visibility = kind == "border" ? Visibility.Visible : Visibility.Collapsed;
         ClipButtons.Visibility = kind == "clip" ? Visibility.Visible : Visibility.Collapsed;
         SharedButtons.Visibility = kind == "shared" ? Visibility.Visible : Visibility.Collapsed;
+        ScreenshotButtons.Visibility = kind == "screenshot" && shot != null ? Visibility.Visible : Visibility.Collapsed;
+        if (kind == "screenshot" && shot != null)
+        {
+            if (!string.IsNullOrEmpty(shot.CopiumLink)) { _shotLink = shot.CopiumLink; ShowLinkButton(); }
+            else if (canUpload && CloudOn) ShotUploadButton.Visibility = Visibility.Visible;   // (cloud sharing off: no Upload button)
+        }
+        // Cloud sharing off (Settings → App): nothing on a toast uploads. Existing links stay copyable.
+        if (kind == "clip" && !CloudOn) ShareButton.Visibility = Visibility.Collapsed;
         // "Share" alone without a token: the button then opens the share window (the file to drag), it does not upload.
         if (kind == "clip") ShareButton.Content = entry?.IsShared == true ? "Copy link" : AppController.Instance?.HasCopiumToken == true ? "Share to Copium" : "Share";
         _hide.Interval = duration;
@@ -298,11 +372,15 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         base.OnClosed(e);
     }
 
+    /// <summary>The cloud kill switch is on (or there is no controller, as in a preview made by a test).</summary>
+    private static bool CloudOn => AppController.Instance?.Settings.CloudSharingEnabled != false;
+
     private async void Share_Click(object sender, RoutedEventArgs e)
     {
         if (Entry == null || _busy || _preview) return;
         _busy = true;
         _hide.Stop();
+        var before = ShareButton.Content;
         ShareButton.IsEnabled = false;
         ShareButton.ToolTip = null;
         ShareButton.Content = "Uploading…";
@@ -313,6 +391,15 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         var app = AppController.Instance;
         if (app.LastShareOutcome == ShareOutcome.FileShareOpened) { Dismiss(); return; }   // no Copium token: the share window took over
         if (_dismissed) return;          // closed while it was uploading
+        if (app.LastShareOutcome == ShareOutcome.Declined)
+        {
+            // "Not now" in the Share with Copium? pop-up, or cloud sharing off: nothing failed. The button is as it was (or gone).
+            ShareButton.Content = before;
+            ShareButton.IsEnabled = true;
+            if (!CloudOn) ShareButton.Visibility = Visibility.Collapsed;
+            StartTimer();
+            return;
+        }
         // Short labels (the card is 330 wide); the full refusal or failure reason is the tooltip. The rare "could not open the share
         // window" (no token) is no upload failure: the subtitle below names it.
         ShareButton.Content = app.ShareRefusal != null ? (app.Settings.CopiumPlus ? "Over Plus limit" : "Over free limit")
@@ -362,8 +449,183 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         string? url = Entry?.CopiumPageUrl ?? Link;
         if (url != null && !_preview)
         {
-            try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); }
+            // The address came from the server or from the clip list file: only an https address is handed to the shell.
+            if (!CopiumClient.IsHttpsUrl(url, out var page)) Log.Warn("toast: not opened: the clip's link is not an https address");
+            else
+            {
+                try { Process.Start(new ProcessStartInfo(page.AbsoluteUri) { UseShellExecute = true }); }
+                catch (Exception ex) { AppController.Instance.Say("Could not open the browser: " + ex.Message); }
+            }
+        }
+        Dismiss();
+    }
+
+    // ------------------------------------------------------------------ a screenshot toast that uploads
+
+    private void ShowLinkButton()
+    {
+        ShotUploadButton.Visibility = Visibility.Visible;
+        ShotUploadButton.IsEnabled = true;
+        ShotUploadButton.Content = "Copy link";
+        ShotUploadButton.ToolTip = "Copy the Copium link";
+        ShotUploadButton.SetResourceReference(StyleProperty, "AccentButton");
+    }
+
+    /// <summary>The upload began (idempotent): the toast stays until it ends, and its button shows the progress.</summary>
+    internal void BeginUpload()
+    {
+        if (_dismissed || Shot == null) return;
+        _busy = true;
+        _hide.Stop();
+        if (!_uploading) _subtitleBeforeUpload = Subtitle.Text;
+        _uploading = true;
+        TitleText.Text = Toasts.TitleFor("Uploading screenshot…");
+        Subtitle.Text = "Uploading…";
+        // The button is the way out of a slow or stuck upload: Cancel (the progress is the second line, there is no room for both).
+        ShotUploadButton.Visibility = Visibility.Visible;
+        ShotUploadButton.IsEnabled = CancelHandler != null;   // an upload still queued behind another has nothing to cancel yet
+        ShotUploadButton.Content = "Cancel";
+        ShotUploadButton.ToolTip = "Stop uploading this screenshot (it stays saved; Retry uploads it again)";
+        System.Windows.Automation.AutomationProperties.SetName(ShotUploadButton, "Cancel the upload");
+    }
+
+    internal void SetUploadProgress(double fraction)
+    {
+        if (_dismissed || !_busy) return;
+        Subtitle.Text = $"Uploading… {Math.Clamp(fraction, 0, 1):P0}";
+    }
+
+    /// <summary>The upload is over (linked, failed, cancelled): the button is an ordinary one again and the second line is back.</summary>
+    private void EndUploadState()
+    {
+        _uploading = false;
+        CancelHandler = null;
+        if (_subtitleBeforeUpload != null) { Subtitle.Text = _subtitleBeforeUpload; _subtitleBeforeUpload = null; }
+        System.Windows.Automation.AutomationProperties.SetName(ShotUploadButton, "Upload the screenshot to Copium");
+    }
+
+    internal void UploadSucceeded(string link, bool linkCopied)
+    {
+        _busy = false;
+        if (_dismissed || Shot == null) return;
+        EndUploadState();
+        _shotLink = link;
+        TitleText.Text = Toasts.TitleFor(linkCopied ? "Screenshot saved · link copied" : "Screenshot saved · uploaded");
+        Subtitle.Text = link;
+        Subtitle.ToolTip = link;
+        ShowLinkButton();
+        if (!string.IsNullOrEmpty(Shot.CopiumPageUrl)) ShotOpenButton.ToolTip = "Open the screenshot on Copium";
+        StartTimer();
+    }
+
+    /// <summary>The upload ended without a link: back to the saved state, with Retry. The reason is a toast of its own.</summary>
+    internal void UploadFailed()
+    {
+        _busy = false;
+        if (_dismissed || Shot == null) return;
+        EndUploadState();
+        TitleText.Text = Toasts.TitleFor("Screenshot saved");
+        ShotUploadButton.IsEnabled = true;
+        ShotUploadButton.Content = "Retry";
+        ShotUploadButton.ToolTip = "Upload the screenshot to Copium again";
+        StartTimer();
+    }
+
+    /// <summary>The upload was stopped because cloud sharing was turned off: back to the saved state, neutral, no Upload / Retry button.</summary>
+    internal void UploadDeclined()
+    {
+        _busy = false;
+        if (_dismissed || Shot == null) return;
+        EndUploadState();
+        TitleText.Text = Toasts.TitleFor("Screenshot saved");
+        ShotUploadButton.Visibility = Visibility.Collapsed;
+        StartTimer();
+    }
+
+    private async void ShotUpload_Click(object sender, RoutedEventArgs e)
+    {
+        if (Shot == null || _preview) return;
+        if (_uploading)
+        {
+            // Cancel: the service stops the HTTP call; the toast then goes back to Retry (UploadFailed).
+            ShotUploadButton.IsEnabled = false;
+            ShotUploadButton.Content = "Cancelling…";
+            CancelHandler?.Invoke();
+            return;
+        }
+        if (_busy) return;
+        if (_shotLink is string link)
+        {
+            AppController.Instance.CopyToClipboard(link);   // an existing link stays copyable whatever the kill switch says
+            ShotUploadButton.Content = "Copied ✓";
+            StartTimer();
+            return;
+        }
+        // Sharing is opt-in: the first Upload asks (the pop-up), and cloud sharing off refuses. The toast stays as it was when declined.
+        _busy = true;
+        _hide.Stop();
+        bool allowed;
+        try { allowed = await AppController.Instance.EnsureCopiumConsentAsync(ConsentContext.ScreenshotUploadManual); }
+        finally { _busy = false; }
+        if (!allowed)
+        {
+            if (!CloudOn && !_dismissed) ShotUploadButton.Visibility = Visibility.Collapsed;
+            StartTimer();
+            return;
+        }
+        if (_dismissed) return;
+        BeginUpload();
+        bool ok = false;
+        try { ok = await AppController.Instance.Screenshots.UploadAsync(Shot, manual: true); }
+        catch (Exception ex) { Log.Error("screenshot: upload", ex); }
+        // The upload reports its own end through the toast service; this covers an upload that never started or was already done.
+        if (!_busy || _dismissed) return;
+        if (ok && Shot.CopiumLink is string done) UploadSucceeded(done, false);
+        else UploadFailed();
+    }
+
+    private void ShotOpen_Click(object sender, RoutedEventArgs e)
+    {
+        // Uploaded: the page on Copium (an https address only: it came from the server); otherwise the file.
+        if (Shot != null && !_preview && _shotLink != null && Uri.TryCreate(Shot.CopiumPageUrl, UriKind.Absolute, out var page) && page.Scheme == Uri.UriSchemeHttps)
+        {
+            try { Process.Start(new ProcessStartInfo(page.AbsoluteUri) { UseShellExecute = true }); }
             catch (Exception ex) { AppController.Instance.Say("Could not open the browser: " + ex.Message); }
+            Dismiss();
+            return;
+        }
+        if (Shot != null && !_preview && System.IO.File.Exists(Shot.Path))
+        {
+            // Shell-executed only as a .png inside the current screenshots folder or a folder screenshots were recorded as saved to
+            // (never a folder that only a history entry names, nor a network path while the folder is local): a path from the history file must never start a program.
+            if (!AppController.Instance.Screenshots.IsOpenableEntry(Shot.Path))
+            {
+                Log.Warn("screenshot: not opened: not a .png in a screenshots folder");
+                AppController.Instance.Say("Could not open the screenshot: it is not in the screenshots folder");
+            }
+            else
+            {
+                try { Process.Start(new ProcessStartInfo(Shot.Path) { UseShellExecute = true }); }
+                catch (Exception ex) { AppController.Instance.Say("Could not open the screenshot: " + ex.Message); }
+            }
+        }
+        Dismiss();
+    }
+
+    private void ShotEdit_Click(object sender, RoutedEventArgs e)
+    {
+        // The service checks the file (a screenshot of this app, a readable .png) and opens the editor, or says why not.
+        if (Shot != null && !_preview) AppController.Instance.Screenshots.EditFile(Shot.Path);
+        Dismiss();
+    }
+
+    private void ShotFolder_Click(object sender, RoutedEventArgs e)
+    {
+        if (Shot != null && !_preview)
+        {
+            // The file is gone (deleted, moved): the screenshots folder, never the clips folder OpenFolder falls back to.
+            if (System.IO.File.Exists(Shot.Path)) AppController.Instance.OpenFolder(Shot.Path);
+            else AppController.Instance.OpenScreenshotsFolder();
         }
         Dismiss();
     }

@@ -68,6 +68,7 @@ internal sealed partial class AppController
     public void ToggleRecording()
     {
         if (_disposed || _exiting) return;
+        if (!Settings.ClipsEnabled) { ClipsOffNotice(); return; }
         if (_finishing) { Say("Finishing the recording…"); return; }
         if ((DateTime.UtcNow - _lastRecordToggleAt).TotalMilliseconds < 700) { Say("One moment…"); return; }
         if (Engine.IsRecording || _wantRecording || RecordingQueued) StopRecording(userRequested: true);

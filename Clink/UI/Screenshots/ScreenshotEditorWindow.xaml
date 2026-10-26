@@ -1,0 +1,46 @@
+<Window x:Class="Clink.UI.Screenshots.ScreenshotEditorWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:sc="clr-namespace:Clink.UI.Screenshots"
+        Title="Clink screenshot editor" Width="1100" Height="760" MinWidth="860" MinHeight="520"
+        UseLayoutRounding="True" WindowStyle="None" ResizeMode="CanResizeWithGrip" AllowsTransparency="True" Background="Transparent"
+        WindowStartupLocation="Manual" FontFamily="{StaticResource UiFont}" PreviewKeyDown="Window_PreviewKeyDown" PreviewKeyUp="Window_PreviewKeyUp">
+    <Border Background="{DynamicResource Bg}" CornerRadius="10" BorderBrush="{DynamicResource Border}" BorderThickness="1">
+        <DockPanel>
+            <Grid DockPanel.Dock="Top" Height="42" MouseLeftButtonDown="Header_MouseLeftButtonDown" Background="Transparent">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock x:Name="TitleText" Style="{StaticResource Display}" Text="Screenshot" Margin="16,0,12,0" VerticalAlignment="Center" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
+                <TextBlock x:Name="HintText" Grid.Column="1" Style="{StaticResource MutedText}" Margin="0,0,52,0" VerticalAlignment="Center" TextWrapping="NoWrap" Visibility="Collapsed" />
+                <Button x:Name="CloseButton" Grid.ColumnSpan="2" Style="{StaticResource IconButton}" Content="✕" HorizontalAlignment="Right" Margin="0,0,8,0" Click="Close_Click"
+                        AutomationProperties.Name="Close the editor" ToolTip="Close (Esc)" />
+            </Grid>
+
+            <Border DockPanel.Dock="Bottom" Padding="16,10,16,14" BorderBrush="{DynamicResource Border}" BorderThickness="0,1,0,0">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock x:Name="StatusText" Style="{StaticResource MutedText}" Foreground="{DynamicResource Accent2}" VerticalAlignment="Center" Margin="0,0,14,0"
+                               TextWrapping="Wrap" MinHeight="17" AutomationProperties.LiveSetting="Polite" />
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
+                        <Button x:Name="DiscardButton" Content="Discard" Click="Discard_Click" Margin="0,0,8,0" AutomationProperties.Name="Discard" ToolTip="Close without saving (Esc)" />
+                        <Button x:Name="DoneButton" Style="{StaticResource AccentButton}" Content="Done" Click="Done_Click" MinWidth="88" AutomationProperties.Name="Done"
+                                ToolTip="Save the picture, copy it and close (Ctrl+Enter)" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <Border x:Name="ToolbarHost" DockPanel.Dock="Top" Padding="14,4,14,10">
+                <sc:EditorToolbar x:Name="Toolbar" />
+            </Border>
+
+            <Border Margin="1,0,1,0" BorderBrush="{DynamicResource Border}" BorderThickness="0,1,0,0">
+                <sc:EditorCanvas x:Name="Canvas" />
+            </Border>
+        </DockPanel>
+    </Border>
+</Window>

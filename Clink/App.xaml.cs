@@ -220,7 +220,11 @@ public partial class App : System.Windows.Application
         _controller = new AppController(settings, updater);
         // Windows signing out / shutting down: finish a manual recording (up to ~4 s) before the process is ended, so its file is
         // complete. (Not final: another program may still cancel the session end.)
-        SessionEnding += (_, _) => _controller?.StopRecordingForExit(final: false);
+        SessionEnding += (_, _) =>
+        {
+            _controller?.StopRecordingForExit(final: false);   // first: an unfinished recording is worth more than edits
+            _controller?.SaveEditorForSessionEnd();            // unsaved screenshot edits: a copy is saved
+        };
         var main = new MainWindow();
         if (dev != null) main.Title = "Clink (dev)";
         MainWindow = main;
