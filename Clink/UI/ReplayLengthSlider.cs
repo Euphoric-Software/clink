@@ -162,7 +162,7 @@ internal sealed class ReplayLengthSlider : FrameworkElement
     protected override Size MeasureOverride(Size availableSize) =>
         new(double.IsInfinity(availableSize.Width) ? 300 : availableSize.Width, ControlHeight);
 
-    // The fallbacks are the Dark / Cyan palette (UI/Palette.xaml), for a control that is drawn where the application's resources are not.
+    // The fallbacks are the Dark / Spark Blue palette (UI/Palette.xaml), for a control that is drawn where the application's resources are not.
     private Brush Res(string key, Color fallback) => TryFindResource(key) as Brush ?? new SolidColorBrush(fallback);
 
     protected override void OnRender(DrawingContext dc)
@@ -173,12 +173,12 @@ internal sealed class ReplayLengthSlider : FrameworkElement
         // Hit-test surface (the whole control, including the label), so a click anywhere on the row moves the thumb.
         dc.DrawRectangle(Brushes.Transparent, null, new Rect(0, 0, w, h));
 
-        var track = Res("Panel3", Color.FromRgb(0x2E, 0x36, 0x45));
-        var zone = Res("AccentDim", Color.FromRgb(0x1B, 0x6F, 0x84));
-        var fg = Res("Fg", Color.FromRgb(0xEA, 0xF2, 0xFF));
-        var muted = Res("Muted", Color.FromRgb(0x8A, 0x94, 0xA6));
-        var accent = Res("Accent", Color.FromRgb(0x22, 0xD3, 0xEE));
-        var accent2 = Res("Accent2", Color.FromRgb(0x3B, 0x82, 0xF6));   // the "ideal" caption: text, so Accent2 (the accent as text does not read on the light theme)
+        var track = Res("Panel3", Color.FromRgb(0x3B, 0x3E, 0x4B));
+        var zone = Res("AccentDim", Color.FromRgb(0x3D, 0x5A, 0x78));
+        var fg = Res("Fg", Color.FromRgb(0xE9, 0xEB, 0xF2));
+        var muted = Res("Muted", Color.FromRgb(0x9E, 0xA4, 0xB3));
+        var accent = Res("Accent", Color.FromRgb(0x6F, 0x9C, 0xC4));
+        var accent2 = Res("Accent2", Color.FromRgb(0x8E, 0xB1, 0xD2));   // the "ideal" caption: text, so Accent2 (the accent as text fails 4.5:1 on the light theme for several accents)
         var danger = Res("Danger", Color.FromRgb(0xF2, 0x6B, 0x6B));
         var overLimit = Res("DangerTint", Color.FromArgb(0x70, 0xF2, 0x6B, 0x6B));
         double left = TrackLeft, right = TrackRight;

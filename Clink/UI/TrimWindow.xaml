@@ -95,7 +95,7 @@
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
-                    <!-- Accent2, not Accent: the accent as text measures under 4.5:1 on the light theme for Cyan and Orange -->
+                    <!-- Accent2, not Accent: the accent as text fails 4.5:1 on the light theme for several accents (e.g. Orange, Pink) -->
                     <TextBlock x:Name="StatusText" Style="{StaticResource MutedText}" Foreground="{DynamicResource Accent2}" VerticalAlignment="Center" Margin="0,0,14,0" TextWrapping="Wrap" Text="" MinHeight="17" />
                     <StackPanel x:Name="SaveButtons" Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
                         <CheckBox x:Name="ReplaceCheck" Content="Replace original" VerticalAlignment="Center" Margin="0,0,14,0" />

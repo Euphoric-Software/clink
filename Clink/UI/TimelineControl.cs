@@ -78,7 +78,7 @@ internal sealed class TimelineControl : FrameworkElement
 
     // ------------------------------------------------------------------ rendering
 
-    // The fallbacks are the Dark / Cyan palette (UI/Palette.xaml), for a control that is drawn where the application's resources are not.
+    // The fallbacks are the Dark / Spark Blue palette (UI/Palette.xaml), for a control that is drawn where the application's resources are not.
     private Brush B(string key, Color fallback) => TryFindResource(key) as Brush ?? new SolidColorBrush(fallback);
 
     protected override void OnRender(DrawingContext dc)
@@ -89,15 +89,15 @@ internal sealed class TimelineControl : FrameworkElement
         // Transparent hit-test background so clicks anywhere in the control register.
         dc.DrawRectangle(Brushes.Transparent, null, new Rect(0, 0, w, h));
 
-        Brush panel2 = B("Panel2", Color.FromRgb(0x23, 0x2A, 0x37));
-        Brush panel3 = B("Panel3", Color.FromRgb(0x2E, 0x36, 0x45));
-        Brush border = B("Border", Color.FromRgb(0x2A, 0x32, 0x40));
-        Brush fg = B("Fg", Color.FromRgb(0xEA, 0xF2, 0xFF));
-        Brush muted = B("Muted", Color.FromRgb(0x8A, 0x94, 0xA6));
-        Brush accent = B("Accent", Color.FromRgb(0x22, 0xD3, 0xEE));
-        Brush accentDim = B("AccentDim", Color.FromRgb(0x1B, 0x6F, 0x84));
-        Brush accent2 = B("Accent2", Color.FromRgb(0x3B, 0x82, 0xF6));
-        Brush bg = B("Bg", Color.FromRgb(0x0A, 0x0E, 0x14));
+        Brush panel2 = B("Panel2", Color.FromRgb(0x30, 0x33, 0x3E));
+        Brush panel3 = B("Panel3", Color.FromRgb(0x3B, 0x3E, 0x4B));
+        Brush border = B("Border", Color.FromRgb(0x36, 0x39, 0x46));
+        Brush fg = B("Fg", Color.FromRgb(0xE9, 0xEB, 0xF2));
+        Brush muted = B("Muted", Color.FromRgb(0x9E, 0xA4, 0xB3));
+        Brush accent = B("Accent", Color.FromRgb(0x6F, 0x9C, 0xC4));
+        Brush accentDim = B("AccentDim", Color.FromRgb(0x3D, 0x5A, 0x78));
+        Brush accent2 = B("Accent2", Color.FromRgb(0x8E, 0xB1, 0xD2));
+        Brush bg = B("Bg", Color.FromRgb(0x1B, 0x1D, 0x24));
 
         double dur = Duration;
         double tw = TrackWidth;
