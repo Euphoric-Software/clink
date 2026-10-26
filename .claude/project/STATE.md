@@ -148,7 +148,7 @@ S8 done (6795381, branch feature/screenshots): library pane Clips | Screenshots 
 GIF/video from the screenshot tool, scrolling capture, delayed capture, auto/repeat capture, AI background remover, WGC HDR source.
 
 ## Next action
-Merged to main (this commit's successor); stable release `v0.4.0` pending user confirmation. Dev builds: `v0.3.2-dev.4` (screenshots slice 8, run 40222994035) and `v0.3.2-dev.5` (capture border merged, run 40255107733, 776/0/0). Follow-ups: deterministic busy-clipboard test, user manual checks (HDR, PrintScreen over a game, real Copium upload, consent/kill switch, library pane).
+Merged to main (this commit's successor); stable release `v0.4.0` PUBLISHED 2026-10-25 from 8ac6ec5 (tag v0.4.0, release.yml run 40262723837 success; Latest, Clink.exe + sha256). Dev builds: `v0.3.2-dev.4` (screenshots slice 8, run 40222994035) and `v0.3.2-dev.5` (capture border merged, run 40255107733, 776/0/0). Follow-ups: deterministic busy-clipboard test, user manual checks (HDR, PrintScreen over a game, real Copium upload, consent/kill switch, library pane).
 
 ## Capture border (branch claude/yellow-outline-recording-c2cb2e, commit d4f6439)
 - MonitorCapture reports a CaptureBorderState (Hidden, UnsupportedOs, Denied, SetFailed, Unconfirmed) via pure DecideBorder, with a per-start bounded borderless access request and once-per-outcome "Capture border: ..." log lines.
