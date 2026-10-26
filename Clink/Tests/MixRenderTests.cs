@@ -19,6 +19,7 @@ namespace Clink.Tests;
 internal static class MixRenderTests
 {
     private static readonly string[] Names = { "Mix", "Game", "Mic", "Voice", "Desktop" };
+    private static readonly string[] AllNames = { "All", "Game", "Mic", "Voice", "Desktop" };
     private static readonly float[] Unity = { 1, 1, 1, 1, 1 };
 
     private static string? s_whyNoAac;
@@ -88,8 +89,8 @@ internal static class MixRenderTests
     }
 
     /// <summary>The tone of <paramref name="hz"/> in the track is <paramref name="share"/> times the level it was recorded at (0 = absent), give or take <paramref name="tolerance"/> of that level.</summary>
-    private static void ExpectTone(float[] track, double hz, double share, double tolerance, string what)
-        => Check.Near(share * SyntheticClip.Level, TestAudio.Amplitude(track, 48000, hz), tolerance * SyntheticClip.Level, $"{what}: level of the {hz:0} Hz tone");
+    private static void ExpectTone(float[] track, double hz, double share, double tolerance, string what, float level = SyntheticClip.Level)
+        => Check.Near(share * level, TestAudio.Amplitude(track, 48000, hz), tolerance * level, $"{what}: level of the {hz:0} Hz tone");
 
     private const double Present = .07, Absent = .02;   // what counts as "at its level" and as "not there", as a share of the recorded level
 
@@ -228,6 +229,85 @@ internal static class MixRenderTests
         });
     }
 
+    [UnitTest]
+    public static void An_All_clip_holds_everything_but_Clink_and_the_Mic_in_its_first_track()
+    {
+        using var dir = new TempDir();
+        string clip = dir.File("all.mp4");
+        OnMta(() =>
+        {
+            var written = SyntheticClip.Write(clip, 6, allTrack: true, level: SyntheticClip.AllLevel);
+            Check.Equal(AllNames, written);
+            Check.Equal(AllNames, Trimmer.ReadAudioTrackNames(clip)!);
+            var all = TestAudio.Decode(clip, 0);
+            foreach (double hz in new[] { SyntheticClip.GameHz, SyntheticClip.DesktopHz, SyntheticClip.OtherHz, SyntheticClip.MicHz }) ExpectTone(all, hz, 1, Present, "All", SyntheticClip.AllLevel);
+            ExpectTone(all, SyntheticClip.VoiceHz, 0, Absent, "the Voice is not in All", SyntheticClip.AllLevel);
+            ExpectTone(TestAudio.Decode(clip, 4), SyntheticClip.OtherHz, 0, Absent, "Desktop has none of the other sound", SyntheticClip.AllLevel);
+        });
+    }
+
+    [UnitTest]
+    public static void On_an_All_clip_the_Mic_at_zero_comes_out_of_All_and_the_rest_stays()
+    {
+        using var dir = new TempDir();
+        string clip = dir.File("all.mp4"), output = dir.File("out.mp4");
+        OnMta(() =>
+        {
+            SyntheticClip.Write(clip, 6, allTrack: true, level: SyntheticClip.AllLevel);
+            var plan = PlanFor(AllNames, new float[] { 1, 1, 0, 1, 1 });
+            Check.Equal(new[] { new MixInput(0, 1f), new MixInput(2, -1f) }, plan[0].Sum!, "All itself and the Mic taken out again");
+            var kept = Trimmer.Trim(clip, output, 1, 5, AllNames, plan);
+            Check.Equal(AllNames, kept, "all five tracks stay, in the same order");
+            var all = TestAudio.Decode(output, 0);
+            // All and the Mic were coded apart, so a trace of the mic remains, far below what it was.
+            ExpectTone(all, SyntheticClip.MicHz, 0, .03, "All without the mic", SyntheticClip.AllLevel);
+            foreach (double hz in new[] { SyntheticClip.GameHz, SyntheticClip.DesktopHz, SyntheticClip.OtherHz }) ExpectTone(all, hz, 1, Present, "All without the mic", SyntheticClip.AllLevel);
+            ExpectTone(TestAudio.Decode(output, 2), SyntheticClip.MicHz, 0, Absent, "Mic's own track, also at 0", SyntheticClip.AllLevel);
+            ExpectTone(TestAudio.Decode(output, 1), SyntheticClip.GameHz, 1, Present, "Game's own track is untouched", SyntheticClip.AllLevel);
+            Check.Near(4.0, TestAudio.Seconds(all), .15, "length of All");
+        });
+    }
+
+    [UnitTest]
+    public static void On_a_loud_All_clip_the_Mic_at_zero_leaves_a_bounded_residue_of_the_soft_knee()
+    {
+        using var dir = new TempDir();
+        string clip = dir.File("loud.mp4"), output = dir.File("out.mp4");
+        OnMta(() =>
+        {
+            const float Loud = .3f;   // four tones of .3: the sum reaches 1.2, well past the 0.8 knee
+            SyntheticClip.Write(clip, 6, allTrack: true, level: Loud);
+            var plan = PlanFor(AllNames, new float[] { 1, 1, 0, 1, 1 });
+            Trimmer.Trim(clip, output, 1, 5, AllNames, plan);
+            var all = TestAudio.Decode(output, 0);
+            double residue = TestAudio.Amplitude(all, 48000, SyntheticClip.MicHz) / Loud;
+            Console.WriteLine($"  (loud All minus the Mic: what is left of the Mic tone {residue:P1} of its level)");
+            // Inherent, not a bug: All = SoftKnee(feeder + mic) was baked, so where the sum passed the knee the Mic is no longer a
+            // separable addend and subtracting it cannot rebuild the feeder alone. The residue is bounded, not zero.
+            Check.True(residue > .003, $"the knee does leave a trace ({residue:P1}), which is why this is documented");
+            Check.True(residue < ResidueBound, $"but it stays bounded ({residue:P1} of the Mic's level)");
+        });
+    }
+
+    private const double ResidueBound = .05;   // measured 1.8% here; the margin is for the encoder
+    [UnitTest]
+    public static void On_an_All_clip_the_Game_at_zero_leaves_All_copied_and_silences_only_the_Game_track()
+    {
+        using var dir = new TempDir();
+        string clip = dir.File("all.mp4"), output = dir.File("out.mp4");
+        OnMta(() =>
+        {
+            SyntheticClip.Write(clip, 6, allTrack: true, level: SyntheticClip.AllLevel);
+            var plan = PlanFor(AllNames, new float[] { 1, 0, 1, 1, 1 });
+            foreach (var track in plan) Check.Null(track.Sum, "nothing is rendered from other tracks");
+            Trimmer.Trim(clip, output, 1, 5, AllNames, plan);
+            Check.True(TestAudio.IsSlice(TestAudio.Frames(clip, 0), TestAudio.Frames(output, 0)), "All is copied frame for frame");
+            ExpectTone(TestAudio.Decode(output, 0), SyntheticClip.GameHz, 1, Present, "All still holds the game", SyntheticClip.AllLevel);
+            Check.True(TestAudio.Rms(TestAudio.Decode(output, 1)) < .002, "Game's own track is silent, as its slider said");
+            Check.True(TestAudio.IsSlice(TestAudio.Frames(clip, 2), TestAudio.Frames(output, 2)), "Mic is copied");
+            ExpectTone(TestAudio.Decode(output, 4), SyntheticClip.DesktopHz, 1, Present, "Desktop", SyntheticClip.AllLevel);
+        });
+    }
     [UnitTest]
     public static void With_every_source_at_100_percent_the_Mix_is_copied_frame_for_frame()
     {
@@ -500,7 +580,9 @@ internal static class MixRenderTests
 internal static unsafe class SyntheticClip
 {
     public const double GameHz = 440, MicHz = 880, VoiceHz = 1320, DesktopHz = 220;
+    public const double OtherHz = 660;                              // a sound that is in the All track and in no track of its own (some other program)
     private const int Rate = AudioTrack.Rate, PacketFrames = 960;   // 20 ms packets, as the capture delivers
+    public const float AllLevel = .12f;                             // peak of every tone of an All clip: its four sources and their noise stay under the soft knee (0.8)
     public const float Level = .2f;                                 // peak of every tone; the three sources plus noise stay under the Mix's soft clip (0.8)
     private const float Noise = .08f;                               // peak-to-peak of the white noise on every source
     private const long Origin = 1_000_000_000;                     // an arbitrary clock reading, as a recording has
@@ -529,9 +611,10 @@ internal static unsafe class SyntheticClip
     /// <param name="stampLag">Frames to add to the timestamps of Game, Mic, Voice and Desktop when the clip is muxed: a recording whose tracks were written with the wrong places (what a trim by a Clink before the mark did).</param>
     /// <param name="aligned">False writes the file without the mark, as a Clink before it did.</param>
     /// <param name="wave">The shape of source <c>s</c> (0 Game, 1 Mic, 2 Voice, 3 Desktop) at sample <c>n</c> of the second, -1..1 (before <paramref name="level"/>); a sine of <paramref name="hz"/> by default.</param>
+    /// <param name="allTrack">True makes track 1 an <c>All</c> as a newer recording does: everything but Clink (the Game and Desktop sounds and an <see cref="OtherHz"/> tone) plus the Mic, with the Game, Mic, Voice and Desktop tracks beside it. The Voice is not in it.</param>
     /// <returns>The names of the tracks written, in file order.</returns>
     public static string[] Write(string path, double seconds, bool voiceTrack = true, float level = Level, double[]? hz = null,
-        double[]? delays = null, double noiseScale = 1, long[]? stampLag = null, bool aligned = true, Func<int, long, float>? wave = null)
+        double[]? delays = null, double noiseScale = 1, long[]? stampLag = null, bool aligned = true, Func<int, long, float>? wave = null, bool allTrack = false)
     {
         hz ??= new[] { GameHz, MicHz, VoiceHz, DesktopHz };
         delays ??= DefaultDelays;
@@ -540,18 +623,22 @@ internal static unsafe class SyntheticClip
         var mic = new AudioTrack("Mic");
         var voice = new AudioTrack("Voice");
         var desktop = new AudioTrack("Desktop");
-        var mix = new AudioTrack("Mix", new[] { game, mic, voice });
+        var feeder = allTrack ? new AudioTrack("Loopback", null, feeder: true) : null;   // the loopback of everything but Clink: mixed into All, never written
+        var mix = allTrack ? new AudioTrack("All", new[] { feeder!, mic }) : new AudioTrack("Mix", new[] { game, mic, voice });
         var all = new[] { mix, game, mic, voice, desktop };
+        var driven = feeder != null ? all.Append(feeder).ToArray() : all;
         try
         {
             var tones = new (AudioTrack track, double hz)[] { (game, hz[0]), (mic, hz[1]), (voice, hz[2]), (desktop, hz[3]) };
             var seeds = new uint[] { 0x9E3779B9, 0x85EBCA6B, 0xC2B2AE35, 0x27D4EB2F };   // one noise sequence per source
             var packet = new float[PacketFrames * 2];
+            var feed = new float[PacketFrames * 2];
             long start = Origin - PreRoll;
             long packets = (long)Math.Ceiling((seconds + 2) * 50);   // the second before the clip, the clip, and a second more so the mix has caught up with its end
             for (long p = 0; p < packets; p++)
             {
                 long tick = start + p * 200_000;
+                Array.Clear(feed);
                 for (int s = 0; s < tones.Length; s++)
                 {
                     var (track, toneHz) = tones[s];
@@ -566,13 +653,24 @@ internal static unsafe class SyntheticClip
                         packet[i * 2] = v; packet[i * 2 + 1] = v;
                     }
                     fixed (float* f = packet) track.OnPacket(f, PacketFrames, qpc, false);
+                    if (feeder != null && s is 0 or 3) for (int i = 0; i < feed.Length; i++) feed[i] += packet[i];
+                }
+                if (feeder != null)
+                {
+                    for (int i = 0; i < PacketFrames; i++)
+                    {
+                        long n = (p * PacketFrames + i) % Rate;
+                        float other = level * (float)Math.Sin(2 * Math.PI * OtherHz * n / Rate);
+                        feed[i * 2] += other; feed[i * 2 + 1] += other;
+                    }
+                    fixed (float* f = feed) feeder.OnPacket(f, PacketFrames, tick, false);
                 }
                 if (p % 5 == 4)
                 {
                     // The engine's audio loop every 100 ms: sources first, then the mix up to 300 ms behind now.
                     long until = tick + 200_000 - 3_000_000;
-                    foreach (var t in all) t.PadSilenceTo(until);
-                    foreach (var t in all) t.MixUpTo(until);
+                    foreach (var t in driven) t.PadSilenceTo(until);
+                    foreach (var t in driven) t.MixUpTo(until);
                 }
             }
 
@@ -592,7 +690,7 @@ internal static unsafe class SyntheticClip
             }
             return ClipWriter.Write(path, Video(seconds), "h264", 16, 16, null, audio, Origin, 0, aligned);
         }
-        finally { foreach (var t in all) t.Dispose(); }
+        finally { foreach (var t in driven) t.Dispose(); }
     }
 
     /// <summary>

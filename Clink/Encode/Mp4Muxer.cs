@@ -744,10 +744,10 @@ internal sealed class Mp4Muxer : IDisposable
         if (_aligned)
         {
             var roles = Engine.MixPlan.Roles(audio.Select(t => t.A!.Name).ToArray(), audio.Count);
-            if (roles[0] == Engine.TrackRole.Mix)
+            if (Engine.MixPlan.IsMix(roles[0]))
             {
                 for (int i = 1; i < roles.Length; i++)
-                    if (roles[i] is Engine.TrackRole.Game or Engine.TrackRole.Mic or Engine.TrackRole.Voice)
+                    if (Engine.MixPlan.Feeds(roles[0], roles[i]))
                         start[i] = start[0] - (long)Math.Round(real[0] - real[i], MidpointRounding.AwayFromZero);
             }
         }

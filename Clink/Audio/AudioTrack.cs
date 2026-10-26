@@ -20,12 +20,16 @@ internal sealed unsafe class AudioTrack : IDisposable
     public string Name { get; }
     public WasapiSource? Source { get; set; }
     /// <summary>Write this track into clips. Sources are captured regardless (the mix needs them).</summary>
-    public bool Enabled { get; set; } = true;
+    public bool Enabled { get => !IsFeeder && _enabled; set => _enabled = value; }
+    private bool _enabled = true;
     /// <summary>Tracks this one is mixed from (null for a normal captured track).</summary>
     public IReadOnlyList<AudioTrack>? MixOf { get; }
     public bool IsMix => MixOf != null;
 
-    private readonly AacEncoder _enc = new(Rate, 2, 24000);
+    /// <summary>A hidden source that only feeds a mix: it keeps its PCM history but is never AAC-encoded, written or tapped.</summary>
+    public bool IsFeeder { get; }
+
+    private readonly AacEncoder? _enc;
     private readonly float[] _acc = new float[FrameSamples * 2];
     private int _accFrames;
     private long _basePts;
@@ -36,14 +40,16 @@ internal sealed unsafe class AudioTrack : IDisposable
     private long _frameIndex;     // AAC frames emitted
     private readonly float[] _history = new float[HistoryFrames * 2];
 
-    public AudioTrack(string name, IReadOnlyList<AudioTrack>? mixOf = null)
+    public AudioTrack(string name, IReadOnlyList<AudioTrack>? mixOf = null, bool feeder = false)
     {
         Name = name;
         MixOf = mixOf;
+        IsFeeder = feeder && mixOf == null;
+        if (!IsFeeder) _enc = new AacEncoder(Rate, 2, 24000);
     }
 
-    public byte[] AudioSpecificConfig => _enc.AudioSpecificConfig;
-    public int Bitrate => _enc.BytesPerSecond * 8;
+    public byte[] AudioSpecificConfig => _enc?.AudioSpecificConfig ?? Array.Empty<byte>();
+    public int Bitrate => (_enc?.BytesPerSecond ?? 0) * 8;
     public bool Started => _started;
     public long TimelineEnd => _started ? PtsAt(_samplePos) : 0;
     public long FrameCount { get { lock (_gate) return _frames.Count; } }
@@ -211,6 +217,7 @@ internal sealed unsafe class AudioTrack : IDisposable
 
     private void FlushFrame()
     {
+        if (_enc == null) { _accFrames = 0; _frameIndex++; return; }   // a feeder keeps only its PCM history
         long pts = PtsAt(_samplePos - FrameSamples);
         Span<byte> pcm = stackalloc byte[FrameSamples * 4];
         for (int i = 0; i < FrameSamples * 2; i++)
@@ -274,6 +281,6 @@ internal sealed unsafe class AudioTrack : IDisposable
     public void Dispose()
     {
         Source?.Dispose();
-        _enc.Dispose();
+        _enc?.Dispose();
     }
 }

@@ -25,7 +25,8 @@ internal sealed class EngineConfig
     public float GopSeconds = 1f;
     public int BufferSeconds = 120;
     public bool CaptureCursor = true;
-    // Track 1 is always the mix of game + mic + voice. These flags say whether each part is also written as its own track.
+    // Track 1 is always "All": everything you hear except Clink, plus the mic. These flags say which extra tracks are written
+    // (the mic is captured for All either way); Game, Voice and Desktop are captured only when their track is on.
     public bool TrackGame = true, TrackMic = true, TrackVoice = false;
     public bool TrackDesktop = false;      // extra track: everything you hear (loopback of an output device), or an audio input
     public string? AllDeviceId;            // Desktop track: "out:<id>" / bare render id = loopback of that output, "in:<id>" = capture device; null = default output
@@ -75,6 +76,8 @@ internal sealed unsafe class Engine : IDisposable
     private uint _gamePid; private string? _gameName;
     private uint _voicePid; private string? _voiceName;
     private AudioTrack? _gameTrack, _voiceTrack;
+    private AudioTrack? _feeder;          // hidden: everything except Clink (process loopback), feeds All; never encoded or written
+    private bool _feederFallback;         // the feeder now records the endpoint loopback (per-process loopback would not start)
     private int _ringSeconds;
     private sealed record GameHint(uint Pid, string Name);
     private volatile GameHint? _gameHint;   // the app's own game detection (AppController), see SetDetectedGame; read by the audio thread
@@ -297,7 +300,8 @@ internal sealed unsafe class Engine : IDisposable
             foreach (var t in _tracks) { try { t.Dispose(); } catch { } }
             _tracks.Clear();
             _taps.Clear();
-            _gameTrack = _voiceTrack = null;
+            _gameTrack = _voiceTrack = _feeder = null;
+            _feederFallback = false;
             _gameIsDevice = _voiceIsDevice = false;
         }
         try { _ring?.Dispose(); } catch { }
@@ -312,26 +316,32 @@ internal sealed unsafe class Engine : IDisposable
     {
         lock (_audioGate)
         {
-            // Game, mic and voice are always captured: track 1 is their mix. The flags only decide whether each is also
-            // written as its own track. A game/voice "process" setting may instead name an audio device (in:/out: prefix).
+            // Track 1 (All) is summed from a hidden feeder (everything except Clink) and the mic, which is captured even when its own
+            // track is off. Game, Voice and Desktop are captured only when their track is on. A game/voice "process" setting may
+            // instead name an audio device (in:/out: prefix); that is noted even without the track, since detection still runs.
             // Each track joins _tracks as soon as it exists, so TearDown disposes a partly built set when a later one fails.
-            _gameTrack = new AudioTrack("Game") { Enabled = _cfg.TrackGame };
-            _tracks.Add(_gameTrack);
-            var mic = new AudioTrack("Mic") { Source = new EndpointSource(false, _cfg.MicDeviceId, "Microphone"), Enabled = _cfg.TrackMic };
-            _tracks.Add(mic);
-            _voiceTrack = new AudioTrack("Voice") { Enabled = _cfg.TrackVoice };
-            _tracks.Add(_voiceTrack);
-            if (TryDeviceSource(_cfg.GameProcess, "Game device", out var gameDevice)) { _gameTrack.Source = gameDevice; _gameIsDevice = true; }
-            if (TryDeviceSource(_cfg.VoiceApp, "Voice device", out var voiceDevice)) { _voiceTrack.Source = voiceDevice; _voiceIsDevice = true; }
-            var mix = new AudioTrack("Mix", new[] { _gameTrack, mic, _voiceTrack }) { Enabled = true };
-            _tracks.Insert(0, mix);   // always track 1
-            if (_cfg.TrackDesktop)
+            _gameIsDevice = IsDeviceSetting(_cfg.GameProcess);
+            _voiceIsDevice = IsDeviceSetting(_cfg.VoiceApp);
+            bool perProcess = AudioTrackPlan.ProcessLoopbackSupported();
+            var built = AudioTrackPlan.Build(AudioTrackPlan.Plan(_cfg.TrackGame, _cfg.TrackMic, _cfg.TrackVoice, _cfg.TrackDesktop), kind =>
             {
-                // "in:<id>" = a capture device (a Wave Link mix, a virtual cable), "out:<id>" = that output's loopback; a bare id from
-                // an older settings file is an output loopback, null the default output.
-                if (!TryDeviceSource(_cfg.AllDeviceId, "Desktop device", out var desktopDevice)) desktopDevice = new EndpointSource(true, _cfg.AllDeviceId, "System loopback");
-                _tracks.Add(new AudioTrack("Desktop") { Source = desktopDevice });
-            }
+                switch (kind)
+                {
+                    case AudioSourceKind.Feeder:
+                        if (perProcess) return new ProcessSource((uint)Environment.ProcessId, false, "Everything", "everything you hear + mic");
+                        _feederFallback = true;   // no per-process loopback on this Windows: record the endpoint loopback from the start
+                        NoteFeederFallback("this Windows has no process loopback");
+                        return new EndpointSource(true, null, "System loopback");
+                    case AudioSourceKind.Game: return TryDeviceSource(_cfg.GameProcess, "Game device", out var gameDevice) ? gameDevice : null;
+                    case AudioSourceKind.Mic: return new EndpointSource(false, _cfg.MicDeviceId, "Microphone");
+                    case AudioSourceKind.Voice: return TryDeviceSource(_cfg.VoiceApp, "Voice device", out var voiceDevice) ? voiceDevice : null;
+                    default:
+                        // "in:<id>" = a capture device (a Wave Link mix, a virtual cable), "out:<id>" = that output's loopback; a bare id from
+                        // an older settings file is an output loopback, null the default output.
+                        return TryDeviceSource(_cfg.AllDeviceId, "Desktop device", out var desktopDevice) ? desktopDevice : new EndpointSource(true, _cfg.AllDeviceId, "System loopback");
+                }
+            }, _tracks);
+            _feeder = built.Feeder; _gameTrack = built.Game; _voiceTrack = built.Voice;
         }
         if (_tracks.Count == 0) return;
         _audioThread = new Thread(AudioLoop) { IsBackground = true, Name = "Clink.Audio", Priority = ThreadPriority.Highest };
@@ -389,19 +399,33 @@ internal sealed unsafe class Engine : IDisposable
     private bool _gameIsDevice, _voiceIsDevice;
 
     /// <summary>"in:&lt;endpoint id&gt;" = a capture device, "out:&lt;endpoint id&gt;" = loopback of an output; anything else is a process name or "auto".</summary>
+    private static bool IsDeviceSetting(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return false;
+        string v = value.Trim();
+        return (v.StartsWith("in:", StringComparison.OrdinalIgnoreCase) && v.Length > 3) || (v.StartsWith("out:", StringComparison.OrdinalIgnoreCase) && v.Length > 4);
+    }
+
     private static bool TryDeviceSource(string? value, string name, out EndpointSource? source)
     {
         source = null;
-        if (string.IsNullOrWhiteSpace(value)) return false;
-        string v = value.Trim();
-        if (v.StartsWith("in:", StringComparison.OrdinalIgnoreCase) && v.Length > 3) { source = new EndpointSource(false, v[3..], name); return true; }
-        if (v.StartsWith("out:", StringComparison.OrdinalIgnoreCase) && v.Length > 4) { source = new EndpointSource(true, v[4..], name); return true; }
-        return false;
+        if (!IsDeviceSetting(value)) return false;
+        string v = value!.Trim();
+        source = new EndpointSource(v.StartsWith("out:", StringComparison.OrdinalIgnoreCase), v[(v.IndexOf(':') + 1)..], name);
+        return true;
+    }
+
+    private static int s_feederFallbackLogged;
+    /// <summary>Said once per process: an engine restart would otherwise repeat it.</summary>
+    private static void NoteFeederFallback(string why)
+    {
+        if (Interlocked.Exchange(ref s_feederFallbackLogged, 1) == 0)
+            Log.Warn($"All records the system loopback instead of everything except Clink ({why}); Clink's own sounds are included");
     }
 
     private void UpdateProcessSources(bool initial)
     {
-        if (_gameTrack == null && _voiceTrack == null) return;
+        // Detection always runs, even with neither the Game nor the Voice track on: clip names depend on it.
         var m = _cfg.Monitor;
         try
         {
@@ -435,8 +459,8 @@ internal sealed unsafe class Engine : IDisposable
                 if (fg is { Fullscreen: true } f && f.Pid != _gamePid) { _gamePid = f.Pid; _gameName = f.Name; Log.Info($"Game detected: {f.Name} pid={f.Pid}"); }
                 else if (_gamePid != 0 && !GameProcessTracker.IsAlive(_gamePid)) { Log.Info($"Game exited: {_gameName}"); GameProcessTracker.Forget(_gamePid); _gamePid = 0; _gameName = null; }
                 // The app's detection (docs/SPEC-v2.md §5): a game library window that is not focused, or a custom app. Never the
-                // voice app or another ignored process (a custom app can be any typed name, Discord included): the Mix would sum
-                // the voice tree twice and lose the "everything except" fallback that holds the game audio.
+                // voice app or another ignored process (a custom app can be any typed name, Discord included): the Game track would
+                // record the voice tree and lose the "everything except" fallback that holds the game audio.
                 else if (hint != null && hint.Pid != _gamePid && hint.Pid != _voicePid && !GameProcessTracker.IsIgnored(hint.Name)
                          && (_gamePid == 0 || newHint) && fg is not { Fullscreen: true } && GameProcessTracker.IsAlive(hint.Pid))
                 {
@@ -456,11 +480,21 @@ internal sealed unsafe class Engine : IDisposable
 
         lock (_audioGate)
         {
+            // The feeder (everything except Clink) leaves process loopback only when activation says the system lacks it; a transient
+            // failure keeps retrying on the source's own backoff. Clink's own sounds are then in All.
+            if (_feeder is { Source: ProcessSource fp } && !_feederFallback && AudioTrackPlan.FallBackToEndpoint(true, fp.IsRunning, fp.StartFailures, fp.LastHResult))
+            {
+                NoteFeederFallback($"process loopback is not supported: {fp.LastError}");
+                fp.Dispose();
+                _feeder.Source = new EndpointSource(true, null, "System loopback");
+                _feederFallback = true;
+            }
             if (_gameTrack != null && !_gameIsDevice)
             {
                 // No game: everything except the voice app, or with no voice app everything except Clink itself (which keeps the
                 // click sound out of the clip).
-                (uint pid, bool include) want = _gamePid != 0 ? (_gamePid, true) : (_voicePid != 0 ? _voicePid : (uint)Environment.ProcessId, false);
+                var (wantPid, wantInclude) = AudioTrackPlan.GameLoopback(_gamePid, _voicePid, (uint)Environment.ProcessId);
+                (uint pid, bool include) want = (wantPid, wantInclude);
                 var cur = _gameTrack.Source as ProcessSource;
                 bool same = cur != null && cur.ProcessId == want.pid && cur.Include == want.include;
                 if (!same)
@@ -502,9 +536,13 @@ internal sealed unsafe class Engine : IDisposable
     {
         List<AudioTrackStatus> audio;
         lock (_audioGate)
-            audio = _tracks.Select(t =>
+            audio = _tracks.Where(t => !t.IsFeeder).Select(t =>
             {
-                if (t.IsMix) return new AudioTrackStatus(t.Name, true, "game + mic + voice, always track 1");
+                if (t.IsMix)
+                {
+                    var (up, why) = AudioTrackPlan.AllStatus(_feeder?.Source?.IsRunning == true, _feeder?.Source?.LastError, _feederFallback);
+                    return new AudioTrackStatus(t.Name, up, why);
+                }
                 string? detail = t.Source == null ? "waiting for app" : t.Source.IsRunning ? t.Source.Detail : t.Source.LastError;
                 if (!t.Enabled) detail = detail == null ? "mix only" : detail + ", mix only";
                 return new AudioTrackStatus(t.Name, t.Source?.IsRunning == true, detail);

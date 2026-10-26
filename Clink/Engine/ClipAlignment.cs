@@ -89,7 +89,7 @@ internal sealed class ClipAlignment
         if (file == null) return new ClipAlignment();   // not a Clink file: its tracks stand on their own anyway
         string[] names = file.Audio.Select(t => t.Name).ToArray();
         var roles = MixPlan.Roles(names, names.Length);
-        var sources = Enumerable.Range(1, Math.Max(0, roles.Length - 1)).Where(i => roles[i] is TrackRole.Game or TrackRole.Mic or TrackRole.Voice).ToArray();
+        var sources = MixPlan.SourceIndexes(roles);
         return new ClipAlignment { Names = names, OffsetFrames = file.Audio.Select(t => t.StartFrames).ToArray(), Untrusted = true, Unlined = sources };
     }
 
@@ -115,7 +115,7 @@ internal sealed class ClipAlignment
         {
             var streams = Trimmer.AudioStreamsOf(path);
             if (streams.Count != frames.Length) throw new InvalidOperationException("the track count differs");
-            var sources = Enumerable.Range(1, roles.Length - 1).Where(i => roles[i] is TrackRole.Game or TrackRole.Mic or TrackRole.Voice).ToArray();
+            var sources = MixPlan.SourceIndexes(roles);
             // Each source is checked on its own (a reader of its own each), side by side: a long clip takes seconds to look through.
             var found = new LagEstimate[sources.Length];
             Parallel.For(0, sources.Length, k => found[k] = TrackAlignment.Measure(path, streams[0], file.OffsetFrames[0], streams[sources[k]], file.OffsetFrames[sources[k]]));
@@ -134,8 +134,7 @@ internal sealed class ClipAlignment
             // Nothing could be checked (a file that will not decode): no source is lined up, and none is added to the Mix.
             Log.Warn($"alignment of {name}: {(ex is AggregateException all ? all.Flatten().InnerException?.Message : null) ?? ex.Message}");
             unlined.Clear();
-            for (int i = 1; i < roles.Length; i++)
-                if (roles[i] is TrackRole.Game or TrackRole.Mic or TrackRole.Voice) unlined.Add(i);
+            unlined.AddRange(MixPlan.SourceIndexes(roles));
             return new ClipAlignment { Names = file.Names, OffsetFrames = file.OffsetFrames, Unlined = unlined.ToArray() };
         }
         return new ClipAlignment { Names = file.Names, OffsetFrames = frames, Calibrated = true, Unlined = unlined.ToArray() };

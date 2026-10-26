@@ -35,6 +35,10 @@ internal abstract unsafe class WasapiSource : IDisposable
     public string? Detail { get; protected set; }
     public bool IsRunning => _running;
     public string? LastError { get; protected set; }
+    /// <summary>Failed starts in a row (reset by a successful start); the engine falls back from process loopback after a few.</summary>
+    public int StartFailures => _failures;
+    /// <summary>The HRESULT of the last failed start (0 before one).</summary>
+    public int LastHResult { get; private set; }
 
     protected abstract IAudioClient* Activate();
     protected virtual uint ExtraStreamFlags => 0;
@@ -62,6 +66,7 @@ internal abstract unsafe class WasapiSource : IDisposable
         catch (Exception ex)
         {
             LastError = Explain(ex.HResult) ?? ex.Message;
+            LastHResult = ex.HResult;
             _failures++;
             _nextRetry = DateTime.UtcNow + TimeSpan.FromSeconds(Math.Min(MaxRetrySeconds, 2 * _failures));
             if (_failures <= 2) Log.Warn($"Audio source '{Name}' failed to start: {ex.Message}");

@@ -198,6 +198,121 @@ internal static class MixPlanTests
     }
 
     [UnitTest]
+    public static void All_is_a_mix_only_as_the_first_track_and_All_audio_stays_a_stranger()
+    {
+        var r = Roles("All", "Game", "Mic", "Voice", "Desktop");
+        Check.Equal(new[] { TrackRole.All, TrackRole.Game, TrackRole.Mic, TrackRole.Voice, TrackRole.Desktop }, r);
+        Check.Equal(new[] { TrackRole.Other, TrackRole.Game, TrackRole.Other }, Roles("All audio", "Game", "All"), "\"All audio\" is not All, and All is a stranger when it is not first");
+        Check.Equal(new[] { TrackRole.Game, TrackRole.Other, TrackRole.Mic }, Roles("Game", "All", "Mic"), "All that is not first is a stranger");
+        Check.Equal(new[] { TrackRole.Other, TrackRole.Mic }, Roles("all", "Mic"), "names are exact");
+        Check.True(MixPlan.IsMix(TrackRole.Mix));
+        Check.True(MixPlan.IsMix(TrackRole.All));
+        Check.False(MixPlan.IsMix(TrackRole.Other));
+        Check.False(MixPlan.IsMix(TrackRole.Mic));
+        Check.False(MixPlan.CanRemix(Roles("All audio", "Mic")));
+        Check.False(MixPlan.CanRemix(Roles("Mic", "All")));
+    }
+
+    [UnitTest]
+    public static void Only_the_Mic_feeds_an_All_and_an_All_is_never_rebuilt()
+    {
+        Check.True(MixPlan.Feeds(TrackRole.All, TrackRole.Mic));
+        foreach (var role in new[] { TrackRole.Game, TrackRole.Voice, TrackRole.Desktop, TrackRole.Other, TrackRole.Mix, TrackRole.All })
+            Check.False(MixPlan.Feeds(TrackRole.All, role), $"{role} is not inside All as the same sound");
+        Check.Equal(3, new[] { TrackRole.Game, TrackRole.Mic, TrackRole.Voice }.Count(role => MixPlan.Feeds(TrackRole.Mix, role)));
+        Check.False(MixPlan.Feeds(TrackRole.Mix, TrackRole.Desktop));
+        Check.False(MixPlan.Feeds(TrackRole.Other, TrackRole.Mic));
+
+        var r = Roles("All", "Game", "Mic", "Voice", "Desktop");
+        Check.True(MixPlan.CanRemix(r), "the Mic is enough");
+        Check.False(MixPlan.CanRebuild(r), "an All cannot be put together from its sources");
+        Check.Equal(new[] { 2 }, MixPlan.SourceIndexes(r));
+        Check.Equal(new[] { 1, 2, 3 }, MixPlan.SourceIndexes(Roles(FiveTracks)));
+        Check.Equal(0, MixPlan.SourceIndexes(Roles("All audio", "Game", "Mic")).Length);
+        Check.Equal(0, MixPlan.SourceIndexes(MixPlan.Roles(null, 3)).Length);
+        Check.Equal(new[] { false, false, true, false, false }, Enumerable.Range(0, 5).Select(i => MixPlan.FeedsMix(r, i)).ToArray());
+        Check.False(MixPlan.CanRemix(Roles("All", "Game", "Voice", "Desktop")), "without a Mic track there is nothing to take out of All");
+        Check.True(MixPlan.CanRemix(Roles("All", "Mic")));
+    }
+
+    [UnitTest]
+    public static void On_an_All_clip_the_Mic_at_zero_is_taken_out_of_All_by_a_delta()
+    {
+        var r = Roles("All", "Game", "Mic", "Voice", "Desktop");
+        var gain = Gains(1f, 1f, 0f, 1f, 1f);
+        var export = MixPlan.Export(r, All(5), gain);
+        Check.Equal(new[] { new MixInput(0, 1f), new MixInput(2, -1f) }, export[0].Sum!);
+        Check.Equal(1f, export[0].Gain);
+        for (int i = 1; i < 5; i++) Check.Null(export[i].Sum, $"track {i} stands on its own");
+        Check.Equal(new[] { 1f, 0f, -1f, 0f, 0f }, MixPlan.PreviewGains(r, All(5), gain, 0));
+        Check.True(MixPlan.PreviewIsRemix(r, All(5), gain, 0));
+        // Half the Mic, and the master of All scales the delta.
+        var half = MixPlan.Export(r, All(5), Gains(.5f, 1f, .5f, 1f, 1f));
+        Check.Equal(.5f, half[0].Gain);
+        Check.Equal(2, half[0].Sum!.Length);
+        Check.Equal(new MixInput(0, 1f), half[0].Sum![0]);
+        Check.Equal(2, half[0].Sum![1].Track);
+        Check.Near(-.5, half[0].Sum![1].Gain, 1e-6);
+    }
+
+    [UnitTest]
+    public static void On_an_All_clip_the_Game_and_Voice_sliders_change_only_their_own_track()
+    {
+        var r = Roles("All", "Game", "Mic", "Voice", "Desktop");
+        foreach (var gain in new[] { Gains(1f, 0f, 1f, 1f, 1f), Gains(1f, 1f, 1f, 0f, 1f), Gains(1f, .5f, 1f, 2f, 1f), Gains(1f, 0f, 1f, 0f, 0f) })
+        {
+            var export = MixPlan.Export(r, All(5), gain);
+            Check.Null(export[0].Sum, "All is copied");
+            for (int i = 0; i < 5; i++)
+            {
+                Check.Null(export[i].Sum);
+                Check.Equal(gain[i], export[i].Gain, $"track {i} at its own volume");
+                Check.True(export[i].Include);
+            }
+            Check.Equal(new[] { 1f, 0f, 0f, 0f, 0f }, MixPlan.PreviewGains(r, All(5), gain, 0), "the preview plays the baked All");
+            Check.False(MixPlan.PreviewIsRemix(r, All(5), gain, 0));
+        }
+        // Listening to Game plays Game at its own volume.
+        Check.Equal(new[] { 0f, .5f, 0f, 0f, 0f }, MixPlan.PreviewGains(r, All(5), Gains(1f, .5f, 1f, 1f, 1f), 1));
+        // A moved Mic still only adds the Mic's delta, whatever Game and Voice did.
+        var both = MixPlan.Export(r, All(5), Gains(1f, 0f, 0f, 0f, 1f));
+        Check.Equal(new[] { new MixInput(0, 1f), new MixInput(2, -1f) }, both[0].Sum!);
+        Check.Equal(0f, both[1].Gain);
+        Check.Equal(0f, both[3].Gain);
+        // The master of All alone is a plain volume change.
+        var louder = MixPlan.Export(r, All(5), Gains(1.5f, 1f, 1f, 1f, 1f));
+        Check.Null(louder[0].Sum);
+        Check.Equal(1.5f, louder[0].Gain);
+    }
+
+    [UnitTest]
+    public static void An_All_clip_never_misses_a_source_other_than_the_Mic_and_remixes_only_with_it()
+    {
+        // The Mic is the only source of an All, and an All is remixable only with it: so nothing is ever missing from a remixable All,
+        // and Game and Voice are never reported as sources a Mix lacks.
+        Check.Equal(0, MixPlan.MissingSources(Roles("All", "Game", "Mic")).Length);
+        Check.Equal(0, MixPlan.MissingSources(Roles("All", "Game", "Voice", "Desktop")).Length, "no Mic: nothing can be changed, so nothing is said");
+        Check.Equal(new[] { TrackRole.Voice }, MixPlan.MissingSources(Roles("Mix", "Game", "Mic")), "a Mix still misses its Voice");
+    }
+
+    [UnitTest]
+    public static void Leaving_out_the_first_track_names_the_track_a_player_will_play_instead()
+    {
+        foreach (var r in new[] { Roles("All", "Game", "Mic"), Roles("Mix", "Game", "Mic") })
+        {
+            Check.True(MixPlan.FirstTrackDropped(r, All(3)) == null, "track 1 kept: nothing is dropped");
+            Check.True(MixPlan.FirstTrackDropped(r, new[] { false, true, true }) == 1, "the first kept track is the one players play");
+            Check.True(MixPlan.FirstTrackDropped(r, new[] { false, false, true }) == 2, "skipping an unticked one");
+            Check.True(MixPlan.FirstTrackDropped(r, All(3, false)) == null, "nothing kept at all: no note");
+            Check.True(MixPlan.FirstTrackDropped(r, new[] { true, false, false }) == null);
+        }
+        var plain = Roles("Game", "Mic");
+        Check.True(MixPlan.FirstTrackDropped(plain, new[] { false, true }) == null, "a first track that is not a mix has no note");
+        Check.True(MixPlan.FirstTrackDropped(Roles("All"), new[] { false }) == null, "a lone track has nothing else to play");
+        Check.True(MixPlan.FirstTrackDropped(Array.Empty<TrackRole>(), Array.Empty<bool>()) == null);
+    }
+
+    [UnitTest]
     public static void The_headless_trim_reads_a_volume_as_a_factor_or_a_percentage()
     {
         Check.Equal(("Game", 0f), TrimCli.ParseGain("Game=0"));

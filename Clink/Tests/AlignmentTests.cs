@@ -208,6 +208,68 @@ internal static class AlignmentTests
     }
 
     [UnitTest]
+    public static void The_Mic_is_lined_up_against_an_All_exactly_as_against_a_Mix_and_Game_is_left_alone()
+    {
+        using var dir = new TempDir();
+        OnMta(() =>
+        {
+            // Same recording twice: first track a Mix, or an All. "old" has the Mic frames written 400 samples (8 ms) late, without the mark.
+            foreach (bool allTrack in new[] { false, true })
+            {
+                string kind = allTrack ? "All" : "Mix";
+                string truth = dir.File($"truth-{kind}.mp4"), old = dir.File($"old-{kind}.mp4");
+                SyntheticClip.Write(truth, 8, voiceTrack: false, level: .1f, noiseScale: 6, allTrack: allTrack);
+                SyntheticClip.Write(old, 8, voiceTrack: false, level: .1f, noiseScale: 6, stampLag: new long[] { 0, 400, 0, 0 }, aligned: false, allTrack: allTrack);
+                string[] names = { kind, "Game", "Mic", "Desktop" };
+                Check.Equal(names, Trimmer.ReadAudioTrackNames(old)!);
+                var right = ClipAlignment.Read(truth);
+                Check.True(right.Marked, $"{kind}: the recording is marked");
+                var raw = TestAudio.Offsets(old);
+                var found = ClipAlignment.Read(old);
+                Console.WriteLine($"  ({kind}: file says {string.Join(", ", raw)}; lined up {string.Join(", ", found.OffsetFrames)}; recorded at {string.Join(", ", right.OffsetFrames)})");
+                Check.True(found.Calibrated, $"{kind}: the Mic was checked against the first track");
+                Check.Equal(0, found.Unlined.Length, $"{kind}: and could be lined up");
+                Check.Equal(right.OffsetFrames[0], found.OffsetFrames[0], $"{kind}: the first track stays where the file has it");
+                Check.Near(right.OffsetFrames[2], found.OffsetFrames[2], 1, $"{kind}: Mic is back where it was recorded");
+                Check.Equal(raw[1], found.OffsetFrames[1], $"{kind}: Game is where the file has it");
+                Check.Equal(raw[3], found.OffsetFrames[3], $"{kind}: so is Desktop");
+            }
+        });
+    }
+
+    [UnitTest]
+    public static void An_All_clip_that_cannot_be_checked_leaves_only_the_Mic_unlined()
+    {
+        var roles = MixPlan.Roles(new[] { "All", "Game", "Mic", "Voice", "Desktop" }, 5);
+        Check.Equal(new[] { 2 }, MixPlan.SourceIndexes(roles));
+        var plain = MixPlan.WithoutTracks(roles, MixPlan.SourceIndexes(roles));
+        Check.Equal(new[] { TrackRole.All, TrackRole.Game, TrackRole.Other, TrackRole.Voice, TrackRole.Desktop }, plain, "Game and Voice were never sources of All; the Mic stands alone");
+        Check.False(MixPlan.CanRemix(plain));
+        var asked = MixPlan.WithoutTracks(roles, new[] { 1, 3 });
+        Check.Equal(roles, asked, "Game and Voice of an All clip are not taken out of anything");
+    }
+
+    [UnitTest]
+    public static void On_an_untrusted_timeline_a_clip_whose_first_track_is_not_a_mix_has_nothing_unlined()
+    {
+        using var dir = new TempDir();
+        OnMta(() =>
+        {
+            string clip = dir.File("legacy.mp4");
+            SyntheticClip.WriteTones(clip, 4, new[] { ("All audio", 440.0, 0.0), ("Game", 880.0, 0.0), ("Mic", 1320.0, 0.0) }, out _);
+            var before = ClipSource.TrustOverride;
+            ClipSource.TrustOverride = false;
+            try
+            {
+                var align = ClipAlignment.Read(clip);
+                Check.True(align.Untrusted);
+                // Changed from [Game, Mic, Voice]: nothing feeds a first track that is not a mix, so nothing needs lining up with it.
+                Check.Equal(0, align.Unlined.Length, "a legacy 'All audio' first track has no sources");
+            }
+            finally { ClipSource.TrustOverride = before; }
+        });
+    }
+    [UnitTest]
     public static void A_source_that_cannot_be_found_in_the_Mix_is_left_out_of_it_and_the_clip_says_why()
     {
         using var dir = new TempDir();

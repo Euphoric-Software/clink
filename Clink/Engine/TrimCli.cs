@@ -6,8 +6,8 @@ namespace Clink.Engine;
 /// The headless trim: <c>Clink.exe --trim &lt;in&gt; &lt;out&gt; &lt;startSec&gt; &lt;endSec&gt; [--gain Name=volume]... [--drop Name]...</c>.
 /// Without options it is the plain cut. <c>--gain</c> sets a track's volume the way the editor's slider does (a factor, or a percentage
 /// with a % sign: <c>Game=0</c>, <c>Game=0.5</c>, <c>Game=50%</c>) and <c>--drop</c> leaves a track out of the file. The plan is the
-/// editor's (<see cref="MixPlan"/>), so Game, Mic and Voice shape "All audio" as well, and the work is the same. Track names are the
-/// file's own (Mix, Game, Mic, Voice, Desktop), in any case.
+/// editor's (<see cref="MixPlan"/>), so Game, Mic and Voice shape "All audio" as well (on a clip whose first track is All, only Mic does; Game and Voice change just their own tracks), and the work is the same. Track names are the
+/// file's own (Mix or All, Game, Mic, Voice, Desktop), in any case.
 /// </summary>
 internal static class TrimCli
 {
