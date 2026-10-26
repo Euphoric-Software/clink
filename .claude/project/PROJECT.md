@@ -15,7 +15,7 @@ D3D11 and Media Foundation for capture/encode; clips are MP4 (clk1 brand).
 - Env: `CLINK_TESTS_NO_SKIP=1` (fail on skipped), `CLINK_EMULATE_ELST=1` (edit-list emulation)
 
 ## Misc
-- Version: `<Version>` in `Clink/Clink.csproj` (currently 0.3.1; main at v0.3.1, dev line v0.3.2-dev.N)
+- Version: `<Version>` in `Clink/Clink.csproj` (currently 0.4.0; main at v0.3.1, dev line v0.3.2-dev.N)
 - CI: `.github/workflows/build.yml`; `.github/workflows/release-dev.yml` (dev prereleases on push to `dev`)
 - Remote push policy: `dev` — push allowed after each reviewed slice (user instruction 2026-10-25); `main` — always ask.
 
