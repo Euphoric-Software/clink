@@ -330,6 +330,7 @@ internal static class NestedTrimTests
         {
             var pool = Rs(30);
             var cur = pool.Where(_ => rnd.Next(3) > 0).OrderBy(_ => rnd.Next()).ToList();
+            if (cur.Count > 0 && rnd.Next(2) == 0) cur.Insert(rnd.Next(cur.Count + 1), cur[rnd.Next(cur.Count)]);   // a duplicate in the start
             var want = pool.Where(_ => rnd.Next(3) > 0).ToList();
             if (rnd.Next(2) == 0) want = want.OrderBy(_ => rnd.Next()).ToList();
             else if (cur.Count > 0) want = cur.Where(_ => rnd.Next(5) > 0).ToList();   // mostly the same order, a few removed
@@ -338,4 +339,48 @@ internal static class NestedTrimTests
             Sync(obs, want, out _);
         }
     }
-}
+
+    [UnitTest]
+    public static void SyncRows_a_toggle_never_rebuilds_even_for_many_trims()
+    {
+        foreach (int n in new[] { 9, 70 })
+        {
+            var p = Rs(5);
+            var kids = Enumerable.Range(0, n).Select(i => new R("k" + i)).ToList();
+            var collapsed = p.ToList();
+            var open = p.Take(2).Concat(kids).Concat(p.Skip(2)).ToList();
+            var target = new System.Collections.ObjectModel.ObservableCollection<R>(collapsed);
+            int resets = 0;
+            target.CollectionChanged += (_, e) => { if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Reset) resets++; };
+            ClipGrouping.SyncRows(target, open, int.MaxValue);
+            Check.True(target.SequenceEqual(open), "expanded equals target (" + n + ")");
+            ClipGrouping.SyncRows(target, collapsed, int.MaxValue);
+            Check.True(target.SequenceEqual(collapsed), "collapsed equals target (" + n + ")");
+            Check.Equal(0, resets, "no reset for " + n + " trims");
+        }
+    }
+
+    [UnitTest]
+    public static void SyncRows_a_heavy_reorder_is_quick_and_the_trial_stops_early()
+    {
+        var rows = Rs(5000);
+        var cur = rows.AsEnumerable().Reverse().ToList();
+        var target = new System.Collections.ObjectModel.ObservableCollection<R>(cur);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        ClipGrouping.SyncRows(target, rows);
+        sw.Stop();
+        Check.True(target.SequenceEqual(rows), "equals target");
+        Check.True(sw.ElapsedMilliseconds < 2000, "finished quickly (" + sw.ElapsedMilliseconds + " ms)");
+        int edits = ClipGrouping.TrialEdits(cur, rows, 64);
+        Check.True(edits > 64 && edits <= 66, "the trial stops right after the limit (" + edits + ")");
+    }
+
+    [UnitTest]
+    public static void SyncRows_removes_duplicates_left_in_the_target()
+    {
+        var a = new R("a"); var b = new R("b");
+        var target = new System.Collections.ObjectModel.ObservableCollection<R> { a, a };
+        Sync(target, new List<R> { a }, out _);
+        target = new System.Collections.ObjectModel.ObservableCollection<R> { a, a, b };
+        Sync(target, new List<R> { a, b }, out _);
+    }}

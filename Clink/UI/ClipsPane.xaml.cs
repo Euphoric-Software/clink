@@ -231,14 +231,14 @@ public partial class ClipsPane : UserControl
     /// <summary>A parent's chevron: show or hide its trims. Only the rows between change (the list keeps its scroll position and the chevron its focus).</summary>
     private void Trims_Click(object sender, RoutedEventArgs e)
     {
+        ClipGrouping.CarryExpanded(_localAll, r => r.Entry, _lastClipKeys, _expandedClips);   // an archive move may be queued: toggle the current key
         var row = RowOf(sender);
         if (row == null || !row.IsParent) return;
         if (LibraryView.TrimmedOnly(LibraryFeature.Clips, _trimmedChip)) return;   // the Trimmed chip lists trims flat: no chevrons
         string key = ClipGrouping.Key(row.Entry.Path);
         if (!_expandedClips.Remove(key)) _expandedClips.Add(key);
-        bool trimmed = LibraryView.TrimmedOnly(LibraryFeature.Clips, _trimmedChip);
-        var view = LocalView(_localAll, trimmed);
-        ClipGrouping.SyncRows(_local, view);
+        var view = LocalView(_localAll, false);   // the Trimmed chip returned above, so this is the nested list
+        ClipGrouping.SyncRows(_local, view, int.MaxValue);   // a toggle is one contiguous block: never rebuild (the chevron keeps focus)
         if (IsVisible && _level == LibraryLevel.Local) LoadThumbnails(view.Where(r => !r.Checked).ToList());
     }
 

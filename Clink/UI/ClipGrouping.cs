@@ -160,31 +160,35 @@ internal static class ClipGrouping
     }
 
     /// <summary>
-    /// Makes <paramref name="target"/> equal <paramref name="rows"/> (by reference) with the fewest simple Insert/RemoveAt steps (a
-    /// moved row is a RemoveAt plus an Insert), so a bound list keeps its scroll position. When that would take more than
-    /// <see cref="MaxEdits"/> steps, or more than half the list (but at least 8), it is Clear + Add instead.
+    /// Makes <paramref name="target"/> equal <paramref name="rows"/> (by reference) with simple Insert/RemoveAt steps (not always
+    /// the fewest: a row moved down costs a RemoveAt plus an Insert), so a bound list keeps its scroll position. When that would
+    /// take more than <paramref name="maxEdits"/> steps, or more than half the list (but at least 8), it is Clear + Add instead (<c>int.MaxValue</c> for <paramref name="maxEdits"/>: never).
     /// </summary>
-    public static void SyncRows<T>(IList<T> target, IReadOnlyList<T> rows) where T : class
+    public static void SyncRows<T>(IList<T> target, IReadOnlyList<T> rows, int maxEdits = MaxEdits) where T : class
     {
-        int limit = Math.Min(MaxEdits, Math.Max(8, Math.Max(target.Count, rows.Count) / 2));
-        if (SyncCore(new List<T>(target), rows) > limit)
+        int limit = maxEdits == int.MaxValue ? int.MaxValue : Math.Min(maxEdits, Math.Max(8, Math.Max(target.Count, rows.Count) / 2));
+        if (limit != int.MaxValue && SyncCore(new List<T>(target), rows, limit) > limit)
         {
             target.Clear();
             foreach (var r in rows) target.Add(r);
             return;
         }
-        SyncCore(target, rows);
+        SyncCore(target, rows, int.MaxValue);
     }
 
     /// <summary>Most single-item edits <see cref="SyncRows"/> makes before it rebuilds the list.</summary>
     public const int MaxEdits = 64;
 
-    private static int SyncCore<T>(IList<T> list, IReadOnlyList<T> rows) where T : class
+    /// <summary>The edits a trial run makes before it gives up (more than <paramref name="limit"/>); for tests.</summary>
+    internal static int TrialEdits<T>(IList<T> list, IReadOnlyList<T> rows, int limit) where T : class => SyncCore(new List<T>(list), rows, limit);
+
+    private static int SyncCore<T>(IList<T> list, IReadOnlyList<T> rows, int limit) where T : class
     {
         int edits = 0;
         var want = new HashSet<T>(rows, ReferenceEqualityComparer.Instance as IEqualityComparer<T>);
         for (int i = list.Count - 1; i >= 0; i--)
             if (!want.Contains(list[i])) { list.RemoveAt(i); edits++; }
+        if (edits > limit) return edits;
         for (int i = 0; i < rows.Count; i++)
         {
             if (i < list.Count && ReferenceEquals(list[i], rows[i])) continue;
@@ -192,10 +196,11 @@ internal static class ClipGrouping
                 if (ReferenceEquals(list[j], rows[i])) { list.RemoveAt(j); edits++; break; }
             list.Insert(i, rows[i]);
             edits++;
+            if (edits > limit) return edits;
         }
+        while (list.Count > rows.Count) { list.RemoveAt(list.Count - 1); edits++; }   // duplicates left over
         return edits;
     }
-
     /// <summary>
     /// Remembers the clips of <paramref name="items"/> in <paramref name="seen"/> and returns the parents of the trims that were not
     /// in it before (to open them, so a trim just made shows). With <paramref name="seed"/> nothing is returned (the first look at
