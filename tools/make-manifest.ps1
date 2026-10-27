@@ -47,6 +47,10 @@ if (-not (Test-Path -LiteralPath $pkgFile)) { throw "package.json not found in $
 $pkg = Get-Content -Raw -LiteralPath $pkgFile | ConvertFrom-Json
 if ($pkg.version -ne $Version) { throw "package.json is for version $($pkg.version), not $Version." }
 
+# Update clients parse minRuntime as a version (X.Y.Z); it comes from package.json (read from the framework build's runtimeconfig).
+$minRuntime = [string]$pkg.minRuntime
+if ($minRuntime -notmatch '^\d+\.\d+\.\d+$') { throw "package.json minRuntime '$minRuntime' is not X.Y.Z (run tools/package.ps1 from this version)." }
+
 function New-AssetEntry($info, [string]$what) {
     if (-not $info) { throw "package.json has no '$what' entry (installer not built?)." }
     if ($info.sha256 -cnotmatch '^[0-9a-f]{64}$') { throw "Bad sha256 for $what." }
@@ -63,10 +67,11 @@ $manifest = [ordered]@{
     tag        = $Tag
     published  = [DateTime]::Now.ToUniversalTime().ToString('o', [System.Globalization.CultureInfo]::InvariantCulture)
     notesUrl   = $NotesUrl
-    minRuntime = '10.0'
+    minRuntime = $minRuntime
     assets     = [ordered]@{
-        exe       = New-AssetEntry $pkg.files.exe 'exe'
-        installer = New-AssetEntry $pkg.files.installer 'installer'
+        exe          = New-AssetEntry $pkg.files.exe 'exe'
+        exeFramework = New-AssetEntry $pkg.files.exeFramework 'exeFramework'
+        installer    = New-AssetEntry $pkg.files.installer 'installer'
     }
 }
 $json = $manifest | ConvertTo-Json -Depth 6

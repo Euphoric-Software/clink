@@ -10,8 +10,8 @@
 #             main, release not yet there), re-checks the artifact, signs the manifest when Clink/Assets/feed.json enables the
 #             feed, creates a DRAFT release, uploads to the bucket, then publishes the draft.
 #
-# The in-app updater downloads the asset named exactly "Clink.exe" and checks it
-# against the first 64-hex token of "Clink.exe.sha256", so keep those names.
+# The in-app updater downloads the assets named exactly "Clink.exe" (self-contained, portable) and "Clink-framework.exe" (framework-dependent,
+# the installer's exe) and checks each against the first 64-hex token of its ".sha256" file, so keep those names.
 #
 # Every action is pinned to a commit SHA (the version is in the comment): the
 # publish job holds contents:write and whatever code those actions run controls the
@@ -41,6 +41,7 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       prerelease: ${{ steps.version.outputs.prerelease }}
       exe_sha256: ${{ steps.package.outputs.exe_sha256 }}
+      fx_sha256: ${{ steps.package.outputs.fx_sha256 }}
       setup_sha256: ${{ steps.package.outputs.setup_sha256 }}
     steps:
       - name: Check out
@@ -51,7 +52,7 @@ jobs:
       - name: Set up .NET
         uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
-          dotnet-version: 10.0.x
+          global-json-file: global.json
 
       - name: Determine version
         id: version
@@ -97,32 +98,30 @@ jobs:
           Add-Content -Path $env:GITHUB_OUTPUT -Value "prerelease=$prerelease"
           Write-Output "Building Clink $version (prerelease: $prerelease)"
 
-      - name: Publish
+      # Self-contained (dist/sc, the portable Clink.exe) and framework-dependent (dist/fx, the installer's exe), separate obj/bin.
+      - name: Publish both flavours
         shell: pwsh
         env:
           VERSION: ${{ steps.version.outputs.version }}
           UPDATE_REPO: ${{ github.repository }}
         run: |
-          dotnet publish Clink/Clink.csproj -c Release -o dist "-p:Version=$env:VERSION" "-p:UpdateRepo=$env:UPDATE_REPO"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          if (-not (Test-Path dist/Clink.exe)) { throw 'dist/Clink.exe was not produced' }
-          Get-ChildItem dist | Select-Object Name, Length
+          ./tools/publish-flavours.ps1 -Version $env:VERSION -UpdateRepo $env:UPDATE_REPO
+          Get-ChildItem dist/sc, dist/fx | Select-Object FullName, Length
 
-      # What the BUILT exe embeds from Clink/Assets/feed.json must match what CI reads from the same file (off for an empty
-      # file, on for a complete one; a partly filled file already fails in Get-FeedConfig). Clink.exe is a GUI-subsystem exe:
-      # Start-Process -Wait -PassThru -NoNewWindow gives its output and exit code.
-      - name: Check the embedded feed trust
+      # Both published exes: size guards, --packaging-check, --preflight, the embedded-feed self-test (what the BUILT exes embed from
+      # Clink/Assets/feed.json must match what CI reads from the same file: off for an empty file, on for a complete one; a partly
+      # filled file already fails in Get-FeedConfig) and ProductVersion == the version (the updater refuses a download whose embedded
+      # version differs from its tag). The framework exe needs the WindowsDesktop 10 runtime of the runner image.
+      - name: Check the published exes
         shell: pwsh
-        timeout-minutes: 5
+        timeout-minutes: 10
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           . ./tools/feed-lib.ps1
           $cfg = Get-FeedConfig -Path Clink/Assets/feed.json -Channel stable
-          $env:CLINK_EXPECT_FEED = $cfg.Mode
-          $env:CLINK_TESTS_NO_SKIP = '1'
-          $exe = (Resolve-Path dist/Clink.exe).Path
-          Write-Output "Expecting the built exe to embed the feed as: $($cfg.Mode)"
-          $run = Start-Process -FilePath $exe -ArgumentList '--unittest', 'Embedded_feed_trust_matches_ci_expectation' -Wait -PassThru -NoNewWindow
-          if ($run.ExitCode -ne 0) { throw "Embedded_feed_trust_matches_ci_expectation failed (exit code $($run.ExitCode)): the built exe does not embed feed.json as CI expects ($($cfg.Mode))" }
+          Write-Output "Expecting the built exes to embed the feed as: $($cfg.Mode)"
+          ./tools/check-published.ps1 -ScExe dist/sc/Clink.exe -FxExe dist/fx/Clink.exe -Version $env:VERSION -ExpectFeed $cfg.Mode
 
       # Pinned Inno Setup 6.7.3 (>= 6.3 is needed for x64compatible). Official release asset of github.com/jrsoftware/issrc;
       # the SHA-256 below was computed from a scratch download and matches the digest GitHub shows for the asset.
@@ -142,18 +141,19 @@ jobs:
           if ($run.ExitCode -ne 0) { throw "Inno Setup install failed (exit code $($run.ExitCode))" }
           if (-not (Test-Path (Join-Path $dir 'ISCC.exe'))) { throw 'ISCC.exe not found after the Inno Setup install' }
 
-      - name: Package (Clink.exe, sha256, installer)
+      - name: Package (Clink.exe, Clink-framework.exe, sha256 files, installer)
         id: package
         shell: pwsh
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          ./tools/package.ps1 -ExePath dist/Clink.exe -Version $env:VERSION -OutDir dist/package -IsccPath (Join-Path $env:RUNNER_TEMP 'InnoSetup\ISCC.exe') -RequireInstaller
+          ./tools/package.ps1 -ExePath dist/sc/Clink.exe -FrameworkExePath dist/fx/Clink.exe -Version $env:VERSION -OutDir dist/package -IsccPath (Join-Path $env:RUNNER_TEMP 'InnoSetup\ISCC.exe') -RequireInstaller
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $pkg = Get-Content -Raw dist/package/package.json | ConvertFrom-Json
           Add-Content -Path $env:GITHUB_OUTPUT -Value "exe_sha256=$($pkg.files.exe.sha256)"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "fx_sha256=$($pkg.files.exeFramework.sha256)"
           Add-Content -Path $env:GITHUB_OUTPUT -Value "setup_sha256=$($pkg.files.installer.sha256)"
-          Get-Content dist/package/Clink.exe.sha256
+          Get-Content dist/package/Clink.exe.sha256, dist/package/Clink-framework.exe.sha256
 
       - name: Upload package artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -218,15 +218,20 @@ jobs:
         shell: pwsh
         env:
           EXE_SHA256: ${{ needs.build.outputs.exe_sha256 }}
+          FX_SHA256: ${{ needs.build.outputs.fx_sha256 }}
           SETUP_SHA256: ${{ needs.build.outputs.setup_sha256 }}
         run: |
           $exe = (Get-FileHash dist/package/Clink.exe -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($exe -ne $env:EXE_SHA256) { throw "Clink.exe in the artifact ($exe) is not what the build job produced ($env:EXE_SHA256)" }
+          $fx = (Get-FileHash dist/package/Clink-framework.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($fx -ne $env:FX_SHA256) { throw "Clink-framework.exe in the artifact ($fx) is not what the build job produced ($env:FX_SHA256)" }
           $setup = (Get-FileHash "dist/package/Clink-$env:VERSION-setup.exe" -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($setup -ne $env:SETUP_SHA256) { throw "The setup exe in the artifact ($setup) is not what the build job produced ($env:SETUP_SHA256)" }
           $line = (Get-Content -Raw dist/package/Clink.exe.sha256).Trim()
           if ($line -ne "$exe *Clink.exe") { throw "Clink.exe.sha256 does not describe Clink.exe: $line" }
-          Write-Output "Package verified (Clink.exe $exe)"
+          $fxLine = (Get-Content -Raw dist/package/Clink-framework.exe.sha256).Trim()
+          if ($fxLine -ne "$fx *Clink-framework.exe") { throw "Clink-framework.exe.sha256 does not describe Clink-framework.exe: $fxLine" }
+          Write-Output "Package verified (Clink.exe $exe, Clink-framework.exe $fx)"
 
       # Trust anchors come from the committed Clink/Assets/feed.json (the same file that was embedded in Clink.exe).
       - name: Read feed configuration
@@ -275,7 +280,7 @@ jobs:
         id: assets
         shell: pwsh
         run: |
-          $files = @('dist/package/Clink.exe', 'dist/package/Clink.exe.sha256', "dist/package/Clink-$env:VERSION-setup.exe")
+          $files = @('dist/package/Clink.exe', 'dist/package/Clink.exe.sha256', 'dist/package/Clink-framework.exe', 'dist/package/Clink-framework.exe.sha256', "dist/package/Clink-$env:VERSION-setup.exe")
           if (Test-Path dist/package/stable.json) { $files += 'dist/package/stable.json', 'dist/package/stable.json.sig' }
           Add-Content -Path $env:GITHUB_OUTPUT -Value "files<<EOF`n$($files -join "`n")`nEOF"
 

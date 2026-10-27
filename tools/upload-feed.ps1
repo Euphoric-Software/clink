@@ -1,8 +1,8 @@
-﻿#requires -Version 7
+#requires -Version 7
 # Uploads a package (tools/package.ps1 output) and its signed manifest to an S3-compatible bucket (Cloudflare R2), contract v2.
 #
 # Bucket layout under <prefix> (must match ^clink(-staging)?$; CLINK_FEED_KEY_PREFIX, default "clink"):
-#   releases/vX.Y.Z/{Clink.exe, Clink.exe.sha256, Clink-X.Y.Z-setup.exe}      write-once
+#   releases/vX.Y.Z/{Clink.exe, Clink.exe.sha256, Clink-framework.exe, Clink-framework.exe.sha256, Clink-X.Y.Z-setup.exe}   write-once
 #   dev/vX.Y.Z-dev.N/{same}                                                   write-once
 #   stable.json(.sig), dev.json(.sig)                                         replaced on every publish
 # Order: refuse a downgrade, versioned assets (write-once), HEAD-check their PUBLIC URLs, manifest, then signature.
@@ -67,6 +67,8 @@ $setup = "Clink-$Version-setup.exe"
 $assets = @(
     [pscustomobject]@{ Name = 'Clink.exe'; Type = 'application/vnd.microsoft.portable-executable' }
     [pscustomobject]@{ Name = 'Clink.exe.sha256'; Type = 'text/plain' }
+    [pscustomobject]@{ Name = 'Clink-framework.exe'; Type = 'application/vnd.microsoft.portable-executable' }
+    [pscustomobject]@{ Name = 'Clink-framework.exe.sha256'; Type = 'text/plain' }
     [pscustomobject]@{ Name = $setup; Type = 'application/vnd.microsoft.portable-executable' }
 )
 foreach ($a in $assets) {
@@ -78,7 +80,7 @@ foreach ($a in $assets) {
     $a | Add-Member -NotePropertyName Key -NotePropertyValue "$prefix/$folder/$($a.Name)"
     $a | Add-Member -NotePropertyName Url -NotePropertyValue "$feed$folder/$($a.Name)"
 }
-foreach ($pair in @(@('exe', 'Clink.exe'), @('installer', $setup))) {
+foreach ($pair in @(@('exe', 'Clink.exe'), @('exeFramework', 'Clink-framework.exe'), @('installer', $setup))) {
     $entry = $manifest.assets.($pair[0])
     $a = $assets | Where-Object { $_.Name -eq $pair[1] }
     if ($entry.url -ne $a.Url -or $entry.sha256 -ne $a.Sha256 -or [int64]$entry.size -ne $a.Size) { throw "The manifest entry '$($pair[0])' does not match $($a.Name) in the package." }

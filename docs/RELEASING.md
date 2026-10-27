@@ -7,8 +7,10 @@ This file is the canonical spec for how Clink is built, signed and published (co
 
 | Download | What it is |
 | --- | --- |
-| `Clink.exe` | The portable download: the plain single-file exe (framework-dependent, needs the .NET 10 Desktop Runtime). |
-| `Clink.exe.sha256` | `<hash> *Clink.exe`. v0.4.1 and older updaters read exactly these two names. |
+| `Clink.exe` | The portable download: the SELF-CONTAINED single-file exe (compressed, about 75 MiB, needs no runtime). v0.4.1 and older updaters read exactly this name, so their bare-exe copies become portable self-contained copies on update. |
+| `Clink.exe.sha256` | `<hash> *Clink.exe`. |
+| `Clink-framework.exe` | The FRAMEWORK-DEPENDENT single-file exe (about 32 MiB, needs the .NET 10 Desktop Runtime). This is the exe the installer installs and what installed copies update to. |
+| `Clink-framework.exe.sha256` | `<hash> *Clink-framework.exe`. |
 | `Clink-X.Y.Z-setup.exe` | Inno Setup installer (per user, no admin, fixed location, upgrades in place). |
 | `stable.json`, `stable.json.sig` (`dev.json`, ...) | Signed update manifest, only when the feed is enabled for that channel. |
 
@@ -45,10 +47,19 @@ Committed and embedded in `Clink.exe`; the only place the app learns where the f
 
 ```json
 { "schema": 1, "channel": "stable", "version": "0.4.2", "tag": "v0.4.2", "published": "2026-10-26T12:00:00.0000000Z",
-  "notesUrl": "https://github.com/Euphoric-Software/clink/releases/tag/v0.4.2", "minRuntime": "10.0",
-  "assets": { "exe":       { "url": ".../releases/v0.4.2/Clink.exe",            "size": 1, "sha256": "<64 hex>" },
-              "installer": { "url": ".../releases/v0.4.2/Clink-0.4.2-setup.exe", "size": 1, "sha256": "<64 hex>" } } }
+  "notesUrl": "https://github.com/Euphoric-Software/clink/releases/tag/v0.4.2", "minRuntime": "10.0.0",
+  "assets": { "exe":          { "url": ".../releases/v0.4.2/Clink.exe",              "size": 1, "sha256": "<64 hex>" },
+              "exeFramework": { "url": ".../releases/v0.4.2/Clink-framework.exe",    "size": 1, "sha256": "<64 hex>" },
+              "installer":    { "url": ".../releases/v0.4.2/Clink-0.4.2-setup.exe",   "size": 1, "sha256": "<64 hex>" } } }
 ```
+
+- `exe` is the self-contained exe (what portable copies take); `exeFramework` is what framework (installed) copies take, unless
+  the manifest lacks it or `minRuntime` is newer than every installed Microsoft.WindowsDesktop.App runtime (then they fall
+  back to `exe`). A client rejects the WHOLE manifest when `exeFramework` is present but invalid (https url, positive size,
+  64 lowercase hex sha256), so it is always written from `package.json`, never by hand.
+- `minRuntime` is `X.Y.Z` (clients parse it as a version). `tools/package.ps1` reads it from the Microsoft.WindowsDesktop.App
+  version in the framework build's `Clink.runtimeconfig.json` (today `10.0.0`) and records it in `package.json`;
+  `tools/make-manifest.ps1` copies it.
 
 Signature file: one line of Base64, ECDSA P-256 / SHA-256 over the exact manifest bytes (UTF-8, no BOM), IEEE P1363
 `r||s`, 64 bytes. Separate keys per channel: the stable key signs `stable.json`, the dev key signs `dev.json`.
@@ -56,7 +67,8 @@ Signature file: one line of Base64, ECDSA P-256 / SHA-256 over the exact manifes
 ### Bucket layout (under `<prefix>`, validated `^clink(-staging)?$`)
 
 ```
-<prefix>/releases/vX.Y.Z/{Clink.exe, Clink.exe.sha256, Clink-X.Y.Z-setup.exe}
+<prefix>/releases/vX.Y.Z/{Clink.exe, Clink.exe.sha256, Clink-framework.exe, Clink-framework.exe.sha256,
+                            Clink-X.Y.Z-setup.exe}
 <prefix>/dev/vX.Y.Z-dev.N/{same}                 (10 newest kept)
 <prefix>/stable.json, stable.json.sig, dev.json, dev.json.sig
 ```
@@ -74,15 +86,20 @@ enabled for that channel. The app's GitHub fallback verifies them against the sa
 Both workflows have two jobs.
 
 1. `build` (`contents: read`, no secrets, no environment): checkout, version (the stable workflow accepts only `refs/tags/vX.Y.Z`
-   or a manual run on `main`, and refuses when `gh release view vX.Y.Z` succeeds), publish `Clink.exe`, run the embedded-feed
-   test, install the pinned Inno Setup, run `tools/package.ps1` (exe, sha256, setup exe, `package.json`), record the SHA-256 values as job outputs, upload the
-   package as an artifact. The dev workflow also builds and runs the unit tests first.
+   or a manual run on `main`, and refuses when `gh release view vX.Y.Z` succeeds), publish BOTH flavours with
+   `tools/publish-flavours.ps1` (`dist/sc` self-contained, `dist/fx` framework-dependent; separate `obj_*`/`bin_*` folders, because
+   a shared one mixed the flavours and produced an exe that failed with 0x80008096), run `tools/check-published.ps1` on both
+   (size guards; `--packaging-check`, `--preflight`, the embedded-feed self-test and ProductVersion on each exe), install the
+   pinned Inno Setup, run `tools/package.ps1` (both exes, both sha256 files, the setup exe built from the FRAMEWORK exe,
+   `package.json`), record the SHA-256 values as job outputs, upload the package as an artifact. The dev workflow also builds
+   and runs the unit tests first (on the bin build: 5 tests fail by design when `--unittest` runs from a published exe).
+   `build.yml` has a no-secrets "Package dry run" job that does the same without the installer.
 2. `publish` (`needs: build`, environment `feed-stable` / `feed-dev`, `contents: write`, fixed concurrency group
    `feed-stable-publish` / `feed-dev-publish` with `cancel-in-progress: false`). Guards first, before any secret is used:
    the stable job accepts only `^refs/tags/v\d+\.\d+\.\d+$` or a manual run on `main` and checks
    `git merge-base --is-ancestor $GITHUB_SHA origin/main` (full-history checkout); the dev job accepts only `refs/heads/dev`;
    both refuse when a GitHub release `vX.Y.Z` already exists (draft or published). Then: download the artifact, verify
-   `Clink.exe` and the setup exe against the build job's outputs, read `Clink/Assets/feed.json` from the checkout.
+   `Clink.exe`, `Clink-framework.exe` and the setup exe against the build job's outputs, read `Clink/Assets/feed.json` from the checkout.
    The GitHub release is created as a DRAFT with all assets, then `upload-feed.ps1` runs (if the feed is on), and only then
    `gh release edit vX.Y.Z --draft=false` publishes it. A failed bucket upload therefore never leaves a visible release.
    - Feed enabled for the channel: require the environment secrets (fail if missing), make and sign the manifest
@@ -196,7 +213,7 @@ Only in a fork (or a scratch repo) with a throwaway key pair and `clink-staging`
 bucket into a fork. Locally you can check the pieces without any bucket:
 
 ```
-.\build.ps1 -Package                      # dist\package (the setup exe needs Inno Setup 6.3+, otherwise it is skipped with a warning)
+.\build.ps1 -Package                      # dist\sc, dist\fx, dist\package (the setup exe needs Inno Setup 6.3+, otherwise it is skipped with a warning)
 $env:CLINK_FEED_SIGNING_KEY = Get-Content -Raw D:\keys\throwaway.pem
 try {
   powershell -File tools\make-manifest.ps1 -Channel dev -Version 0.4.2-dev.1 -Tag v0.4.2-dev.1 `
@@ -208,8 +225,45 @@ try {
 
 ## Local packaging
 
-`.\build.ps1 -Package` publishes (Release by default; it warns for Debug) and runs `tools/package.ps1` into `dist\package`:
-`Clink.exe`, `Clink.exe.sha256`, `Clink-<ver>-setup.exe` (when `ISCC.exe` is found), `package.json`.
+`.\build.ps1 -Package` publishes both flavours (Release by default; it warns for Debug) into `dist\sc` and `dist\fx` and runs
+`tools/package.ps1` into `dist\package`: `Clink.exe`, `Clink.exe.sha256`, `Clink-framework.exe`, `Clink-framework.exe.sha256`,
+`Clink-<ver>-setup.exe` (when `ISCC.exe` is found; `tools/package.ps1 -SkipInstaller` skips it even then, `-RequireInstaller` fails when it is missing), `package.json`. To check the published
+exes: `tools\check-published.ps1 -ScExe dist\sc\Clink.exe -FxExe dist\fx\Clink.exe`.
+
+## Pinned SDK (`global.json`)
+
+`global.json` pins the .NET SDK to an exact version with `"rollForward": "disable"`, and every workflow installs it with
+`actions/setup-dotnet` `global-json-file: global.json`. The SDK that builds a release therefore only changes in a reviewed
+commit. Bump it deliberately, once per release, together with the third-party notices (the runtime pack and SDK versions the
+notices describe):
+
+1. Install the new SDK locally, set `"version"` in `global.json` to it, run `.\build.ps1 -Package` and
+   `tools\tests\run-script-tests.ps1`, and run the unit tests.
+2. Regenerate the notices for that SDK/runtime, then commit `global.json` and the notices together.
+3. Check that the version exists for the runner image (`actions/setup-dotnet` downloads it); the next workflow run proves it.
+
+`build.ps1` and `tools/publish-flavours.ps1` probe `dotnet --version` run in the repo root (which honours `global.json`): the
+`dotnet` on PATH is used when it satisfies the pin, otherwise `%USERPROFILE%\.dotnet\dotnet.exe` is tried, and when neither does
+they fail with "No .NET SDK satisfying global.json found". When bumping the pin, install the new SDK side by side with
+`dotnet-install.ps1 -Version <x>` (an exact version; the old one can stay). Nested worktrees under `.claude\worktrees` inherit the
+parent checkout's `global.json` once `dev` has it (the SDK resolver walks up the directory tree), so a worktree on an older
+branch is pinned too.
+
+## Installer inputs (ISCC)
+
+`tools/package.ps1` feeds the Inno Setup compiler `/DAppVersion`, `/DAppFileVersion`, `/DOutDir` and
+`/DSourceExe=<OutDir>\Clink-framework.exe` (the framework-dependent exe). The runtime-bootstrap slices add
+`/DDotNetRuntimeUrl`, `/DDotNetRuntimeSha256`, `/DDotNetRuntimeVersion` and `/DNoticesFile`; they are mandatory under
+`-RequireInstaller`. `package.ps1` also refuses inputs whose ProductVersion differs from `-Version` (`-SkipVersionCheck` is
+for the script tests only) and reads the default `minRuntime` from exactly one `Clink\bin_fx\**\Clink.runtimeconfig.json`
+(`-RuntimeConfigPath` or `-MinRuntime` override).
+
+## Script tests
+
+`tools\tests\run-script-tests.ps1` (Windows PowerShell 5.1 and pwsh 7, no modules) parses every script under `tools\` and
+`build.ps1`, runs every `tools\tests\*.tests.ps1`, and `packaging.tests.ps1` covers `package.ps1`, `make-manifest.ps1`
+(with a throwaway key made inside the test), `check-published.ps1`'s size guards and text assertions on the workflows (pinned
+`uses:`, the four release asset names, `global-json-file`, no `${{ }}` inside `run:` scripts).
 
 ## Recommended next step: Authenticode
 
