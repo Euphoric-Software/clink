@@ -919,11 +919,12 @@ internal sealed partial class AppController : IDisposable
     /// new one is started, so that if this process hangs on the way out the new Clink still gets it when its wait is over. False, and
     /// <paramref name="error"/> says why, when the new process could not be started: nothing has been given up then.
     /// </summary>
-    internal bool RestartClink(out string? error)
+    internal bool RestartClink(out string? error, IEnumerable<string>? extra = null)
     {
         error = null;
         var psi = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = false };
         foreach (string a in RestartArguments(CommandLine ?? Environment.GetCommandLineArgs().Skip(1))) psi.ArgumentList.Add(a);
+        if (extra != null) foreach (string a in extra) psi.ArgumentList.Add(a);   // for this one start only (e.g. --setup)
         foreach (string a in AfterPidArguments()) psi.ArgumentList.Add(a);
         try { StartProcess(psi); }
         catch (Exception ex)
@@ -947,7 +948,7 @@ internal sealed partial class AppController : IDisposable
     /// </summary>
     internal static List<string> RestartArguments(IEnumerable<string> args)
     {
-        var once = new[] { "--clip", "--trim-last", "--share-last", "--record", "--screenshot", "--screenshot-edit-last", "--minimized", "--no-update" };
+        var once = new[] { "--clip", "--trim-last", "--share-last", "--record", "--screenshot", "--screenshot-edit-last", "--minimized", "--no-update", "--setup-continue", "--setup" };
         var kept = new List<string>();
         var all = WithoutAfterPid(DevOptions.WithoutSwitches(args)).ToList();
         for (int i = 0; i < all.Count; i++)
@@ -955,6 +956,11 @@ internal sealed partial class AppController : IDisposable
             if (all[i].Equals("--screenshot-edit", StringComparison.OrdinalIgnoreCase))   // with its path: a command for one start only
             {
                 if (i + 1 < all.Count && !all[i + 1].StartsWith("--", StringComparison.Ordinal)) i++;
+                continue;
+            }
+            if (all[i].Equals("--setup-moved-from", StringComparison.OrdinalIgnoreCase))   // with its path and hash: the move is done, a restart must not clean up again
+            {
+                for (int n = 0; n < 2 && i + 1 < all.Count && !all[i + 1].StartsWith("--", StringComparison.Ordinal); n++) i++;
                 continue;
             }
             if (!once.Contains(all[i], StringComparer.OrdinalIgnoreCase)) kept.Add(all[i]);

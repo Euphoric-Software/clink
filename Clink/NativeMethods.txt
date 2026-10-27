@@ -403,3 +403,10 @@ SHCNE_ID
 SHCNF_FLAGS
 SHGetKnownFolderPath
 KNOWN_FOLDER_FLAG
+
+// elevation check (Services/Elevation.cs): is this process's token elevated
+OpenProcessToken
+GetTokenInformation
+TOKEN_ELEVATION
+TOKEN_INFORMATION_CLASS
+TOKEN_ACCESS_MASK

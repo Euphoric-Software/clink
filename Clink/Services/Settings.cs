@@ -188,6 +188,12 @@ internal sealed class Settings
     /// <inheritdoc cref="FeedFloorStable"/>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? FeedFloorDev { get; set; }
 
+    /// <summary>
+    /// The version of the first-run setup the user went through (or skipped) on this installation; null = never. Per installation: never
+    /// imported. Left out of the file while null, so a settings.json that never saw the setup is exactly what it was.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public int? SetupVersion { get; set; }
+
     // ---- v3 (v0.2.5) ----
     /// <summary>dark | light</summary>
     public string Theme { get; set; } = SettingsDefaults.Theme;

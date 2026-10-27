@@ -225,13 +225,15 @@ internal static class TestRunner
     private sealed record Shared(string? SettingsDir, string? ClipIndex, string? UpdatesDir, string InstanceSuffix, bool DevHotkeys, bool DevAcceptImport, bool DevToken, bool DevRecord, bool DevQuiet, bool DevQuietRecord,
         string? RealDir, string? PackagesRoot,
         Func<System.Net.Http.HttpRequestMessage, CancellationToken, Task<System.Net.Http.HttpResponseMessage>>? UpdaterHttp, FeedTrust? FeedTrust, string? BuiltInRepo,
-        TimeSpan? FeedTimeout, Packaging? Packaging, Func<string, TimeSpan, Updater.PreflightResult>? Preflight, IReadOnlyList<Version>? Runtimes, bool? Elevated)
+        TimeSpan? FeedTimeout, Packaging? Packaging, Func<string, TimeSpan, Updater.PreflightResult>? Preflight, IReadOnlyList<Version>? Runtimes, bool? Elevated,
+        Func<bool?>? ElevationToken, Func<bool>? ElevationPrincipal, Func<string, uint> ShortcutDriveType)
     {
         public static Shared Capture() => new(Settings.DirOverride, ClipLibrary.IndexPathOverride, Updater.UpdatesDirOverride,
             AppController.InstanceSuffix, AppController.DevHotkeys, AppController.DevAcceptImport, AppController.DevToken, AppController.DevRecord, AppController.DevQuiet, AppController.DevQuietRecord,
             Settings.RealDirOverride, SettingsImport.PackagesRoot,
             Updater.HttpOverride, Updater.FeedOverride, Updater.BuiltInRepoOverride, Updater.FeedTimeoutOverride,
-            Updater.PackagingOverride, Updater.PreflightOverride, DotNetRuntimes.Override, Updater.IsElevatedOverride);
+            Updater.PackagingOverride, Updater.PreflightOverride, DotNetRuntimes.Override, Updater.IsElevatedOverride,
+            Elevation.TokenQueryOverride, Elevation.PrincipalQueryOverride, Shortcuts.DriveTypeOf);
     }
 
     /// <summary>
@@ -263,6 +265,9 @@ internal static class TestRunner
         Updater.PreflightOverride = scratch != null ? static (_, _) => new(0, false, null) : before.Preflight;   // never a real process; a test installs its own fake
         DotNetRuntimes.Override = scratch != null ? new[] { new Version(10, 0, 0) } : before.Runtimes;
         Updater.IsElevatedOverride = before.Elevated;   // null = ask Windows; a test that pretends to be elevated does not leave it so
+        Elevation.TokenQueryOverride = before.ElevationToken;
+        Elevation.PrincipalQueryOverride = before.ElevationPrincipal;
+        Shortcuts.DriveTypeOf = before.ShortcutDriveType;
         Settings.ThawSaves();
         Settings.SeedDefaults = scratch == null;   // off during a test (the older tests pin exact hotkey lists); the seeding tests turn it on themselves
         SettingsImport.Reset();

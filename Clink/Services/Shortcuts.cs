@@ -10,7 +10,7 @@ namespace Clink.Services;
 internal enum ShortcutOutcome
 {
     Created,
-    /// <summary>A link of ours (pointing at some Clink.exe) was rewritten.</summary>
+    /// <summary>A link of ours (to this exe, to the exe it was moved from, or to a Clink.exe that is gone) was rewritten.</summary>
     Replaced,
     /// <summary>A link of that name exists and points elsewhere (or cannot be read): left alone.</summary>
     LeftAlone,
@@ -32,7 +32,7 @@ internal readonly record struct ShortcutResult(ShortcutOutcome Outcome, string P
 /// <summary>
 /// The Start menu and Desktop shortcuts of the first-run setup (<c>Clink.lnk</c>, the names the Inno installer uses). The folders are
 /// always passed in (the caller resolves the Programs and Desktop folders; tests use a temp folder). A link is written only where
-/// there is none or where the existing one points at a Clink.exe; one is removed only when it points at this exe.
+/// there is none or where the existing one points at this exe, at <c>previousExe</c> (the copy this one was moved from), or at a Clink.exe that no longer exists; a link to any other Clink.exe (for instance the installer's, while this is a copy in Downloads) is left alone; one is removed only when it points at this exe.
 /// With a <c>devFolder</c> (a <c>--dev</c> instance) only folders inside it are touched. Needs a COM-initialised thread (the UI thread).
 /// </summary>
 internal static unsafe class Shortcuts
@@ -48,8 +48,11 @@ internal static unsafe class Shortcuts
         string.IsNullOrWhiteSpace(devFolder)
         || (InstallLocation.Under(InstallLocation.Normalize(folder), devFolder) && InstallLocation.Under(InstallLocation.Normalize(exePath), devFolder));
 
-    /// <summary>Writes <c>folder\Clink.lnk</c> pointing at <paramref name="exePath"/>. Never throws. <paramref name="devFolder"/>: refuses a folder or exe outside it.</summary>
-    public static ShortcutResult Create(string folder, string exePath, string? description = "Clink", bool notifyShell = true, string? devFolder = null)
+    /// <summary>
+    /// Writes <c>folder\Clink.lnk</c> pointing at <paramref name="exePath"/>. Never throws. <paramref name="devFolder"/>: refuses a folder or exe outside it.
+    /// An existing link is replaced only when its target is <paramref name="exePath"/>, <paramref name="previousExe"/>, or a <c>Clink.exe</c> that is not on disk any more.
+    /// </summary>
+    public static ShortcutResult Create(string folder, string exePath, string? description = "Clink", bool notifyShell = true, string? devFolder = null, string? previousExe = null)
     {
         string link = LinkPath(folder);
         if (!InsideDev(devFolder, folder, exePath)) return new ShortcutResult(ShortcutOutcome.Refused, link, "outside the dev folder");
@@ -59,8 +62,9 @@ internal static unsafe class Shortcuts
             if (existed)
             {
                 string? current = ReadTarget(link);
-                if (current == null || !Path.GetFileName(current).Equals(ExeName, StringComparison.OrdinalIgnoreCase))
-                    return new ShortcutResult(ShortcutOutcome.LeftAlone, link, current == null ? "unreadable link" : "points at " + current);
+                if (current == null) return new ShortcutResult(ShortcutOutcome.LeftAlone, link, "unreadable link");
+                if (!MayReplace(current, exePath, previousExe))
+                    return new ShortcutResult(ShortcutOutcome.LeftAlone, link, "points at " + current);
             }
             Directory.CreateDirectory(folder);
             Write(link, exePath, description);
@@ -68,6 +72,31 @@ internal static unsafe class Shortcuts
             return new ShortcutResult(existed ? ShortcutOutcome.Replaced : ShortcutOutcome.Created, link);
         }
         catch (Exception ex) { return new ShortcutResult(ShortcutOutcome.Failed, link, ex.Message); }
+    }
+
+    internal static bool MayReplace(string currentTarget, string exePath, string? previousExe)
+    {
+        string cur = InstallLocation.Normalize(Environment.ExpandEnvironmentVariables(currentTarget));
+        if (cur.Equals(InstallLocation.Normalize(exePath), StringComparison.OrdinalIgnoreCase)) return true;
+        if (!string.IsNullOrWhiteSpace(previousExe) && cur.Equals(InstallLocation.Normalize(previousExe), StringComparison.OrdinalIgnoreCase)) return true;
+        if (!IsLocalFixed(cur)) return false;   // a network or removable target is "not ours": never probed (File.Exists on a dead share blocks; on a hostile one it lies)
+        return Path.GetFileName(cur).Equals(ExeName, StringComparison.OrdinalIgnoreCase) && !File.Exists(cur);   // a stale link of ours
+    }
+
+    /// <summary>Stands in for GetDriveType in the unit tests (a fake mapped drive). The real one by default.</summary>
+    internal static Func<string, uint> DriveTypeOf { get; set; } = Screenshots.ScreenshotService.DriveTypeOf;
+
+    /// <summary>A path on a local fixed drive letter (not UNC, not a mapped network / removable drive). No file access.</summary>
+    private static bool IsLocalFixed(string normalized)
+    {
+        try
+        {
+            if (normalized.Length == 0 || InstallLocation.IsUnc(normalized)) return false;
+            string root = Path.GetPathRoot(normalized) ?? "";
+            if (root.Length != 3 || !char.IsAsciiLetter(root[0]) || root[1] != ':' || root[2] != '\\') return false;
+            return DriveTypeOf(root) == 3;
+        }
+        catch { return false; }
     }
 
     /// <summary>Deletes <c>folder\Clink.lnk</c> only if it points at <paramref name="exePath"/>. Never throws. <paramref name="devFolder"/>: refuses a folder or exe outside it.</summary>

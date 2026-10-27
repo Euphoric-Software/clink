@@ -4,7 +4,6 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Reflection;
 using System.Security.Cryptography;
-using System.Security.Principal;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -920,24 +919,15 @@ internal sealed class Updater : IDisposable
         catch (Exception) { return $"Clink.exe's folder ({dir}) is not writable"; }
     }
 
-    /// <summary>Stands in for "is this process elevated" in the unit tests; null otherwise.</summary>
-    internal static bool? IsElevatedOverride { get; set; }
+    /// <summary>Stands in for "is this process elevated" in the unit tests; null otherwise. One source of truth: <see cref="Elevation.IsElevatedOverride"/>.</summary>
+    internal static bool? IsElevatedOverride { get => Elevation.IsElevatedOverride; set => Elevation.IsElevatedOverride = value; }
 
     /// <summary>Exit code of <c>--apply-update</c> when it refuses to run elevated.</summary>
     internal const int ElevatedExitCode = 3;
 
     private const string ElevatedNote = "Clink is running as administrator and does not install updates from an elevated process";
 
-    private static bool IsElevated()
-    {
-        if (IsElevatedOverride is bool forced) return forced;
-        try
-        {
-            using var id = WindowsIdentity.GetCurrent();
-            return new WindowsPrincipal(id).IsInRole(WindowsBuiltInRole.Administrator);
-        }
-        catch { return false; }
-    }
+    private static bool IsElevated() => Elevation.IsElevated();
 
     /// <summary>
     /// Newest downloaded <c>Clink-&lt;ver&gt;.exe</c> that is newer than the running exe and still matches what was verified at

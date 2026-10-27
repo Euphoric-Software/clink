@@ -166,6 +166,8 @@ internal sealed record InstallEnvironment
     public string? Documents { get; init; }
     /// <summary>%LOCALAPPDATA%\Programs.</summary>
     public string? ProgramsFolder { get; init; }
+    /// <summary>The Start menu Programs folder where <c>Clink.lnk</c> goes.</summary>
+    public string? StartMenu { get; init; }
     /// <summary>Program Files, Program Files (x86), ProgramW6432.</summary>
     public IReadOnlyList<string> ProgramFiles { get; init; } = Array.Empty<string>();
     /// <summary>%TEMP% and Windows\Temp.</summary>
@@ -190,6 +192,7 @@ internal sealed record InstallEnvironment
             Desktop = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
             Documents = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
             ProgramsFolder = local.Length > 0 ? Path.Combine(local, "Programs") : null,
+            StartMenu = Environment.GetFolderPath(Environment.SpecialFolder.Programs),
             ProgramFiles = new[] { Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), Env("ProgramW6432") }
                 .Where(s => s.Length > 0).ToArray(),
             Temp = new[] { Path.GetTempPath(), windows.Length > 0 ? Path.Combine(windows, "Temp") : "" }.Where(s => s.Length > 0).ToArray(),
@@ -202,6 +205,19 @@ internal sealed record InstallEnvironment
             },
         };
     }
+
+    /// <summary>
+    /// The places of a <c>--dev</c> instance, all inside its dev folder: <c>Programs</c>, <c>Documents</c>, <c>Downloads</c>, <c>Desktop</c> and <c>StartMenu</c>.
+    /// No Temp or cloud roots, no Program Files, every drive fixed: nothing of the real machine is looked at or touched.
+    /// </summary>
+    public static InstallEnvironment ForDev(string devFolder) => new()
+    {
+        Downloads = Path.Combine(devFolder, "Downloads"),
+        Desktop = Path.Combine(devFolder, "Desktop"),
+        Documents = Path.Combine(devFolder, "Documents"),
+        ProgramsFolder = Path.Combine(devFolder, "Programs"),
+        StartMenu = Path.Combine(devFolder, "StartMenu"),
+    };
 }
 
 /// <summary>The Downloads folder has no Environment.SpecialFolder; the shell knows it.</summary>

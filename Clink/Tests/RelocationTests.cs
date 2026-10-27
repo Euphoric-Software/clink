@@ -34,6 +34,8 @@ internal static class RelocationTests
         public readonly List<string> ClearedReadOnly = new();
         public Func<string, string, Exception?>? MoveFault;
         public int MoveCalls;
+        public readonly HashSet<string> UnknownSame = new(StringComparer.OrdinalIgnoreCase);
+        public Action? OnSleep;
 
         public void Put(string path, string content, string? version = null)
         {
@@ -60,13 +62,18 @@ internal static class RelocationTests
         public bool DeleteAlwaysFails;
         public void Delete(string path)
         {
-            if (DeleteAlwaysFails) throw new IOException("scanner holds it");
-            if (DeleteFailuresLeft > 0) { DeleteFailuresLeft--; throw new IOException("scanner holds it"); }
+            if (DeleteAlwaysFails) throw Locked("scanner holds it");
+            if (DeleteFailuresLeft > 0) { DeleteFailuresLeft--; throw Locked("scanner holds it"); }
             Files.Remove(path); Deleted.Add(path);
         }
         public void ClearReadOnly(string path) { ClearedReadOnly.Add(path); ReadOnly.Remove(path); }
         private string Canon(string p) => Aliases.TryGetValue(p, out var c) ? c : p;
-        public bool SameFile(string a, string b) => Files.ContainsKey(a) && Files.ContainsKey(b) && string.Equals(Canon(a), Canon(b), StringComparison.OrdinalIgnoreCase);
+        public bool? SameFile(string a, string b)
+        {
+            if (!Files.ContainsKey(a) || !Files.ContainsKey(b)) return false;
+            if (UnknownSame.Contains(a) || UnknownSame.Contains(b)) return null;
+            return string.Equals(Canon(a), Canon(b), StringComparison.OrdinalIgnoreCase);
+        }
         public bool LooksLikeClink(string exePath) => !Foreign.Contains(exePath);
         public uint DriveTypeOf(string root) => Drives.TryGetValue(char.ToUpperInvariant(root[0]), out var t) ? t : 3u;
         public IReadOnlyList<string> ProgramFilesFolders() => ProgramFiles;
@@ -89,15 +96,18 @@ internal static class RelocationTests
             Recycled.Add(path);
             Files.Remove(path);
         }
-        public void Sleep(int milliseconds) => Sleeps++;
+        public void Sleep(int milliseconds) { Sleeps++; OnSleep?.Invoke(); }
     }
+
+    /// <summary>ERROR_SHARING_VIOLATION (0x20): what a virus scanner or the indexer causes.</summary>
+    private static IOException Locked(string message) => new(message, unchecked((int)0x80070020));
 
     private const string Src = @"C:\Users\u\Downloads\Clink.exe";
     private const string Folder = @"C:\Users\u\AppData\Local\Programs\Clink";
     private const string Target = Folder + @"\Clink.exe";
     private static readonly ReleaseVersion Current = ReleaseVersion.Parse("0.4.2")!.Value;
 
-    private static RelocationPlan PlanOf(FakeSystem sys, bool elevated = false, string? src = null) => SelfInstall.Plan(src ?? Src, Folder, elevated, Current, sys);
+    private static RelocationPlan PlanOf(FakeSystem sys, bool elevated = false, string? src = null) => SelfInstall.Plan(src ?? Src, Folder, elevated, Current, sys, singleFile: true, preferExisting: false, targetInstallerManaged: false);
 
     // ------------------------------------------------------------------ plan
 
@@ -119,8 +129,8 @@ internal static class RelocationTests
     {
         var sys = new FakeSystem();
         sys.Put(Target, "exe");
-        Check.Equal(RelocationKind.NoOp, SelfInstall.Plan(Target, Folder, false, Current, sys).Kind);
-        Check.Equal(RelocationKind.NoOp, SelfInstall.Plan(Target.ToUpperInvariant(), Folder + @"\", false, Current, sys).Kind);
+        Check.Equal(RelocationKind.NoOp, SelfInstall.Plan(Target, Folder, false, Current, sys, singleFile: true, preferExisting: false, targetInstallerManaged: false).Kind);
+        Check.Equal(RelocationKind.NoOp, SelfInstall.Plan(Target.ToUpperInvariant(), Folder + @"\", false, Current, sys, singleFile: true, preferExisting: false, targetInstallerManaged: false).Kind);
         Check.Equal(RelocationOutcome.NothingToDo, SelfInstall.Execute(PlanOf(sys, src: Target), 1, null, sys).Outcome);
         Check.Equal(0, sys.Started.Count);
     }
@@ -129,8 +139,8 @@ internal static class RelocationTests
     public static void A_relative_path_is_refused()
     {
         var sys = new FakeSystem();
-        Check.Equal(RelocationKind.Refused, SelfInstall.Plan("Clink.exe", Folder, false, Current, sys).Kind);
-        Check.Equal(RelocationKind.Refused, SelfInstall.Plan(Src, "", false, Current, sys).Kind);
+        Check.Equal(RelocationKind.Refused, SelfInstall.Plan("Clink.exe", Folder, false, Current, sys, singleFile: true, preferExisting: false, targetInstallerManaged: false).Kind);
+        Check.Equal(RelocationKind.Refused, SelfInstall.Plan(Src, "", false, Current, sys, singleFile: true, preferExisting: false, targetInstallerManaged: false).Kind);
     }
 
     [UnitTest]
@@ -373,7 +383,7 @@ internal static class RelocationTests
         sys.Put(Target, "exe");
         sys.Put(ShortSrc, "exe");
         sys.Aliases[ShortSrc] = Target;   // 8.3 name / junction / subst drive / hard link: one file, a different string
-        var plan = SelfInstall.Plan(ShortSrc, Folder, false, Current, sys);
+        var plan = SelfInstall.Plan(ShortSrc, Folder, false, Current, sys, singleFile: true, preferExisting: false, targetInstallerManaged: false);
         Check.Equal(RelocationKind.NoOp, plan.Kind);
         Check.Equal(RelocationOutcome.NothingToDo, SelfInstall.Execute(plan, 1, null, sys).Outcome);
         Check.Equal(0, sys.Started.Count);
@@ -386,7 +396,7 @@ internal static class RelocationTests
         var other = new FakeSystem();
         other.Put(Target, "exe");
         other.Put(Src, "exe");
-        Check.Equal(RelocationKind.Install, SelfInstall.Plan(Src, Folder, false, Current, other).Kind);
+        Check.Equal(RelocationKind.Install, SelfInstall.Plan(Src, Folder, false, Current, other, singleFile: true, preferExisting: false, targetInstallerManaged: false).Kind);
         Check.Equal(SelfInstall.CleanupOutcome.Recycled, SelfInstall.CleanupOldCopy(Src, HashOf("exe"), Target, other, elevated: false));
     }
 
@@ -459,7 +469,7 @@ internal static class RelocationTests
         var sys = new FakeSystem();
         sys.Put(Src, "exe");
         string dev = @"C:\dev\data";
-        var outside = SelfInstall.Plan(Src, Folder, false, Current, sys, devFolder: dev);
+        var outside = SelfInstall.Plan(Src, Folder, false, Current, sys, singleFile: true, preferExisting: false, targetInstallerManaged: false, devFolder: dev);
         Check.Equal(RelocationKind.Refused, outside.Kind);
         var r = SelfInstall.Execute(outside, 1, null, sys);
         Check.Equal(RelocationOutcome.Refused, r.Outcome);
@@ -467,9 +477,9 @@ internal static class RelocationTests
         Check.False(sys.Files.ContainsKey(Target));
         Check.False(sys.Directories.Contains(Folder));
 
-        Check.Equal(RelocationKind.Refused, SelfInstall.Plan(Src, @"C:\dev\data2\Clink", false, Current, sys, devFolder: dev).Kind, "a sibling with the same prefix");
-        Check.Equal(RelocationKind.Install, SelfInstall.Plan(Src, dev + @"\Programs", false, Current, sys, devFolder: dev).Kind);
-        Check.Equal(RelocationKind.Install, SelfInstall.Plan(Src, Folder, false, Current, sys, devFolder: null).Kind);
+        Check.Equal(RelocationKind.Refused, SelfInstall.Plan(Src, @"C:\dev\data2\Clink", false, Current, sys, singleFile: true, preferExisting: false, targetInstallerManaged: false, devFolder: dev).Kind, "a sibling with the same prefix");
+        Check.Equal(RelocationKind.Install, SelfInstall.Plan(Src, dev + @"\Programs", false, Current, sys, singleFile: true, preferExisting: false, targetInstallerManaged: false, devFolder: dev).Kind);
+        Check.Equal(RelocationKind.Install, SelfInstall.Plan(Src, Folder, false, Current, sys, singleFile: true, preferExisting: false, targetInstallerManaged: false, devFolder: null).Kind);
     }
 
     [UnitTest]
@@ -501,7 +511,7 @@ internal static class RelocationTests
         var sys = new FakeSystem();
         sys.Put(Src, "exe");
         int fails = 3;
-        sys.MoveFault = (from, to) => to == Target && fails-- > 0 ? new IOException("scanner has it open") : null;
+        sys.MoveFault = (from, to) => to == Target && fails-- > 0 ? Locked("scanner has it open") : null;
         var r = SelfInstall.Execute(PlanOf(sys), 1, null, sys);
         Check.Equal(RelocationOutcome.Moved, r.Outcome, r.Error);
         Check.Equal(3, sys.Sleeps);
@@ -516,7 +526,7 @@ internal static class RelocationTests
 
         var forever = new FakeSystem();
         forever.Put(Src, "exe");
-        forever.MoveFault = (from, to) => new IOException("locked");
+        forever.MoveFault = (from, to) => Locked("locked");
         var f = SelfInstall.Execute(PlanOf(forever), 1, null, forever);
         Check.Equal(RelocationOutcome.Failed, f.Outcome);
         Check.Equal(SelfInstall.MoveAttempts, forever.MoveCalls);
@@ -531,7 +541,7 @@ internal static class RelocationTests
         var sys = new FakeSystem();
         sys.Put(Src, "new");
         sys.Put(Target, "old", "0.1.0");
-        sys.MoveFault = (from, to) => from == Target + ".new" && to == Target ? new IOException("av lock") : null;
+        sys.MoveFault = (from, to) => from == Target + ".new" && to == Target ? Locked("av lock") : null;
         var r = SelfInstall.Execute(PlanOf(sys), 1, null, sys);
         Check.Equal(RelocationOutcome.Failed, r.Outcome);
         Check.Null(r.RollbackError);
@@ -546,7 +556,7 @@ internal static class RelocationTests
         var sys = new FakeSystem { ThrowOnStart = true };
         sys.Put(Src, "new");
         sys.Put(Target, "old", "0.1.0");
-        sys.MoveFault = (from, to) => from == Target + ".bak" ? new IOException("backup is locked") : null;
+        sys.MoveFault = (from, to) => from == Target + ".bak" ? Locked("backup is locked") : null;
         var r = SelfInstall.Execute(PlanOf(sys), 1, null, sys);
         Check.Equal(RelocationOutcome.Failed, r.Outcome);
         Check.NotNull(r.RollbackError);
@@ -618,6 +628,196 @@ internal static class RelocationTests
         Check.NotNull(f.RollbackError);
         Check.Contains(f.RollbackError, "could not remove " + Target);
     }
+    // ------------------------------------------------------------------ first-run services (slice 3a)
+
+    [UnitTest]
+    public static void A_build_that_is_not_a_single_file_cannot_install_itself()
+    {
+        var sys = new FakeSystem();
+        sys.Put(Src, "exe");
+        var plan = SelfInstall.Plan(Src, Folder, false, Current, sys, singleFile: false, preferExisting: false, targetInstallerManaged: false);
+        Check.Equal(RelocationKind.Refused, plan.Kind);
+        Check.Contains(plan.Reason, "cannot install itself");
+        Check.Equal(RelocationOutcome.Refused, SelfInstall.Execute(plan, 1, null, sys).Outcome);
+        Check.Equal(0, sys.Started.Count);
+        Check.False(sys.Files.ContainsKey(Target));
+        Check.Equal(RelocationKind.Install, SelfInstall.Plan(Src, Folder, false, Current, sys, singleFile: true, preferExisting: false, targetInstallerManaged: false).Kind);
+        _ = SelfInstall.IsSingleFile;   // reads the entry assembly; the answer depends on how the test host was built
+    }
+
+    [UnitTest]
+    public static void The_installed_copy_is_preferred_at_any_version_when_asked()
+    {
+        foreach (string? v in new string?[] { "0.4.1", "0.1.0", "0.4.2-dev.5", null })
+        {
+            var sys = new FakeSystem();
+            sys.Put(Src, "this one");
+            sys.Put(Target, "existing", v);
+            Check.Equal(RelocationKind.Install, SelfInstall.Plan(Src, Folder, false, Current, sys, singleFile: true, preferExisting: false, targetInstallerManaged: false).Kind, "default: older is replaced " + (v ?? "unknown"));
+            var plan = SelfInstall.Plan(Src, Folder, false, Current, sys, singleFile: true, preferExisting: true, targetInstallerManaged: false);
+            Check.Equal(RelocationKind.LaunchExisting, plan.Kind, v ?? "unknown");
+            Check.Equal(RelocationOutcome.LaunchedExisting, SelfInstall.Execute(plan, 5, null, sys).Outcome);
+            Check.Equal("existing", sys.Text(Target));
+            Check.False(sys.Files.ContainsKey(Target + ".bak"));
+        }
+        var none = new FakeSystem();
+        none.Put(Src, "x");
+        Check.Equal(RelocationKind.Install, SelfInstall.Plan(Src, Folder, false, Current, none, singleFile: true, preferExisting: true, targetInstallerManaged: false).Kind, "nothing there to prefer");
+        var foreign = new FakeSystem();
+        foreign.Put(Src, "x");
+        foreign.Put(Target, "other", "0.1.0");
+        foreign.Foreign.Add(Target);
+        Check.Equal(RelocationKind.Refused, SelfInstall.Plan(Src, Folder, false, Current, foreign, singleFile: true, preferExisting: true, targetInstallerManaged: false).Kind, "an exe that is not Clink is never launched");
+    }
+
+    [UnitTest]
+    public static void An_installer_managed_target_is_launched_never_overwritten()
+    {
+        foreach (string? v in new string?[] { "0.1.0", "0.4.1", null })
+        {
+            var sys = new FakeSystem();
+            sys.Put(Src, "this one");
+            sys.Put(Target, "inno copy", v);
+            var plan = SelfInstall.Plan(Src, Folder, false, Current, sys, singleFile: true, preferExisting: false, targetInstallerManaged: true);
+            Check.Equal(RelocationKind.LaunchExisting, plan.Kind, v ?? "unknown");
+            SelfInstall.Execute(plan, 1, null, sys);
+            Check.Equal("inno copy", sys.Text(Target));
+        }
+        var absent = new FakeSystem();
+        absent.Put(Src, "x");
+        var refused = SelfInstall.Plan(Src, Folder, false, Current, absent, singleFile: true, preferExisting: false, targetInstallerManaged: true);
+        Check.Equal(RelocationKind.Refused, refused.Kind, "no Clink.exe there but the installer manages the folder: repair it with the installer");
+        Check.Equal("The Clink installer manages this folder; repair it with the installer.", refused.Reason);
+        Check.Equal(RelocationOutcome.Refused, SelfInstall.Execute(refused, 1, null, absent).Outcome);
+        Check.False(absent.Files.ContainsKey(Target));
+        Check.Equal(0, absent.Started.Count);
+        var unmanaged = SelfInstall.Plan(Src, Folder, false, Current, absent, singleFile: true, preferExisting: false, targetInstallerManaged: false);
+        Check.Equal(RelocationKind.Install, unmanaged.Kind, "an unmanaged empty folder is a plain install");
+    }
+
+    [UnitTest]
+    public static void Under_quiet_mode_an_old_backup_in_the_way_fails_the_install_instead_of_pretending_it_is_gone()
+    {
+        var inner = new FakeSystem();
+        inner.Put(Src, "new bits");
+        inner.Put(Target, "installed", "0.1.0");
+        inner.Put(Target + ".bak", "older install");
+        var quiet = new DryRunRecycleSystem(inner);
+        var plan = SelfInstall.Plan(Src, Folder, false, Current, quiet, singleFile: true, preferExisting: false, targetInstallerManaged: false);
+        Check.Equal(RelocationKind.Install, plan.Kind);
+        var r = SelfInstall.Execute(plan, 1, null, quiet);
+        Check.Equal(RelocationOutcome.Failed, r.Outcome);
+        Check.Contains(r.Error, "quiet: an old backup is in the way");
+        Check.Equal("installed", inner.Text(Target), "the installed copy is untouched");
+        Check.Equal("older install", inner.Text(Target + ".bak"), "no Move onto the existing backup");
+        Check.False(inner.Files.ContainsKey(Target + ".new"), "the staged copy is removed");
+        Check.Equal(0, inner.MoveCalls);
+        Check.Equal(0, inner.Started.Count);
+        Check.Equal(0, inner.RecycleCalls);
+
+        var noBackup = new FakeSystem();   // without an old backup the quiet install still works
+        noBackup.Put(Src, "new bits");
+        noBackup.Put(Target, "installed", "0.1.0");
+        var quiet2 = new DryRunRecycleSystem(noBackup);
+        Check.Equal(RelocationOutcome.Moved, SelfInstall.Execute(SelfInstall.Plan(Src, Folder, false, Current, quiet2, singleFile: true, preferExisting: false, targetInstallerManaged: false), 1, null, quiet2).Outcome);
+    }
+
+    [UnitTest]
+    public static void A_system_without_the_quiet_wrapper_still_recycles_an_old_backup()
+    {
+        var sys = new FakeSystem();
+        sys.Put(Src, "new bits");
+        sys.Put(Target, "installed", "0.1.0");
+        sys.Put(Target + ".bak", "older install");
+        Check.Equal(RelocationOutcome.Moved, SelfInstall.Execute(PlanOf(sys), 1, null, sys).Outcome);
+        Check.Equal(new[] { Target + ".bak" }, sys.Recycled.ToArray());
+        Check.Equal("installed", sys.Text(Target + ".bak"));
+    }
+
+    [UnitTest]
+    public static void A_same_file_check_that_cannot_be_made_refuses_the_plan()
+    {
+        var sys = new FakeSystem();
+        sys.Put(Src, "exe");
+        sys.Put(Target, "exe", "0.1.0");
+        sys.UnknownSame.Add(Target);
+        var plan = SelfInstall.Plan(Src, Folder, false, Current, sys, singleFile: true, preferExisting: false, targetInstallerManaged: false);
+        Check.Equal(RelocationKind.Refused, plan.Kind);
+        Check.Contains(plan.Reason, "Could not tell");
+        Check.Equal("exe", sys.Text(Target));
+    }
+
+    [UnitTest]
+    public static void The_old_copy_is_never_removed_when_the_same_file_check_cannot_be_made()
+    {
+        var sys = new FakeSystem();
+        sys.Put(Src, "exe");
+        sys.Put(Target, "exe");
+        sys.UnknownSame.Add(Src);
+        Check.Equal(SelfInstall.CleanupOutcome.Failed, SelfInstall.CleanupOldCopy(Src, HashOf("exe"), Target, sys, elevated: false, attempts: 3));
+        Check.Equal(0, sys.RecycleCalls);
+        Check.True(sys.Files.ContainsKey(Src));
+        Check.Equal(2, sys.Sleeps, "it tried again");
+    }
+
+    [UnitTest]
+    public static void The_same_file_check_is_made_again_on_every_attempt()
+    {
+        var sys = new FakeSystem { RecycleFailuresLeft = 1 };
+        sys.Put(Src, "exe");
+        sys.Put(Target, "exe");
+        // between the attempts the old path turns out to be the running file (a link swapped in while the old process exited)
+        sys.OnSleep = () => sys.Aliases[Src] = Target;
+        Check.Equal(SelfInstall.CleanupOutcome.IsSelf, SelfInstall.CleanupOldCopy(Src, HashOf("exe"), Target, sys, elevated: false));
+        Check.Equal(1, sys.RecycleCalls, "only the first attempt got as far as the Recycle Bin");
+        Check.True(sys.Files.ContainsKey(Src) && sys.Files.ContainsKey(Target));
+    }
+
+    [UnitTest]
+    public static void A_dev_instance_removes_the_old_copy_only_inside_its_dev_folder()
+    {
+        string dev = @"C:\dev\data";
+        string inside = dev + @"\Downloads\Clink.exe", devTarget = dev + @"\Programs\Clink\Clink.exe";
+        var sys = new FakeSystem();
+        sys.Put(inside, "exe");
+        sys.Put(Src, "exe");
+        Check.Equal(SelfInstall.CleanupOutcome.NotRecyclable, SelfInstall.CleanupOldCopy(Src, HashOf("exe"), devTarget, sys, elevated: false, devFolder: dev), "outside the dev folder");
+        Check.Equal(SelfInstall.CleanupOutcome.NotRecyclable, SelfInstall.CleanupOldCopy(@"C:\dev\data2\Clink.exe", HashOf("exe"), devTarget, sys, elevated: false, devFolder: dev), "a sibling with the same prefix");
+        Check.Equal(0, sys.RecycleCalls);
+        Check.True(sys.Files.ContainsKey(Src));
+        Check.Equal(SelfInstall.CleanupOutcome.Recycled, SelfInstall.CleanupOldCopy(inside, HashOf("exe"), devTarget, sys, elevated: false, devFolder: dev));
+        Check.Equal(new[] { inside }, sys.Recycled.ToArray());
+        var plain = new FakeSystem();
+        plain.Put(Src, "exe");
+        Check.Equal(SelfInstall.CleanupOutcome.Recycled, SelfInstall.CleanupOldCopy(Src, HashOf("exe"), devTarget, plain, elevated: false, devFolder: null), "no dev folder: no fence");
+    }
+
+    [UnitTest]
+    public static void Only_lock_violations_and_access_denied_are_retried()
+    {
+        // disk full (0x70), file exists (0x50), a plain IOException: fail at once, no waiting
+        foreach (IOException other in new[] { new IOException("disk full", unchecked((int)0x80070070)), new IOException("exists", unchecked((int)0x80070050)), new IOException("other") })
+        {
+            var sys = new FakeSystem();
+            sys.Put(Src, "exe");
+            sys.MoveFault = (from, to) => other;
+            var r = SelfInstall.Execute(PlanOf(sys), 1, null, sys);
+            Check.Equal(RelocationOutcome.Failed, r.Outcome, other.Message);
+            Check.Equal(1, sys.MoveCalls, other.Message);
+            Check.Equal(0, sys.Sleeps, other.Message);
+        }
+        // lock violation (0x21) and access denied are
+        var lockViolation = new FakeSystem();
+        lockViolation.Put(Src, "exe");
+        int n = 2;
+        lockViolation.MoveFault = (from, to) => n-- > 0 ? new IOException("locked range", unchecked((int)0x80070021)) : null;
+        Check.Equal(RelocationOutcome.Moved, SelfInstall.Execute(PlanOf(lockViolation), 1, null, lockViolation).Outcome);
+        Check.Equal(2, lockViolation.Sleeps);
+        Check.True(SelfInstall.IsRetryable(new UnauthorizedAccessException()));
+        Check.True(SelfInstall.IsRetryable(Locked("x")));
+        Check.False(SelfInstall.IsRetryable(new FileNotFoundException()));
+        Check.False(SelfInstall.IsRetryable(new InvalidOperationException()));
+    }
     // ------------------------------------------------------------------ real disk (temp folder only)
 
     [UnitTest]
@@ -640,9 +840,9 @@ internal static class RelocationTests
         File.SetAttributes(c, FileAttributes.Normal);
         sys.StripZoneIdentifier(c);   // none there: no error
         string same = dir.File("sub\\..\\c.exe");
-        Check.True(sys.SameFile(c, same), "one file, two spellings");
-        Check.False(sys.SameFile(a, c), "two files with the same bytes");
-        Check.False(sys.SameFile(a, dir.File("missing.exe")));
+        Check.True(sys.SameFile(c, same) == true, "one file, two spellings");
+        Check.True(sys.SameFile(a, c) == false, "two files with the same bytes");
+        Check.True(sys.SameFile(a, dir.File("missing.exe")) == false);
         sys.ClearReadOnly(c);
         File.SetAttributes(c, FileAttributes.ReadOnly);
         sys.ClearReadOnly(c);

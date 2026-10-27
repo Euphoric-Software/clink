@@ -65,8 +65,8 @@ internal interface ISelfInstallSystem
     void Copy(string from, string to);
     void Move(string from, string to, bool overwrite);
     void Delete(string path);
-    /// <summary>True when the two paths are one file (volume serial + file index), however they are spelled (8.3 names, junctions, subst drives, hard links). False when either does not exist.</summary>
-    bool SameFile(string a, string b);
+    /// <summary>True when the two paths are one file (volume serial + file index), however they are spelled (8.3 names, junctions, subst drives, hard links); false when they are two files or either does not exist; null when both exist but it could not be checked (callers treat that as "unknown", never as "different").</summary>
+    bool? SameFile(string a, string b);
     /// <summary>The version of an exe (its product version, else its file version); null when unknown.</summary>
     ReleaseVersion? VersionOf(string exePath);
     /// <summary>True when the exe's version resource says it is Clink (product name or original file name).</summary>
@@ -101,6 +101,7 @@ internal static class SelfInstall
     public const int SurvivalMilliseconds = 2000;
     public const int MoveAttempts = 20;
     public const int MoveDelayMilliseconds = 250;
+    public const string ManagedFolderReason = "The Clink installer manages this folder; repair it with the installer.";
 
     private static readonly Regex s_sha256 = new("^[0-9A-Fa-f]{64}$", RegexOptions.CultureInvariant);
 
@@ -110,30 +111,55 @@ internal static class SelfInstall
     /// </summary>
     public static bool StripMarkOfTheWeb { get; set; } = false;
 
+    /// <summary>True for a single-file publish (the entry assembly has no location on disk); only that build can copy itself to a new home.</summary>
+    public static bool IsSingleFile => EntryAssemblyHasNoLocation();
+
+    private static bool EntryAssemblyHasNoLocation()
+    {
+#pragma warning disable IL3000   // intentional: an empty location is exactly the single-file signal
+        try { return string.IsNullOrEmpty(System.Reflection.Assembly.GetEntryAssembly()?.Location); } catch { return false; }
+#pragma warning restore IL3000
+    }
+
     /// <summary>Where "Install for me" puts Clink: %LOCALAPPDATA%\Programs\Clink, the folder of the per-user installer.</summary>
     public static string DefaultTargetFolder(string localAppData) => Path.Combine(localAppData, "Programs", "Clink");
 
     /// <summary>
     /// What to do. <paramref name="devFolder"/>: the data folder of a <c>--dev</c> instance; when given, a target outside it is refused
-    /// (a dev run must never touch the real install).
+    /// (a dev run must never touch the real install). <paramref name="singleFile"/> (<see cref="IsSingleFile"/>): only a single-file build can
+    /// copy itself; any other is refused. <paramref name="preferExisting"/>: a Clink already at the target is started at any version instead
+    /// of being replaced. <paramref name="targetInstallerManaged"/> (<see cref="InstallerFootprint.IsManaged"/>): the target folder belongs to
+    /// the Inno installer, whose copy is never overwritten: it is started at any version.
     /// </summary>
-    public static RelocationPlan Plan(string sourceExe, string targetFolder, bool elevated, ReleaseVersion currentVersion, ISelfInstallSystem sys, string? devFolder = null)
+    public static RelocationPlan Plan(string sourceExe, string targetFolder, bool elevated, ReleaseVersion currentVersion, ISelfInstallSystem sys,
+        bool singleFile, bool preferExisting, bool targetInstallerManaged, string? devFolder = null)
     {
         string source = InstallLocation.Normalize(sourceExe);
         if (source.Length == 0 || string.IsNullOrWhiteSpace(targetFolder) || !Path.IsPathFullyQualified(source) || !Path.IsPathFullyQualified(targetFolder))
             return new RelocationPlan(RelocationKind.Refused, source, "", "The paths are not full paths.");
         string target = Path.Combine(InstallLocation.Normalize(targetFolder), TargetFileName);
         if (elevated) return new RelocationPlan(RelocationKind.Refused, source, target, "Clink is running as administrator; it will not install itself from an elevated process.");
+        if (!singleFile) return new RelocationPlan(RelocationKind.Refused, source, target, "This build cannot install itself.");
         if (!string.IsNullOrWhiteSpace(devFolder) && !InstallLocation.Under(InstallLocation.Normalize(target), devFolder))
             return new RelocationPlan(RelocationKind.Refused, source, target, "A --dev instance only installs inside its own dev folder.");
-        if (source.Equals(target, StringComparison.OrdinalIgnoreCase) || (sys.FileExists(target) && sys.SameFile(source, target)))
-            return new RelocationPlan(RelocationKind.NoOp, source, target, "Already there.");
+        if (source.Equals(target, StringComparison.OrdinalIgnoreCase)) return new RelocationPlan(RelocationKind.NoOp, source, target, "Already there.");
+        if (targetInstallerManaged && !sys.FileExists(target))
+            return new RelocationPlan(RelocationKind.Refused, source, target, ManagedFolderReason);
         if (sys.FileExists(target))
         {
+            bool? same = sys.SameFile(source, target);
+            if (same == null) return new RelocationPlan(RelocationKind.Refused, source, target, "Could not tell whether the file at the target is this one; it is left alone.");
+            if (same == true) return new RelocationPlan(RelocationKind.NoOp, source, target, "Already there.");
             if (!sys.LooksLikeClink(target))
                 return new RelocationPlan(RelocationKind.Refused, source, target, "The file at the target is not Clink; it is left alone.");
-            if (sys.VersionOf(target) is { } existing && existing >= currentVersion)
-                return new RelocationPlan(RelocationKind.LaunchExisting, source, target, $"The target holds {existing}, this is {currentVersion}.");
+            if (targetInstallerManaged)
+                return new RelocationPlan(RelocationKind.LaunchExisting, source, target, "The target was installed by the Clink installer; it is used as it is.");
+            if (sys.VersionOf(target) is { } existing)
+            {
+                if (existing >= currentVersion) return new RelocationPlan(RelocationKind.LaunchExisting, source, target, $"The target holds {existing}, this is {currentVersion}.");
+                if (preferExisting) return new RelocationPlan(RelocationKind.LaunchExisting, source, target, $"The target holds {existing}; the installed copy is preferred.");
+            }
+            else if (preferExisting) return new RelocationPlan(RelocationKind.LaunchExisting, source, target, "The installed copy is preferred.");
         }
         return new RelocationPlan(RelocationKind.Install, source, target);
     }
@@ -201,6 +227,12 @@ internal static class SelfInstall
 
             if (targetExists)
             {
+                if (sys is DryRunRecycleSystem && sys.FileExists(backup))
+                {
+                    // quiet mode never recycles, so the old backup would stay and the Move below would land on it
+                    Rollback(plan, sys, false, false);
+                    return new RelocationResult(RelocationOutcome.Failed, "quiet: an old backup is in the way (" + backup + "); nothing was moved.");
+                }
                 if (sys.FileExists(backup) && !TryRecycle(sys, backup, ownerHwnd))
                 {
                     Rollback(plan, sys, false, false);
@@ -237,12 +269,16 @@ internal static class SelfInstall
         for (int i = 0; ; i++)
         {
             try { sys.Move(from, to, overwrite); return; }
-            catch (Exception ex) when (i < MoveAttempts - 1 && (ex is UnauthorizedAccessException || (ex is IOException && ex is not FileNotFoundException && ex is not DirectoryNotFoundException)))
+            catch (Exception ex) when (i < MoveAttempts - 1 && IsRetryable(ex))
             {
                 sys.Sleep(MoveDelayMilliseconds);
             }
         }
     }
+
+    /// <summary>A virus scanner or indexer may let go in a moment: a sharing violation (0x20), a lock violation (0x21) or access denied. Anything else (disk full, a name in the way, a missing folder) fails at once.</summary>
+    internal static bool IsRetryable(Exception ex) =>
+        ex is UnauthorizedAccessException || (ex is IOException && ex is not FileNotFoundException && ex is not DirectoryNotFoundException && ((ex.HResult & 0xFFFF) is 0x20 or 0x21 or 5));
 
     /// <summary>File.Delete retried like <see cref="MoveWithRetry"/> (a virus scanner may hold the file right after a failed launch).</summary>
     private static void DeleteWithRetry(ISelfInstallSystem sys, string path)
@@ -250,7 +286,7 @@ internal static class SelfInstall
         for (int i = 0; ; i++)
         {
             try { sys.Delete(path); return; }
-            catch (Exception ex) when (i < MoveAttempts - 1 && (ex is UnauthorizedAccessException || (ex is IOException && ex is not FileNotFoundException && ex is not DirectoryNotFoundException)))
+            catch (Exception ex) when (i < MoveAttempts - 1 && IsRetryable(ex))
             {
                 sys.Sleep(MoveDelayMilliseconds);
             }
@@ -292,8 +328,25 @@ internal static class SelfInstall
         catch { return false; }
     }
 
+    /// <summary>
+    /// A path on a local fixed drive letter (not UNC, not a mapped network drive, removable or optical). Asks only the drive type: no file access,
+    /// so nothing here can block on a dead share.
+    /// </summary>
+    public static bool IsLocalFixed(string? path, ISelfInstallSystem sys)
+    {
+        try
+        {
+            string p = InstallLocation.Normalize(path);
+            if (p.Length == 0 || InstallLocation.IsUnc(p)) return false;
+            string root = Path.GetPathRoot(p) ?? "";
+            if (root.Length != 3 || !char.IsAsciiLetter(root[0]) || root[1] != ':' || root[2] != '\\') return false;
+            return sys.DriveTypeOf(root) == 3;
+        }
+        catch { return false; }
+    }
+
     /// <summary>Sends our own leftover (.bak) to the Recycle Bin if that is safe; true when it is gone. Never throws, never deletes for good.</summary>
-    private static bool TryRecycle(ISelfInstallSystem sys, string path, nint? ownerHwnd)
+    internal static bool TryRecycle(ISelfInstallSystem sys, string path, nint? ownerHwnd)
     {
         try
         {
@@ -316,12 +369,12 @@ internal static class SelfInstall
     /// <summary>
     /// Run by the new copy: sends the copy it was moved from to the Recycle Bin. Only a file whose name ends in .exe, that is not the
     /// running exe (compared by file identity too), that sits on a local fixed drive outside Program Files, and whose SHA-256 is still
-    /// the one passed on the command line. Never when <paramref name="elevated"/>. Anything else is left alone. Retries (the old
+    /// the one passed on the command line. Never when <paramref name="elevated"/>, and with a <paramref name="devFolder"/> never outside it. Anything else is left alone. Retries (the old
     /// process may still be exiting) except after the user ended the shell operation. Serialised with the screenshot library's
     /// Recycle Bin calls. Never throws.
     /// </summary>
     public static CleanupOutcome CleanupOldCopy(string? movedFrom, string? expectedSha256, string currentExe, ISelfInstallSystem sys, bool elevated,
-        nint? ownerHwnd = null, int attempts = 8, int delayMs = 500)
+        nint? ownerHwnd = null, int attempts = 8, int delayMs = 500, string? devFolder = null)
     {
         try
         {
@@ -329,7 +382,11 @@ internal static class SelfInstall
             if (src.Length == 0 || !Path.IsPathFullyQualified(src) || src.IndexOf(':', 2) >= 0 || string.IsNullOrWhiteSpace(expectedSha256)) return CleanupOutcome.NotAnExe;
             if (!src.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) return CleanupOutcome.NotAnExe;
             if (elevated) return CleanupOutcome.NotRecyclable;
-            if (src.Equals(InstallLocation.Normalize(currentExe), StringComparison.OrdinalIgnoreCase) || sys.SameFile(src, currentExe)) return CleanupOutcome.IsSelf;
+            if (src.Equals(InstallLocation.Normalize(currentExe), StringComparison.OrdinalIgnoreCase)) return CleanupOutcome.IsSelf;
+            if (!string.IsNullOrWhiteSpace(devFolder) && !InstallLocation.Under(src, devFolder)) return CleanupOutcome.NotRecyclable;   // a --dev instance never removes anything outside its dev folder
+            // before any file access: a UNC or mapped-drive path must not be touched at all (a dead share would block, a hostile one answers anything)
+            if (!IsRecyclableLocation(src, sys)) return CleanupOutcome.NotRecyclable;
+            bool selfCheckable = IsLocalFixed(currentExe, sys);
 
             for (int i = 0; i < Math.Max(1, attempts); i++)
             {
@@ -337,7 +394,13 @@ internal static class SelfInstall
                 try
                 {
                     if (!sys.FileExists(src)) return CleanupOutcome.AlreadyGone;   // a directory of that name is not a file
-                    if (!IsRecyclableLocation(src, sys)) return CleanupOutcome.NotRecyclable;
+                    if (selfCheckable)
+                    {
+                        bool? same = sys.SameFile(src, currentExe);   // checked on every pass: the files can change while the old process exits
+                        if (same == true) return CleanupOutcome.IsSelf;
+                        if (same == null) continue;   // could not tell: never remove on a guess; try again, then give up
+                    }
+                    if (!sys.LooksLikeClink(src)) return CleanupOutcome.NotAnExe;   // a file that is not Clink is never recycled, whatever the record says
                     if (!string.Equals(sys.Sha256(src), expectedSha256.Trim(), StringComparison.OrdinalIgnoreCase)) return CleanupOutcome.HashMismatch;
                     sys.Recycle(src, ownerHwnd);
                     if (!sys.FileExists(src)) return CleanupOutcome.Recycled;
@@ -382,8 +445,8 @@ internal sealed class SelfInstallSystem : ISelfInstallSystem
     public void Move(string from, string to, bool overwrite) => File.Move(from, to, overwrite);
     public void Delete(string path) => File.Delete(path);
 
-    /// <summary>Volume serial + file index of both files. When one cannot be opened though both exist, the answer is "same" (the safe one for the callers: nothing is installed over it or removed).</summary>
-    public unsafe bool SameFile(string a, string b)
+    /// <summary>Volume serial + file index of both files. When one cannot be opened though both exist, the answer is null (unknown): the callers then install nothing over it and remove nothing.</summary>
+    public unsafe bool? SameFile(string a, string b)
     {
         try
         {
@@ -391,11 +454,11 @@ internal sealed class SelfInstallSystem : ISelfInstallSystem
             using var fa = new FileStream(a, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1);
             using var fb = new FileStream(b, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1);
             Windows.Win32.Storage.FileSystem.BY_HANDLE_FILE_INFORMATION ia, ib;
-            if (!Windows.Win32.PInvoke.GetFileInformationByHandle(new Windows.Win32.Foundation.HANDLE(fa.SafeFileHandle.DangerousGetHandle()), &ia)) return true;
-            if (!Windows.Win32.PInvoke.GetFileInformationByHandle(new Windows.Win32.Foundation.HANDLE(fb.SafeFileHandle.DangerousGetHandle()), &ib)) return true;
+            if (!Windows.Win32.PInvoke.GetFileInformationByHandle(new Windows.Win32.Foundation.HANDLE(fa.SafeFileHandle.DangerousGetHandle()), &ia)) return null;
+            if (!Windows.Win32.PInvoke.GetFileInformationByHandle(new Windows.Win32.Foundation.HANDLE(fb.SafeFileHandle.DangerousGetHandle()), &ib)) return null;
             return ia.dwVolumeSerialNumber == ib.dwVolumeSerialNumber && ia.nFileIndexHigh == ib.nFileIndexHigh && ia.nFileIndexLow == ib.nFileIndexLow;
         }
-        catch { return true; }
+        catch { return null; }
     }
 
     /// <summary>ProductVersion (the informational version), else FileVersion: the same fallback the updater uses for an exe's embedded version.</summary>
