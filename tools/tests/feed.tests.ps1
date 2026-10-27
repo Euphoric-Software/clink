@@ -665,6 +665,42 @@ try {
         Assert-True ($lib -match "(?m)^\. \(Join-Path \(Split-Path -Parent \`$PSScriptRoot\) 'feed-lib\.ps1'\)\s*$") 'the lib does not dot-source tools/feed-lib.ps1 unconditionally'
         Assert-True ($lib -notmatch 'Get-Command Test-FeedSignature') 'the dot-source of tools/feed-lib.ps1 is conditional'
     }
+    Invoke-Test 'upload-feed.ps1 resets $LASTEXITCODE after the dev prune block (prune failures are warnings; the runner appends an exit-code check)' {
+        $text = [System.IO.File]::ReadAllText((Join-Path $toolsDir 'upload-feed.ps1'))
+        $start = $text.IndexOf("# 7. Dev only")
+        Assert-True ($start -ge 0) 'upload-feed.ps1 has no step 7 (dev prune)'
+        $block = $text.Substring($start)
+        $reset = $block.IndexOf('$global:LASTEXITCODE = 0')
+        Assert-True ($reset -gt $block.LastIndexOf("'--only-show-errors')")) 'the $LASTEXITCODE reset does not follow the prune block'
+        Assert-True ($block.Substring($reset + 1) -notmatch "Invoke-FeedAws") 'an aws call follows the $LASTEXITCODE reset'
+        # Behaviour: run the real step 7 text with an aws invoker whose ls/rm fail and leave a non-zero $LASTEXITCODE.
+        $script:pruneCalls = @()
+        $failingAws = {
+            param([string[]]$Arguments)
+            $script:pruneCalls += ,($Arguments -join ' ')
+            $global:LASTEXITCODE = 1
+            if ($Arguments[1] -eq 'ls') { return @{ Code = 1; Text = 'boom: listing' } }
+            return @{ Code = 1; Text = 'boom: rm' }
+        }
+        $listing = ((1..12) | ForEach-Object { "                           PRE v0.4.2-dev.$_/" }) -join "`n"
+        $listingAws = {
+            param([string[]]$Arguments)
+            $script:pruneCalls += ,($Arguments -join ' ')
+            $global:LASTEXITCODE = 1
+            if ($Arguments[1] -eq 'ls') { return @{ Code = 0; Text = $listing } }
+            return @{ Code = 1; Text = 'boom: rm' }
+        }
+        foreach ($invoker in $failingAws, $listingAws) {
+            $script:pruneCalls = @()
+            $global:LASTEXITCODE = 0
+            $Channel = 'dev'; $tag = 'v0.4.2-dev.13'; $bucket = 'b'; $prefix = 'clink'; $endpoint = 'https://example.invalid'
+            $awsInvoker = $invoker
+            . ([scriptblock]::Create($block)) 6>$null
+            Assert-True ($script:pruneCalls.Count -ge 1) 'the fake aws invoker was never called by the prune block'
+            Assert-True ($global:LASTEXITCODE -eq 0) "`$LASTEXITCODE is $($global:LASTEXITCODE) after the prune block"
+        }
+        Assert-True (@($script:pruneCalls | Where-Object { $_ -like 's3 rm *' }).Count -ge 1) 'the prune rm path was not exercised'
+    }
     Invoke-Test 'm1: no security decision in the lib matches against a variable (an unset one would make -match pass)' {
         $lib = [System.IO.File]::ReadAllText((Join-Path $toolsDir 'lib\feed-publish-lib.ps1'))
         Assert-True ($lib -notmatch '(?i)-(c|i)?(not)?match\s+\$') 'a -match/-notmatch against a variable remains in feed-publish-lib.ps1'

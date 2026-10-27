@@ -786,11 +786,68 @@ try {
         $stable = [System.IO.File]::ReadAllText((Join-Path $workflowDir 'release.yml'))
         $dev = [System.IO.File]::ReadAllText((Join-Path $workflowDir 'release-dev.yml'))
         $stablePublish = $stable.Substring($stable.IndexOf('- name: Publish the GitHub release'))
-        Assert-True ($stablePublish.Contains('Get-MakeLatestValue -Version $env:VERSION -LatestTag $latestTag') -and $stablePublish.Contains('-f make_latest=$makeLatest') -and $stablePublish.Contains('releases/latest" --jq .tag_name')) 'release.yml: make_latest is not computed from the current latest release'
-        Assert-True ($stablePublish.Contains('. ./tools/lib/release-latest-lib.ps1')) 'release.yml: the make_latest helper is not loaded'
+        $decideAt = $stable.IndexOf('- name: Decide whether this release becomes latest')
+        $feedAt = $stable.IndexOf('- name: Publish to the update feed')
+        $verifyAt = $stable.IndexOf('- name: Verify the release assets')
+        Assert-True ($verifyAt -gt 0 -and $decideAt -gt $verifyAt -and $decideAt -lt $feedAt) 'release.yml: the make_latest step is not between the asset check and the feed upload'
+        $decide = $stable.Substring($decideAt, $feedAt - $decideAt)
+        Assert-True ($decide.Contains('id: latest') -and $decide.Contains('Get-MakeLatestValue -Version $env:VERSION -LatestTag $latestTag') -and $decide.Contains('releases/latest" --jq .tag_name')) 'release.yml: make_latest is not computed from the current latest release'
+        Assert-True ($decide.Contains('. ./tools/lib/release-latest-lib.ps1') -and $decide.Contains('GITHUB_OUTPUT') -and $decide.Contains('make_latest=$makeLatest')) 'release.yml: the make_latest step does not load the helper or write its output'
+        Assert-True ($decide.Contains("elseif (`$latestErr -cmatch '\(HTTP 404\)')") -and $decide -notmatch 'Not Found' -and $decide -notmatch '2>&1' -and $decide -notmatch '\$latestOut\)? -c?match') 'release.yml: only the anchored (HTTP 404) in stderr may mean no latest release, and stderr must stay separate'
+        Assert-True ($decide.Contains('Remove-Item -LiteralPath $errFile -ErrorAction SilentlyContinue')) 'release.yml: the stderr temp file is not deleted after reading'
+        Assert-True ($decide.Contains('if ($latestCode -eq 0) {') -and $decide.Contains('IsNullOrWhiteSpace($latestOut)') -and $decide.Contains('$latestTag = $latestOut') -and $decide.Contains('else { throw "Could not read the latest release')) 'release.yml: the latest lookup is not exit-code driven'
+        Assert-True ($stablePublish.Contains('MAKE_LATEST: ${{ steps.latest.outputs.make_latest }}') -and $stablePublish.Contains("`$env:MAKE_LATEST -cnotmatch '\A(true|false)\z'") -and $stablePublish.Contains('$makeLatest = $env:MAKE_LATEST')) 'release.yml: the publish step does not take make_latest from a validated env'
+        Assert-True ($stablePublish -notmatch 'Get-MakeLatestValue' -and $stablePublish -notmatch 'releases/latest"') 'release.yml: the publish step still computes make_latest'
+        Assert-True ([regex]::Matches($stable, 'steps\.latest\.outputs\.make_latest').Count -eq 1) 'release.yml: steps.latest.outputs.make_latest is used more than once'
+        Assert-True ($stable.Contains('$release.prerelease -ne $false') -and $dev.Contains('$release.prerelease -ne $true')) 'the asset checks do not assert the prerelease flag per channel'
+        Assert-True ($stable.Contains("'stable.json', 'stable.json.sig'") -and $stable.Contains('Test-Path -LiteralPath dist/package/stable.json')) 'release.yml: the asset check does not require the channel manifest'
+        Assert-True ($dev.Contains("'dev.json', 'dev.json.sig'") -and $dev.Contains('Test-Path -LiteralPath dist/package/dev.json')) 'release-dev.yml: the asset check does not require the channel manifest'
+        Assert-True ($stable -notmatch 'target_commitish\s*[-=]' -and $dev -notmatch 'target_commitish\s*[-=]') 'a target_commitish check was added'
         $devPublish = $dev.Substring($dev.IndexOf('- name: Publish the GitHub release'))
         $devPublish = $devPublish.Substring(0, $devPublish.IndexOf('- name: Prune'))
         Assert-True ($devPublish.Contains('-f make_latest=false') -and $devPublish -notmatch 'make_latest=\$') 'release-dev.yml: the dev publish must pass make_latest=false'
+    }
+
+    Invoke-Test 'pwsh steps that handle a non-zero native exit reset $LASTEXITCODE (the runner appends an exit-code check)' {
+        $targets = @(
+            @('release.yml', '- name: Determine version', '$exists = $LASTEXITCODE -eq 0'),
+            @('release.yml', '- name: Guard - stable tag, commit on main, release not yet there', '$exists = $LASTEXITCODE -eq 0'),
+            @('release.yml', '- name: Decide whether this release becomes latest', '$latestCode = $LASTEXITCODE'),
+            @('release-dev.yml', '- name: Guard - dev branch only, release not yet there', '$exists = $LASTEXITCODE -eq 0')
+        )
+        foreach ($t in $targets) {
+            $text = [System.IO.File]::ReadAllText((Join-Path $workflowDir $t[0]))
+            $at = $text.IndexOf($t[1])
+            Assert-True ($at -ge 0) "$($t[0]): no step '$($t[1])'"
+            $next = $text.IndexOf("`n      - name:", $at + 10)
+            $uses = $text.IndexOf("`n      # ", $at + 10)
+            $end = $text.Length
+            foreach ($c in $next, $uses) { if ($c -gt 0 -and $c -lt $end) { $end = $c } }
+            $step = $text.Substring($at, $end - $at)
+            $capture = $step.IndexOf($t[2])
+            Assert-True ($capture -ge 0) "$($t[0]) / $($t[1]): the exit code capture '$($t[2])' is missing"
+            $reset = $step.IndexOf('$global:LASTEXITCODE = 0', $capture)
+            Assert-True ($reset -gt $capture) "$($t[0]) / $($t[1]): no '`$global:LASTEXITCODE = 0' after the exit code capture"
+            $afterReset = $step.Substring($reset + '$global:LASTEXITCODE = 0'.Length)
+            Assert-True ($afterReset -notmatch '(?m)^\s*(\$\w+\s*=\s*)?\(?\s*&?\s*(gh|git|aws|dotnet)\s') "$($t[0]) / $($t[1]): a native gh/git/aws/dotnet call follows the reset"
+        }
+    }
+
+    Invoke-Test 'the runner wrapper (appended LASTEXITCODE exit) fails a step unless it resets $LASTEXITCODE' {
+        $wrapperTail = 'if ((Test-Path -LiteralPath variable:\LASTEXITCODE)) { exit $LASTEXITCODE }'
+        $variants = [ordered]@{
+            'no reset'   = @("`$ErrorActionPreference='stop'", '$PSNativeCommandUseErrorActionPreference = $false', 'cmd /c exit 1', '$null = ''x''', $wrapperTail)
+            'with reset' = @("`$ErrorActionPreference='stop'", '$PSNativeCommandUseErrorActionPreference = $false', 'cmd /c exit 1', '$global:LASTEXITCODE = 0', '$null = ''x''', $wrapperTail)
+        }
+        $expected = @{ 'no reset' = 1; 'with reset' = 0 }
+        foreach ($key in $variants.Keys) {
+            $file = Join-Path $scratch ('runner-wrapper-' + [guid]::NewGuid().ToString('N') + '.ps1')
+            [System.IO.File]::WriteAllText($file, ($variants[$key] -join "`r`n") + "`r`n", $utf8)
+            try {
+                $run = Start-Process -FilePath $hostExe -ArgumentList @('-NoProfile', '-Command', "`". '$file'`"") -Wait -PassThru -NoNewWindow
+                Assert-True ($run.ExitCode -eq $expected[$key]) "wrapper variant '$key' exited $($run.ExitCode), expected $($expected[$key])"
+            } finally { Remove-Item -LiteralPath $file -ErrorAction SilentlyContinue }
+        }
     }
 
     Invoke-Test 'Get-MakeLatestValue: higher gives true, equal or lower false, no latest true, garbage throws' {
@@ -803,7 +860,9 @@ try {
         Assert-True ((Get-MakeLatestValue -Version '0.9.9' -LatestTag 'v0.10.0') -ceq 'false') 'lower (numeric)'
         Assert-True ((Get-MakeLatestValue -Version '0.4.2' -LatestTag '') -ceq 'true') 'missing latest (empty)'
         Assert-True ((Get-MakeLatestValue -Version '0.4.2') -ceq 'true') 'missing latest (omitted)'
-        foreach ($bad in 'latest', '0.4.1', 'v0.4', 'v0.4.1-dev.3', 'V0.4.1', 'v0.4.1 extra', 'HTTP 500') {
+        Assert-True ((Get-MakeLatestValue -Version '0.4.2' -LatestTag "  v0.4.1`r`n") -ceq 'true') 'latest tag with surrounding whitespace'
+        Assert-True ((Get-MakeLatestValue -Version '0.4.1' -LatestTag " v0.4.1 ") -ceq 'false') 'equal latest tag with surrounding whitespace'
+        foreach ($bad in 'v99999999999.0.0', 'v0.99999999999.0', 'latest', '0.4.1', 'v0.4', 'v0.4.1-dev.3', 'V0.4.1', 'v0.4.1 extra', 'HTTP 500') {
             $threw = $false
             try { [void](Get-MakeLatestValue -Version '0.4.2' -LatestTag $bad) } catch { $threw = $true }
             Assert-True $threw "garbage latest tag '$bad' did not throw"

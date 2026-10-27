@@ -87,6 +87,8 @@ enabled for that channel. The app's GitHub fallback verifies them against the sa
 
 Both workflows have two jobs.
 
+CI note: the runner appends `if ((Test-Path -LiteralPath variable:\LASTEXITCODE)) { exit $LASTEXITCODE }` to every `shell: pwsh` step, so a step that handles a non-zero native exit itself (for example `gh release view` returning 1 for "not found", or a 404 from `gh api`) must set `$global:LASTEXITCODE = 0` right after capturing the code, or the job fails anyway.
+
 1. `build` (`contents: read`, no secrets, no environment): checkout, `actions/setup-dotnet` followed by a step that verifies the SDK
    (`tools/lib/dotnet-sdk-lib.ps1`: the resolved dotnet host (muxer, `dotnet.exe`) has a Valid Authenticode signature, an exact observed Microsoft signer subject and a
    chain ending in the Microsoft Root Certificate Authority 2011 thumbprint, and the last non-empty line of `dotnet --version` (run with
@@ -107,12 +109,17 @@ Both workflows have two jobs.
    the stable job accepts only `^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$` and checks
    `git merge-base --is-ancestor $GITHUB_SHA origin/main` (full-history checkout); the dev job accepts only `refs/heads/dev`;
    both refuse when a GitHub release `vX.Y.Z` already exists (draft or published). Then: download the artifact, verify
-   `package.json`, `Clink.exe`, `Clink-framework.exe`, the setup exe and `THIRD-PARTY-NOTICES.txt` against the build job's outputs, read `Clink/Assets/feed.json` from the checkout.
-   The GitHub release is created as a DRAFT with all assets, then `upload-feed.ps1` runs (if the feed is on), and only then
+   `package.json`, `Clink.exe`, `Clink-framework.exe`, the setup exe and `THIRD-PARTY-NOTICES.txt` against the build job's outputs (including the single `Clink-Setup.exe.sha256` line check), read `Clink/Assets/feed.json` from the checkout.
+   The GitHub release is created as a DRAFT with all assets, the "Verify the release assets" step checks them (exactly once each, uploaded, size and
+   digest; the channel manifest `stable.json`/`dev.json` and its `.sig` when the build produced them; `prerelease` is false for stable and true for dev),
+   then `upload-feed.ps1` runs (if the feed is on), and only then
    the draft is published by release ID (`gh api -X PATCH repos/.../releases/<id> -F draft=false -f make_latest=...`). A failed bucket upload therefore never leaves a visible release.
-   The "latest" flag is set explicitly: the stable job (`tools/lib/release-latest-lib.ps1`, `Get-MakeLatestValue`) sets `make_latest=true` only when
-   the version is higher than the current latest stable release (`releases/latest`; none yet counts as higher; an unparsable tag fails the run), so
-   re-cutting or backporting an older version never takes over `releases/latest/download/...`. The dev job always passes `make_latest=false`.
+   The "latest" flag is set explicitly and is computed BEFORE the feed upload (step `Decide whether this release becomes latest`, `id: latest`, so a
+   failure stops the job while nothing is public): the stable job (`tools/lib/release-latest-lib.ps1`, `Get-MakeLatestValue`) sets `make_latest=true` only when
+   the version is higher than the current latest stable release (`releases/latest`; only `HTTP 404` means none yet, which counts as higher; any other lookup
+   failure or an unparsable tag fails the run; stderr is never parsed as the tag), so
+   re-cutting or backporting an older version never takes over `releases/latest/download/...`. The value reaches the publish step only through
+   `env: MAKE_LATEST`, which re-validates it as exactly `true` or `false`. The dev job always passes `make_latest=false`.
    - Feed enabled for the channel: require the environment secrets (fail if missing), make and sign the manifest
      (`tools/make-manifest.ps1`; the key is only in that step's environment; the signature is verified against the keys in
      `feed.json` before it is written; a mismatch fails the run), create the GitHub release with all assets including the
@@ -308,6 +315,11 @@ try {
 has no .NET runtime task unless the runtime inputs are passed (see Installer inputs below); the script warns about it. A real ISCC output
 of 1 MiB or less is refused (`-SkipSetupSizeCheck` is for the script tests' fake ISCC only). To check the published
 exes: `tools\check-published.ps1 -ScExe dist\sc\Clink.exe -FxExe dist\fx\Clink.exe`.
+
+Uninstall: the installer removes only the updater's own `Clink.exe.bak/.new/.failed` beside the exe and the Framework copy's `updates\fx` files
+(then the empty folders). Copies that switched to the self-contained flavour keep their downloads in `%LOCALAPPDATA%\Clink\updates` after
+uninstall, by design: that folder is shared with portable copies. `installer-script.tests.ps1` enforces this with an allowlist for
+`[UninstallDelete]` and rejects `[InstallDelete]`, `[UninstallRun]` and `DelTree(`.
 
 ## Pinned SDK (`global.json`)
 

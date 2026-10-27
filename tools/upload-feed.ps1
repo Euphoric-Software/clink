@@ -147,3 +147,6 @@ if ($Channel -eq 'dev') {
         }
     }
 }
+# Prune failures above are only warnings, but the failed aws calls leave a non-zero $LASTEXITCODE. The runner appends an exit-code check
+# to the step, which must not fail a publish that already succeeded (dev.json is live).
+$global:LASTEXITCODE = 0

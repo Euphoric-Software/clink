@@ -87,6 +87,7 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $false
           $probe = (& gh release view "v$version" --repo $env:GITHUB_REPOSITORY 2>&1 | Out-String)
           $exists = $LASTEXITCODE -eq 0
+          $global:LASTEXITCODE = 0                       # the runner appends an exit-code check; "not found" is handled below
           $ErrorActionPreference = $eap
           if ($exists) { throw "A GitHub release v$version already exists; bump <Version> in Clink/Clink.csproj first." }
           if ($probe -notmatch 'release not found|HTTP 404') { throw "Could not check whether release v$version exists: $probe" }
@@ -236,6 +237,7 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $false
           $probe = (& gh release view "v$env:VERSION" 2>&1 | Out-String)
           $exists = $LASTEXITCODE -eq 0
+          $global:LASTEXITCODE = 0                       # the runner appends an exit-code check; "not found" is handled below
           $ErrorActionPreference = $eap
           if ($exists) { throw "A GitHub release v$env:VERSION already exists (published or draft); refusing to touch it." }
           if ($probe -notmatch 'release not found|HTTP 404') { throw "Could not check whether release v$env:VERSION exists: $probe" }
@@ -375,7 +377,10 @@ jobs:
           $release = $json | ConvertFrom-Json
           if ($release.draft -ne $true) { throw "Release $env:RELEASE_ID is not a draft." }
           if (-not ($release.tag_name -ceq "v$env:VERSION")) { throw "Release $env:RELEASE_ID has tag '$($release.tag_name)', expected v$env:VERSION." }
-          $required = 'Clink.exe', 'Clink.exe.sha256', 'Clink-framework.exe', 'Clink-framework.exe.sha256', 'Clink-Setup.exe', 'Clink-Setup.exe.sha256', 'THIRD-PARTY-NOTICES.txt'
+          if ($release.prerelease -ne $false) { throw "Release $env:RELEASE_ID is flagged as a prerelease; the stable workflow must create a normal release." }
+          $required = @('Clink.exe', 'Clink.exe.sha256', 'Clink-framework.exe', 'Clink-framework.exe.sha256', 'Clink-Setup.exe', 'Clink-Setup.exe.sha256', 'THIRD-PARTY-NOTICES.txt')
+          # The channel manifest and its signature, when this build produced them (feed enabled): they were attached with the other assets.
+          if (Test-Path -LiteralPath dist/package/stable.json) { $required += 'stable.json', 'stable.json.sig' }
           foreach ($name in $required) {
             $found = @($release.assets | Where-Object { $_.name -ceq $name })
             if ($found.Count -ne 1) { throw "Release v$env:VERSION lacks exactly one asset named $name (found $($found.Count); has: $((@($release.assets) | ForEach-Object { $_.name }) -join ', '))" }
@@ -392,6 +397,39 @@ jobs:
             }
           }
           Write-Output "Release v$env:VERSION (id $env:RELEASE_ID) has all $($required.Count) required assets"
+
+      # Computed BEFORE the feed upload so that a failure here stops the job while nothing is public yet. "latest" is set only when
+      # this version is higher than the current latest stable release (a re-cut or backport of an older version must not take it).
+      # Only HTTP 404 means "there is no latest release yet"; any other failure throws. stderr is never parsed as the tag.
+      - name: Decide whether this release becomes latest
+        id: latest
+        shell: pwsh
+        run: |
+          . ./tools/lib/release-latest-lib.ps1
+          if ($env:VERSION -cnotmatch '\A[0-9]+\.[0-9]+\.[0-9]+\z') { throw "'$env:VERSION' is not a valid version." }
+          $errFile = Join-Path $env:RUNNER_TEMP 'latest-release.err'
+          $eap = $ErrorActionPreference
+          $ErrorActionPreference = 'Continue'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $latestOut = (& gh api "repos/$env:GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>$errFile | Out-String).Trim()
+          $latestCode = $LASTEXITCODE
+          $global:LASTEXITCODE = 0                       # the runner appends an exit-code check; a 404 is handled below
+          $ErrorActionPreference = $eap
+          $latestErr = ''
+          if (Test-Path -LiteralPath $errFile) {
+            $latestErr = [string](Get-Content -LiteralPath $errFile -Raw)
+            Remove-Item -LiteralPath $errFile -ErrorAction SilentlyContinue
+          }
+          if ($latestCode -eq 0) {
+            if ([string]::IsNullOrWhiteSpace($latestOut)) { throw 'The latest release lookup succeeded but returned no tag.' }
+            $latestTag = $latestOut
+          }
+          elseif ($latestErr -cmatch '\(HTTP 404\)') { $latestTag = '' }
+          else { throw "Could not read the latest release (exit $latestCode): $latestErr $latestOut" }
+          $makeLatest = Get-MakeLatestValue -Version $env:VERSION -LatestTag $latestTag
+          if ($makeLatest -cnotmatch '\A(true|false)\z') { throw "Unexpected make_latest value '$makeLatest'." }
+          Write-Output "Current latest release: '$latestTag'; v$env:VERSION gets make_latest=$makeLatest"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "make_latest=$makeLatest"
 
       - name: Publish to the update feed
         if: steps.feed.outputs.enabled == 'true'
@@ -416,20 +454,10 @@ jobs:
         shell: pwsh
         env:
           RELEASE_ID: ${{ steps.draft.outputs.id }}
+          MAKE_LATEST: ${{ steps.latest.outputs.make_latest }}
         run: |
-          . ./tools/lib/release-latest-lib.ps1
           if ($env:RELEASE_ID -cnotmatch '\A[0-9]+\z') { throw 'The draft release ID is missing or not numeric.' }
-          if ($env:VERSION -cnotmatch '\A[0-9]+\.[0-9]+\.[0-9]+\z') { throw "'$env:VERSION' is not a valid version." }
-          $eap = $ErrorActionPreference
-          $ErrorActionPreference = 'Continue'
-          $PSNativeCommandUseErrorActionPreference = $false
-          $latestOut = (& gh api "repos/$env:GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>&1 | Out-String).Trim()
-          $latestCode = $LASTEXITCODE
-          $ErrorActionPreference = $eap
-          if ($latestCode -eq 0) { $latestTag = $latestOut }
-          elseif ($latestOut -match 'HTTP 404|Not Found') { $latestTag = '' }
-          else { throw "Could not read the latest release: $latestOut" }
-          $makeLatest = Get-MakeLatestValue -Version $env:VERSION -LatestTag $latestTag
-          Write-Output "Current latest release: '$latestTag'; v$env:VERSION gets make_latest=$makeLatest"
+          if ($env:MAKE_LATEST -cnotmatch '\A(true|false)\z') { throw 'The make_latest value is missing or not true/false.' }
+          $makeLatest = $env:MAKE_LATEST
           gh api -X PATCH "repos/$env:GITHUB_REPOSITORY/releases/$env:RELEASE_ID" -F draft=false -f make_latest=$makeLatest
           if ($LASTEXITCODE -ne 0) { throw 'Could not publish the draft release' }

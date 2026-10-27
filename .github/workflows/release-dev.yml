@@ -108,7 +108,7 @@ jobs:
           $code = $LASTEXITCODE
           $ErrorActionPreference = $eap
           if ($code -eq 0) { $latest = [version](($out.Trim() -replace '^v', '') -replace '-.*$', '') }
-          elseif ($out -match 'HTTP 404') { $latest = [version]'0.0.0' }
+          elseif ($out -cmatch '\(HTTP 404\)') { $latest = [version]'0.0.0' }
           else { throw "Could not read the latest release: $out" }
 
           if ($csproj -gt $latest) { $xyz = "$($csproj.Major).$($csproj.Minor).$($csproj.Build)" }
@@ -256,6 +256,7 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $false
           $probe = (& gh release view "v$env:VERSION" 2>&1 | Out-String)
           $exists = $LASTEXITCODE -eq 0
+          $global:LASTEXITCODE = 0                       # the runner appends an exit-code check; "not found" is handled below
           $ErrorActionPreference = $eap
           if ($exists) { throw "A GitHub release v$env:VERSION already exists (published or draft); refusing to touch it." }
           if ($probe -notmatch 'release not found|HTTP 404') { throw "Could not check whether release v$env:VERSION exists: $probe" }
@@ -401,7 +402,10 @@ jobs:
           $release = $json | ConvertFrom-Json
           if ($release.draft -ne $true) { throw "Release $env:RELEASE_ID is not a draft." }
           if (-not ($release.tag_name -ceq "v$env:VERSION")) { throw "Release $env:RELEASE_ID has tag '$($release.tag_name)', expected v$env:VERSION." }
-          $required = 'Clink.exe', 'Clink.exe.sha256', 'Clink-framework.exe', 'Clink-framework.exe.sha256', 'Clink-Setup.exe', 'Clink-Setup.exe.sha256', 'THIRD-PARTY-NOTICES.txt'
+          if ($release.prerelease -ne $true) { throw "Release $env:RELEASE_ID is not flagged as a prerelease; a dev build must never be a normal release." }
+          $required = @('Clink.exe', 'Clink.exe.sha256', 'Clink-framework.exe', 'Clink-framework.exe.sha256', 'Clink-Setup.exe', 'Clink-Setup.exe.sha256', 'THIRD-PARTY-NOTICES.txt')
+          # The channel manifest and its signature, when this build produced them (feed enabled): they were attached with the other assets.
+          if (Test-Path -LiteralPath dist/package/dev.json) { $required += 'dev.json', 'dev.json.sig' }
           foreach ($name in $required) {
             $found = @($release.assets | Where-Object { $_.name -ceq $name })
             if ($found.Count -ne 1) { throw "Release v$env:VERSION lacks exactly one asset named $name (found $($found.Count); has: $((@($release.assets) | ForEach-Object { $_.name }) -join ', '))" }

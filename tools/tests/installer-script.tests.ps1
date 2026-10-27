@@ -44,16 +44,31 @@ $allowedLocal = @(
     'dirifempty|{localappdata}\clink\updates',
     'dirifempty|{localappdata}\clink'
 )
+# The whole [UninstallDelete] section is an ALLOWLIST: these three beside the exe plus the eight above. Anything else fails
+# (other constants, '..', '{%env}', '{#preprocessor}', {userpf}, {userdocs}, wildcards at the Clink root, ...).
+$allowedApp = @(
+    'files|{app}\clink.exe.bak',
+    'files|{app}\clink.exe.new',
+    'files|{app}\clink.exe.failed'
+)
+$allowedAll = @($allowedApp) + @($allowedLocal)
 
 function Get-InstallerUninstallFailures {
     param([string]$Text, [string]$Label)
     $out = New-Object System.Collections.Generic.List[string]
     $inSection = $false
+    $sectionName = ''
     $seen = New-Object System.Collections.Generic.List[string]
     $lineNo = 0
     foreach ($line in ($Text -split "\r?\n")) {
         $lineNo++
-        if ($line -cmatch '\A\s*\[(?<name>[^\]]+)\]') { $inSection = ($Matches['name'] -ieq 'UninstallDelete'); continue }
+        if ($line -cmatch '\A\s*\[(?<name>[^\]]+)\]') {
+            $sectionName = $Matches['name']
+            $inSection = ($sectionName -ieq 'UninstallDelete')
+            if ($sectionName -ieq 'InstallDelete' -or $sectionName -ieq 'UninstallRun') { $out.Add("${Label}:${lineNo}: a [$sectionName] section is not allowed") }
+            continue
+        }
+        if ($sectionName -ieq 'Code' -and $line -imatch '\bDelTree\s*\(' -and $line -notmatch '\A\s*//') { $out.Add("${Label}:${lineNo}: [Code] calls DelTree(: $line") }
         if ($line -match '\A\s*[^;\s].*\bRedirectionGuard\s*=\s*no\b' -or $line -match '\A\s*RedirectionGuard\s*=\s*no\b') {
             $out.Add("${Label}:${lineNo}: RedirectionGuard=no is not allowed")
         }
@@ -65,15 +80,11 @@ function Get-InstallerUninstallFailures {
         $type = $typeMatch.Groups['v'].Value.ToLowerInvariant()
         $name = ($nameMatch.Groups['v'].Value.ToLowerInvariant() -replace '/', '\' -replace '\\{2,}', '\').TrimEnd('\')
         $seen.Add("$type|$name")
-        if ($name.StartsWith('{userappdata}')) { $out.Add("${Label}:${lineNo}: [UninstallDelete] touches {userappdata}: $name") }
-        if ($name.StartsWith('{localappdata}')) {
-            if ($type -eq 'filesandordirs') { $out.Add("${Label}:${lineNo}: [UninstallDelete] filesandordirs under {localappdata}: $name") }
-            if (($name -eq '{localappdata}\clink' -or $name.StartsWith('{localappdata}\clink\')) -and "$type|$name" -notin $allowedLocal) {
-                $out.Add("${Label}:${lineNo}: [UninstallDelete] '$type $name' is not one of the updater's own files or an empty-folder cleanup")
-            }
+        if ("$type|$name" -notin $allowedAll) {
+            $out.Add("${Label}:${lineNo}: [UninstallDelete] '$type $name' is not on the allowlist (the updater's own files or an empty-folder cleanup)")
         }
     }
-    foreach ($want in $allowedLocal) {
+    foreach ($want in $allowedAll) {
         if (@($seen | Where-Object { $_ -eq $want }).Count -ne 1) { $out.Add("${Label}: [UninstallDelete] needs exactly one entry '$want'") }
     }
     $out.ToArray()
@@ -98,6 +109,14 @@ if (Test-Path -LiteralPath $realIss) {
             'reversed order filesandordirs'   = $real.Replace($anchor, "$anchor`r`nName: `"{localappdata}\Clink\updates`"; Type: filesandordirs")
             'reversed order files wildcard'   = $real.Replace($anchor, "$anchor`r`nName: `"{localappdata}\Clink\*`"; Type: files")
             'userappdata entry'               = $real.Replace($anchor, "$anchor`r`nName: `"{userappdata}\Clink\settings.json`"; Type: files")
+            'userpf dotdot'                   = $real.Replace($anchor, "$anchor`r`nType: filesandordirs; Name: `"{userpf}\..\Clink\updates`"")
+            'env constant'                    = $real.Replace($anchor, "$anchor`r`nType: filesandordirs; Name: `"{%LOCALAPPDATA}\Clink\updates`"")
+            'preprocessor constant'           = $real.Replace($anchor, "$anchor`r`nType: filesandordirs; Name: `"{#Local}\Clink\updates`"")
+            'localappdata wildcard'           = $real.Replace($anchor, "$anchor`r`nType: files; Name: `"{localappdata}\*`"")
+            'userdocs dotdot'                 = $real.Replace($anchor, "$anchor`r`nType: filesandordirs; Name: `"{userdocs}\..\AppData\Roaming\Clink`"")
+            'UninstallRun section'            = $real + "`r`n[UninstallRun]`r`nFilename: `"cmd.exe`"; Parameters: `"/c rd /s /q x`"`r`n"
+            'InstallDelete section'           = $real + "`r`n[InstallDelete]`r`nType: files; Name: `"{app}\x`"`r`n"
+            'DelTree in Code'                 = $real + "`r`n[Code]`r`nprocedure X;`r`nbegin`r`n  DelTree(ExpandConstant('{app}'), True, True, True);`r`nend;`r`n"
             'RedirectionGuard=no'             = $real.Replace('[Setup]', "[Setup]`r`nRedirectionGuard=no")
         }
         foreach ($k in $variants.Keys) {

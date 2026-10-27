@@ -155,8 +155,12 @@ if ($iscc) {
         Write-Warning 'No .NET runtime inputs (-RuntimeInfoPath): the installer is built WITHOUT the runtime task (Setup only warns when the runtime is missing).'
     }
     # No /Qp (it would suppress warnings). stdout is captured: only warning lines are echoed on success, everything on failure.
-    $isccOutput = @(& $iscc @isccArguments $iss)
-    $isccExit = $LASTEXITCODE
+    # PowerShell 7.3+ may turn a non-zero native exit into a terminating error under ErrorActionPreference=Stop: switch that off here
+    # so the echo-then-throw path below always runs (the variable is unknown to, and harmless on, Windows PowerShell 5.1).
+    $previousNativePreference = $PSNativeCommandUseErrorActionPreference
+    $PSNativeCommandUseErrorActionPreference = $false
+    try { $isccOutput = @(& $iscc @isccArguments $iss); $isccExit = $LASTEXITCODE }
+    finally { $PSNativeCommandUseErrorActionPreference = $previousNativePreference }
     foreach ($line in $isccOutput) { if ([string]$line -match '^\s*(Line \d+:\s*)?Warning:') { Write-Output "ISCC: $line" } }
     Write-Output "ISCC exit code: $isccExit"
     if ($isccExit -ne 0) {
