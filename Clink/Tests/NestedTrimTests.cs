@@ -207,6 +207,49 @@ internal static class NestedTrimTests
     }
 
     [UnitTest]
+    public static void A_chevron_acts_only_when_its_state_differs_from_the_model()
+    {
+        Check.True(ClipGrouping.ShouldToggle(true, modelExpanded: false, isParent: true, trimmedChipOn: false), "checked while collapsed: expand");
+        Check.True(ClipGrouping.ShouldToggle(false, modelExpanded: true, isParent: true, trimmedChipOn: false), "unchecked while expanded: collapse");
+        Check.True(ClipGrouping.ShouldToggle(null, modelExpanded: true, isParent: true, trimmedChipOn: false), "indeterminate counts as unchecked");
+        Check.False(ClipGrouping.ShouldToggle(true, modelExpanded: true, isParent: true, trimmedChipOn: false), "the model setting the toggle: nothing to do");
+        Check.False(ClipGrouping.ShouldToggle(false, modelExpanded: false, isParent: true, trimmedChipOn: false));
+        Check.False(ClipGrouping.ShouldToggle(true, modelExpanded: false, isParent: true, trimmedChipOn: true), "Trimmed chip on: flat list, the toggle snaps back");
+        Check.False(ClipGrouping.ShouldToggle(true, modelExpanded: false, isParent: false, trimmedChipOn: false), "not a parent");
+    }
+
+    [UnitTest]
+    public static void A_user_toggle_keeps_the_one_way_binding_to_the_row()
+    {
+        // ToggleButton writes IsChecked with SetCurrentValue (mouse, Space and UIA TogglePattern alike): the binding to the row must survive it.
+        var row = new ClipRow(new ClipEntry { Path = A, Game = "Game A" });
+        row.SetNesting(ClipRowKind.Parent, 2, expanded: false);
+        var toggle = new System.Windows.Controls.Primitives.ToggleButton();
+        toggle.SetBinding(System.Windows.Controls.Primitives.ToggleButton.IsCheckedProperty, new System.Windows.Data.Binding(nameof(ClipRow.IsExpanded)) { Source = row, Mode = System.Windows.Data.BindingMode.OneWay });
+        Check.False(toggle.IsChecked == true);
+        int checkedCount = 0, uncheckedCount = 0, clicks = 0;
+        bool shouldToggleOnUnchecked = true;
+        toggle.Checked += (_, _) => checkedCount++;
+        toggle.Unchecked += (_, _) => { uncheckedCount++; shouldToggleOnUnchecked = ClipGrouping.ShouldToggle(toggle.IsChecked, row.IsExpanded, row.IsParent, trimmedChipOn: false); };
+        toggle.Click += (_, _) => clicks++;
+        var provider = new System.Windows.Automation.Peers.ToggleButtonAutomationPeer(toggle).GetPattern(System.Windows.Automation.Peers.PatternInterface.Toggle) as System.Windows.Automation.Provider.IToggleProvider;
+        Check.True(provider != null, "TogglePattern is offered");
+        provider!.Toggle();
+        Check.True(toggle.IsChecked == true, "the automation toggle flipped the state");
+        Check.Equal(1, checkedCount, "Checked raised once by the automation toggle");
+        Check.Equal(0, clicks, "UIA Toggle raises no Click");
+        row.SetNesting(ClipRowKind.Parent, 2, expanded: true);
+        Check.Equal(1, checkedCount, "the model agreeing raises nothing more");
+        Check.Equal(0, uncheckedCount);
+        row.SetNesting(ClipRowKind.Parent, 2, expanded: false);
+        Check.False(toggle.IsChecked == true, "the model still drives the toggle after a user toggle");
+        Check.Equal(1, uncheckedCount, "Unchecked raised once by the model collapsing");
+        Check.False(shouldToggleOnUnchecked, "at that moment the state equals the model: no action");
+        Check.Equal(1, checkedCount);
+        Check.Equal(0, clicks);
+    }
+
+    [UnitTest]
     public static void The_chevron_has_a_label_and_a_screen_reader_name_and_a_row_knows_its_place()
     {
         Check.Equal("1 trim", ClipGrouping.TrimsLabel(1));
