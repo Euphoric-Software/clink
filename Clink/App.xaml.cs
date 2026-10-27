@@ -112,6 +112,9 @@ public partial class App : System.Windows.Application
             return;
         }
 
+        // Clink.exe --dev-make-samples <clips folder> [--index <clips.json>]: drawn sample clips for the documentation screenshots (Services/SampleClips.cs)
+        if (Services.SampleClips.TryRunCli(args, AttachParentConsole, out int samplesCode)) { Shutdown(samplesCode); return; }
+
         try { RunNormal(args); }
         catch (Exception ex)
         {
@@ -150,6 +153,8 @@ public partial class App : System.Windows.Application
             AppController.DevRecord = dev.Record;
             AppController.DevQuiet = dev.Quiet;
             AppController.DevQuietRecord = dev.QuietRecord;
+            AppController.DevNoMarker = dev.NoMarker;
+            AppController.DevDemoStatus = dev.DemoStatus;
             SettingsImport.PackagesRoot = dev.PackagesRoot;   // a --dev instance looks for other copies' settings only where this says (tests)
             SettingsImport.ForeignGuard = s => dev.Isolate(s, freshStore: false);   // and compares them as they would be once loaded here
         }
@@ -230,7 +235,7 @@ public partial class App : System.Windows.Application
             _controller?.SaveEditorForSessionEnd();            // unsaved screenshot edits: a copy is saved
         };
         var main = new MainWindow();
-        if (dev != null)
+        if (dev != null && AppController.ShowsDevMarker)   // --dev-no-marker: no TEST in any title
         {
             main.Title = DevInstanceMarker.WindowTitle(dev.Folder);
             TagTestWindows();

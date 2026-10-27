@@ -15,6 +15,7 @@ namespace Clink.Services;
 /// <see cref="Isolate"/> keeps it away from the real clips, archive, updates and account on every start. Not in <c>--help</c>.
 /// <c>--dev-quiet</c> (see <see cref="QuietMode"/>) keeps the instance out of the way of the person at the PC (no focus, nothing on screen, no sound, no capture
 /// unless <c>--dev-quiet-record</c>); like every dev switch, it and <c>--dev-quiet-record</c> are an error without <c>--dev</c>.
+/// <c>--dev-no-marker</c> and <c>--dev-demo-status &lt;game&gt;</c> (documentation screenshots, see tools/screenshots) additionally need <c>--dev-quiet</c>.
 /// Two more switches exist only for testing how settings are taken over from another copy of Clink (SettingsImport), which a
 /// <c>--dev</c> instance otherwise never looks for: <c>--packages-root &lt;folder&gt;</c> names a fake <c>%LOCALAPPDATA%\Packages</c> to
 /// look in (never the real one), and <c>--dev-accept-import</c> accepts what is offered there at once.
@@ -37,12 +38,16 @@ internal sealed record DevOptions(string Folder, bool BindHotkeys)
     public bool Quiet { get; init; }
     /// <summary><c>--dev-quiet-record</c>: a quiet instance records after all (otherwise it starts paused, whatever <c>--dev-record</c> says).</summary>
     public bool QuietRecord { get; init; }
+    /// <summary><c>--dev-no-marker</c> (with <c>--dev</c> and <c>--dev-quiet</c>): the TEST frame, badge and title text are not drawn (documentation screenshots).</summary>
+    public bool NoMarker { get; init; }
+    /// <summary><c>--dev-demo-status "game"</c> (with <c>--dev</c> and <c>--dev-quiet</c>): the header shows "Recording · game" without recording anything (a display override only).</summary>
+    public string? DemoStatus { get; init; }
 
     /// <summary>Where a bare <c>--dev</c> keeps its data.</summary>
     public static string DefaultFolder => Path.Combine(Path.GetTempPath(), "clink-dev");
 
     private const string Dev = "--dev", DevEquals = "--dev=", Hotkeys = "--dev-hotkeys", Token = "--dev-token", Record_ = "--dev-record", Quiet_ = "--dev-quiet", QuietRecord_ = "--dev-quiet-record",
-        AcceptImport_ = "--dev-accept-import", PackagesRoot_ = "--packages-root";
+        NoMarker_ = "--dev-no-marker", DemoStatus_ = "--dev-demo-status", AcceptImport_ = "--dev-accept-import", PackagesRoot_ = "--packages-root";
 
     private static bool Is(string arg, string name) => arg.Equals(name, StringComparison.OrdinalIgnoreCase);
 
@@ -114,8 +119,8 @@ internal sealed record DevOptions(string Folder, bool BindHotkeys)
     /// </summary>
     public static DevOptions? Parse(string[] args)
     {
-        bool sawDev = false, hotkeys = false, token = false, record = false, accept = false, sawRoot = false, quiet = false, quietRecord = false;
-        string? folderArg = null, rootArg = null;
+        bool sawDev = false, hotkeys = false, token = false, record = false, accept = false, sawRoot = false, quiet = false, quietRecord = false, noMarker = false, sawDemo = false;
+        string? folderArg = null, rootArg = null, demoStatus = null;
         for (int i = 0; i < args.Length; i++)
         {
             string a = args[i];
@@ -137,6 +142,13 @@ internal sealed record DevOptions(string Folder, bool BindHotkeys)
             else if (Is(a, Record_)) record = true;
             else if (Is(a, Quiet_)) quiet = true;               // an error without --dev, like the others
             else if (Is(a, QuietRecord_)) quietRecord = true;
+            else if (Is(a, NoMarker_)) noMarker = true;          // quiet-only, like the next one
+            else if (Is(a, DemoStatus_))
+            {
+                sawDemo = true;
+                if (i + 1 < args.Length && IsValue(args[i + 1])) demoStatus = Unquote(args[++i]);
+                if (string.IsNullOrWhiteSpace(demoStatus)) throw new ArgumentException("--dev-demo-status needs a game name after it");
+            }
             else if (Is(a, AcceptImport_)) accept = true;
             else if (Is(a, PackagesRoot_))
             {
@@ -144,15 +156,21 @@ internal sealed record DevOptions(string Folder, bool BindHotkeys)
                 if (i + 1 < args.Length && IsValue(args[i + 1])) rootArg = args[++i];
             }
             else if (LooksLikeDevSwitch(a))
-                throw new ArgumentException($"{Shown(a)} is not a dev switch (they are --dev [folder] or --dev=<folder>, --dev-hotkeys, --dev-record, --dev-quiet, --dev-quiet-record, --dev-token, --dev-accept-import and --packages-root <folder>, "
+                throw new ArgumentException($"{Shown(a)} is not a dev switch (they are --dev [folder] or --dev=<folder>, --dev-hotkeys, --dev-record, --dev-quiet, --dev-quiet-record, --dev-no-marker, --dev-demo-status <game>, --dev-token, --dev-accept-import and --packages-root <folder>, "
                     + "written with two plain hyphens and nothing around them; a folder is written with its path, like .\\devdata)");
         }
         if (!sawDev)
         {
-            if (hotkeys || token || record || accept || sawRoot || quiet || quietRecord)
-                throw new ArgumentException("--dev-hotkeys, --dev-record, --dev-quiet, --dev-quiet-record, --dev-token, --dev-accept-import and --packages-root only work together with --dev [folder]");
+            if (hotkeys || token || record || accept || sawRoot || quiet || quietRecord || noMarker || sawDemo)
+                throw new ArgumentException("--dev-hotkeys, --dev-record, --dev-quiet, --dev-quiet-record, --dev-no-marker, --dev-demo-status, --dev-token, --dev-accept-import and --packages-root only work together with --dev [folder]");
             return null;
         }
+
+        if ((noMarker || sawDemo) && !quiet)
+            throw new ArgumentException("--dev-no-marker and --dev-demo-status only work together with --dev [folder] and --dev-quiet");
+
+        if (noMarker && quietRecord)
+            throw new ArgumentException("--dev-no-marker cannot be used with --dev-quiet-record: a recording instance must keep its TEST marker");
 
         string folder = folderArg == null ? DefaultFolder : Unquote(folderArg);
         try { folder = Path.GetFullPath(folder); }
@@ -174,7 +192,7 @@ internal sealed record DevOptions(string Folder, bool BindHotkeys)
             if (SamePath(root, realPackages))
                 throw new ArgumentException("--packages-root is the real %LOCALAPPDATA%\\Packages: a test must not take over the settings of whoever owns this machine (make a fake folder)");
         }
-        return new DevOptions(folder, hotkeys) { PackagesRoot = root, AcceptImport = accept, AllowToken = token, Record = record, Quiet = quiet, QuietRecord = quietRecord };
+        return new DevOptions(folder, hotkeys) { PackagesRoot = root, AcceptImport = accept, AllowToken = token, Record = record, Quiet = quiet, QuietRecord = quietRecord, NoMarker = noMarker, DemoStatus = demoStatus };
     }
 
     private static bool SamePath(string a, string b) =>
@@ -367,7 +385,8 @@ internal sealed record DevOptions(string Folder, bool BindHotkeys)
     /// is for one start. Every restart (an import, an update) puts these on the new command line: a restart without
     /// <c>--dev</c> would be a normal start, which takes the real Clink's mutex or forwards to it.
     /// </summary>
-    public static List<string> Switches(string folder, bool hotkeys, bool record, bool token, string? packagesRoot, bool quiet = false, bool quietRecord = false)
+    public static List<string> Switches(string folder, bool hotkeys, bool record, bool token, string? packagesRoot, bool quiet = false, bool quietRecord = false,
+        bool noMarker = false, string? demoStatus = null)
     {
         var list = new List<string> { Dev, folder };
         if (hotkeys) list.Add(Hotkeys);
@@ -375,6 +394,8 @@ internal sealed record DevOptions(string Folder, bool BindHotkeys)
         if (token) list.Add(Token);
         if (quiet) list.Add(Quiet_);
         if (quietRecord) list.Add(QuietRecord_);
+        if (noMarker) list.Add(NoMarker_);
+        if (demoStatus != null) { list.Add(DemoStatus_); list.Add(demoStatus); }
         if (packagesRoot != null) { list.Add(PackagesRoot_); list.Add(packagesRoot); }
         return list;
     }
@@ -387,8 +408,8 @@ internal sealed record DevOptions(string Folder, bool BindHotkeys)
         for (int i = 0; i < list.Count; i++)
         {
             string a = list[i];
-            if (Is(a, Dev) || Is(a, PackagesRoot_)) { if (i + 1 < list.Count && IsValue(list[i + 1])) i++; }
-            else if (a.StartsWith(DevEquals, StringComparison.OrdinalIgnoreCase) || Is(a, Hotkeys) || Is(a, Token) || Is(a, Record_) || Is(a, Quiet_) || Is(a, QuietRecord_) || Is(a, AcceptImport_)) { }
+            if (Is(a, Dev) || Is(a, PackagesRoot_) || Is(a, DemoStatus_)) { if (i + 1 < list.Count && IsValue(list[i + 1])) i++; }
+            else if (a.StartsWith(DevEquals, StringComparison.OrdinalIgnoreCase) || Is(a, Hotkeys) || Is(a, Token) || Is(a, Record_) || Is(a, Quiet_) || Is(a, QuietRecord_) || Is(a, NoMarker_) || Is(a, AcceptImport_)) { }
             else rest.Add(a);
         }
         return rest;

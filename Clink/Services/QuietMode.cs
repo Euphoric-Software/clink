@@ -169,6 +169,40 @@ internal static unsafe class QuietMode
     public static bool StartsPaused(bool isDev, bool devRecord, bool devQuiet, bool devQuietRecord) =>
         isDev && !(IsQuiet(isDev, devQuiet) ? devQuietRecord : devRecord);
 
+    /// <summary>
+    /// <c>--dev-no-marker</c>: the TEST frame, badge, title text and toast tag are not drawn. Only in a quiet dev instance that asked for it
+    /// (documentation screenshots); a normal run, a plain <c>--dev</c> run and a quiet run without the switch keep their marker.
+    /// </summary>
+    public static bool HidesMarker(bool isDev, bool devQuiet, bool devNoMarker) => IsQuiet(isDev, devQuiet) && devNoMarker;
+
+    /// <summary>
+    /// <c>--dev-demo-status "game"</c>: the header text that stands in for the real status, "Recording · game"; null (show the real
+    /// status) unless this is a quiet dev instance that was given a non-blank game. A display override only: nothing records.
+    /// </summary>
+    public static string? DemoStatusText(bool isDev, bool devQuiet, string? game) =>
+        DemoGameName(isDev, devQuiet, game) is { } g ? "Recording · " + g : null;
+
+    /// <summary>The game <c>--dev-demo-status</c> pretends to have detected (trimmed), or null when the override is not in force.</summary>
+    public static string? DemoGameName(bool isDev, bool devQuiet, string? game) =>
+        IsQuiet(isDev, devQuiet) && !string.IsNullOrWhiteSpace(game) ? game.Trim() : null;
+
+    /// <summary>The game name the Alerts tab's sample toasts show: the demo game when <c>--dev-demo-status</c> is in force, otherwise the built-in "Overwatch".</summary>
+    public static string SampleToastGame(string? demoGame) => string.IsNullOrWhiteSpace(demoGame) ? "Overwatch" : demoGame.Trim();
+
+    /// <summary>What a normal install keeps its settings in, as the documentation pictures show it.</summary>
+    public const string DocSettingsDir = @"%APPDATA%\Clink";
+    /// <summary>The default clips folder (<c>Settings.ClipsFolder</c>'s default: Videos\Clink), as the documentation pictures show it.</summary>
+    public const string DocClipsFolder = @"%USERPROFILE%\Videos\Clink";
+    /// <summary>The default screenshots folder: <c>Screenshots</c> inside the clips folder (<c>ScreenshotService.FolderFor</c>).</summary>
+    public const string DocScreenshotsFolder = DocClipsFolder + @"\Screenshots";
+
+    /// <summary>
+    /// DISPLAY ONLY. The text a path box or label shows: <paramref name="real"/> normally, <paramref name="docPlaceholder"/> (an
+    /// environment-variable form, never a fully qualified path) in documentation-screenshot mode, so no scratch folder or user name is
+    /// pictured. Never store the result: the placeholder is not a folder, and the path-box handlers also return at once in that mode.
+    /// </summary>
+    public static string Shown(bool docShots, string real, string docPlaceholder) => docShots ? docPlaceholder : real;
+
     /// <summary>This process is a quiet dev instance.</summary>
     public static bool Active => AppController.IsQuiet;
 
