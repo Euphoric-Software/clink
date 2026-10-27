@@ -25,6 +25,26 @@ public partial class App : System.Windows.Application
             return;
         }
 
+        if (args.Length > 0 && args[0].Equals(Updater.PreflightVerb, StringComparison.OrdinalIgnoreCase))
+        {
+            // Clink.exe --preflight: a downloaded update is run like this before it is applied (Updater.LaunchApply). Reaching this line
+            // means the runtime loaded and the app started; exit 0 at once, before any mutex, pipe, log or settings.
+            Shutdown(0);
+            return;
+        }
+
+        if (args.Length > 0 && args[0].Equals(PackagingCheck.Verb, StringComparison.OrdinalIgnoreCase))
+        {
+            // Clink.exe --packaging-check [SelfContained|Framework]: CI looks at the published exes with this. One line on stdout, exit code
+            // 0 = build label and runtime agree (and match the expected value). Before any mutex, pipe, log or settings, like --preflight.
+            AttachParentConsole(blankLine: false);
+            int code;
+            try { code = PackagingCheck.Run(args); }
+            catch (Exception ex) { Console.WriteLine("packaging-check failed: " + ex.Message); code = PackagingCheck.ExitFailed; }
+            Shutdown(code);
+            return;
+        }
+
         AppDomain.CurrentDomain.UnhandledException += (_, a) => Log.Error("Unhandled", (a.ExceptionObject as Exception) ?? new Exception(a.ExceptionObject?.ToString()));
         DispatcherUnhandledException += (_, a) => { Log.Error("UI exception", a.Exception); a.Handled = true; };
         TaskScheduler.UnobservedTaskException += (_, a) => { Log.Error("Task exception", a.Exception); a.SetObserved(); };
@@ -206,7 +226,7 @@ public partial class App : System.Windows.Application
             try
             {
                 // The restarted exe gets this command line back, so an update at login (--minimized from the Run key) stays in the tray.
-                Updater.LaunchApply(pendingExe, Environment.ProcessPath!, args.Where(a => !a.Equals("--no-update", StringComparison.OrdinalIgnoreCase)));
+                updater.LaunchApply(pendingExe, Environment.ProcessPath!, args.Where(a => !a.Equals("--no-update", StringComparison.OrdinalIgnoreCase)));
                 AppController.ReleaseSingleInstance();
                 Shutdown(0);
                 return;
@@ -270,7 +290,7 @@ public partial class App : System.Windows.Application
         base.OnExit(e);
     }
 
-    private static void AttachParentConsole()
+    private static void AttachParentConsole(bool blankLine = true)
     {
         try
         {
@@ -279,7 +299,7 @@ public partial class App : System.Windows.Application
                 var stdout = new StreamWriter(Console.OpenStandardOutput()) { AutoFlush = true };
                 Console.SetOut(stdout);
                 Console.SetError(stdout);
-                Console.WriteLine();
+                if (blankLine) Console.WriteLine();
             }
         }
         catch { }

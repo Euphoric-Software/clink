@@ -676,9 +676,14 @@ internal sealed partial class AppController : IDisposable
     }
 
     /// <summary>Installs the downloaded update now: hands over to the new exe and quits.</summary>
-    public void UpdateNow()
+    public void UpdateNow() => _ = UpdateNowAsync();
+
+    private bool _applying;   // UI thread: a click on Update is being handled (the check of the download is running or the apply was started)
+
+    private async Task UpdateNowAsync()
     {
         if (IsDev) { Say(Updater.DevModeNote); return; }   // the updates folder is the real Clink's, and the new process would not be this dev instance
+        if (_applying) { Say("Still checking…"); return; }   // a second click while the first one is still checking the download
         // A download made for the other channel (Dev Build switched since) is never installed; dropping it hides the button (PendingCleared).
         if (Updater.PendingVersion is { } v && !Updater.ShouldInstall(v, Updater.Current, Settings.UseDevBuilds, allowLeaveDev: true))
         {
@@ -690,21 +695,59 @@ internal sealed partial class AppController : IDisposable
         if (pending == null || Updater.PendingVersion == null || !File.Exists(pending)) { Say("No update downloaded yet"); return; }
         string? problem = Updater.InstallProblemFor(Environment.ProcessPath ?? "");
         if (problem != null) { Say($"Cannot install v{Updater.PendingVersion}: {problem}. Install it by hand from {Updater.UpdatesDir}"); return; }
+        var version = Updater.PendingVersion.Value;
+        _applying = true;
+        Updater.ApplyToken token;
         try
         {
-            Log.Info($"update: installing v{Updater.PendingVersion} from {pending}");
-            // Come back the way we are now: visible if the window is open, otherwise in the tray (and as the same --dev instance, if
-            // it is one), and only once this process is gone.
-            Updater.LaunchApply(pending, Environment.ProcessPath!, UpdateRestartArguments(MainWindowVisible));
+            Log.Info($"update: installing v{version} from {pending}");
+            Say($"Checking v{version} before installing…");
+            // The hash of the whole file and the start-up check (up to 15 s) must not hold the window: off the UI thread.
+            token = await Task.Run(() => Updater.PrepareApply(pending));
+        }
+        catch (Updater.ApplyRefusedException refused)
+        {
+            _applying = false;
+            Log.Warn("update: not installed: " + refused.Message);
+            Say(Updater.RefusalText(refused, version));
+            return;
         }
         catch (Exception ex)
         {
+            _applying = false;
+            Log.Error("update: not installed", ex);
+            Say("Update failed to start: " + ex.Message);
+            return;
+        }
+        // The window was open for the whole check: the app may be quitting, or the channel switched / a newer download replaced this one.
+        if (!StillTheUpdateToInstall(_exiting || _disposed, Updater.PendingPath, pending, version, Updater.Current, Settings.UseDevBuilds))
+        {
+            _applying = false;
+            Log.Warn($"update: v{version} is no longer the update to install; not starting it");
+            Say($"v{version} is no longer the update to install");
+            return;
+        }
+        try
+        {
+            // Come back the way we are now: visible if the window is open, otherwise in the tray (and as the same --dev instance, if
+            // it is one), and only once this process is gone. The check was done above: not run a second time.
+            Updater.StartApply(token, Environment.ProcessPath!, UpdateRestartArguments(MainWindowVisible));
+        }
+        catch (Exception ex)
+        {
+            _applying = false;
             Log.Error("update: launch failed", ex);
             Say("Update failed to start: " + ex.Message);
             return;
         }
-        Quit(userInitiated: false);
+        Quit(userInitiated: false);   // _applying stays set: this process is on its way out
     }
+
+    /// <summary>The decision after the awaited check of the download: the app is not going away, the pending update is still the file that was checked, and the channel / running exe still want its version.</summary>
+    internal static bool StillTheUpdateToInstall(bool quitting, string? pendingPath, string preparedPath, ReleaseVersion version, ReleaseVersion current, bool useDevBuilds) =>
+        !quitting
+        && string.Equals(pendingPath, preparedPath, StringComparison.OrdinalIgnoreCase)
+        && Updater.ShouldInstall(version, current, useDevBuilds, allowLeaveDev: true);
 
     /// <summary>
     /// What the Clink an update installs is started with: the window shown or in the tray as it is now, the same --dev instance if

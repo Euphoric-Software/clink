@@ -14,9 +14,10 @@ namespace Clink.Services;
 /// A newer release (or, on the dev channel, dev build) found on GitHub or in the signed feed. Without the feed (today's path)
 /// <see cref="ShaUrl"/> is the release's <c>Clink.exe.sha256</c> (a release without one is not offered) and <see cref="Sha256"/> is null.
 /// With the feed on for the channel, <see cref="Sha256"/> (lowercase hex) and <see cref="ExeSize"/> come from a verified signed manifest,
-/// <see cref="ShaUrl"/> is empty and the download fetches no hash file.
+/// <see cref="ShaUrl"/> is empty and the download fetches no hash file. <see cref="Flavour"/> is the flavour of the asset on offer (a framework
+/// client that falls back to the self-contained exe gets <see cref="Packaging.SelfContained"/> here).
 /// </summary>
-internal sealed record UpdateInfo(ReleaseVersion Version, string Tag, string ExeUrl, long ExeSize, string ShaUrl, string HtmlUrl, string Notes, string? Sha256 = null);
+internal sealed record UpdateInfo(ReleaseVersion Version, string Tag, string ExeUrl, long ExeSize, string ShaUrl, string HtmlUrl, string Notes, string? Sha256 = null, Packaging Flavour = Packaging.SelfContained);
 
 /// <summary>
 /// Self-update from GitHub Releases. Polls <c>/releases/latest</c> for a newer <c>Clink.exe</c> asset (or, with
@@ -44,6 +45,8 @@ internal sealed class Updater : IDisposable
 {
     private const string ExeAssetName = "Clink.exe";
     private const string ShaAssetName = "Clink.exe.sha256";
+    private const string FrameworkExeAssetName = "Clink-framework.exe";
+    private const string FrameworkShaAssetName = "Clink-framework.exe.sha256";
     private const string MetadataKey = "UpdateRepo";
     private const int MaxDownloadAttempts = 3;              // per version, per process; a broken release should not be re-fetched every cycle
     private static readonly TimeSpan FirstCheckDelay = TimeSpan.FromSeconds(30);
@@ -56,7 +59,7 @@ internal sealed class Updater : IDisposable
 
     private readonly Settings _settings;
     private readonly CancellationTokenSource _cts = new();
-    private readonly SemaphoreSlim _gate = new(1, 1);        // one check/download at a time
+    internal readonly SemaphoreSlim _gate = new(1, 1);       // one check/download at a time (internal: the unit tests hold it)
     private readonly SemaphoreSlim _wake = new(0, 1);        // released by Wake(): cuts the background loop's wait short
     private readonly Dictionary<ReleaseVersion, int> _attempts = new();
     private readonly object _pendingLock = new();            // PendingPath/PendingVersion: set by the check, dropped by the UI too
@@ -114,7 +117,17 @@ internal sealed class Updater : IDisposable
     /// runner points it at a per-run scratch folder); the app never does, so it is null in a real run.
     /// </summary>
     internal static string? UpdatesDirOverride { get; set; }
-    public static string UpdatesDir => UpdatesDirOverride ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Clink", "updates");
+
+    /// <summary>Stands in for the detected <see cref="PackagingInfo.Current"/> in the unit tests (the runner pins SelfContained); null otherwise.</summary>
+    internal static Packaging? PackagingOverride { get; set; }
+    /// <summary>The packaging of this copy: decides the update asset, the updates folder and whose pending download it may touch.</summary>
+    public static Packaging OwnPackaging => PackagingOverride ?? PackagingInfo.Current.Packaging;
+
+    /// <summary>The base updates folder shared by every Clink exe of this user: SelfContained copies use it directly, Framework copies its <c>fx</c> subfolder (<see cref="UpdatesDirFor"/>).</summary>
+    private static string UpdatesRoot => UpdatesDirOverride ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Clink", "updates");
+    /// <summary>Updates folder of <paramref name="packaging"/>: <c>updates</c> (SelfContained, as ever) or <c>updates\fx</c> (Framework). A copy never looks into the other one.</summary>
+    internal static string UpdatesDirFor(Packaging packaging) => packaging == Packaging.Framework ? Path.Combine(UpdatesRoot, "fx") : UpdatesRoot;
+    public static string UpdatesDir => UpdatesDirFor(OwnPackaging);
 
     /// <summary>What a --dev instance says when asked to look for, download or install an update.</summary>
     public const string DevModeNote = "Updates are off in dev mode";
@@ -213,6 +226,9 @@ internal sealed class Updater : IDisposable
             return;
         }
         Log.Info("updater: " + trust.Describe());
+        var pk = PackagingInfo.Current;
+        Log.Info($"updater: packaging {OwnPackaging} (runtime says {pk.RuntimeSays}, build label {pk.BuildLabel ?? "none"}); updates folder {UpdatesDir}");
+        if (pk.Disagreement != null) Log.Warn("updater: packaging: " + pk.Disagreement);
         if (AppController.IsDev) { Log.Info("updater: off in a --dev instance"); return; }
         string? repo = Repo;
         if (repo == null) { Log.Info("updater: no UpdateRepo configured, updates disabled"); return; }
@@ -259,8 +275,16 @@ internal sealed class Updater : IDisposable
     /// never one an older exe left behind (nor any other file than the recorded download).
     /// </summary>
     private bool LeaveDevAllowedAtStart(ReleaseVersion file) =>
-        string.Equals(_settings.PendingUpdateFrom, Current.ToString(), StringComparison.Ordinal)
-        && string.Equals(_settings.PendingUpdateVersion, file.ToString(), StringComparison.Ordinal);
+        string.Equals(RecFrom, Current.ToString(), StringComparison.Ordinal)
+        && string.Equals(RecVersion, file.ToString(), StringComparison.Ordinal);
+
+    // The download record of this copy's packaging: SelfContained uses the legacy PendingUpdate* keys (they describe the root updates\ folder,
+    // which v0.4.1 and dev.10 write too), Framework the PendingUpdateFx* keys (updates\fx\). Every read and write of the record goes through here.
+    private bool OwnIsFx => OwnPackaging == Packaging.Framework;
+    private string? RecVersion { get => OwnIsFx ? _settings.PendingUpdateFxVersion : _settings.PendingUpdateVersion; set { if (OwnIsFx) _settings.PendingUpdateFxVersion = value; else _settings.PendingUpdateVersion = value; } }
+    private string? RecSha256 { get => OwnIsFx ? _settings.PendingUpdateFxSha256 : _settings.PendingUpdateSha256; set { if (OwnIsFx) _settings.PendingUpdateFxSha256 = value; else _settings.PendingUpdateSha256 = value; } }
+    private string? RecFrom { get => OwnIsFx ? _settings.PendingUpdateFxFrom : _settings.PendingUpdateFrom; set { if (OwnIsFx) _settings.PendingUpdateFxFrom = value; else _settings.PendingUpdateFrom = value; } }
+    private bool? RecSigned { get => OwnIsFx ? _settings.PendingUpdateFxSigned : _settings.PendingUpdateSigned; set { if (OwnIsFx) _settings.PendingUpdateFxSigned = value; else _settings.PendingUpdateSigned = value; } }
 
     internal static string FileFor(ReleaseVersion v) => Path.Combine(UpdatesDir, $"Clink-{v}.exe");
 
@@ -273,6 +297,26 @@ internal sealed class Updater : IDisposable
 
     /// <summary>Written by <see cref="RunApplyUpdate"/> after a successful swap, so the file is never installed a second time (even if the new exe reports an unexpected version).</summary>
     private static string InstalledMarker(string exePath) => exePath + ".installed";
+
+    /// <summary>Counts the start-up checks of this file that only timed out (first line: the number). At <see cref="MaxStartupTimeouts"/> the file is marked failed instead, so start-up stops handing over to it; any fresh download or cleanup of the file removes it.</summary>
+    private static string TimeoutMarker(string exePath) => exePath + ".timeout";
+
+    /// <summary>How many start-up checks of one file may time out before the file counts as failed (the start-up then stops trying).</summary>
+    internal const int MaxStartupTimeouts = 3;
+
+    private static int TimeoutCount(string exePath)
+    {
+        try { return int.TryParse(File.ReadLines(TimeoutMarker(exePath)).FirstOrDefault()?.Trim(), out int n) && n > 0 ? n : 0; }
+        catch { return 0; }
+    }
+
+    /// <summary>Removes the failed, installed and timeout markers of a file.</summary>
+    private static void DeleteMarkers(string exePath)
+    {
+        TryDelete(FailedMarker(exePath));
+        TryDelete(InstalledMarker(exePath));
+        TryDelete(TimeoutMarker(exePath));
+    }
 
     /// <summary>First line of the failed marker (why the install failed), or null if there is none.</summary>
     private static string? FailedReason(string exePath)
@@ -375,7 +419,7 @@ internal sealed class Updater : IDisposable
             }
             string? problem;
             SignedAssets? assets;
-            var info = dev ? PickRelease(body, true, signed, out problem, out assets) : ParseRelease(body, false, signed, out problem, out assets);
+            var info = dev ? PickRelease(body, true, signed, OwnPackaging, out problem, out assets) : ParseRelease(body, false, signed, OwnPackaging, out problem, out assets);
             if (info == null) { LastError = problem ?? "latest release is unusable"; Log.Warn("updater: " + LastError); return null; }
             LastError = null;
             if (!ShouldInstall(info.Version, Current, dev, allowLeaveDev: manual))
@@ -451,7 +495,7 @@ internal sealed class Updater : IDisposable
             // Offered: the manifests it was chosen from are used. With half the picture, only the offered one is.
             foreach (var m in complete ? fresh : new List<FeedManifest> { best }) RaiseFloor(m.Channel, m.Version);
             if (!complete) Log.Info($"updater: offering {best.Channel}.json's v{best.Version} although {notUsed}");
-            return new(FeedVerdict.Offer, UpdateFeed.ToUpdateInfo(best), "");
+            return new(FeedVerdict.Offer, UpdateFeed.ToUpdateInfo(best, OwnPackaging), "");
         }
         if (!complete) return new(FeedVerdict.FallBack, null, $"{notUsed}; the verified v{best.Version} is not newer");
         if (best.Version == Current)
@@ -475,6 +519,7 @@ internal sealed class Updater : IDisposable
         string channel = assets?.Channel ?? UpdateFeed.ChannelName(info.Version.IsDevBuild);
         string? why = null;
         FeedManifest? m = null;
+        FeedAsset? asset = null;
         if (assets?.ManifestUrl is not { } manifestUrl || assets.SigUrl is not { } sigUrl)
             why = $"release {info.Tag} has no {channel}.json and {channel}.json.sig assets";
         else if (!UpdateFeed.IsHttps(manifestUrl) || !UpdateFeed.IsHttps(sigUrl) || !UpdateFeed.IsHttps(info.ExeUrl))
@@ -488,17 +533,33 @@ internal sealed class Updater : IDisposable
             {
                 if (m.Tag != info.Tag) why = $"the signed manifest is for {m.Tag}, not for release {info.Tag}";
                 else if (UpdateFeed.FloorReason(m, Floor(channel)) is { } below) why = $"the signed manifest of {info.Tag} is stale ({below})";
-                else if (info.ExeSize > 0 && info.ExeSize != m.Exe.Size) why = $"GitHub's {ExeAssetName} of {info.Tag} is {info.ExeSize} bytes, the signed manifest says {m.Exe.Size}";
+                else
+                {
+                    if (info.Flavour == Packaging.Framework && (m.ExeFramework == null || !DotNetRuntimes.MeetsMinimum(m.MinRuntime, DotNetRuntimes.InstalledDesktop())))
+                    {
+                        // The signed manifest has no framework exe for this release, or its minRuntime is not installed: the self-contained Clink.exe.
+                        if (assets?.FallbackExeUrl is { } fallback) { info = info with { ExeUrl = fallback, ExeSize = assets.FallbackExeSize, Flavour = Packaging.SelfContained }; }
+                        else why = $"the signed manifest of {info.Tag} cannot be used for the framework exe and the release has no {ExeAssetName} to fall back on";
+                    }
+                    if (why == null && !UpdateFeed.IsHttps(info.ExeUrl))   // the fallback's URL was not checked above
+                        why = $"release {info.Tag} has an asset URL that is not https";
+                    if (why == null)
+                    {
+                        asset = info.Flavour == Packaging.Framework ? m.ExeFramework! : m.Exe;
+                        string assetName = info.Flavour == Packaging.Framework ? FrameworkExeAssetName : ExeAssetName;
+                        if (info.ExeSize > 0 && info.ExeSize != asset.Size) why = $"GitHub's {assetName} of {info.Tag} is {info.ExeSize} bytes, the signed manifest says {asset.Size}";
+                    }
+                }
             }
         }
-        if (why != null || m == null)
+        if (why != null || m == null || asset == null)
         {
             LastError = GitHubRefusedNote;
             Log.Warn($"updater: not offering {info.Tag}: {why ?? "no signed manifest"}");
             return null;
         }
         RaiseFloor(m.Channel, m.Version);   // used: offered
-        return info with { ExeSize = m.Exe.Size, ShaUrl = "", Sha256 = m.Exe.Sha256 };
+        return info with { ExeSize = asset.Size, ShaUrl = "", Sha256 = asset.Sha256 };
     }
 
     /// <summary>The highest version verified before on <paramref name="channel"/> (settings FeedFloorStable / FeedFloorDev), or null.</summary>
@@ -519,15 +580,18 @@ internal sealed class Updater : IDisposable
     }
 
     /// <summary>The signed manifest assets of a GitHub release (signed GitHub path): <c>&lt;Channel&gt;.json</c> and its <c>.sig</c>; null URLs when missing.</summary>
-    internal sealed record SignedAssets(string Channel, string? ManifestUrl, string? SigUrl);
+    internal sealed record SignedAssets(string Channel, string? ManifestUrl, string? SigUrl, string? FallbackExeUrl = null, long FallbackExeSize = 0);
 
     /// <summary>Answer of <c>/releases/latest</c> as an <see cref="UpdateInfo"/>, or null with <paramref name="problem"/> set (pre-release/draft: problem stays null).</summary>
-    internal static UpdateInfo? ParseRelease(string json, bool devChannel, out string? problem) => ParseRelease(json, devChannel, false, out problem, out _);
+    internal static UpdateInfo? ParseRelease(string json, bool devChannel, out string? problem) => ParseRelease(json, devChannel, false, Packaging.SelfContained, out problem, out _);
 
-    private static UpdateInfo? ParseRelease(string json, bool devChannel, bool signed, out string? problem, out SignedAssets? assets)
+    /// <summary><see cref="ParseRelease(string, bool, out string?)"/> for a copy of <paramref name="packaging"/>: a Framework copy takes <c>Clink-framework.exe</c> (+ its .sha256), falling back to <c>Clink.exe</c> when the release lacks it.</summary>
+    internal static UpdateInfo? ParseRelease(string json, bool devChannel, Packaging packaging, out string? problem) => ParseRelease(json, devChannel, false, packaging, out problem, out _);
+
+    private static UpdateInfo? ParseRelease(string json, bool devChannel, bool signed, Packaging packaging, out string? problem, out SignedAssets? assets)
     {
         using var doc = JsonDocument.Parse(json);
-        return ParseRelease(doc.RootElement, devChannel, signed, out problem, out assets);
+        return ParseRelease(doc.RootElement, devChannel, signed, packaging, out problem, out assets);
     }
 
     /// <summary>
@@ -535,9 +599,12 @@ internal sealed class Updater : IDisposable
     /// computed. Drafts, beta pre-releases, dev-looking tags not flagged as pre-release and entries without both assets are skipped.
     /// Null with <paramref name="problem"/> set when nothing is usable.
     /// </summary>
-    internal static UpdateInfo? PickRelease(string listJson, bool devChannel, out string? problem) => PickRelease(listJson, devChannel, false, out problem, out _);
+    internal static UpdateInfo? PickRelease(string listJson, bool devChannel, out string? problem) => PickRelease(listJson, devChannel, false, Packaging.SelfContained, out problem, out _);
 
-    private static UpdateInfo? PickRelease(string listJson, bool devChannel, bool signed, out string? problem, out SignedAssets? bestAssets)
+    /// <summary><see cref="PickRelease(string, bool, out string?)"/> for a copy of <paramref name="packaging"/> (see <see cref="ParseRelease(string, bool, Packaging, out string?)"/>).</summary>
+    internal static UpdateInfo? PickRelease(string listJson, bool devChannel, Packaging packaging, out string? problem) => PickRelease(listJson, devChannel, false, packaging, out problem, out _);
+
+    private static UpdateInfo? PickRelease(string listJson, bool devChannel, bool signed, Packaging packaging, out string? problem, out SignedAssets? bestAssets)
     {
         problem = null;
         bestAssets = null;
@@ -548,7 +615,7 @@ internal sealed class Updater : IDisposable
         foreach (var entry in doc.RootElement.EnumerateArray())
         {
             if (entry.ValueKind != JsonValueKind.Object) continue;
-            var info = ParseRelease(entry, devChannel, signed, out string? entryProblem, out var assets);
+            var info = ParseRelease(entry, devChannel, signed, packaging, out string? entryProblem, out var assets);
             if (entryProblem != null) lastProblem = entryProblem;
             if (info != null && (best == null || info.Version > best.Version)) { best = info; bestAssets = assets; }
         }
@@ -560,14 +627,17 @@ internal sealed class Updater : IDisposable
     /// One release object as an <see cref="UpdateInfo"/>, or null (with <paramref name="problem"/> when that is worth telling the user).
     /// Stable channel: pre-releases are refused. Dev channel: a plain X.Y.Z release or a pre-release tagged X.Y.Z-dev.N is accepted.
     /// </summary>
-    internal static UpdateInfo? ParseRelease(JsonElement root, bool devChannel, out string? problem) => ParseRelease(root, devChannel, false, out problem, out _);
+    internal static UpdateInfo? ParseRelease(JsonElement root, bool devChannel, out string? problem) => ParseRelease(root, devChannel, false, Packaging.SelfContained, out problem, out _);
+
+    /// <summary><see cref="ParseRelease(JsonElement, bool, out string?)"/> for a copy of <paramref name="packaging"/> (see <see cref="ParseRelease(string, bool, Packaging, out string?)"/>).</summary>
+    internal static UpdateInfo? ParseRelease(JsonElement root, bool devChannel, Packaging packaging, out string? problem) => ParseRelease(root, devChannel, false, packaging, out problem, out _);
 
     /// <summary>
     /// <see cref="ParseRelease(JsonElement, bool, out string?)"/>; with <paramref name="signed"/> (the feed is on) <c>Clink.exe.sha256</c>
     /// is neither required nor used, and the release's <c>stable.json</c> / <c>dev.json</c> (by its pre-release flag) and <c>.sig</c>
     /// asset URLs come back in <paramref name="assets"/> for <see cref="VerifyGitHubReleaseAsync"/>.
     /// </summary>
-    private static UpdateInfo? ParseRelease(JsonElement root, bool devChannel, bool signed, out string? problem, out SignedAssets? assets)
+    private static UpdateInfo? ParseRelease(JsonElement root, bool devChannel, bool signed, Packaging packaging, out string? problem, out SignedAssets? assets)
     {
         problem = null;
         assets = null;
@@ -586,7 +656,7 @@ internal sealed class Updater : IDisposable
         }
         string channel = UpdateFeed.ChannelName(prerelease);
         string manifestName = channel + ".json", sigName = manifestName + ".sig";
-        string? exeUrl = null, shaUrl = null, manifestUrl = null, sigUrl = null; long exeSize = 0;
+        string? exeUrl = null, shaUrl = null, manifestUrl = null, sigUrl = null, fxUrl = null, fxShaUrl = null; long exeSize = 0, fxSize = 0;
         if (root.TryGetProperty("assets", out var list) && list.ValueKind == JsonValueKind.Array)
         {
             foreach (var a in list.EnumerateArray())
@@ -597,21 +667,39 @@ internal sealed class Updater : IDisposable
                     exeUrl = Str(a, "browser_download_url");
                     exeSize = a.TryGetProperty("size", out var sz) && sz.ValueKind == JsonValueKind.Number ? sz.GetInt64() : 0;
                 }
+                else if (name.Equals(FrameworkExeAssetName, StringComparison.Ordinal))
+                {
+                    fxUrl = Str(a, "browser_download_url");
+                    fxSize = a.TryGetProperty("size", out var fsz) && fsz.ValueKind == JsonValueKind.Number ? fsz.GetInt64() : 0;
+                }
+                else if (name.Equals(FrameworkShaAssetName, StringComparison.Ordinal)) fxShaUrl = Str(a, "browser_download_url");
                 else if (name.Equals(ShaAssetName, StringComparison.Ordinal)) shaUrl = Str(a, "browser_download_url");
                 else if (name.Equals(manifestName, StringComparison.Ordinal)) manifestUrl = Str(a, "browser_download_url");
                 else if (name.Equals(sigName, StringComparison.Ordinal)) sigUrl = Str(a, "browser_download_url");
             }
         }
-        if (string.IsNullOrEmpty(exeUrl)) { problem = $"release {tag} has no {ExeAssetName} asset"; return null; }
+        // A framework copy prefers Clink-framework.exe (with its .sha256 on the unsigned path) and falls back to the self-contained Clink.exe.
+        bool useFx = packaging == Packaging.Framework && !string.IsNullOrEmpty(fxUrl) && (signed || !string.IsNullOrEmpty(fxShaUrl));
+        if (string.IsNullOrEmpty(exeUrl) && !useFx) { problem = $"release {tag} has no {ExeAssetName} asset"; return null; }
         if (signed)
         {
             // The hash comes from the signed manifest (VerifyGitHubReleaseAsync); Clink.exe.sha256 is not trusted.
-            assets = new SignedAssets(channel, string.IsNullOrEmpty(manifestUrl) ? null : manifestUrl, string.IsNullOrEmpty(sigUrl) ? null : sigUrl);
-            return new UpdateInfo(version, tag, exeUrl, exeSize, "", Str(root, "html_url"), Str(root, "body"));
+            assets = new SignedAssets(channel, string.IsNullOrEmpty(manifestUrl) ? null : manifestUrl, string.IsNullOrEmpty(sigUrl) ? null : sigUrl,
+                useFx && !string.IsNullOrEmpty(exeUrl) ? exeUrl : null, exeSize);
+            return useFx
+                ? new UpdateInfo(version, tag, fxUrl!, fxSize, "", Str(root, "html_url"), Str(root, "body"), null, Packaging.Framework)
+                : new UpdateInfo(version, tag, exeUrl!, exeSize, "", Str(root, "html_url"), Str(root, "body"));
+        }
+        // Unsigned path: the exe and its hash file are fetched over https only (the hash is the only check, so it must not travel in the clear either).
+        if (useFx)
+        {
+            if (!UpdateFeed.IsHttps(fxUrl!) || !UpdateFeed.IsHttps(fxShaUrl!)) { problem = $"release {tag} has an asset URL that is not https, refusing it"; return null; }
+            return new UpdateInfo(version, tag, fxUrl!, fxSize, fxShaUrl!, Str(root, "html_url"), Str(root, "body"), null, Packaging.Framework);
         }
         // Fail closed: without the published hash nothing could tell a corrupted download from a good one.
         if (string.IsNullOrEmpty(shaUrl)) { problem = $"release {tag} has no {ShaAssetName} asset, refusing it"; return null; }
-        return new UpdateInfo(version, tag, exeUrl, exeSize, shaUrl, Str(root, "html_url"), Str(root, "body"));
+        if (!UpdateFeed.IsHttps(exeUrl!) || !UpdateFeed.IsHttps(shaUrl)) { problem = $"release {tag} has an asset URL that is not https, refusing it"; return null; }
+        return new UpdateInfo(version, tag, exeUrl!, exeSize, shaUrl, Str(root, "html_url"), Str(root, "body"));
 
         static bool Flag(JsonElement e, string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.True;
         static string Str(JsonElement e, string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : "";
@@ -632,7 +720,7 @@ internal sealed class Updater : IDisposable
         IsDownloading = true;
         try
         {
-            // The hash first: if it cannot be fetched there is no point transferring 30 MB. A signed manifest (feed on) carries it,
+            // The hash first: if it cannot be fetched there is no point transferring the exe (tens of MB, more for the self-contained exe). A signed manifest (feed on) carries it,
             // and then no Clink.exe.sha256 is ever requested.
             bool signedHash = info.Sha256 != null;
             string expected = info.Sha256 ?? await FetchShaAsync(info.ShaUrl, ct).ConfigureAwait(false);
@@ -688,20 +776,18 @@ internal sealed class Updater : IDisposable
             progress?.Report(1.0);
 
             File.Move(partial, final, overwrite: true);
-            _settings.PendingUpdateVersion = info.Version.ToString();
-            _settings.PendingUpdateSha256 = actual;
-            _settings.PendingUpdateSigned = signedHash ? true : null;   // see VerifyDownload(): with the feed on, only a signed download is installed
-            _settings.PendingUpdateFrom = Current.ToString();   // see LeaveDevAllowedAtStart()
+            RecVersion = info.Version.ToString();
+            RecSha256 = actual;
+            RecSigned = signedHash ? true : null;   // see VerifyDownload(): with the feed on, only a signed download is installed
+            RecFrom = Current.ToString();   // see LeaveDevAllowedAtStart()
             _settings.Save();
-            TryDelete(FailedMarker(final));
-            TryDelete(InstalledMarker(final));
+            DeleteMarkers(final);
             foreach (string other in Directory.EnumerateFiles(UpdatesDir, "Clink-*.exe"))
             {
                 if (!other.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) continue;
                 if (string.Equals(Path.GetFullPath(other), Path.GetFullPath(final), StringComparison.OrdinalIgnoreCase)) continue;
                 TryDelete(other);
-                TryDelete(FailedMarker(other));
-                TryDelete(InstalledMarker(other));
+                DeleteMarkers(other);
             }
             foreach (string stale in Directory.EnumerateFiles(UpdatesDir, "*.partial")) TryDelete(stale);
             return final;
@@ -764,17 +850,27 @@ internal sealed class Updater : IDisposable
     /// settings) and the version it reports, so a file corrupted or swapped in the updates folder since then is never
     /// installed. Returns null if fine, otherwise why not.
     /// </summary>
-    private string? VerifyDownload(string file, ReleaseVersion version)
+    private string? VerifyDownload(string file, ReleaseVersion version) => VerifyDownload(file, version, OwnPackaging);
+
+    /// <summary>
+    /// <see cref="VerifyDownload(string, ReleaseVersion)"/> against the download record of <paramref name="folder"/>'s packaging: the legacy
+    /// PendingUpdate* keys for the root updates folder, the PendingUpdateFx* keys for <c>updates\fx</c>.
+    /// </summary>
+    private string? VerifyDownload(string file, ReleaseVersion version, Packaging folder)
     {
+        bool fx = folder == Packaging.Framework;
+        string? recVersion = fx ? _settings.PendingUpdateFxVersion : _settings.PendingUpdateVersion;
+        string? recSha = fx ? _settings.PendingUpdateFxSha256 : _settings.PendingUpdateSha256;
+        bool? recSigned = fx ? _settings.PendingUpdateFxSigned : _settings.PendingUpdateSigned;
         if (!LooksLikeExe(file)) return "it is not a Windows executable";
-        if (!string.Equals(_settings.PendingUpdateVersion, version.ToString(),StringComparison.Ordinal) || string.IsNullOrEmpty(_settings.PendingUpdateSha256))
+        if (!string.Equals(recVersion, version.ToString(), StringComparison.Ordinal) || string.IsNullOrEmpty(recSha))
             return "there is no record of a verified download of this version";
-        if (Trust.On && _settings.PendingUpdateSigned != true)
+        if (Trust.On && recSigned != true)
             return "it was not verified against a signed manifest, and this build installs signed updates only";
         string actual;
         try { actual = Sha256Hex(file); }
         catch (Exception ex) { return "it cannot be read: " + ex.Message; }
-        if (!string.Equals(actual, _settings.PendingUpdateSha256, StringComparison.OrdinalIgnoreCase)) return "its SHA-256 no longer matches the verified download";
+        if (!string.Equals(actual, recSha, StringComparison.OrdinalIgnoreCase)) return "its SHA-256 no longer matches the verified download";
         return CheckEmbeddedVersion(file, version);
     }
 
@@ -785,9 +881,9 @@ internal sealed class Updater : IDisposable
     /// </summary>
     private bool RecordedDownloadIs(UpdateInfo info) =>
         info.Sha256 != null
-        && _settings.PendingUpdateSigned == true
-        && string.Equals(_settings.PendingUpdateVersion, info.Version.ToString(), StringComparison.Ordinal)
-        && string.Equals(_settings.PendingUpdateSha256, info.Sha256, StringComparison.OrdinalIgnoreCase);
+        && RecSigned == true
+        && string.Equals(RecVersion, info.Version.ToString(), StringComparison.Ordinal)
+        && string.Equals(RecSha256, info.Sha256, StringComparison.OrdinalIgnoreCase);
 
     private static void TryDelete(string path)
     {
@@ -813,7 +909,7 @@ internal sealed class Updater : IDisposable
     public static string? InstallProblemFor(string targetExe)
     {
         // An elevated Clink must not run an exe from a folder every process of this user can write to.
-        if (IsElevated()) return "Clink is running as administrator and does not install updates from an elevated process";
+        if (IsElevated()) return ElevatedNote;
         string dir = Path.GetDirectoryName(targetExe) ?? "";
         try
         {
@@ -824,8 +920,17 @@ internal sealed class Updater : IDisposable
         catch (Exception) { return $"Clink.exe's folder ({dir}) is not writable"; }
     }
 
+    /// <summary>Stands in for "is this process elevated" in the unit tests; null otherwise.</summary>
+    internal static bool? IsElevatedOverride { get; set; }
+
+    /// <summary>Exit code of <c>--apply-update</c> when it refuses to run elevated.</summary>
+    internal const int ElevatedExitCode = 3;
+
+    private const string ElevatedNote = "Clink is running as administrator and does not install updates from an elevated process";
+
     private static bool IsElevated()
     {
+        if (IsElevatedOverride is bool forced) return forced;
         try
         {
             using var id = WindowsIdentity.GetCurrent();
@@ -881,7 +986,7 @@ internal sealed class Updater : IDisposable
             {
                 Log.Warn($"updater: discarding {best}: {reason}");
                 TryDelete(best);
-                TryDelete(FailedMarker(best));
+                DeleteMarkers(best);
                 return false;
             }
             reason = InstallProblemFor(Environment.ProcessPath ?? "");
@@ -900,24 +1005,218 @@ internal sealed class Updater : IDisposable
     /// <summary>Records why starting a downloaded update failed, in words the user can act on (shown once at startup).</summary>
     public void ReportInstallFailure(Exception ex, ReleaseVersion version, string pendingExe)
     {
+        if (ex is ApplyRefusedException refused)
+        {
+            // PrepareApply said it all and, where the file is to blame, already wrote the marker (or removed the file): neither is redone here.
+            InstallProblem = RefusalText(refused, version);
+            Log.Warn("updater: " + InstallProblem);
+            return;
+        }
         bool appControl = ex.Message.Contains("Application Control", StringComparison.OrdinalIgnoreCase);
         // Kept short: this text comes back at every start inside a longer message, and tray balloons stop at 250 characters.
         string why = appControl
             ? "Smart App Control blocked it (Clink is not code-signed yet). Turn it off in Windows Security › App & browser control, or build Clink from source"
             : Describe(ex);
-        InstallProblem = $"Update to v{version} could not start: {why.TrimEnd('.')}. {RetryHint}";
+        InstallProblem = $"Update to v{version} could not start: {Shorten(why)}. {RetryHint}";
         Log.Warn("updater: " + InstallProblem);
         // Same marker the apply process writes: this file is not offered again at every start (a manual check retries it).
         try { File.WriteAllText(FailedMarker(pendingExe), $"{why}\n{DateTime.Now:yyyy-MM-dd HH:mm:ss} launch failed"); } catch { }
     }
 
+    /// <summary>Longest reason put into a user message: with "Update to v…" in front and the retry hint behind it the whole stays within a tray balloon's 250 characters.</summary>
+    internal const int ReasonCap = 145;
+
+    /// <summary>What the user is told when <see cref="PrepareApply"/> refused (a status line or a balloon: at most 250 characters).</summary>
+    internal static string RefusalText(ApplyRefusedException refused, ReleaseVersion version) => refused.Deferred
+        ? $"Update to v{version} was not installed this time: {Shorten(refused.Reason)}. It will be tried again."
+        : $"Update to v{version} not installed: {Shorten(refused.Reason)}. {RetryHint}";
+
+    internal static string Shorten(string reason)
+    {
+        string s = reason.ReplaceLineEndings(" ").Trim().TrimEnd('.');
+        return s.Length > ReasonCap ? s[..ReasonCap] + "…" : s;
+    }
+
+    // ------------------------------------------------------------------ preflight
+
+    /// <summary>The early verb a downloaded exe is run with before it is applied: it does nothing and exits 0 (App.xaml.cs).</summary>
+    internal const string PreflightVerb = "--preflight";
+    /// <summary>How long a downloaded exe gets to start and exit 0 under <see cref="PreflightVerb"/> (a self-contained exe unpacks itself first).</summary>
+    internal static readonly TimeSpan PreflightTimeout = TimeSpan.FromSeconds(15);
+    /// <summary>The same at start-up, where nothing else is waiting for the answer (a first run of an exe the antivirus is still scanning can be slow).</summary>
+    internal static readonly TimeSpan StartupPreflightTimeout = TimeSpan.FromSeconds(30);
+
+    /// <summary>How a preflight run ended: its exit code, or that it timed out (and was killed), or why it could not be started.</summary>
+    internal readonly record struct PreflightResult(int? ExitCode, bool TimedOut, string? Error);
+
+    /// <summary>Runs an exe with <see cref="PreflightVerb"/>, waits up to the timeout. Replaced by a fake in the unit tests (no test starts a real process); null otherwise.</summary>
+    internal static Func<string, TimeSpan, PreflightResult>? PreflightOverride { get; set; }
+
+    private static PreflightResult RunPreflightProcess(string exe, TimeSpan timeout)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo(exe)
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WorkingDirectory = Path.GetDirectoryName(exe) ?? "",
+            };
+            psi.ArgumentList.Add(PreflightVerb);
+            psi.Environment["DOTNET_DISABLE_GUI_ERRORS"] = "1";   // a missing runtime must fail quietly (exit code), not open a dialog
+            using var p = Process.Start(psi) ?? throw new InvalidOperationException("could not start the process");
+            if (!p.WaitForExit((int)timeout.TotalMilliseconds))
+            {
+                try { p.Kill(entireProcessTree: true); } catch { }
+                return new(null, true, null);
+            }
+            return new(p.ExitCode, false, null);
+        }
+        catch (Exception ex) { return new(null, false, Describe(ex)); }
+    }
+
     /// <summary>
-    /// Starts the downloaded exe so it replaces <paramref name="targetExePath"/> once this process has exited and then restarts
-    /// it with <paramref name="restartArgs"/> (the current command line, so a login start stays in the tray). The caller then exits.
+    /// Why the downloaded <paramref name="exe"/> cannot be applied, or null when it started and exited 0 under <see cref="PreflightVerb"/>.
+    /// Catches a download that cannot run here at all (missing .NET runtime for the framework flavour, blocked by AV or App Control)
+    /// before the installed exe is replaced by it.
     /// </summary>
-    public static void LaunchApply(string newExePath, string targetExePath, IEnumerable<string> restartArgs)
+    internal static string? PreflightProblem(string exe, TimeSpan timeout, Func<string, TimeSpan, PreflightResult>? launcher = null, Packaging flavour = Packaging.SelfContained) =>
+        PreflightCheck(exe, timeout, launcher, flavour).Problem;
+
+    /// <summary><see cref="PreflightProblem"/>, and whether the run only timed out (which says nothing against the file). The runtime hint is for the Framework flavour only.</summary>
+    internal static (string? Problem, bool TimedOut) PreflightCheck(string exe, TimeSpan timeout, Func<string, TimeSpan, PreflightResult>? launcher = null, Packaging flavour = Packaging.SelfContained)
+    {
+        var r = (launcher ?? PreflightOverride ?? RunPreflightProcess)(exe, timeout);
+        if (r.Error != null) return ($"it could not be started ({r.Error})", false);
+        if (r.TimedOut) return ($"it did not finish its start-up check within {timeout.TotalSeconds:0} s", true);
+        if (r.ExitCode != 0)
+            return ($"its start-up check failed (exit code {r.ExitCode?.ToString() ?? "unknown"}{(flavour == Packaging.Framework ? "; if this is the framework build, is the .NET 10 Desktop Runtime installed?" : "")})", false);
+        return (null, false);
+    }
+
+    /// <summary>
+    /// A downloaded exe that <see cref="PrepareApply"/> would not hand over to. <see cref="Reason"/> is the short why (no "not applied" prefix).
+    /// <see cref="Deferred"/>: the file is not to blame (its start-up check only took too long): nothing was marked failed, it is tried again.
+    /// </summary>
+    internal sealed class ApplyRefusedException : InvalidOperationException
+    {
+        public string Reason { get; }
+        public bool Deferred { get; }
+        public ApplyRefusedException(string message, string reason, bool deferred = false) : base(message) { Reason = reason; Deferred = deferred; }
+    }
+
+    /// <summary>A downloaded exe that was verified and passed its start-up check just now; the only way to <see cref="StartApply"/>. Made by <see cref="PrepareApply"/> alone.</summary>
+    public sealed class ApplyToken
+    {
+        internal string Exe { get; }
+        internal ReleaseVersion Version { get; }
+        private ApplyToken(string exe, ReleaseVersion version) { Exe = exe; Version = version; }
+        internal static ApplyToken Make(string exe, ReleaseVersion version) => new(exe, version);
+    }
+
+    /// <summary>Which download record and flavour a file of the updates folder belongs to: <c>updates\</c> = SelfContained (legacy keys), <c>updates\fx\</c> = Framework. Null for any other place.</summary>
+    internal static Packaging? FlavourOfFolder(string file)
+    {
+        try
+        {
+            string dir = Path.TrimEndingDirectorySeparator(Path.GetFullPath(Path.GetDirectoryName(Path.GetFullPath(file)) ?? ""));
+            foreach (var p in new[] { Packaging.SelfContained, Packaging.Framework })
+                if (string.Equals(dir, Path.TrimEndingDirectorySeparator(Path.GetFullPath(UpdatesDirFor(p))), StringComparison.OrdinalIgnoreCase)) return p;
+        }
+        catch { }
+        return null;
+    }
+
+    /// <summary>
+    /// Everything that must hold before a downloaded exe is run to replace the installed one, checked now (not when it was downloaded):
+    /// this process is not elevated; the file is in one of the updates folders and re-hashed against that folder's own download record
+    /// (a file that fails is thrown away like <see cref="TryGetPendingUpdate"/> does, and the pending update dropped); then the
+    /// exe's start-up check (<see cref="PreflightVerb"/>) passes. The version is the one in the file's name and the record is looked up,
+    /// never supplied by the caller. Blocking (a hash of tens of MB, a process of up to <paramref name="timeout"/>): call it off the UI thread.
+    /// A failed start-up check marks the file failed, but a timeout does not (<see cref="ApplyRefusedException.Deferred"/>).
+    /// </summary>
+    public ApplyToken PrepareApply(string newExePath, TimeSpan? timeout = null) => PrepareApply(newExePath, timeout, countTimeouts: false);
+
+    /// <summary>
+    /// <see cref="PrepareApply(string, TimeSpan?)"/>. Takes the updater's gate for its whole run, as a try-lock (a running check or download
+    /// may be replacing or deleting this very file): busy means a deferred refusal with nothing touched. <paramref name="countTimeouts"/>
+    /// (the start-up path) counts a timed-out start-up check in the file's <c>.timeout</c> marker and marks the file failed at
+    /// <see cref="MaxStartupTimeouts"/>, so a start never hangs on the same slow file for ever.
+    /// </summary>
+    internal ApplyToken PrepareApply(string newExePath, TimeSpan? timeout, bool countTimeouts)
+    {
+        if (!_gate.Wait(0))
+        {
+            const string busy = "a check or download is running; try again in a moment";
+            Log.Warn($"updater: not applying {newExePath} now: {busy}");
+            throw new ApplyRefusedException("the downloaded exe was not applied now: " + busy, busy, deferred: true);
+        }
+        try { return PrepareApplyLocked(newExePath, timeout, countTimeouts); }
+        finally { _gate.Release(); }
+    }
+
+    private ApplyToken PrepareApplyLocked(string newExePath, TimeSpan? timeout, bool countTimeouts)
     {
         if (AppController.IsDev) throw new InvalidOperationException(DevModeNote);
+        if (IsElevated()) throw new ApplyRefusedException(ElevatedNote, ElevatedNote);
+        if (FlavourOfFolder(newExePath) is not { } flavour || VersionFromFile(newExePath) is not { } version)
+        {
+            string why = "it is not a Clink-<version>.exe in the updates folder";
+            Log.Warn($"updater: not applying {newExePath}: {why}");
+            throw new ApplyRefusedException("the downloaded exe was not applied: " + why, why);
+        }
+        if (VerifyDownload(newExePath, version, flavour) is { } bad)
+        {
+            Log.Warn($"updater: discarding {newExePath}: {bad}");
+            TryDelete(newExePath);
+            DeleteMarkers(newExePath);
+            DropStalePending();   // the file is gone: no "Update to v…" for it any more
+            string why = $"{bad}; the file was removed";
+            throw new ApplyRefusedException($"the downloaded exe was not applied: {why}", why);
+        }
+        // Does the downloaded exe even start here? If not it is marked failed (like a bad hash) and the current version keeps running.
+        var (preflight, timedOut) = PreflightCheck(newExePath, timeout ?? PreflightTimeout, null, flavour);
+        if (preflight != null)
+        {
+            if (timedOut)
+            {
+                // Slow, not broken (antivirus scanning a fresh exe, a busy disk): no failed marker, so the next start or the next click
+                // tries again. At start-up the timeouts are counted, and the third one marks the file failed (a manual check retries it).
+                int count = countTimeouts ? TimeoutCount(newExePath) + 1 : 0;
+                if (countTimeouts && count < MaxStartupTimeouts)
+                    try { File.WriteAllText(TimeoutMarker(newExePath), $"{count}\n{DateTime.Now:yyyy-MM-dd HH:mm:ss} start-up check timed out"); } catch { }
+                if (!countTimeouts || count < MaxStartupTimeouts)
+                {
+                    Log.Warn($"updater: not applying {newExePath} now: {preflight}");
+                    throw new ApplyRefusedException("the downloaded exe was not applied now: " + preflight, preflight, deferred: true);
+                }
+                Log.Warn($"updater: {preflight} at {count} starts in a row ({newExePath}); marking it failed");
+                try { File.WriteAllText(FailedMarker(newExePath), $"{preflight}\n{DateTime.Now:yyyy-MM-dd HH:mm:ss} start-up check timed out {count} times"); } catch { }
+                TryDelete(TimeoutMarker(newExePath));
+                throw new ApplyRefusedException("the downloaded exe was not applied: " + preflight, preflight);
+            }
+            string why = "the downloaded exe was not applied: " + preflight;
+            Log.Warn($"updater: {why} ({newExePath})");
+            try { File.WriteAllText(FailedMarker(newExePath), $"{preflight}\n{DateTime.Now:yyyy-MM-dd HH:mm:ss} preflight failed"); } catch { }
+            throw new ApplyRefusedException(why, preflight);
+        }
+        TryDelete(TimeoutMarker(newExePath));
+        return ApplyToken.Make(newExePath, version);
+    }
+
+    /// <summary><see cref="PrepareApply"/> then <see cref="StartApply"/>: the start-up path, which has no window to keep responsive.</summary>
+    public void LaunchApply(string newExePath, string targetExePath, IEnumerable<string> restartArgs, TimeSpan? timeout = null) =>
+        StartApply(PrepareApply(newExePath, timeout ?? StartupPreflightTimeout, countTimeouts: true), targetExePath, restartArgs);
+
+    /// <summary>
+    /// Starts the downloaded exe of <paramref name="token"/> so it replaces <paramref name="targetExePath"/> once this process has exited
+    /// and then restarts it with <paramref name="restartArgs"/> (the current command line, so a login start stays in the tray). The caller then exits.
+    /// </summary>
+    public static void StartApply(ApplyToken token, string targetExePath, IEnumerable<string> restartArgs)
+    {
+        if (AppController.IsDev) throw new InvalidOperationException(DevModeNote);
+        if (IsElevated()) throw new ApplyRefusedException(ElevatedNote, ElevatedNote);
+        string newExePath = token.Exe;
         var psi = new ProcessStartInfo(newExePath)
         {
             UseShellExecute = false,
@@ -958,6 +1257,15 @@ internal sealed class Updater : IDisposable
         int pid = args.Length > 2 && int.TryParse(args[2], out int p) ? p : 0;
         string[] restartArgs = args.Length > 3 ? args[3..] : Array.Empty<string>();
         string self = Environment.ProcessPath ?? "";
+
+        // An elevated process never swaps the installed exe (the downloaded exe sits in a folder every process of this user can write to).
+        // The target is not touched, nothing is restarted and this process writes nothing at all (no log, no marker: an elevated
+        // process must not write into the user's folders). The parent may still write a .failed marker when it sees this child exit early.
+        if (IsElevated())
+        {
+            try { Console.Error.WriteLine($"Clink --apply-update: {ElevatedNote}"); } catch { }
+            return ElevatedExitCode;
+        }
 
         // Wait for the old process first: it still holds the log file open (and the exe we are about to replace).
         string waitNote = "old process already gone";
@@ -1002,6 +1310,7 @@ internal sealed class Updater : IDisposable
         {
             Log.Info($"[update] installed v{GetCurrentSemVer()} to {target} (previous exe kept as {backup} until the new one has started)");
             TryDelete(FailedMarker(self));
+            TryDelete(TimeoutMarker(self));
             try { File.WriteAllText(InstalledMarker(self), $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} {target}"); } catch { }
         }
         else
@@ -1159,13 +1468,12 @@ internal sealed class Updater : IDisposable
                 if (bad == null && info.Sha256 != null && !RecordedDownloadIs(info)) bad = "it is not the download the signed manifest describes";
                 if (bad == null)
                 {
-                    if (failed != null) { Log.Info($"updater: retrying v{info.Version} after an earlier failure ({failed})"); TryDelete(FailedMarker(existing)); }
+                    if (failed != null) { Log.Info($"updater: retrying v{info.Version} after an earlier failure ({failed})"); TryDelete(FailedMarker(existing)); TryDelete(TimeoutMarker(existing)); }
                     return TrySetPending(existing, info.Version, "already downloaded", manual) ? info : null;
                 }
                 Log.Warn($"updater: discarding {existing}: {bad}");
                 TryDelete(existing);
-                TryDelete(FailedMarker(existing));
-                TryDelete(InstalledMarker(existing));
+                DeleteMarkers(existing);
                 DropStalePending();   // it may have been this run's pending update: no "Update to v…" for a file that is gone
             }
 
@@ -1214,7 +1522,7 @@ internal sealed class Updater : IDisposable
         }
         // Accepted by this exe now (a download adopted from an earlier run included), so the startup scan may install it (LeaveDevAllowedAtStart).
         string self = Current.ToString();
-        if (_settings.PendingUpdateFrom != self) { _settings.PendingUpdateFrom = self; _settings.Save(); }
+        if (RecFrom != self) { RecFrom = self; _settings.Save(); }
         // A problem reported at startup (an earlier failed install) is out of date now; keep only what still blocks installing.
         string? blocked = InstallProblemFor(Environment.ProcessPath ?? "");
         InstallProblem = blocked == null ? null : $"Update to v{version} is downloaded but {blocked}; {HowToInstallByHand}.";
@@ -1253,20 +1561,55 @@ internal sealed class Updater : IDisposable
         {
             string? self = Environment.ProcessPath;
             if (!string.IsNullOrEmpty(self)) { TryDelete(self + ".bak"); TryDelete(self + ".new"); }
+            CleanupUpdatesFolder();
+        }
+        catch (Exception ex) { Log.Warn("updater: cleanup: " + ex.Message); }
+    }
+
+    /// <summary>The updates-folder half of <see cref="CleanupInstalled"/>: this packaging's folder (<see cref="UpdatesDir"/>) in full, the other one's only for applied files (<see cref="CleanupOtherFolder"/>).</summary>
+    internal void CleanupUpdatesFolder()
+    {
+        try
+        {
             if (!Directory.Exists(UpdatesDir)) return;
             foreach (string file in Directory.EnumerateFiles(UpdatesDir, "Clink-*.exe"))
             {
                 if (!file.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) continue;
                 var v = VersionFromFile(file);
-                if (v == null || !ShouldInstall(v.Value, allowLeaveDev: LeaveDevAllowedAtStart(v.Value))) { TryDelete(file); TryDelete(FailedMarker(file)); TryDelete(InstalledMarker(file)); }
+                if (v == null || !ShouldInstall(v.Value, allowLeaveDev: LeaveDevAllowedAtStart(v.Value))) { TryDelete(file); DeleteMarkers(file); }
             }
             foreach (string stale in Directory.EnumerateFiles(UpdatesDir, "*.partial")) TryDelete(stale);
             foreach (string marker in Directory.EnumerateFiles(UpdatesDir, "*.failed"))
                 if (!File.Exists(marker[..^".failed".Length])) TryDelete(marker);
+            foreach (string marker in Directory.EnumerateFiles(UpdatesDir, "*.timeout"))
+                if (!File.Exists(marker[..^".timeout".Length])) TryDelete(marker);
             foreach (string marker in Directory.EnumerateFiles(UpdatesDir, "*.installed"))
                 if (!File.Exists(marker[..^".installed".Length])) TryDelete(marker);
         }
         catch (Exception ex) { Log.Warn("updater: cleanup: " + ex.Message); }
+        finally { CleanupOtherFolder(); }   // also when this packaging's folder does not exist
+    }
+
+    /// <summary>
+    /// The other packaging's folder keeps files nobody will ever clean once a copy changes flavour (a Framework copy that fell back to the
+    /// self-contained exe leaves its applied updates\fx\ files behind). Only what was already applied is removed: a Clink-*.exe that has an
+    /// <c>.installed</c> marker, plus that marker. Never recursive, and a file without a marker (a pending download of the other flavour) is not touched.
+    /// </summary>
+    private void CleanupOtherFolder()
+    {
+        try
+        {
+            string other = UpdatesDirFor(OwnPackaging == Packaging.Framework ? Packaging.SelfContained : Packaging.Framework);
+            if (!Directory.Exists(other)) return;
+            foreach (string file in Directory.EnumerateFiles(other, "Clink-*.exe"))
+            {
+                if (!file.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) continue;
+                if (!File.Exists(InstalledMarker(file))) continue;
+                TryDelete(file);
+                DeleteMarkers(file);
+            }
+        }
+        catch (Exception ex) { Log.Warn("updater: cleanup of the other flavour's folder: " + ex.Message); }
     }
 
     public void Dispose()

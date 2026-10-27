@@ -17,7 +17,8 @@ internal enum AppMode
 /// Where a Clink copy runs from, worked out from the exe path and %LOCALAPPDATA%. Pure: both are passed in, so every case is
 /// unit-testable (<see cref="Resolve"/>). Nothing here reads the environment or touches the disk by itself except
 /// <see cref="ForCurrentProcess"/>. Every mode keeps its settings in <c>%APPDATA%\Clink</c> and its updates in
-/// <see cref="UpdatesDir"/> (<c>%LOCALAPPDATA%\Clink\updates</c>, today's folder); the mode only says how the copy was deployed.
+/// <see cref="UpdatesDir"/> (<c>%LOCALAPPDATA%\Clink\updates</c>, today's folder: the base shared by both flavours; a Framework copy downloads
+/// into its <c>fx</c> subfolder, see <c>Updater.UpdatesDirFor</c>); the mode only says how the copy was deployed.
 /// </summary>
 internal sealed record AppLayout(AppMode Mode, string? ExeDir, string? UpdatesDir)
 {
