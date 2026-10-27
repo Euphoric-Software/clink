@@ -173,6 +173,29 @@ internal static class QuietModeTests
         Check.Equal(QuietWindowKind.Foreign, QuietWindows.Classify(false, 0x80000000, 0x8000, null, null), "a native menu (#32768, an atom)");
         Check.Equal(QuietWindowKind.Foreign, QuietWindows.Classify(false, 0x80000000, 0, "hwndwrapper[x]", null), "the class prefix is case-sensitive, as Windows spells it");
         Check.Equal(QuietWindowKind.Foreign, QuietWindows.Classify(false, 0x80000000, 0, null, null), "no class at all");
+        // WPF's zero-size helper windows are not rewritten or marked
+        Check.Equal(QuietWindowKind.Foreign, QuietWindows.Classify(false, 0x00000000, 0, wpf, "SystemResourceNotifyWindow"), "WPF's system-resource helper window");
+        Check.Equal(QuietWindowKind.Foreign, QuietWindows.Classify(false, 0x00000000, 0, wpf, "MediaContextNotificationWindow"), "WPF's media-context helper window");
+    }
+
+    [UnitTest]
+    public static void The_foreground_is_only_given_back_while_the_hidden_window_still_holds_it()
+    {
+        var g = new QuietForegroundGuard();
+        g.OnForeground(Other, false, false, false, _ => true, Other, 0);
+        Check.Equal(QuietForegroundAction.Stale, g.OnForeground(Main, true, false, true, _ => true, Other2, 10).Action, "the user has moved on since: nothing is done");
+        Check.Equal(QuietForegroundAction.Restore, g.OnForeground(Main, true, false, true, _ => true, Main, 20).Action, "still the foreground: given back");
+        Check.Equal(QuietForegroundAction.Stale, g.OnForeground(Main, true, false, true, _ => true, 0, 30).Action, "no foreground at all");
+    }
+
+    [UnitTest]
+    public static void A_restore_target_is_an_existing_visible_uncloaked_window_of_another_process_minimized_or_not()
+    {
+        Check.True(QuietWindows.IsUsableTarget(true, true, false, false), "a normal window (a minimized one is visible too)");
+        Check.True(!QuietWindows.IsUsableTarget(false, true, false, false), "gone");
+        Check.True(!QuietWindows.IsUsableTarget(true, false, false, false), "not visible");
+        Check.True(!QuietWindows.IsUsableTarget(true, true, true, false), "cloaked");
+        Check.True(!QuietWindows.IsUsableTarget(true, true, false, true), "ours");
     }
 
     // ------------------------------------------------------------------ the foreground safety net
@@ -184,18 +207,18 @@ internal static class QuietModeTests
     {
         var g = new QuietForegroundGuard();
         Func<nint, bool> alive = _ => true;
-        Check.Equal(QuietForegroundAction.None, g.OnForeground(0, false, false, false, alive, 0).Action, "no window");
-        Check.Equal(QuietForegroundAction.Remembered, g.OnForeground(Other, false, false, false, alive, 0).Action);
+        Check.Equal(QuietForegroundAction.None, g.OnForeground(0, false, false, false, alive, 0, 0).Action, "no window");
+        Check.Equal(QuietForegroundAction.Remembered, g.OnForeground(Other, false, false, false, alive, Other, 0).Action);
         Check.Equal(Other, g.LastOther);
-        Check.Equal(QuietForegroundAction.Remembered, g.OnForeground(Other2, false, false, false, alive, 10).Action);
+        Check.Equal(QuietForegroundAction.Remembered, g.OnForeground(Other2, false, false, false, alive, Other2, 10).Action);
         Check.Equal(Other2, g.LastOther, "the latest one is remembered");
-        var (action, target) = g.OnForeground(Main, true, false, true, alive, 20);
+        var (action, target) = g.OnForeground(Main, true, false, true, alive, Main, 20);
         Check.Equal(QuietForegroundAction.Restore, action, "a hidden window of ours took the foreground");
         Check.Equal(Other2, target);
         Check.Equal(Other2, g.LastOther, "a window of ours is never remembered");
         // the overlay is meant to have the foreground; a visible window of ours (the tray menu) too
-        Check.Equal(QuietForegroundAction.Exempt, g.OnForeground(Overlay, true, true, false, alive, 30).Action, "the capture overlay");
-        Check.Equal(QuietForegroundAction.None, g.OnForeground(Tray, true, false, false, alive, 40).Action, "a visible window of ours");
+        Check.Equal(QuietForegroundAction.Exempt, g.OnForeground(Overlay, true, true, false, alive, Overlay, 30).Action, "the capture overlay");
+        Check.Equal(QuietForegroundAction.None, g.OnForeground(Tray, true, false, false, alive, Tray, 40).Action, "a visible window of ours");
         Check.Equal(Other2, g.LastOther);
     }
 
@@ -203,18 +226,18 @@ internal static class QuietModeTests
     public static void The_foreground_is_not_given_to_a_window_that_has_gone_and_never_fought_over()
     {
         var g = new QuietForegroundGuard();
-        Check.Equal(QuietForegroundAction.NothingToRestore, g.OnForeground(Main, true, false, true, _ => true, 0).Action, "nothing remembered yet");
-        g.OnForeground(Other, false, false, false, _ => true, 0);
-        Check.Equal(QuietForegroundAction.NothingToRestore, g.OnForeground(Main, true, false, true, h => h != Other, 10).Action, "the remembered window has gone (or its handle is ours now)");
+        Check.Equal(QuietForegroundAction.NothingToRestore, g.OnForeground(Main, true, false, true, _ => true, Main, 0).Action, "nothing remembered yet");
+        g.OnForeground(Other, false, false, false, _ => true, Other, 0);
+        Check.Equal(QuietForegroundAction.NothingToRestore, g.OnForeground(Main, true, false, true, h => h != Other, Main, 10).Action, "the remembered window has gone (or its handle is ours now)");
         Check.Equal((nint)0, g.LastOther, "a dead handle is forgotten");
-        Check.Equal(QuietForegroundAction.NothingToRestore, g.OnForeground(Main, true, false, true, _ => true, 20).Action, "and not used later");
+        Check.Equal(QuietForegroundAction.NothingToRestore, g.OnForeground(Main, true, false, true, _ => true, Main, 20).Action, "and not used later");
 
         // a loop: at most MaxRestores in WindowMs, then skipped until the window has passed
-        g.OnForeground(Other, false, false, false, _ => true, 1000);
+        g.OnForeground(Other, false, false, false, _ => true, Other, 1000);
         for (int i = 0; i < QuietForegroundGuard.MaxRestores; i++)
-            Check.Equal(QuietForegroundAction.Restore, g.OnForeground(Main, true, false, true, _ => true, 1000 + i).Action, "restore " + i);
-        Check.Equal(QuietForegroundAction.Throttled, g.OnForeground(Main, true, false, true, _ => true, 1100).Action, "one too many in a second");
-        Check.Equal(QuietForegroundAction.Restore, g.OnForeground(Main, true, false, true, _ => true, 1000 + QuietForegroundGuard.WindowMs).Action, "again once the second has passed");
+            Check.Equal(QuietForegroundAction.Restore, g.OnForeground(Main, true, false, true, _ => true, Main, 1000 + i).Action, "restore " + i);
+        Check.Equal(QuietForegroundAction.Throttled, g.OnForeground(Main, true, false, true, _ => true, Main, 1100).Action, "one too many in a second");
+        Check.Equal(QuietForegroundAction.Restore, g.OnForeground(Main, true, false, true, _ => true, Main, 1000 + QuietForegroundGuard.WindowMs).Action, "again once the second has passed");
         g.Reset();
         Check.Equal((nint)0, g.LastOther);
     }
