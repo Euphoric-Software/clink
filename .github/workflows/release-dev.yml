@@ -109,8 +109,10 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
           UPDATE_REPO: ${{ github.repository }}
+          UPDATE_FEED: ${{ vars.CLINK_FEED_URL }}
+          UPDATE_FEED_PUBLIC_KEY: ${{ vars.CLINK_FEED_PUBLIC_KEY }}
         run: |
-          dotnet publish Clink/Clink.csproj -c Release -o dist "-p:Version=$env:VERSION" "-p:UpdateRepo=$env:UPDATE_REPO"
+          dotnet publish Clink/Clink.csproj -c Release -o dist "-p:Version=$env:VERSION" "-p:UpdateRepo=$env:UPDATE_REPO" "-p:UpdateFeed=$env:UPDATE_FEED" "-p:UpdateFeedPublicKey=$env:UPDATE_FEED_PUBLIC_KEY"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (-not (Test-Path dist/Clink.exe)) { throw 'dist/Clink.exe was not produced' }
           Get-ChildItem dist | Select-Object Name, Length
@@ -147,6 +149,67 @@ jobs:
           files: |
             dist/Clink.exe
             dist/Clink.exe.sha256
+
+      # Installer + portable zip are extra assets: Clink.exe and Clink.exe.sha256 above stay exactly as v0.4.1 updaters expect.
+      - name: Install Inno Setup (if missing)
+        shell: pwsh
+        run: |
+          $known = @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe")
+          if ((Get-Command ISCC.exe -ErrorAction SilentlyContinue) -or ($known | Where-Object { Test-Path $_ })) { Write-Output 'Inno Setup already present'; return }
+          choco install innosetup -y --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'Inno Setup install failed' }
+
+      - name: Package (installer, portable zip)
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: ./tools/package.ps1 -ExePath dist/Clink.exe -Version $env:VERSION -OutDir dist/package -RequireInstaller
+
+      - name: Attach installer and portable zip to the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release upload "v$env:VERSION" "dist/package/Clink-$env:VERSION-setup.exe" "dist/package/Clink-$env:VERSION-portable.zip" --clobber --repo $env:GITHUB_REPOSITORY
+          if ($LASTEXITCODE -ne 0) { throw 'Could not attach the extra assets' }
+
+      # Secrets cannot be tested in if:, so a step reports whether the whole set is configured.
+      - name: Check update-feed configuration
+        id: feed
+        shell: pwsh
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          CLINK_FEED_SIGNING_KEY: ${{ secrets.CLINK_FEED_SIGNING_KEY }}
+          CLINK_FEED_URL: ${{ vars.CLINK_FEED_URL }}
+        run: |
+          $missing = @('R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_ENDPOINT', 'R2_BUCKET', 'CLINK_FEED_SIGNING_KEY', 'CLINK_FEED_URL' |
+            Where-Object { [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) })
+          if ($missing) {
+            Write-Output "::warning::Update feed not published; not configured: $($missing -join ', ')"
+            Add-Content -Path $env:GITHUB_OUTPUT -Value 'enabled=false'
+          } else {
+            Add-Content -Path $env:GITHUB_OUTPUT -Value 'enabled=true'
+          }
+
+      - name: Publish to the update feed
+        if: steps.feed.outputs.enabled == 'true'
+        shell: pwsh
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          CLINK_FEED_SIGNING_KEY: ${{ secrets.CLINK_FEED_SIGNING_KEY }}
+          CLINK_FEED_URL: ${{ vars.CLINK_FEED_URL }}
+          CLINK_FEED_KEY_PREFIX: ${{ vars.CLINK_FEED_KEY_PREFIX }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: ./tools/upload-feed.ps1 -Channel dev -Version $env:VERSION -PackageDir dist/package -NotesUrl "https://github.com/$env:GITHUB_REPOSITORY/releases/tag/v$env:VERSION"
 
       # Housekeeping: a failure here must not fail a build that was already published.
       - name: Prune old dev builds

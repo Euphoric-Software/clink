@@ -2,6 +2,7 @@
 param(
     [ValidateSet('Debug', 'Release')] [string]$Configuration = 'Release',
     [switch]$Publish,
+    [switch]$Package,   # publish, then run tools/package.ps1 into dist/package (setup.exe needs Inno Setup 6)
     [switch]$Run
 )
 $ErrorActionPreference = 'Stop'
@@ -12,10 +13,16 @@ if (-not (Get-Command dotnet -ErrorAction SilentlyContinue) -or -not (& dotnet -
     if (Test-Path $local) { $dotnet = $local } else { throw "No .NET SDK found. Install .NET 10 SDK or run: https://dot.net/v1/dotnet-install.ps1 -Channel 10.0" }
 }
 $proj = Join-Path $root 'Clink\Clink.csproj'
+if ($Package) { $Publish = $true }
 if ($Publish) {
     & $dotnet publish $proj -c $Configuration -o (Join-Path $root 'dist')
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     "Published to $(Join-Path $root 'dist')\Clink.exe"
+    if ($Package) {
+        $ver = ([xml](Get-Content -Raw (Join-Path $root 'Clink\Clink.csproj'))).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
+        & (Join-Path $root 'tools\package.ps1') -ExePath (Join-Path $root 'dist\Clink.exe') -Version $ver -OutDir (Join-Path $root 'dist\package')
+        if ($LASTEXITCODE) { exit $LASTEXITCODE }
+    }
 } else {
     & $dotnet build $proj -c $Configuration
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
