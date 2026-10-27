@@ -13,7 +13,9 @@ namespace Clink.Services;
 /// <c>--dev-hotkeys</c> is given, does not record (it starts paused: it would record next to the user's game) unless
 /// <c>--dev-record</c> is given, and has no Copium token unless <c>--dev-token</c> is given. Whatever is in its settings file,
 /// <see cref="Isolate"/> keeps it away from the real clips, archive, updates and account on every start. Not in <c>--help</c>.
-/// <c>--dev-quiet</c> (see <see cref="QuietMode"/>) keeps the instance out of the way of the person at the PC (no focus, nothing on screen, no sound, no capture\n/// unless <c>--dev-quiet-record</c>); it and <c>--dev-quiet-record</c> are ignored without <c>--dev</c>.\n/// Two more switches exist only for testing how settings are taken over from another copy of Clink (SettingsImport), which a
+/// <c>--dev-quiet</c> (see <see cref="QuietMode"/>) keeps the instance out of the way of the person at the PC (no focus, nothing on screen, no sound, no capture
+/// unless <c>--dev-quiet-record</c>); like every dev switch, it and <c>--dev-quiet-record</c> are an error without <c>--dev</c>.
+/// Two more switches exist only for testing how settings are taken over from another copy of Clink (SettingsImport), which a
 /// <c>--dev</c> instance otherwise never looks for: <c>--packages-root &lt;folder&gt;</c> names a fake <c>%LOCALAPPDATA%\Packages</c> to
 /// look in (never the real one), and <c>--dev-accept-import</c> accepts what is offered there at once.
 /// Every <c>--dev*</c> switch is checked, and a mistake (an unknown one, one without <c>--dev</c>, a switch that only looks like one
@@ -133,7 +135,7 @@ internal sealed record DevOptions(string Folder, bool BindHotkeys)
             else if (Is(a, Hotkeys)) hotkeys = true;
             else if (Is(a, Token)) token = true;
             else if (Is(a, Record_)) record = true;
-            else if (Is(a, Quiet_)) quiet = true;               // ignored without --dev (it only changes how a dev instance behaves)
+            else if (Is(a, Quiet_)) quiet = true;               // an error without --dev, like the others
             else if (Is(a, QuietRecord_)) quietRecord = true;
             else if (Is(a, AcceptImport_)) accept = true;
             else if (Is(a, PackagesRoot_))
@@ -142,13 +144,13 @@ internal sealed record DevOptions(string Folder, bool BindHotkeys)
                 if (i + 1 < args.Length && IsValue(args[i + 1])) rootArg = args[++i];
             }
             else if (LooksLikeDevSwitch(a))
-                throw new ArgumentException($"{Shown(a)} is not a dev switch (they are --dev [folder] or --dev=<folder>, --dev-hotkeys, --dev-record, --dev-token, --dev-accept-import and --packages-root <folder>, "
+                throw new ArgumentException($"{Shown(a)} is not a dev switch (they are --dev [folder] or --dev=<folder>, --dev-hotkeys, --dev-record, --dev-quiet, --dev-quiet-record, --dev-token, --dev-accept-import and --packages-root <folder>, "
                     + "written with two plain hyphens and nothing around them; a folder is written with its path, like .\\devdata)");
         }
         if (!sawDev)
         {
-            if (hotkeys || token || record || accept || sawRoot)
-                throw new ArgumentException("--dev-hotkeys, --dev-record, --dev-token, --dev-accept-import and --packages-root only work together with --dev [folder]");
+            if (hotkeys || token || record || accept || sawRoot || quiet || quietRecord)
+                throw new ArgumentException("--dev-hotkeys, --dev-record, --dev-quiet, --dev-quiet-record, --dev-token, --dev-accept-import and --packages-root only work together with --dev [folder]");
             return null;
         }
 

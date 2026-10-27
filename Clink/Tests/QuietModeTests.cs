@@ -11,12 +11,13 @@ internal static class QuietModeTests
     // ------------------------------------------------------------------ the switches
 
     [UnitTest]
-    public static void Dev_quiet_is_ignored_without_dev_and_on_with_it()
+    public static void Dev_quiet_without_dev_is_an_error_and_on_with_it()
     {
         using var dir = new TempDir();
-        Check.True(DevOptions.Parse(new[] { "--dev-quiet" }) == null, "--dev-quiet alone is a normal start (ignored), not an error");
-        Check.True(DevOptions.Parse(new[] { "--dev-quiet", "--dev-quiet-record" }) == null, "so is --dev-quiet-record alone");
-        Check.True(DevOptions.Parse(new[] { "--DEV-QUIET", "--show" }) == null, "case does not matter");
+        Check.Throws<ArgumentException>(() => DevOptions.Parse(new[] { "--dev-quiet" }), "--dev-quiet alone is an error, never a normal start");
+        Check.Throws<ArgumentException>(() => DevOptions.Parse(new[] { "--dev-quiet-record" }), "so is --dev-quiet-record alone");
+        Check.Throws<ArgumentException>(() => DevOptions.Parse(new[] { "--dev-quiet", "--dev-quiet-record" }));
+        Check.Throws<ArgumentException>(() => DevOptions.Parse(new[] { "--DEV-QUIET", "--show" }), "case does not matter");
         var plain = Dev(dir);
         Check.False(plain.Quiet, "plain --dev is not quiet");
         Check.False(plain.QuietRecord);

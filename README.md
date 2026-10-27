@@ -559,7 +559,7 @@ command does not touch it); `--selftest` / `--probe` / `--trim` write `clink-cli
   **`--dev` is the only safe way to run a second Clink.** A plain second `Clink.exe` does not start another copy: it
   hands its command (`--clip`, `--share-last`, `--trim-last`, or just *show*) to the Clink that is running and exits, so
   a test run that forgets `--dev` acts on your live session.
-  * **`--dev-quiet`** (`Clink.exe --dev <folder> --dev-quiet`, for automated test runs; ignored without `--dev`) keeps the
+  * **`--dev-quiet`** (`Clink.exe --dev <folder> --dev-quiet`, for automated test runs; like every dev switch it is an error without `--dev`, exit code 2 before anything starts, never a normal start) keeps the
     test instance out of the way of whoever is at the PC. Its windows never take the focus, are never topmost and have no
     taskbar button; each one is created beyond the right edge of the virtual screen and then **cloaked** (DWM, invisible,
     no Alt-Tab entry) at the back with a single pixel column over the right-most monitor's edge. The pixel matters: Windows
@@ -571,9 +571,14 @@ command does not touch it); `--selftest` / `--probe` / `--trim` write `clink-cli
     no hotkey is bound unless `--dev-hotkeys` is also given, and capture starts **paused** (no capture border on your
     screen) unless `--dev-quiet-record` is given (`--dev-record` does not override it). The TEST markers stay. The
     capture overlay (`RegionOverlayWindow`) is left alone: it only appears for an explicit screenshot action and then
-    takes the whole screen like the real one. Best effort: Windows common dialogs (folder picker) and message boxes are
-    created off-screen too and their activation is refused, but a shell dialog that runs outside the thread's window
-    hook could still flash on screen. `QuietMode` / `QuietPlacement` (`Clink\Services\QuietMode.cs`) hold the pure placement
+    takes the whole screen like the real one. Every window of the application is cloaked
+    when it is created, not only the WPF windows: message boxes, Windows common dialogs (folder picker) and WPF popups
+    (tooltips, ComboBox dropdowns) too, each created off-screen with its activation refused (a window the app did not make,
+    like the tray menu, is left alone). A process-wide window-shown hook cloaks them again when they appear. A hotkey capture
+    is never armed in a quiet instance (nothing would disarm it, and it would swallow the next key pressed anywhere), and a
+    capture only takes a key while a window of Clink has the foreground. The confirmation boxes Clink shows after start-up
+    have a question icon (no system sound); the start-up failure box is shown before the hook and is not covered. Best
+    effort: a shell dialog that runs outside the thread's window hook could still flash on screen. `QuietMode` / `QuietPlacement` (`Clink\Services\QuietMode.cs`) hold the pure placement
     and gating logic (`QuietModeTests`).
   * **The dev folder must be a leaf Clink can own**: new, empty, or one an earlier dev run made (an existing folder that
     holds other files and no Clink data is refused). A dev instance treats everything in its folder as its own (its

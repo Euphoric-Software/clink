@@ -122,8 +122,38 @@ internal static unsafe class Hotkeys
     /// untouched and leave the capture armed; a typing key also calls <paramref name="refused"/>. Esc is reported (the UI
     /// cancels on it). Both callbacks run on the hook thread: marshal to the UI, never block.
     /// </summary>
-    public static void CaptureNext(Action<int, bool, bool, bool, bool>? handler, Action? refused = null) =>
-        s_capture = handler == null ? null : new Capture { OnKeys = handler, OnRefused = refused };
+    public static bool CaptureNext(Action<int, bool, bool, bool, bool>? handler, Action? refused = null)
+    {
+        if (handler == null) { s_capture = null; return true; }
+        if (!MayArm(QuietMode.Active))
+        {
+            // A quiet instance never receives Deactivated / LostKeyboardFocus (its windows are never active), so nothing would disarm the capture
+            // and it would swallow the next key pressed anywhere on the system.
+            s_capture = null;
+            Log.Info("hotkeys: a quiet instance does not capture keys; the capture is not armed");
+            return false;
+        }
+        s_capture = new Capture { OnKeys = handler, OnRefused = refused };
+        return true;
+    }
+
+    /// <summary>A capture may be armed unless this is a quiet instance (pure; HotkeyHookTests).</summary>
+    internal static bool MayArm(bool quiet) => !quiet;
+
+    /// <summary>
+    /// Whether a key press is offered to the armed capture: only while a capture is armed and a window of this process owns the foreground, so a
+    /// capture that outlived its window (the focus went elsewhere) never takes a key meant for another program (pure; HotkeyHookTests).
+    /// </summary>
+    internal static bool CaptureLive(bool armed, bool ownsForeground) => armed && ownsForeground;
+
+    /// <summary>A window of this process has the focus (two calls that never wait on another thread: safe in the hook).</summary>
+    private static bool OwnsForeground()
+    {
+        var fg = PInvoke.GetForegroundWindow();
+        if (fg.IsNull) return false;
+        PInvoke.GetWindowThreadProcessId(fg, out uint pid);
+        return pid == (uint)Environment.ProcessId;
+    }
 
     public static void Uninstall()
     {
@@ -353,7 +383,7 @@ internal static unsafe class Hotkeys
                     ctrl = IsDown(VK_CONTROL); alt = IsDown(VK_MENU); shift = IsDown(VK_SHIFT); win = IsDown(VK_LWIN) || IsDown(VK_RWIN);
                 }
                 var capture = s_capture;
-                var decision = Decide(new KeyInput(vk, raw, down, ctrl, alt, shift, win, marked, swallowed), capture != null, s_actions, s_gameInFront);
+                var decision = Decide(new KeyInput(vk, raw, down, ctrl, alt, shift, win, marked, swallowed), CaptureLive(capture != null, capture != null && OwnsForeground()), s_actions, s_gameInFront);
                 switch (decision.Verdict)
                 {
                     case KeyVerdict.EatRelease:

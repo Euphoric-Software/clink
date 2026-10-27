@@ -284,11 +284,11 @@ public partial class HotkeyListEditor : UserControl
         _capturingLabel = button.Content as string;
         button.Content = "Press keys";
         button.Focus();   // so clicking anywhere else (LostKeyboardFocus) disarms the capture
-        Arm(button, a);
+        if (!Arm(button, a)) { _capturing = null; button.Content = _capturingLabel; }   // a quiet instance does not capture
     }
 
     /// <summary>Waits for the next combo for row <paramref name="a"/>, again after one that could not be taken. Esc cancels.</summary>
-    private void Arm(Button button, HotkeyAction a) => Hotkeys.CaptureNext(
+    private bool Arm(Button button, HotkeyAction a) => Hotkeys.CaptureNext(
         (vk, ctrl, alt, shift, win) => Dispatcher.BeginInvoke(() =>
         {
             if (!ReferenceEquals(_capturing, button)) return;   // a newer capture replaced this one, or it was cancelled

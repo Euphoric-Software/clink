@@ -266,6 +266,7 @@ public partial class App : System.Windows.Application
     {
         _controller?.StopRecordingForExit();   // the common exit finishes the file here, not in Dispose's 15 s wait
         _controller?.Dispose();
+        QuietMode.RemoveWindowHook();
         base.OnExit(e);
     }
 

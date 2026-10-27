@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
@@ -179,10 +179,21 @@ public partial class MainWindow : Window
         {
             // Moved only as far as it takes to keep the drag area reachable on that work area: all of its height and 120 DIP of its
             // width (also after a narrower Width). A window left reaching onto the next monitor or past the bottom stays put.
-            double from = DragStart(Width), grab = Math.Min(120, Width - from);
-            Left = Math.Max(area.Left + grab - Width, Math.Min(Left, area.Right - grab - from));
-            Top = Math.Max(area.Top, Math.Min(Top, area.Bottom - HeaderHeight));
+            var kept = KeepDragAreaReachable(area, new Point(Left, Top), Width);
+            Left = kept.X;
+            Top = kept.Y;
         }
+    }
+
+    /// <summary>
+    /// The window position moved only as far as it takes to keep the drag area reachable on <paramref name="area"/> (a monitor's work area):
+    /// all of the header's height and 120 DIP of its width. Pure arithmetic (WindowBoundsTests).
+    /// </summary>
+    internal static Point KeepDragAreaReachable(Rect area, Point position, double width)
+    {
+        double from = DragStart(width), grab = Math.Min(120, width - from);
+        return new Point(Math.Max(area.Left + grab - width, Math.Min(position.X, area.Right - grab - from)),
+            Math.Max(area.Top, Math.Min(position.Y, area.Bottom - HeaderHeight)));
     }
 
     /// <summary>The window's top drag area: the 6 px top edge plus the header row (DIP).</summary>
@@ -258,15 +269,29 @@ public partial class MainWindow : Window
         Grid.SetRow(Tabs, oneRow ? 0 : 1);
         Grid.SetRowSpan(Tabs, oneRow ? 2 : 1);
         StatusHost.Margin = new Thickness(oneRow ? 12 : 0, 0, 6, 0);
-        // Keyboard and screen-reader order follow the picture: one row has the tabs on the left, so the tabs come first and the header
-        // (status, minimize, close) after them; the header is then the last child of the grid, drawn over the tabs, which is harmless: it
+        // Keyboard and screen-reader order follow the picture: one row has the tabs on the left, so the tabs and the page content come first and
+        // the header (status, minimize, close) after all of them (Tab reaches its buttons last); the header is then the last child of the grid, drawn over the tabs, which is harmless: it
         // leaves the strip's spot (TabsSpacer) unhittable, so the tabs still take their clicks. (A z-index would reorder the UI Automation
         // children too.) Two rows: the header row is on top, so it comes first.
         int at = Body.Children.IndexOf(HeaderBar);
         int want = oneRow ? Body.Children.Count - 1 : 0;
-        if (at >= 0 && at != want) { Body.Children.RemoveAt(at); Body.Children.Insert(want, HeaderBar); }
+        if (at >= 0 && at != want)
+        {
+            // Taking the bar out of the tree drops the keyboard focus from a button in it (a layout switch from a click or key on one): put it back.
+            var focused = Keyboard.FocusedElement as DependencyObject;
+            bool hadFocus = focused != null && HeaderBar.IsAncestorOf(focused);
+            Body.Children.RemoveAt(at);
+            Body.Children.Insert(want, HeaderBar);
+            if (hadFocus && focused is IInputElement element)
+            {
+                HeaderBar.UpdateLayout();
+                if (!ReferenceEquals(Keyboard.Focus(element), element)) Dispatcher.BeginInvoke(() => Keyboard.Focus(element), System.Windows.Threading.DispatcherPriority.Input);
+            }
+        }
         SyncHeader();
     }
+
+    private bool _loggedStripWidth;
 
     private void FindTabStrip()
     {
@@ -283,6 +308,11 @@ public partial class MainWindow : Window
         if (_wide && _tabStrip != null)
         {
             TabsSpacer.Width = new GridLength(_tabStrip.ActualWidth);
+            if (!_loggedStripWidth && 16 + _tabStrip.ActualWidth > DragStart(ActualWidth))
+            {
+                _loggedStripWidth = true;
+                Log.Warn($"header: the tab strip ({_tabStrip.ActualWidth:0} DIP + 16) is wider than the {DragStart(ActualWidth):0} DIP the window clamp assumes for it");
+            }
             HeaderBar.Height = Math.Max(_tabStrip.ActualHeight, HeaderBar.MinHeight);
         }
         else

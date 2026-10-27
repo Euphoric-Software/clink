@@ -46,7 +46,7 @@ internal static class QuietPlacement
 /// <c>--dev-quiet</c>: a test instance (<c>Clink.exe --dev &lt;folder&gt; --dev-quiet</c>) that never gets in the way of the person at the PC:
 /// no window takes the focus, comes to the front, sits topmost or has a taskbar button; every window is placed beyond the right edge of the
 /// virtual screen (still rendered, so PrintWindow and UI Automation tree walks work); toasts and balloons, sounds and the screen capture are
-/// off. Ignored without <c>--dev</c>. The gating is pure (<see cref="IsQuiet"/>, <see cref="StartsPaused"/>); the window handling is a thread
+/// off. An error without <c>--dev</c>, like every dev switch. The gating is pure (<see cref="IsQuiet"/>, <see cref="StartsPaused"/>); the window handling is a thread
 /// hook (<see cref="InstallWindowHook"/>) plus a few explicit guards where Clink itself activates or places a window.
 /// </summary>
 internal static unsafe class QuietMode
@@ -66,12 +66,11 @@ internal static unsafe class QuietMode
 
     // ------------------------------------------------------------------ windows
 
-    /// <summary>The title the capture overlay carries: capture overlays are left alone (explicit screenshot actions only).</summary>
+    /// <summary>The title the capture overlay carries: capture overlays are left alone (explicit screenshot actions only; never marked as ours, so never cloaked or refused).</summary>
     internal const string OverlayTitle = "Clink screenshot";
 
-    private const int WH_CBT = 5, HCBT_CREATEWND = 3, HCBT_ACTIVATE = 5;
+    private const int WH_CBT = 5, HCBT_CREATEWND = 3, HCBT_DESTROYWND = 4, HCBT_ACTIVATE = 5;
     private const uint WS_CHILD = 0x40000000, WS_POPUP = 0x80000000, WS_CAPTION = 0x00C00000;
-    private const uint WS_EX_TOPMOST = 0x8, WS_EX_TOOLWINDOW = 0x80, WS_EX_APPWINDOW = 0x40000, WS_EX_NOACTIVATE = 0x08000000;
     private const int SM_XVIRTUALSCREEN = 76, SM_YVIRTUALSCREEN = 77, SM_CXVIRTUALSCREEN = 78, SM_CYVIRTUALSCREEN = 79;
     private const nint HwndMessage = -3, HwndBottom = 1;
     private const uint SWP_NOSIZE = 0x1, SWP_NOMOVE = 0x2, SWP_NOACTIVATE = 0x10;
@@ -79,6 +78,15 @@ internal static unsafe class QuietMode
     private delegate nint HookProc(int code, nint wParam, nint lParam);
     private static HookProc? s_proc;
     private static nint s_hook;
+    private static nint s_winEventHook;
+    private static WinEventProc? s_winEventProc;
+    /// <summary>The windows the creation hook recognised as the application's own (and, therefore, cloaks and does not let activate). UI thread only in practice; locked all the same.</summary>
+    private static readonly HashSet<nint> s_ours = new();
+
+    private delegate void WinEventProc(nint hook, uint eventType, nint hwnd, int idObject, int idChild, uint thread, uint time);
+    private const uint EVENT_OBJECT_SHOW = 0x8002, WINEVENT_OUTOFCONTEXT = 0;
+    [DllImport("user32.dll")] private static extern nint SetWinEventHook(uint eventMin, uint eventMax, nint module, WinEventProc proc, uint processId, uint threadId, uint flags);
+    [DllImport("user32.dll")] private static extern bool UnhookWinEvent(nint hook);
 
     [DllImport("user32.dll", SetLastError = true)] private static extern nint SetWindowsHookExW(int idHook, HookProc proc, nint hMod, uint threadId);
     [DllImport("user32.dll")] private static extern nint CallNextHookEx(nint hook, int code, nint wParam, nint lParam);
@@ -86,7 +94,6 @@ internal static unsafe class QuietMode
     [DllImport("user32.dll")] private static extern int GetSystemMetrics(int index);
     [DllImport("user32.dll")] private static extern bool GetWindowRect(nint hwnd, out Rect32 rect);
     [DllImport("user32.dll")] private static extern bool SetWindowPos(nint hwnd, nint after, int x, int y, int cx, int cy, uint flags);
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowTextW(nint hwnd, char* text, int max);
     [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
 
     [StructLayout(LayoutKind.Sequential)] private struct Rect32 { public int Left, Top, Right, Bottom; }
@@ -101,8 +108,11 @@ internal static unsafe class QuietMode
 
     /// <summary>
     /// Installs, on the calling (UI) thread, a CBT hook that sees every window this thread creates or activates, including message boxes and
-    /// common dialogs, before the window is ever shown: a creation is moved beyond the right edge of the virtual screen and made
-    /// not-topmost, tool-window (no taskbar button) and no-activate; an activation is refused. Capture overlays are left alone. Best effort:
+    /// common dialogs, before the window is ever shown: a window of the application (a WPF window or popup, a dialog) is moved beyond the
+    /// right edge of the virtual screen and cloaked when it is created (the creation structure's style flags cannot be changed from a CBT
+    /// hook, so topmost and the taskbar button are handled by the explicit guards and <see cref="Calm"/>); the activation of such a window
+    /// is refused (no other window: the tray icon's hidden window and its menu work as usual). A process-wide WinEvent hook cloaks the same
+    /// windows again when they are shown, in case the cloak did not stick that early. Capture overlays are left alone. Best effort:
     /// a failure is logged and the explicit guards remain.
     /// </summary>
     public static void InstallWindowHook()
@@ -112,46 +122,65 @@ internal static unsafe class QuietMode
         s_hook = SetWindowsHookExW(WH_CBT, s_proc, 0, GetCurrentThreadId());
         if (s_hook == 0) Log.Warn("quiet: the window hook could not be installed (error " + Marshal.GetLastWin32Error() + "); windows may take the focus");
         else Log.Info("quiet: no window will be activated, every window is created off-screen and then cloaked at the back");
+        s_winEventProc = OnWindowShown;
+        s_winEventHook = SetWinEventHook(EVENT_OBJECT_SHOW, EVENT_OBJECT_SHOW, 0, s_winEventProc, (uint)Environment.ProcessId, 0, WINEVENT_OUTOFCONTEXT);
+        if (s_winEventHook == 0) Log.Warn("quiet: the window-shown hook could not be installed; windows are cloaked at creation only");
     }
 
     private static nint Proc(int code, nint wParam, nint lParam)
     {
         try
         {
-            if (code == HCBT_ACTIVATE) { if (!IsOverlay(wParam)) return 1; }   // a non-zero result refuses the activation
-            else if (code == HCBT_CREATEWND) Adjust(*(nint*)lParam);
+            if (code == HCBT_ACTIVATE) { if (IsOurs(wParam)) return 1; }   // a non-zero result refuses the activation (only for windows we marked)
+            else if (code == HCBT_CREATEWND) Adjust(wParam, *(nint*)lParam);
+            else if (code == HCBT_DESTROYWND) { lock (s_ours) s_ours.Remove(wParam); }
         }
         catch (Exception) { }   // a hook must never throw into the window procedure that called it
         return CallNextHookEx(s_hook, code, wParam, lParam);
     }
 
-    private static bool IsOverlay(nint hwnd)
+    private static bool IsOurs(nint hwnd) { lock (s_ours) return s_ours.Contains(hwnd); }
+
+    /// <summary>Cloaks a window of the application when it is shown (the same cloak as at creation; harmless when it already is).</summary>
+    private static void OnWindowShown(nint hook, uint eventType, nint hwnd, int idObject, int idChild, uint thread, uint time)
     {
-        char* text = stackalloc char[24];
-        int n = GetWindowTextW(hwnd, text, 24);
-        return n == OverlayTitle.Length && new string(text, 0, n) == OverlayTitle;
+        try { if (idObject == 0 && idChild == 0 && IsOurs(hwnd)) Cloak(hwnd); }
+        catch (Exception) { }
     }
 
-    /// <summary>Rewrites the CREATESTRUCT of a top-level window that is about to be created (x64 layout: cy 32, cx 36, y 40, x 44, style 48, name 56, class 64, exstyle 72).</summary>
-    private static void Adjust(nint cs)
+    /// <summary>Hides a window from every monitor and from Alt-Tab (DWMWA_CLOAK) without moving or activating it. True when DWM took it.</summary>
+    private static bool Cloak(nint hwnd)
     {
-        if (cs == 0) return;
+        int on = 1;
+        return DwmSetWindowAttribute(hwnd, DWMWA_CLOAK, ref on, sizeof(int)) == 0;
+    }
+
+    private static bool s_loggedCloak;
+
+    /// <summary>
+    /// Marks, cloaks and moves a top-level window of the application that is about to be created (<paramref name="hwnd"/>; x64 layout of the
+    /// CREATESTRUCT: parent 24, cy 32, cx 36, y 40, x 44, style 48, name 56, class 64). Only the position and size in the structure are honoured by
+    /// a CBT hook, so only those are rewritten.
+    /// </summary>
+    private static void Adjust(nint hwnd, nint cs)
+    {
+        if (cs == 0 || hwnd == 0 || IntPtr.Size != 8) return;   // the offsets below are the 64-bit layout
         nint parent = Marshal.ReadIntPtr(cs, 24);
         int cy = Marshal.ReadInt32(cs, 32), cx = Marshal.ReadInt32(cs, 36);
         uint style = (uint)Marshal.ReadInt32(cs, 48);
-        if (parent == HwndMessage || (style & WS_CHILD) != 0 || (style & (WS_POPUP | WS_CAPTION)) == 0 || cx <= 0 || cy <= 0) return;
+        if (parent == HwndMessage || (style & WS_CHILD) != 0 || (style & (WS_POPUP | WS_CAPTION)) == 0) return;
         nint name = Marshal.ReadIntPtr(cs, 56), cls = Marshal.ReadIntPtr(cs, 64);
         if (name > 0xFFFF && Marshal.PtrToStringUni(name) == OverlayTitle) return;
-        // Only windows of the application: WPF windows (HwndWrapper[...]) and dialogs (#32770, given as an atom). Not a menu, a tooltip or an IME window.
+        // Only windows of the application: WPF windows and popups (tooltips, ComboBox dropdowns: HwndWrapper[...]) and dialogs (#32770: message boxes, common dialogs; given as an atom). Not a native menu or an IME window.
         bool ours = cls == 0x8002 || (cls > 0xFFFF && (Marshal.PtrToStringUni(cls) ?? "").StartsWith("HwndWrapper[", StringComparison.Ordinal))
             || (cls > 0xFFFF && Marshal.PtrToStringUni(cls) == "#32770");
         if (!ours) return;
-        var at = QuietPlacement.OffScreen(VirtualScreenPixels(), new Size(cx, cy));
+        lock (s_ours) s_ours.Add(hwnd);
+        bool cloaked = Cloak(hwnd);
+        if (!s_loggedCloak) { s_loggedCloak = true; Log.Info("quiet: cloaking a window at creation " + (cloaked ? "worked" : "was refused; it is cloaked when shown")); }
+        var at = QuietPlacement.OffScreen(VirtualScreenPixels(), new Size(Math.Max(cx, 0), Math.Max(cy, 0)));
         Marshal.WriteInt32(cs, 40, (int)at.Y);
         Marshal.WriteInt32(cs, 44, (int)at.X);
-        uint ex = (uint)Marshal.ReadInt32(cs, 72);
-        ex = (ex & ~(WS_EX_TOPMOST | WS_EX_APPWINDOW)) | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
-        Marshal.WriteInt32(cs, 72, (int)ex);
     }
 
     /// <summary>
@@ -199,8 +228,7 @@ internal static unsafe class QuietMode
     {
         if (!GetWindowRect(hwnd, out var r)) return;
         var window = new Rect(r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top);
-        int on = 1;
-        bool cloaked = DwmSetWindowAttribute(hwnd, DWMWA_CLOAK, ref on, sizeof(int)) == 0;
+        bool cloaked = Cloak(hwnd);
         Point? target = cloaked ? QuietPlacement.Sliver(MonitorRects(), window.Size) : null;
         target ??= QuietPlacement.OffScreen(VirtualScreenPixels(), window.Size);
         if ((int)target.Value.X == r.Left && (int)target.Value.Y == r.Top) return;
@@ -230,9 +258,11 @@ internal static unsafe class QuietMode
 
     [DllImport("user32.dll")] private static extern bool ShowWindow(nint hwnd, int cmd);
 
-    /// <summary>For tests and shutdown: removes the hook.</summary>
+    /// <summary>Removes both hooks (called from <c>App.OnExit</c>, and available to tests).</summary>
     public static void RemoveWindowHook()
     {
+        if (s_winEventHook != 0) { UnhookWinEvent(s_winEventHook); s_winEventHook = 0; s_winEventProc = null; }
         if (s_hook != 0) { UnhookWindowsHookEx(s_hook); s_hook = 0; s_proc = null; }
+        lock (s_ours) s_ours.Clear();
     }
 }
