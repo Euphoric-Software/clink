@@ -51,6 +51,19 @@ if ($pkg.version -ne $Version) { throw "package.json is for version $($pkg.versi
 $minRuntime = [string]$pkg.minRuntime
 if ($minRuntime -notmatch '^\d+\.\d+\.\d+$') { throw "package.json minRuntime '$minRuntime' is not X.Y.Z (run tools/package.ps1 from this version)." }
 
+# Bind package.json to what the manifest advertises (the publish job also verifies package.json's hash against the build job's output).
+# The names are compared case-sensitively and exactly: they become URLs and file paths. Runtime major: the app targets
+# net10.0-windows (Clink/Clink.csproj TargetFramework), so minRuntime (the Microsoft.WindowsDesktop.App version) must be 10.x.y; raise it
+# together with the TargetFramework.
+$expectedRuntimeMajor = 10
+foreach ($pair in @(@('exe', 'Clink.exe'), @('exeFramework', 'Clink-framework.exe'), @('installer', "Clink-$Version-setup.exe"))) {
+    $entry = $pkg.files.($pair[0])
+    if (-not $entry) { throw "package.json has no '$($pair[0])' entry (installer not built?)." }
+    if (([string]$entry.file) -cne $pair[1]) { throw "package.json files.$($pair[0]).file is '$($entry.file)', expected '$($pair[1])'." }
+}
+if (([string]$pkg.files.exe.sha256) -ceq ([string]$pkg.files.exeFramework.sha256)) { throw 'package.json lists the same sha256 for exe and exeFramework: the two flavours must differ.' }
+if ([int]($minRuntime.Split('.')[0]) -ne $expectedRuntimeMajor) { throw "package.json minRuntime '$minRuntime' is not a $expectedRuntimeMajor.x.y runtime (the app targets net$expectedRuntimeMajor.0)." }
+
 function New-AssetEntry($info, [string]$what) {
     if (-not $info) { throw "package.json has no '$what' entry (installer not built?)." }
     if ($info.sha256 -cnotmatch '^[0-9a-f]{64}$') { throw "Bad sha256 for $what." }

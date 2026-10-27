@@ -5,23 +5,29 @@
 #   releases/vX.Y.Z/{Clink.exe, Clink.exe.sha256, Clink-framework.exe, Clink-framework.exe.sha256, Clink-X.Y.Z-setup.exe}   write-once
 #   dev/vX.Y.Z-dev.N/{same}                                                   write-once
 #   stable.json(.sig), dev.json(.sig)                                         replaced on every publish
-# Order: refuse a downgrade, versioned assets (write-once), HEAD-check their PUBLIC URLs, manifest, then signature.
+# Order: refuse a downgrade (the bucket's current manifest counts only after its signature verified against feed.json), versioned assets
+# (write-once, compared by their real downloaded bytes), GET-and-hash their PUBLIC URLs, manifest, then signature.
+# The decisions live in tools/lib/feed-publish-lib.ps1 (testable with a fake aws); this script only wires the real aws CLI and web client.
 #
 # The manifest and .sig must already be in -PackageDir (tools/make-manifest.ps1, run with the signing key in its own step).
 # With -Sign this script runs make-manifest.ps1 itself (needs -NotesUrl and CLINK_FEED_SIGNING_KEY) and drops the key from
 # the environment as soon as signing is done.
+# -HistoryFloor: the highest published GitHub release of this channel that carried <channel>.json (the workflow computes it; empty = none).
 # Env: R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ENDPOINT, R2_BUCKET. Optional purge: CLOUDFLARE_API_TOKEN + CLOUDFLARE_ZONE_ID.
+#      Owner-only, temporary: CLINK_FEED_BUCKET_RESET_VERSION (see Resolve-FeedEffectiveFloor).
 param(
     [Parameter(Mandatory)] [ValidateSet('stable', 'dev')] [string]$Channel,
     [Parameter(Mandatory)] [string]$Version,
     [Parameter(Mandatory)] [string]$PackageDir,
     [Parameter(Mandatory)] [string]$FeedJson,
     [string]$NotesUrl,
+    [string]$HistoryFloor,
     [switch]$Sign
 )
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 . (Join-Path $PSScriptRoot 'feed-lib.ps1')
+. (Join-Path $PSScriptRoot 'lib\feed-publish-lib.ps1')
 
 $PackageDir = (Resolve-Path -LiteralPath $PackageDir).Path
 $FeedJson = (Resolve-Path -LiteralPath $FeedJson).Path
@@ -86,73 +92,33 @@ foreach ($pair in @(@('exe', 'Clink.exe'), @('exeFramework', 'Clink-framework.ex
     if ($entry.url -ne $a.Url -or $entry.sha256 -ne $a.Sha256 -or [int64]$entry.size -ne $a.Size) { throw "The manifest entry '$($pair[0])' does not match $($a.Name) in the package." }
 }
 
-function Invoke-Aws {
-    # Runs aws, returns @{ Code; Text } (stdout+stderr), never throws.
-    param([string[]]$Arguments)
-    $text = (& aws @Arguments 2>&1 | Out-String)
-    @{ Code = $LASTEXITCODE; Text = $text }
-}
+# The real invokers (tools/lib/feed-publish-lib.ps1 holds the decisions; the script tests fake these two).
+$awsInvoker = New-FeedAwsInvoker
+$httpInvoker = New-FeedHttpInvoker
 
-# 2. Never go backwards: the bucket's current manifest for this channel must not be newer than this version.
-$tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("clink-current-" + [guid]::NewGuid().ToString('N') + '.json')
-try {
-    $r = Invoke-Aws @('s3api', 'get-object', '--bucket', $bucket, '--key', "$prefix/$Channel.json", '--endpoint-url', $endpoint, $tmp)
-    if ($r.Code -eq 0) {
-        $current = (Get-Content -Raw -LiteralPath $tmp | ConvertFrom-Json).version
-        if ((Compare-FeedVersion $current $Version) -gt 0) { throw "The bucket's $Channel.json is already at $current, newer than $Version; refusing to publish an older version." }
-        "current $Channel feed: $current"
-    } elseif ($r.Text -match 'NoSuchKey|Not Found|\(404\)') {
-        "no current $Channel.json in the bucket"
-    } else { throw "Could not read the current $Channel.json: $($r.Text.Trim())" }
-} finally { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
-
+# 2. Never go backwards: the bucket's current manifest for this channel must not be newer than this version. The manifest is only
+#    believed as a floor after its .sig verified against the keys the app trusts (feed.json). The GitHub history floor (the highest
+#    published release of the channel that carried the manifest, found by the workflow) is a second floor that an emptied or rolled-back
+#    bucket cannot lower; with neither bucket file but a history floor the run is refused unless the owner's reset variable names that
+#    exact version (docs/RELEASING.md, "Recovering a stuck feed").
+$bucketFloor = Get-FeedBucketFloor -Aws $awsInvoker -Bucket $bucket -Prefix $prefix -Channel $Channel -Endpoint $endpoint -Keys $cfg.Keys
+$floor = Resolve-FeedEffectiveFloor -BucketFloor $bucketFloor -HistoryFloor $HistoryFloor -ResetVersion $env:CLINK_FEED_BUCKET_RESET_VERSION -Version $Version -Channel $Channel
+if ($floor) { Write-Host "effective $Channel floor: $floor" } else { Write-Host "no $Channel floor (first publish)" }
 $immutable = 'public, max-age=31536000, immutable'
 $short = 'public, max-age=60'
 
-# 3. Versioned assets are write-once: same content (sha256 metadata) = skip, different = fail.
+# 3. Versioned assets are write-once: the object in the bucket is downloaded and hashed; same bytes = skip, different = fail.
+#    Conditional create (If-None-Match: *); an aws cli without it fails closed (no fallback). The real write-once guarantee is
+#    still the R2 Bucket Lock rule on releases/ (docs/RELEASING.md).
 foreach ($a in $assets) {
-    $r = Invoke-Aws @('s3api', 'head-object', '--bucket', $bucket, '--key', $a.Key, '--endpoint-url', $endpoint)
-    if ($r.Code -eq 0) {
-        $meta = ($r.Text | ConvertFrom-Json).Metadata
-        $remote = if ($meta) { [string]$meta.sha256 } else { '' }
-        if ($remote -eq $a.Sha256) { "exists, same sha256, skipped: $($a.Key)"; continue }
-        throw "$($a.Key) already exists with different content (sha256 metadata '$remote' vs '$($a.Sha256)'). Versioned objects are write-once; bump the version."
-    }
-    if ($r.Text -notmatch 'Not Found|\(404\)|NoSuchKey') { throw "Could not check $($a.Key): $($r.Text.Trim())" }
-    # Conditional create (If-None-Match: *) so a concurrent writer cannot be overwritten. Older aws cli versions do not know
-    # --if-none-match: then fall back to a plain copy (the head-object check above still applies). The real write-once guarantee
-    # is the R2 Bucket Lock rule on releases/ (docs/RELEASING.md).
-    $r = Invoke-Aws @('s3api', 'put-object', '--bucket', $bucket, '--key', $a.Key, '--body', $a.Local, '--endpoint-url', $endpoint,
-        '--cache-control', $immutable, '--content-type', $a.Type, '--metadata', "sha256=$($a.Sha256)", '--if-none-match', '*')
-    if ($r.Code -ne 0 -and $r.Text -match '(?i)(Unknown options?|unrecognized arguments?):.*(if-none-match|\*)') {
-        Write-Host '::warning::This aws cli does not support --if-none-match; falling back to an unconditional copy (head-object check only).'
-        $r = Invoke-Aws @('s3', 'cp', $a.Local, "s3://$bucket/$($a.Key)", '--endpoint-url', $endpoint, '--cache-control', $immutable,
-            '--content-type', $a.Type, '--metadata', "sha256=$($a.Sha256)", '--only-show-errors')
-    } elseif ($r.Code -ne 0 -and $r.Text -match 'PreconditionFailed|\(412\)') {
-        throw "$($a.Key) was created by someone else between the check and the upload (precondition failed). Versioned objects are write-once; re-run to compare the content."
-    }
-    if ($r.Code -ne 0) { throw "Upload failed: $($a.Key): $($r.Text.Trim())" }
-    "uploaded $($a.Key)"
+    [void](Publish-FeedVersionedAsset -Aws $awsInvoker -Bucket $bucket -Endpoint $endpoint -Asset $a -CacheControl $immutable)
 }
 
-# 4. The assets must be reachable at their PUBLIC URLs with the right size before the manifest points at them.
-foreach ($a in $assets) {
-    $ok = $false; $last = ''
-    for ($i = 1; $i -le 5 -and -not $ok; $i++) {
-        try {
-            $resp = Invoke-WebRequest -Method Head -Uri $a.Url -MaximumRedirection 0 -UseBasicParsing
-            $len = [int64]($resp.Headers['Content-Length'] | Select-Object -First 1)
-            if ($resp.StatusCode -eq 200 -and $len -eq $a.Size) { $ok = $true } else { $last = "status $($resp.StatusCode), Content-Length $len (expected $($a.Size))" }
-        } catch { $last = $_.Exception.Message }
-        if (-not $ok -and $i -lt 5) { Start-Sleep -Seconds 4 }
-    }
-    if (-not $ok) { throw "Public URL check failed for $($a.Url): $last" }
-    "public URL ok: $($a.Url)"
-}
-
+# 4. The assets must be reachable at their PUBLIC URLs with the right bytes (downloaded and hashed) before the manifest points at them.
+foreach ($a in $assets) { Assert-FeedPublicAsset -Http $httpInvoker -Asset $a }
 # 5. Manifest, then signature.
 foreach ($m in @(@($manifestPath, "$prefix/$Channel.json", 'application/json'), @($sigPath, "$prefix/$Channel.json.sig", 'text/plain'))) {
-    $r = Invoke-Aws @('s3', 'cp', $m[0], "s3://$bucket/$($m[1])", '--endpoint-url', $endpoint, '--cache-control', $short, '--content-type', $m[2], '--only-show-errors')
+    $r = Invoke-FeedAws -Aws $awsInvoker -Arguments @('s3', 'cp', $m[0], "s3://$bucket/$($m[1])", '--endpoint-url', $endpoint, '--cache-control', $short, '--content-type', $m[2], '--only-show-errors')
     if ($r.Code -ne 0) { throw "Upload failed: $($m[1]): $($r.Text.Trim())" }
     "uploaded $($m[1])"
 }
@@ -169,14 +135,14 @@ if ($env:CLOUDFLARE_API_TOKEN -and $env:CLOUDFLARE_ZONE_ID) {
 
 # 7. Dev only: keep the 10 newest dev folders, deleting strictly under <prefix>/dev/<vX.Y.Z-dev.N>/.
 if ($Channel -eq 'dev') {
-    $r = Invoke-Aws @('s3', 'ls', "s3://$bucket/$prefix/dev/", '--endpoint-url', $endpoint)
+    $r = Invoke-FeedAws -Aws $awsInvoker -Arguments @('s3', 'ls', "s3://$bucket/$prefix/dev/", '--endpoint-url', $endpoint)
     if ($r.Code -ne 0) { Write-Host "::warning::Could not list old dev folders: $($r.Text.Trim())" }
     else {
-        $dirs = @($r.Text -split "`r?`n" | ForEach-Object { if ($_ -match '^\s*PRE (v\d+\.\d+\.\d+-dev\.(\d+))/\s*$') { [pscustomobject]@{ Name = $Matches[1]; N = [int]$Matches[2] } } } |
+        $dirs = @($r.Text -split "`r?`n" | ForEach-Object { if ($_ -match '^\s*PRE (v[0-9]+\.[0-9]+\.[0-9]+-dev\.([0-9]+))/\s*$') { [pscustomobject]@{ Name = $Matches[1]; N = [int]$Matches[2] } } } |
             Where-Object { $_.Name -ne $tag } | Sort-Object N -Descending)
         foreach ($d in ($dirs | Select-Object -Skip 9)) {   # 9 + the one just published = 10
             "pruning $($d.Name)"
-            $r = Invoke-Aws @('s3', 'rm', "s3://$bucket/$prefix/dev/$($d.Name)/", '--recursive', '--endpoint-url', $endpoint, '--only-show-errors')
+            $r = Invoke-FeedAws -Aws $awsInvoker -Arguments @('s3', 'rm', "s3://$bucket/$prefix/dev/$($d.Name)/", '--recursive', '--endpoint-url', $endpoint, '--only-show-errors')
             if ($r.Code -ne 0) { Write-Host "::warning::Pruning $($d.Name) failed: $($r.Text.Trim())" }
         }
     }

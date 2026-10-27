@@ -86,38 +86,57 @@ enabled for that channel. The app's GitHub fallback verifies them against the sa
 
 Both workflows have two jobs.
 
-1. `build` (`contents: read`, no secrets, no environment): checkout, version (the stable workflow accepts only `refs/tags/vX.Y.Z`
-   or a manual run on `main`, and refuses when `gh release view vX.Y.Z` succeeds), publish BOTH flavours with
+1. `build` (`contents: read`, no secrets, no environment): checkout, `actions/setup-dotnet` followed by a step that verifies the SDK
+   (`tools/lib/dotnet-sdk-lib.ps1`: the resolved dotnet host (muxer, `dotnet.exe`) has a Valid Authenticode signature, an exact observed Microsoft signer subject and a
+   chain ending in the Microsoft Root Certificate Authority 2011 thumbprint, and the last non-empty line of `dotnet --version` (run with
+   `DOTNET_NOLOGO=1`) equals the version `global.json` pins; both allow-lists contain only values that were observed, and a new value is added in a reviewed commit; `build.yml`'s two jobs run the same step), version (the stable workflow accepts only
+   `refs/tags/vX.Y.Z`: it has NO `workflow_dispatch` and no branch trigger, and it refuses when `gh release view vX.Y.Z` succeeds), publish BOTH flavours with
    `tools/publish-flavours.ps1` (`dist/sc` self-contained, `dist/fx` framework-dependent; separate `obj_*`/`bin_*` folders, because
    a shared one mixed the flavours and produced an exe that failed with 0x80008096), run `tools/check-published.ps1` on both
    (size guards; `--packaging-check`, `--preflight`, the embedded-feed self-test, `--unittest ThirdPartyNotices` and ProductVersion on
    each exe, plus the N-1 regression below; every child process gets 90 s), install the
    pinned Inno Setup, run `tools/package.ps1` (both exes, both sha256 files, the setup exe built from the FRAMEWORK exe, the notices
-   file, `package.json`), record the SHA-256 values (including `notices_sha256`) as job outputs, upload the package as an artifact.
+   file, `package.json`), record the SHA-256 values (including `notices_sha256` and `pkg_sha256`, the hash of `package.json` itself) as job outputs, upload the package as an artifact.
    Before the package step the build job also runs `make-notices.ps1 -Check -AssetsFile Clink/obj_sc/project.assets.json`, resolves the
    runtime installer and checks runtime freshness (next sections). The dev workflow also builds
    and runs the unit tests first (on the bin build: 5 tests fail by design when `--unittest` runs from a published exe).
    `build.yml` has a no-secrets "Package dry run" job that does the same without the installer.
 2. `publish` (`needs: build`, environment `feed-stable` / `feed-dev`, `contents: write`, fixed concurrency group
    `feed-stable-publish` / `feed-dev-publish` with `cancel-in-progress: false`). Guards first, before any secret is used:
-   the stable job accepts only `^refs/tags/v\d+\.\d+\.\d+$` or a manual run on `main` and checks
+   the stable job accepts only `^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$` and checks
    `git merge-base --is-ancestor $GITHUB_SHA origin/main` (full-history checkout); the dev job accepts only `refs/heads/dev`;
    both refuse when a GitHub release `vX.Y.Z` already exists (draft or published). Then: download the artifact, verify
-   `Clink.exe`, `Clink-framework.exe`, the setup exe and `THIRD-PARTY-NOTICES.txt` against the build job's outputs, read `Clink/Assets/feed.json` from the checkout.
+   `package.json`, `Clink.exe`, `Clink-framework.exe`, the setup exe and `THIRD-PARTY-NOTICES.txt` against the build job's outputs, read `Clink/Assets/feed.json` from the checkout.
    The GitHub release is created as a DRAFT with all assets, then `upload-feed.ps1` runs (if the feed is on), and only then
    `gh release edit vX.Y.Z --draft=false` publishes it. A failed bucket upload therefore never leaves a visible release.
    - Feed enabled for the channel: require the environment secrets (fail if missing), make and sign the manifest
      (`tools/make-manifest.ps1`; the key is only in that step's environment; the signature is verified against the keys in
      `feed.json` before it is written; a mismatch fails the run), create the GitHub release with all assets including the
-     manifest and signature, then run `tools/upload-feed.ps1`.
-   - Feed not enabled: warn and create the GitHub release (exe, sha256, setup exe) without manifest assets.
-   - `upload-feed.ps1`: validates the prefix; refuses when the bucket's current `<channel>.json` is a higher version; for each
-     versioned object does a `head-object` (same `sha256` metadata: skip; different: FAIL); uploads with a conditional create
-     (`aws s3api put-object ... --if-none-match "*"`, falling back to a plain copy with a warning on an aws cli that lacks the
-     option; this is best effort, **R2 Bucket Lock on `releases/` is the real write-once guarantee**); HEAD-checks every asset's
-     PUBLIC URL (`feedUrl` + path) for status 200 and the right `Content-Length`; then uploads the manifest, then the `.sig`;
-     optionally purges the two manifest URLs from Cloudflare (non-fatal). Dev only: prunes old `<prefix>/dev/vX.Y.Z-dev.N/`
-     folders (strict regex, exit code checked).
+     manifest and signature, then run `tools/upload-feed.ps1`. Before the draft is created, the step `Find the GitHub history floor` lists
+     the earlier releases (`gh api repos/<repo>/releases --paginate`, GET only) and computes the highest NON-DRAFT release of the channel
+     that carried `<channel>.json`; `upload-feed.ps1` receives it as `-HistoryFloor`.
+   - Feed not enabled: first the step `Guard - a feed that was on stays on` lists the assets of every earlier release of the repository
+     (`gh api repos/<repo>/releases --paginate`, GET only) and FAILS when one carried `<channel>.json` (see "The feed cannot be switched off");
+     otherwise warn and create the GitHub release (exe, sha256, setup exe) without manifest assets.
+   - `make-manifest.ps1` binds `package.json` to the manifest: `files.exe.file` must be exactly `Clink.exe`, `files.exeFramework.file`
+     `Clink-framework.exe` and `files.installer.file` `Clink-<version>-setup.exe` (case-sensitive), the `exe` and `exeFramework` hashes must differ,
+     and `minRuntime` must be `10.x.y` (the app targets `net10.0-windows`; raise the constant in `make-manifest.ps1` with the `TargetFramework`).
+     Each file is then re-hashed against `package.json`, and the publish job has already compared `package.json` itself with the build job's `pkg_sha256`.
+   - `upload-feed.ps1` (entry point, `#requires -Version 7`; the decisions are in `tools/lib/feed-publish-lib.ps1` and are tested with a fake aws in
+     `tools/tests/feed.tests.ps1`): validates the prefix; takes the downgrade floor from the bucket's current `<channel>.json` ONLY after
+     downloading `<channel>.json.sig` and verifying it against the channel's keys in `feed.json` (the keys the app trusts; a missing or
+     invalid signature, an unpaired file or a manifest for another channel fails the run; no manifest and no signature at all is the first
+     publish, which is logged and allowed); the effective floor is the HIGHER of that verified bucket floor and the GitHub history floor (a
+     bucket that was emptied or rolled back cannot lower it); with NEITHER bucket file but a history floor the run is REFUSED unless the
+     owner has set `CLINK_FEED_BUCKET_RESET_VERSION` to exactly that release's version (see "Recovering a stuck feed"); refuses when the
+     bucket floor is higher than this version or this version is not newer than the history floor; a bucket manifest or `.sig` larger than
+     1 MB is refused before it is read; for each versioned object DOWNLOADS the
+     existing object and compares its real SHA-256 and size (never `x-amz-meta-sha256`, never `Content-Length`): same bytes = skip,
+     different = FAIL; otherwise uploads with a conditional create (`aws s3api put-object ... --if-none-match "*"`). An aws cli that lacks
+     the option FAILS the run (the version is logged; there is no fallback to a plain copy). R2 Bucket Lock on `releases/` remains the real
+     write-once guarantee. Then GETs every asset's PUBLIC URL (`feedUrl` + path, no redirects) and requires status 200 and the same SHA-256
+     and size of the served bytes; then uploads the manifest, then the `.sig`; optionally purges the two manifest URLs from Cloudflare
+     (non-fatal). Dev only: prunes old `<prefix>/dev/vX.Y.Z-dev.N/` folders (strict regex, exit code checked). The step has `timeout-minutes: 30` and each public-URL request a 600 s timeout.
    - Dev only: old GitHub prereleases are pruned (10 kept) in a step with `if: ${{ !cancelled() }}`.
 
 The installer comes from a pinned Inno Setup release: `innosetup-6.7.3.exe` from
@@ -127,19 +146,39 @@ The installer comes from a pinned Inno Setup release: `innosetup-6.7.3.exe` from
 SHA-256, change both values in both workflows in a reviewed commit. Every action is pinned by full commit SHA; Dependabot
 proposes bumps.
 
+### The feed cannot be switched off
+
+Once a release of a channel has carried `<channel>.json`, the feed is on for good. A publish with the feed disabled in `feed.json` would
+leave the bucket's last manifest (and every client that trusts it) frozen, a replay target for an old, still validly signed manifest. Both
+publish jobs therefore refuse a feed-less publish when any earlier release of the repository (drafts included) has an asset named
+`stable.json` (stable) or `dev.json` (dev). To recover, restore `feedUrl` and the keys in `Clink/Assets/feed.json`. Deleting old releases to
+get around the check is not a supported way to turn the feed off.
+
 ## Owner setup checklist
 
 GitHub (repo Settings). Create BOTH environments (with their protection rules and secrets) BEFORE the first push of these
 workflows reaches `dev`: the first run auto-creates a missing environment WITHOUT any protection.
 
-- [ ] Environment `feed-stable`: required reviewer (the owner), "Allow administrators to bypass" OFF, deployment rule matching
-      ONLY stable tags (a pattern such as `v[0-9]*.[0-9]*.[0-9]*` with the dev tags excluded; add `main` only if manual releases
-      are wanted; never `dev` or `v*-dev.*`). Environment secrets: `CLINK_FEED_SIGNING_KEY` (the stable key), `R2_ACCESS_KEY_ID`,
-      `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT`, `R2_BUCKET`; optional `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ZONE_ID`.
-- [ ] Environment `feed-dev`: deployment rule limited to the `dev` branch, "Allow administrators to bypass" OFF. Same secret
-      names, with the dev signing key.
+- [ ] Environment `feed-stable`: required reviewer (the owner), "Allow administrators to bypass" OFF, deployment rule "Selected
+      branches and tags" with ONLY Tag-type rules (not Branch-type) for these patterns (GitHub's pattern language cannot exclude, so they are character classes that
+      cannot match a `-dev.` tag; a final tag is `vX.Y.Z` with one or two digits per part): `v[0-9].[0-9].[0-9]`,
+      `v[0-9].[0-9].[0-9][0-9]`, `v[0-9].[0-9][0-9].[0-9]`, `v[0-9].[0-9][0-9].[0-9][0-9]`. Do NOT add `main` (the stable workflow has
+      no manual trigger) and never `dev`, `v*` or `v*-dev.*`. Add `v[0-9][0-9]...` patterns only when a major version reaches 10.
+- [ ] Environment `feed-dev`: deployment rule limited to the `dev` branch (a Branch-type rule), "Allow administrators to bypass" OFF.
+- [ ] A branch ruleset that blocks creating branches named `v*`, so no branch can be named like a stable tag and be confused with one.
+- [ ] The environment VARIABLE `CLINK_FEED_BUCKET_RESET_VERSION` is NOT set in `feed-stable` or `feed-dev` in normal operation. It is an
+      owner-only, temporary, reviewed override for one publish (see "Recovering a stuck feed"); remove it right after.
+- [ ] Environment secrets, one set per environment, with DIFFERENT names per channel (the workflows map them to the generic names the
+      scripts read, `CLINK_FEED_SIGNING_KEY` and `R2_*`):
+
+      | Environment | Signing key (PEM or one-line Base64) | R2 credentials |
+      | --- | --- | --- |
+      | `feed-stable` (`release.yml`) | `CLINK_FEED_STABLE_SIGNING_KEY` | `R2_STABLE_ACCESS_KEY_ID`, `R2_STABLE_SECRET_ACCESS_KEY`, `R2_STABLE_ENDPOINT`, `R2_STABLE_BUCKET` |
+      | `feed-dev` (`release-dev.yml`) | `CLINK_FEED_DEV_SIGNING_KEY` | `R2_DEV_ACCESS_KEY_ID`, `R2_DEV_SECRET_ACCESS_KEY`, `R2_DEV_ENDPOINT`, `R2_DEV_BUCKET` |
+
+      Optional in either: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ZONE_ID`. Bucket layout (separate or shared) is the OWNER DECISION under Cloudflare below.
 - [ ] Delete every repo-level and organization-level copy of the feed, R2 and Cloudflare secrets (`CLINK_FEED_SIGNING_KEY`,
-      `R2_*`, `CLOUDFLARE_*`) and the old `CLINK_FEED_URL` / `CLINK_FEED_PUBLIC_KEY` / `CLINK_FEED_*` variables. Only the two
+      `CLINK_FEED_STABLE_SIGNING_KEY`, `CLINK_FEED_DEV_SIGNING_KEY`, `R2_*`, `CLOUDFLARE_*`) and the old `CLINK_FEED_URL` / `CLINK_FEED_PUBLIC_KEY` / `CLINK_FEED_*` variables. Only the two
       environments hold them.
 - [ ] Two tag rulesets (Settings > Rules > Rulesets):
       1. Stable: target tags `v*`, exclude `v*-dev.*`; restrict creation, update and deletion to the owner; NO bypass for
@@ -156,7 +195,7 @@ workflows reaches `dev`: the first run auto-creates a missing environment WITHOU
 
 Reviewer checklist for each publish approval (the environment reviewer is the last gate before secrets are used):
 
-- [ ] The deployment's commit SHA is on `main` (stable) or `dev` (dev builds).
+- [ ] The deployment's commit SHA is on `main` (stable, run from an owner-created `vX.Y.Z` tag) or `dev` (dev builds).
 - [ ] The tag matches the version in `Clink/Clink.csproj` and the release you intend.
 - [ ] The diff of `.github/` and `tools/` (and `installer/`, `feed.json`) since the last release was reviewed.
 Cloudflare:
@@ -166,11 +205,14 @@ Cloudflare:
 - [ ] Copium's token re-scoped to Copium's own bucket (no shared bucket or token).
 - [ ] Purge token limited to Cache Purge on that zone.
 - [ ] Bucket Lock on `<prefix>/releases/` (retention rule) so released objects cannot be changed even with a stolen token.
-      This is the real write-once guarantee; the `--if-none-match` create and the `head-object` check are best effort. Lock
-      `<prefix>/dev/` too if you accept that pruning old dev folders then waits for the retention period (or exclude it).
-- [ ] Optional hardening (recommended, not required now): separate buckets and API tokens per channel, so the dev token cannot
-      touch stable objects. The `feedUrl` contract stays single: a manifest the client refuses falls back to the signed GitHub
-      release, so a shared bucket is acceptable today.
+      This is the real write-once guarantee; the `--if-none-match` create and the download-and-hash comparison of an existing object
+      are best effort. Lock `<prefix>/dev/` too if you accept that pruning old dev folders then waits for the retention period (or exclude it).
+- [ ] OWNER DECISION, bucket layout per channel: either separate buckets and API tokens per channel (the dev token then cannot touch
+      stable objects, but the single `feedUrl` needs path routing in front of the two buckets), or one shared bucket (simpler, but then
+      the dev token can affect stable availability: it can delete or overwrite stable objects unless Bucket Lock covers them). The
+      `feedUrl` contract stays single in both cases, and a manifest the client refuses falls back to the signed GitHub release.
+      Whichever is chosen, the secrets are per channel (`R2_STABLE_*`, `R2_DEV_*`) and the bucket-scoped token is limited to what that
+      channel needs.
 - [ ] CORS for GET and HEAD from `https://euphoric.software` (and `https://www.euphoric.software` if used), with `Vary: Origin`.
 - [ ] A cache rule for `*.json` and `*.sig` that applies no transformations (no minify, no Rocket Loader, no Polish).
 - [ ] Hardware-key 2FA on the Cloudflare and GitHub accounts.
@@ -186,7 +228,7 @@ powershell -File tools\new-feed-key.ps1 -Channel dev    -PrivateKeyPath D:\keys\
 ```
 
 For each key: add the printed public key to `stableKeys` / `devKeys` in `Clink/Assets/feed.json`; put the key into
-`CLINK_FEED_SIGNING_KEY` of the matching environment; keep an encrypted offline backup; delete the working copy. Store the
+`CLINK_FEED_STABLE_SIGNING_KEY` (`feed-stable`) or `CLINK_FEED_DEV_SIGNING_KEY` (`feed-dev`), the environment secret of the matching channel; keep an encrypted offline backup; delete the working copy. Store the
 secret as the PEM file in one-line Base64 (it survives the secret editor's newline handling):
 `[Convert]::ToBase64String([IO.File]::ReadAllBytes('D:\keys\clink-stable.pem'))`. `tools/make-manifest.ps1` accepts either the
 plain PEM or that Base64 text. Until the working copy is deleted, restrict its ACL to your account
@@ -209,6 +251,33 @@ Because clients only trust the keys embedded in their own build, rotate in two r
 3. A leaked or lost key with no pre-shipped successor means shipping a new build (installer download) with the new key; the
    old key stays trusted by old clients until they update, so treat a leak as an incident (revoke the bucket token, publish a
    fixed release by hand).
+4. The publish step verifies the bucket's current manifest against the keys in `feed.json` before it uses it as the downgrade floor, so a key that
+   is removed from `feed.json` can no longer vouch for the manifest already in the bucket. Therefore switch the secret to the next key and publish one
+   release with BOTH keys still listed first; remove the old public key in a later release (otherwise the publish fails closed on the old manifest).
+
+### Recovering a stuck feed
+
+The publish step fails closed, so some failures leave the feed refusing every later publish until the owner acts. Find the case below.
+The message of the refusal ends with "or a previous publish was interrupted between the manifest and its .sig; see RELEASING.md
+'Recovering a stuck feed'".
+
+- **Torn pair** (the manifest `<channel>.json` was uploaded but its `<channel>.json.sig` was not; the run failed or was cancelled between
+  the two uploads). The next publish refuses with "has no ... .sig". Fix: download the matching `<channel>.json.sig` from the assets of the
+  DRAFT release that the failed run created (the draft carries the manifest and the signature that were made together), check that the
+  `<channel>.json` of that draft is byte-identical to the one in the bucket, and upload that `.sig` to `<prefix>/<channel>.json.sig` with
+  the same `Cache-Control` and content type. Then re-run, or publish a newer version.
+- **Leaked or removed key** (the key that signed the bucket's manifest was removed from `feed.json`, or must be distrusted, so the bucket's
+  manifest no longer verifies). The owner, in this order: (1) deletes `<prefix>/<channel>.json` and `<prefix>/<channel>.json.sig` from the
+  bucket; (2) sets the environment variable `CLINK_FEED_BUCKET_RESET_VERSION` of `feed-stable` / `feed-dev` to the version of the newest
+  PUBLISHED release that carried `<channel>.json` (the refusal prints it); (3) publishes a newer version, signed with the new key listed in
+  `feed.json`; (4) removes the variable. With the variable set and NEITHER file in the bucket, the publish accepts the GitHub history floor
+  instead of the (deleted) bucket floor; it is ignored when the bucket has a manifest, and it never lowers the history floor. It is an
+  owner-only, temporary, reviewed override: set it only for the one publish, never leave it in place.
+- **A failed FIRST feed-on run.** The first run with the feed enabled leaves a DRAFT release that carries `<channel>.json`, and possibly
+  objects (even the manifest) in the bucket. The guard `a feed that was on stays on` counts drafts, so a later feed-less publish is refused
+  while that draft exists. If the feed is to stay off after all, the owner first deletes that draft release (and its tag if it was created)
+  and cleans the bucket objects of the failed version, and only then publishes feed-less. To retry with the feed on, publish a newer version
+  (the versioned objects of the failed version stay write-once and are compared by content).
 
 ## Dry runs
 
@@ -320,6 +389,9 @@ failure means the exe would load a runtime from a place that is not the register
 wiring against a fake `ISCC.cmd`; Inno Setup is not needed), `make-manifest.ps1` (with a throwaway key made inside the test),
 `check-published.ps1`'s size guards and timeout handling, and text assertions on the workflows (pinned `uses:`, the release asset names
 including the notices, the resolver / notices / freshness / Inno steps, `global-json-file`, no `${{ }}` inside `run:` scripts).
+`feed.tests.ps1` covers `tools/lib/feed-publish-lib.ps1` and `upload-feed.ps1`'s decisions with a fake aws (lying metadata, size/hash mismatch,
+bad or missing floor signature, first publish, the GitHub history floor and the reset override, `--if-none-match` unsupported; the real aws
+invoker runs against a fake `aws.cmd` on PATH), the `make-manifest.ps1` binding rules and text assertions on the workflows.
 `runtime-freshness.tests.ps1`, `make-notices.tests.ps1`, `resolve-dotnet-runtime.tests.ps1` and `installer-script.tests.ps1` cover the
 other scripts.
 ## Recommended next step: Authenticode

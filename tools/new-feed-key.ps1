@@ -57,10 +57,11 @@ $pub
 ''
 $keysProp = if ($Channel -eq 'stable') { 'stableKeys' } else { 'devKeys' }
 $envName = if ($Channel -eq 'stable') { 'feed-stable' } else { 'feed-dev' }
+$secretName = if ($Channel -eq 'stable') { 'CLINK_FEED_STABLE_SIGNING_KEY' } else { 'CLINK_FEED_DEV_SIGNING_KEY' }
 "Next:"
 "  1. Add the public key to the '$keysProp' list in Clink/Assets/feed.json in a reviewed commit (pull request). Clink builds"
 "     made from that commit trust it; the feed is off while feed.json is completely empty and a build error while it is only partly filled in."
-"  2. GitHub repo > Settings > Environments > $envName > Environment secrets: add CLINK_FEED_SIGNING_KEY (environment secret,"
+"  2. GitHub repo > Settings > Environments > $envName > Environment secrets: add $secretName (environment secret,"
 "     not a repo-level secret). Recommended value, one line without newlines (make-manifest.ps1 accepts it or the plain PEM):"
 "       [Convert]::ToBase64String([IO.File]::ReadAllBytes('$target'))"
 "     Both channels must be enabled together: feed.json needs feedUrl plus at least one key in BOTH stableKeys and devKeys,"

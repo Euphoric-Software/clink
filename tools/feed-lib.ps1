@@ -75,10 +75,10 @@ function Test-FeedSignature {
     return $false
 }
 
-# Sort key for X.Y.Z and X.Y.Z-dev.N: a final build sorts above any dev build of the same X.Y.Z.
+# Sort key for X.Y.Z and X.Y.Z-dev.N (ASCII digits only: the .NET digit shorthand also matches other Unicode digits): a final build sorts above any dev build of the same X.Y.Z.
 function Get-VersionKey {
     param([Parameter(Mandatory)] [string]$Version)
-    if ($Version -notmatch '^(\d+\.\d+\.\d+)(?:-dev\.(\d+))?$') { throw "Not a feed version: '$Version'" }
+    if ($Version -cnotmatch '\A([0-9]+\.[0-9]+\.[0-9]+)(?:-dev\.([0-9]+))?\z') { throw "Not a feed version: '$Version'" }
     $n = if ($Matches[2]) { [int64]$Matches[2] } else { [int64]::MaxValue }
     [pscustomobject]@{ Base = [version]$Matches[1]; N = $n }
 }

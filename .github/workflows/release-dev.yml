@@ -44,6 +44,7 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       exe_sha256: ${{ steps.package.outputs.exe_sha256 }}
       fx_sha256: ${{ steps.package.outputs.fx_sha256 }}
+      pkg_sha256: ${{ steps.package.outputs.pkg_sha256 }}
       setup_sha256: ${{ steps.package.outputs.setup_sha256 }}
       notices_sha256: ${{ steps.package.outputs.notices_sha256 }}
     steps:
@@ -56,6 +57,14 @@ jobs:
         uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
           global-json-file: global.json
+
+      # setup-dotnet downloads the SDK: the dotnet.exe this job resolves must be Authenticode-valid with an exact Microsoft signer subject
+      # and report the version global.json pins (tools/lib/dotnet-sdk-lib.ps1).
+      - name: Verify the .NET SDK (Authenticode, pinned version)
+        shell: pwsh
+        run: |
+          . ./tools/lib/dotnet-sdk-lib.ps1
+          Assert-DotNetSdk -GlobalJsonPath global.json
 
       - name: Only the dev branch publishes
         shell: pwsh
@@ -110,12 +119,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Could not list the releases' }
           $maxN = 0
           foreach ($tag in $tags) {
-            if ($tag -match '^v\d+\.\d+\.\d+-dev\.(\d+)$') { $maxN = [Math]::Max($maxN, [int]$Matches[1]) }
+            if ($tag -match '^v[0-9]+\.[0-9]+\.[0-9]+-dev\.([0-9]+)$') { $maxN = [Math]::Max($maxN, [int]$Matches[1]) }
           }
           $n = [Math]::Max([int]$env:GITHUB_RUN_NUMBER, $maxN + 1)
 
           $version = "$xyz-dev.$n"
-          if ($version -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$') { throw "'$version' is not a valid version (expected X.Y.Z-dev.N)" }
+          if ($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+-dev\.[0-9]+$') { throw "'$version' is not a valid version (expected X.Y.Z-dev.N)" }
           Add-Content -Path $env:GITHUB_OUTPUT -Value "version=$version"
           Write-Output "Building Clink $version (csproj $csproj, latest release $latest)"
 
@@ -208,6 +217,7 @@ jobs:
           $pkg = Get-Content -Raw dist/package/package.json | ConvertFrom-Json
           Add-Content -Path $env:GITHUB_OUTPUT -Value "exe_sha256=$($pkg.files.exe.sha256)"
           Add-Content -Path $env:GITHUB_OUTPUT -Value "fx_sha256=$($pkg.files.exeFramework.sha256)"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "pkg_sha256=$((Get-FileHash dist/package/package.json -Algorithm SHA256).Hash.ToLowerInvariant())"
           Add-Content -Path $env:GITHUB_OUTPUT -Value "setup_sha256=$($pkg.files.installer.sha256)"
           Add-Content -Path $env:GITHUB_OUTPUT -Value "notices_sha256=$($pkg.files.notices.sha256)"
           Get-Content dist/package/Clink.exe.sha256, dist/package/Clink-framework.exe.sha256
@@ -240,7 +250,7 @@ jobs:
         shell: pwsh
         run: |
           if ($env:GITHUB_REF -ne 'refs/heads/dev') { throw "dev builds publish only from the dev branch (this run is on $env:GITHUB_REF)" }
-          if ($env:VERSION -notmatch '^\d+\.\d+\.\d+-dev\.\d+$') { throw "'$env:VERSION' is not an X.Y.Z-dev.N version" }
+          if ($env:VERSION -notmatch '^[0-9]+\.[0-9]+\.[0-9]+-dev\.[0-9]+$') { throw "'$env:VERSION' is not an X.Y.Z-dev.N version" }
           $eap = $ErrorActionPreference
           $ErrorActionPreference = 'Continue'
           $PSNativeCommandUseErrorActionPreference = $false
@@ -266,9 +276,13 @@ jobs:
         env:
           EXE_SHA256: ${{ needs.build.outputs.exe_sha256 }}
           FX_SHA256: ${{ needs.build.outputs.fx_sha256 }}
+          PKG_SHA256: ${{ needs.build.outputs.pkg_sha256 }}
           SETUP_SHA256: ${{ needs.build.outputs.setup_sha256 }}
           NOTICES_SHA256: ${{ needs.build.outputs.notices_sha256 }}
         run: |
+          # package.json drives the manifest script (file names, hashes, minRuntime): it must be the one the build job wrote.
+          $pkgHash = (Get-FileHash dist/package/package.json -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($pkgHash -ne $env:PKG_SHA256) { throw "package.json in the artifact ($pkgHash) is not what the build job produced ($env:PKG_SHA256)" }
           $exe = (Get-FileHash dist/package/Clink.exe -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($exe -ne $env:EXE_SHA256) { throw "Clink.exe in the artifact ($exe) is not what the build job produced ($env:EXE_SHA256)" }
           $fx = (Get-FileHash dist/package/Clink-framework.exe -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -295,29 +309,53 @@ jobs:
           Add-Content -Path $env:GITHUB_OUTPUT -Value ('enabled=' + $enabled.ToString().ToLowerInvariant())
           Add-Content -Path $env:GITHUB_OUTPUT -Value "feed_url=$($cfg.FeedUrl)"
 
+      # The feed cannot be switched off once it was on (docs/RELEASING.md): refuse a feed-less publish when any earlier release (drafts
+      # included) of this repository carried dev.json. Read-only API calls (gh api GET, paginated) with the job token.
+      - name: Guard - a feed that was on stays on
+        if: steps.feed.outputs.enabled != 'true'
+        shell: pwsh
+        run: |
+          . ./tools/lib/feed-publish-lib.ps1
+          $names = @(& gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" --paginate --jq '.[].assets[].name')
+          if ($LASTEXITCODE -ne 0) { throw 'Could not list the assets of the earlier releases.' }
+          Assert-FeedNeverWasOn -Channel dev -AssetNames $names
+
       # Fail before anything is published if the bucket credentials are missing. Presence check only; nothing is printed.
       - name: Check bucket secrets
         if: steps.feed.outputs.enabled == 'true'
         shell: pwsh
         env:
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_DEV_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_DEV_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_DEV_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_DEV_BUCKET }}
         run: |
           $missing = 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_ENDPOINT', 'R2_BUCKET' |
             Where-Object { [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) }
-          if ($missing) { throw "The dev feed is enabled in feed.json but these secrets are missing from the feed-dev environment: $($missing -join ', ')" }
+          if ($missing) { throw "The dev feed is enabled in feed.json but these secrets are missing from the feed-dev environment (R2_DEV_ACCESS_KEY_ID, R2_DEV_SECRET_ACCESS_KEY, R2_DEV_ENDPOINT, R2_DEV_BUCKET): $($missing -join ', ')" }
 
+      # Security M1: the highest earlier PUBLISHED (non-draft) release of this repository that carried dev.json is a second downgrade
+      # floor, so an emptied or rolled-back bucket cannot lower it (docs/RELEASING.md, "Recovering a stuck feed"). Read-only GET.
+      - name: Find the GitHub history floor
+        id: history
+        if: steps.feed.outputs.enabled == 'true'
+        shell: pwsh
+        run: |
+          . ./tools/lib/feed-publish-lib.ps1
+          $listing = @(& gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" --paginate --jq '.[] | [.tag_name, (.draft | tostring), ([.assets[].name] | join(","))] | @tsv')
+          if ($LASTEXITCODE -ne 0) { throw 'Could not list the earlier releases.' }
+          $floor = Get-FeedHistoryFloor -Channel dev -Listing $listing
+          Write-Output "GitHub history floor: $floor"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "floor=$floor"
       # The signing key exists only in this step's environment.
       - name: Make and sign the manifest
         if: steps.feed.outputs.enabled == 'true'
         shell: pwsh
         env:
-          CLINK_FEED_SIGNING_KEY: ${{ secrets.CLINK_FEED_SIGNING_KEY }}
+          CLINK_FEED_SIGNING_KEY: ${{ secrets.CLINK_FEED_DEV_SIGNING_KEY }}
           FEED_URL: ${{ steps.feed.outputs.feed_url }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:CLINK_FEED_SIGNING_KEY)) { throw 'The dev feed is enabled in feed.json but CLINK_FEED_SIGNING_KEY is missing from the feed-dev environment.' }
+          if ([string]::IsNullOrWhiteSpace($env:CLINK_FEED_SIGNING_KEY)) { throw 'The dev feed is enabled in feed.json but CLINK_FEED_DEV_SIGNING_KEY is missing from the feed-dev environment.' }
           $tag = "v$env:VERSION"
           ./tools/make-manifest.ps1 -Channel dev -Version $env:VERSION -Tag $tag -BaseUrl "$($env:FEED_URL)dev/$tag/" `
             -NotesUrl "https://github.com/$env:GITHUB_REPOSITORY/releases/tag/$tag" -PackageDir dist/package -FeedJson Clink/Assets/feed.json
@@ -349,15 +387,18 @@ jobs:
       - name: Publish to the update feed
         if: steps.feed.outputs.enabled == 'true'
         shell: pwsh
+        timeout-minutes: 30
         env:
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_DEV_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_DEV_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_DEV_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_DEV_BUCKET }}
+          HISTORY_FLOOR: ${{ steps.history.outputs.floor }}
+          CLINK_FEED_BUCKET_RESET_VERSION: ${{ vars.CLINK_FEED_BUCKET_RESET_VERSION }}
           CLINK_FEED_KEY_PREFIX: ${{ vars.CLINK_FEED_KEY_PREFIX }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
-        run: ./tools/upload-feed.ps1 -Channel dev -Version $env:VERSION -PackageDir dist/package -FeedJson Clink/Assets/feed.json
+        run: ./tools/upload-feed.ps1 -Channel dev -Version $env:VERSION -PackageDir dist/package -FeedJson Clink/Assets/feed.json -HistoryFloor $env:HISTORY_FLOOR
 
       - name: Publish the GitHub release
         shell: pwsh
@@ -375,8 +416,8 @@ jobs:
         run: |
           $tags = & gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" --jq '.[].tag_name'
           if ($LASTEXITCODE -ne 0) { throw 'Could not list the releases' }
-          $dev = @($tags | Where-Object { $_ -match '^v\d+\.\d+\.\d+-dev\.(\d+)$' } |
-            Sort-Object { [int]([regex]::Match($_, '-dev\.(\d+)$').Groups[1].Value) } -Descending)
+          $dev = @($tags | Where-Object { $_ -match '^v[0-9]+\.[0-9]+\.[0-9]+-dev\.([0-9]+)$' } |
+            Sort-Object { [int]([regex]::Match($_, '-dev\.([0-9]+)$').Groups[1].Value) } -Descending)
           foreach ($t in ($dev | Select-Object -Skip 10)) {
             Write-Output "Deleting $t"
             & gh release delete $t --cleanup-tag --yes --repo $env:GITHUB_REPOSITORY
