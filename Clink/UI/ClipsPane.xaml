@@ -104,9 +104,43 @@
             </Style.Triggers>
         </Style>
 
+        <!-- The "N trims" + chevron toggle on a clip that has trims under it. Muted text on the row (the theme's muted-on-panel pairing); the chevron points down when open. -->
+        <Style x:Key="TrimsToggle" TargetType="ToggleButton">
+            <Setter Property="Foreground" Value="{DynamicResource Muted}" />
+            <Setter Property="FontSize" Value="11.5" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="KeyboardNavigation.AcceptsReturn" Value="True" />
+            <Setter Property="FocusVisualStyle" Value="{StaticResource FocusRing}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleButton">
+                        <Border x:Name="B" Background="Transparent" CornerRadius="4" Padding="6,2">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="{Binding TrimsLabel}" Foreground="{TemplateBinding Foreground}" VerticalAlignment="Center" />
+                                <TextBlock x:Name="Chevron" Style="{StaticResource Glyph}" Text="&#xE76C;" FontSize="10" Margin="6,1,0,0" Foreground="{TemplateBinding Foreground}" />
+                            </StackPanel>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Chevron" Property="Text" Value="&#xE70D;" />
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Foreground" Value="{DynamicResource Fg}" />
+                                <Setter TargetName="B" Property="Background" Value="{DynamicResource Panel3}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <!-- Local / Trimmed row: thumbnail · title + icons · meta · Trim / Share / folder -->
         <DataTemplate x:Key="LocalRow">
-            <Border Style="{StaticResource Row}" Cursor="Hand" PreviewMouseLeftButtonDown="Row_Down" MouseLeftButtonUp="Row_Click">
+            <Grid>
+            <!-- a trim listed under its clip: indented, with a quiet guide line down the left (the full height of the row, gap included, so a run of trims reads as one block) -->
+            <Border Width="2" HorizontalAlignment="Left" Margin="13,0,0,0" Background="{DynamicResource Border}" Visibility="{Binding IsChild, Converter={StaticResource Vis}}" />
+            <Border Style="{StaticResource Row}" Margin="{Binding NestMargin}" Cursor="Hand" PreviewMouseLeftButtonDown="Row_Down" MouseLeftButtonUp="Row_Click">
                 <!-- a click anywhere on the row that is not on one of its buttons plays the clip -->
                 <Grid>
                     <Grid.ColumnDefinitions>
@@ -122,6 +156,9 @@
                     </Border>
                     <StackPanel Grid.Column="1" Margin="10,0,8,0" VerticalAlignment="Center">
                         <DockPanel LastChildFill="False">
+                            <!-- a clip with trims under it: "N trims" and a chevron (a focusable toggle; the pane keeps the state) -->
+                            <ToggleButton DockPanel.Dock="Right" Style="{StaticResource TrimsToggle}" Margin="6,0,0,0" IsChecked="{Binding IsExpanded, Mode=OneWay}" Click="Trims_Click"
+                                          Visibility="{Binding IsParent, Converter={StaticResource Vis}}" AutomationProperties.Name="{Binding ToggleName}" ToolTip="{Binding ToggleName}" />
                             <ContentPresenter DockPanel.Dock="Right" Content="{Binding}" ContentTemplate="{StaticResource Icons}" />
                             <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap" />
                         </DockPanel>
@@ -138,6 +175,7 @@
                     </StackPanel>
                 </Grid>
             </Border>
+            </Grid>
         </DataTemplate>
 
         <!-- Cloud row: title · date · the link (click = copy) · Open page · folder when the local file still exists -->

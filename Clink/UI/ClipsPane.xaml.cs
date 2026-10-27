@@ -197,16 +197,66 @@ public partial class ClipsPane : UserControl
         foreach (var gone in _rows.Keys.Where(k => !keep.Contains(k)).ToList()) _rows.Remove(gone);
         bool trimmed = LibraryView.TrimmedOnly(LibraryFeature.Clips, _trimmedChip);
         Func<ClipRow, bool> isLocal = hasFileRows.Contains, isShared = r => r.IsShared, isTrim = r => r.IsTrim;
-        var local = LibraryView.Pick(all, LibraryLevel.Local, trimmed, isLocal, isShared, isTrim);
+        _localAll = LibraryView.Pick(all, LibraryLevel.Local, false, isLocal, isShared, isTrim);
+        var local = trimmed ? LibraryView.Pick(all, LibraryLevel.Local, true, isLocal, isShared, isTrim) : _localAll;
         var shared = LibraryView.Pick(all, LibraryLevel.Shared, trimmed, isLocal, isShared, isTrim);
-        Replace(_local, local);
+        // A trim that was not in the list before opens its clip, so the user sees it (the first look only remembers what is there).
+        foreach (var key in ClipGrouping.TakeNewTrimParents(_localAll, r => r.Entry, _seenClips, seed: !_clipsSeeded)) _expandedClips.Add(key);
+        _clipsSeeded = true;
+        var localView = LocalView(local, trimmed);
+        SyncRows(_local, localView);
         Replace(_shared, shared);
         SetLabels(local.Count, shared.Count);
-        var shown = _level == LibraryLevel.Shared ? shared : local;
+        var shown = _level == LibraryLevel.Shared ? shared : localView;
         ShowList(LibraryFeature.Clips, shown.Count);
         // Only listed rows, in list order (newest first), and only while the pane is on screen (IsVisibleChanged refreshes on show).
         if (IsVisible) LoadThumbnails(shown.Where(r => !r.Checked).ToList());
     }
+
+    // Local level: trims nested under the clip they were cut from (ClipGrouping). The Trimmed filter and the Shared level stay flat.
+    private List<ClipRow> _localAll = new();
+    private readonly HashSet<string> _seenClips = ClipGrouping.NewExpanded(), _expandedClips = ClipGrouping.NewExpanded();
+    private bool _clipsSeeded;
+
+    /// <summary>The rows the Local list shows: the Trimmed filter's flat list as it is, otherwise the nested list with collapsed parents' trims left out (so their thumbnails are not made either).</summary>
+    private List<ClipRow> LocalView(List<ClipRow> filtered, bool trimmedOnly)
+    {
+        var flat = ClipGrouping.View(_localAll, filtered, trimmedOnly, r => r.Entry, _expandedClips);
+        foreach (var f in flat) f.Item.SetNesting(f.Kind, f.ChildCount, f.Expanded);
+        return flat.Select(f => f.Item).ToList();
+    }
+
+    /// <summary>A parent's chevron: show or hide its trims. Only the rows between change (the list keeps its scroll position and the chevron its focus).</summary>
+    private void Trims_Click(object sender, RoutedEventArgs e)
+    {
+        var row = RowOf(sender);
+        if (row == null || !row.IsParent) return;
+        string key = ClipGrouping.Key(row.Entry.Path);
+        if (!_expandedClips.Remove(key)) _expandedClips.Add(key);
+        bool trimmed = LibraryView.TrimmedOnly(LibraryFeature.Clips, _trimmedChip);
+        var view = LocalView(_localAll, trimmed);
+        SyncRows(_local, view);
+        if (IsVisible && _level == LibraryLevel.Local) LoadThumbnails(view.Where(r => !r.Checked).ToList());
+    }
+
+    /// <summary>Makes <paramref name="target"/> list <paramref name="rows"/> by inserting and removing only what differs (a rebuild would send the list back to the top). A different order is rebuilt.</summary>
+    private static void SyncRows<T>(ObservableCollection<T> target, IReadOnlyList<T> rows) where T : class
+    {
+        var want = new HashSet<T>(rows);
+        for (int i = target.Count - 1; i >= 0; i--)
+            if (!want.Contains(target[i])) target.RemoveAt(i);
+        var have = new HashSet<T>(target);
+        var common = rows.Where(have.Contains).ToList();
+        if (common.Count != target.Count || !common.Zip(target).All(p => ReferenceEquals(p.First, p.Second)))
+        {
+            target.Clear();
+            foreach (var r in rows) target.Add(r);
+            return;
+        }
+        for (int i = 0; i < rows.Count; i++)
+            if (i >= target.Count || !ReferenceEquals(target[i], rows[i])) target.Insert(i, rows[i]);
+    }
+
     /// <summary>
     /// The archive service reached its share again (at login the NAS may come up after Clink): forget which folders did not
     /// answer, so the rows found "archive offline" are looked at again now instead of after <see cref="OfflineRetry"/>.
@@ -831,6 +881,27 @@ internal sealed class ClipRow : INotifyPropertyChanged
     /// <summary>The status line is a problem (amber) rather than progress (accent).</summary>
     public bool IsProblem { get => _problem; set { _problem = value; Raise(); } }
 
+    // Where the row sits in the Local list (set by the pane from ClipGrouping.Flatten; Plain everywhere else: Trimmed filter, Shared level).
+    private ClipRowKind _kind;
+    private int _childCount;
+    private bool _expanded;
+    public bool IsParent => _kind == ClipRowKind.Parent;
+    public bool IsChild => _kind == ClipRowKind.Child;
+    public bool IsExpanded => _expanded;
+    public int ChildCount => _childCount;
+    public string TrimsLabel => ClipGrouping.TrimsLabel(_childCount);
+    public string ToggleName => ClipGrouping.ToggleName(_expanded, _childCount, Title);
+    /// <summary>The row's outer margin: a trim under its clip is indented.</summary>
+    public Thickness NestMargin => new(IsChild ? 28 : 0, 0, 0, 2);
+
+    public void SetNesting(ClipRowKind kind, int childCount, bool expanded)
+    {
+        if (_kind == kind && _childCount == childCount && _expanded == expanded) return;
+        _kind = kind; _childCount = childCount; _expanded = expanded;
+        foreach (var p in new[] { nameof(IsParent), nameof(IsChild), nameof(IsExpanded), nameof(ChildCount), nameof(TrimsLabel), nameof(ToggleName), nameof(NestMargin) })
+            Raise(p);
+    }
+
     public void SetProblem(string text) { IsProblem = true; Status = text; }
 
     /// <summary>
@@ -856,7 +927,7 @@ internal sealed class ClipRow : INotifyPropertyChanged
 
     public void Refresh()
     {
-        foreach (var p in new[] { nameof(ShareLabel), nameof(ShareVisible), nameof(HasLink), nameof(Link), nameof(Meta), nameof(CloudMeta), nameof(Title), nameof(IsShared), nameof(IsTrim), nameof(IsArchived), nameof(IsLocalOnly), nameof(ArchiveTip) })
+        foreach (var p in new[] { nameof(ShareLabel), nameof(ShareVisible), nameof(HasLink), nameof(Link), nameof(Meta), nameof(CloudMeta), nameof(Title), nameof(IsShared), nameof(IsTrim), nameof(IsArchived), nameof(IsLocalOnly), nameof(ArchiveTip), nameof(ToggleName) })
             Raise(p);
     }
 
