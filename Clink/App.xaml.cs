@@ -226,7 +226,11 @@ public partial class App : System.Windows.Application
             _controller?.SaveEditorForSessionEnd();            // unsaved screenshot edits: a copy is saved
         };
         var main = new MainWindow();
-        if (dev != null) main.Title = "Clink (dev)";
+        if (dev != null)
+        {
+            main.Title = DevInstanceMarker.WindowTitle(dev.Folder);
+            TagTestWindows();
+        }
         MainWindow = main;
         _controller.Start();
         // "--clip" / "--share-last" / "--trim-last" while Clink was not running: start in the tray and run the command,
@@ -237,6 +241,23 @@ public partial class App : System.Windows.Application
         if (!minimized) main.Show();
         Log.Info($"Clink v{updater.VersionDisplay} started" + (dev != null ? $" (--dev: data in {dev.Folder}, hotkeys {(dev.BindHotkeys ? "on" : "off")})" : ""));
         if (cmd != null) _controller.RunStartupCommand(cmd);
+    }
+
+    /// <summary>
+    /// Test (--dev) instance: every other top-level window (trim, screenshot editor, share and other dialogs) gets " [TEST]" at the end of
+    /// its title when it loads, so its taskbar button / Alt+Tab entry is not taken for the main Clink's. One class handler instead of
+    /// a change in each window. Not the main window (titled in OnStartup), the toasts, the status dot or the capture overlay: the last
+    /// two can end up in a capture and show no title anyway.
+    /// </summary>
+    private static void TagTestWindows()
+    {
+        EventManager.RegisterClassHandler(typeof(Window), FrameworkElement.LoadedEvent, new RoutedEventHandler((sender, e) =>
+        {
+            if (sender is not Window w || !ReferenceEquals(e.OriginalSource, w)) return;   // Loaded of a child bubbles up too
+            if (w is Clink.MainWindow or UI.ToastWindow or UI.StatusDotWindow or UI.Screenshots.RegionOverlayWindow) return;
+            string tagged = DevInstanceMarker.TagTitle(w.Title);
+            if (tagged != w.Title) w.Title = tagged;
+        }));
     }
 
     protected override void OnExit(ExitEventArgs e)

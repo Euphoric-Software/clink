@@ -48,6 +48,7 @@ public partial class MainWindow : Window
     private bool _recheckUpdate;                          // Dev Build switched while a check was running: check again when it ends
     private DateTime _versionPopupClosed = DateTime.MinValue;   // StaysOpen=False closes the popup on the mouse-down of the click that would reopen it
     private bool _wide, _layoutApplied;
+    private FrameworkElement? _tabStrip;                // the TabControl template's strip (PART_TabStrip): the header row leaves room for it when wide
     private List<MonitorInfo>? _shownMonitors;          // the monitor list the map and label were built from (AppController replaces it on a display change)
     private DateTime _noticeUntil = DateTime.MinValue;   // keep a Say() notice visible this long before the stats line takes the footer back
 
@@ -55,6 +56,8 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         AppIcons.Attach(this);   // the taskbar button's own icon size, not WPF's default 32 px frame shrunk to it
+        ApplyDevMarker();
+        StatusHost.SizeChanged += (_, _) => UpdateHeaderFit();
         _restartTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(700) };
         _restartTimer.Tick += (_, _) => { _restartTimer.Stop(); _app.RequestEngineRestart(); };   // postponed while a recording runs
         _saveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(800) };
@@ -204,6 +207,7 @@ public partial class MainWindow : Window
         bool clips = LibraryView.ShowLibrary(_app.Settings.ClipsEnabled, _app.Settings.ScreenshotsEnabled);
         if (_layoutApplied && wide == _wide && clips == _clipsShown) return;
         _wide = wide; _clipsShown = clips; _layoutApplied = true;
+        PlaceHeader();
         if (wide && clips)
         {
             ClipsTab.Content = null;
@@ -229,6 +233,71 @@ public partial class MainWindow : Window
     }
 
     private bool _clipsShown = true;
+
+    /// <summary>
+    /// The window's top row. Wide: one row, the tab strip on its left (the TabControl spans both body rows, its strip is drawn over the
+    /// row) and the status group and the buttons in the room to its right. Narrow: the strip (about 450 px with the Library tab) does not
+    /// fit beside the buttons at the 470 px minimum, so the row is a compact header of its own and the tabs sit in the row under it.
+    /// </summary>
+    private void PlaceHeader()
+    {
+        Grid.SetRow(Tabs, _wide ? 0 : 1);
+        Grid.SetRowSpan(Tabs, _wide ? 2 : 1);
+        StatusHost.Margin = new Thickness(_wide ? 12 : 0, 0, 6, 0);
+        SyncHeader();
+    }
+
+    /// <summary>Sizes the header row to the tab strip when wide (the strip is part of the TabControl's template, so it is looked up once and watched).</summary>
+    private void SyncHeader()
+    {
+        if (_tabStrip == null)
+        {
+            Tabs.ApplyTemplate();
+            _tabStrip = Tabs.Template?.FindName("PART_TabStrip", Tabs) as FrameworkElement;
+            if (_tabStrip != null) _tabStrip.SizeChanged += (_, _) => SyncHeader();
+        }
+        if (_wide && _tabStrip != null)
+        {
+            TabsSpacer.Width = new GridLength(_tabStrip.ActualWidth);
+            HeaderBar.Height = Math.Max(_tabStrip.ActualHeight, HeaderBar.MinHeight);
+        }
+        else
+        {
+            TabsSpacer.Width = new GridLength(0);
+            HeaderBar.Height = double.NaN;
+        }
+    }
+
+    /// <summary>
+    /// A test (--dev) instance only: a 3 px yellow frame around the whole window and the badge after "Clink". The badge outranks the status
+    /// text when the row is short of room (<see cref="UpdateHeaderFit"/>). A normal run does none of this.
+    /// </summary>
+    private void ApplyDevMarker()
+    {
+        if (!AppController.IsDev) return;
+        var yellow = (SolidColorBrush)new BrushConverter().ConvertFromInvariantString(DevInstanceMarker.YellowHex)!;
+        WindowFrame.BorderBrush = yellow;
+        WindowFrame.BorderThickness = new Thickness(3);
+        TestBadge.Visibility = Visibility.Visible;
+        TestBadge.ToolTip = DevInstanceMarker.BadgeTooltip(Settings.Dir);
+        TestBadgeText.Text = DevInstanceMarker.BadgeText(Settings.Dir, shortForm: false);
+        Title = DevInstanceMarker.WindowTitle(Settings.Dir);
+    }
+
+    /// <summary>Test instance only: drops the status text before the badge, and cuts the badge to "TEST" last, as the status group's width shrinks.</summary>
+    private void UpdateHeaderFit()
+    {
+        if (!AppController.IsDev || TestBadge.Visibility != Visibility.Visible || StatusHost.ActualWidth <= 0) return;
+        TestBadgeText.Text = DevInstanceMarker.BadgeText(Settings.Dir, shortForm: false);
+        TestBadge.MaxWidth = double.PositiveInfinity;
+        TestBadge.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        StatusLead.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        double fullBadge = TestBadge.DesiredSize.Width, lead = StatusLead.DesiredSize.Width;
+        var (showStatus, shortBadge) = DevInstanceMarker.FitHeader(StatusHost.ActualWidth, lead, fullBadge, minStatus: 90, hasBadge: true);
+        StatusText.Visibility = showStatus ? Visibility.Visible : Visibility.Collapsed;
+        if (shortBadge) TestBadgeText.Text = DevInstanceMarker.BadgeText(Settings.Dir, shortForm: true);
+        TestBadge.MaxWidth = Math.Max(24, StatusHost.ActualWidth - lead);   // last resort: the text ellipsizes rather than reaching the buttons
+    }
 
     /// <summary>The selected tab was hidden (a feature was turned off): the first tab that is still shown takes over.</summary>
     private void SelectFirstVisibleTab()
@@ -1716,7 +1785,18 @@ public partial class MainWindow : Window
 
     private void Header_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
+        // The tabs and the buttons take their own clicks (and keyboard focus): only a press on an empty part of the row, or on the status
+        // group behind them, moves the window.
+        if (IsOnClickable(e.OriginalSource as DependencyObject, (DependencyObject)sender)) return;
         if (e.ButtonState == MouseButtonState.Pressed) DragMove();
+    }
+
+    /// <summary>True when <paramref name="source"/> is, or sits inside, a button, toggle button or tab item below <paramref name="root"/>.</summary>
+    private static bool IsOnClickable(DependencyObject? source, DependencyObject root)
+    {
+        for (var d = source; d != null && !ReferenceEquals(d, root); d = d is Visual or System.Windows.Media.Media3D.Visual3D ? VisualTreeHelper.GetParent(d) : LogicalTreeHelper.GetParent(d))
+            if (d is System.Windows.Controls.Primitives.ButtonBase or TabItem) return true;   // ButtonBase covers Button, ToggleButton, CheckBox, RadioButton
+        return false;
     }
 
     private void Minimize_Click(object sender, RoutedEventArgs e) { HotkeyEditor.CancelCapture(); WindowState = WindowState.Minimized; }

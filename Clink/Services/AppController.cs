@@ -1742,8 +1742,8 @@ internal sealed partial class AppController : IDisposable
 
     // ------------------------------------------------------------------ tray
 
-    /// <summary>The tray icon's name: "Clink", or "Clink (dev)" for a --dev instance, so the two icons can be told apart.</summary>
-    private static string TrayName => IsDev ? "Clink (dev)" : "Clink";
+    /// <summary>The tray icon's name: "Clink", or "TEST · Clink (dev)" for a --dev instance, so the two icons can be told apart.</summary>
+    private static string TrayName => IsDev ? DevInstanceMarker.TrayText("Clink (dev)") : "Clink";
 
     private void CreateTray()
     {

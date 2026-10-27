@@ -431,7 +431,7 @@
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="*" />
                         </Grid.RowDefinitions>
-                        <Border Background="{DynamicResource Panel}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="8" Padding="2" HorizontalAlignment="Left" Margin="{TemplateBinding Padding}">
+                        <Border x:Name="PART_TabStrip" Background="{DynamicResource Panel}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="8" Padding="2" HorizontalAlignment="Left" Margin="{TemplateBinding Padding}">
                             <TabPanel IsItemsHost="True" />
                         </Border>
                         <ContentPresenter x:Name="PART_SelectedContentHost" Grid.Row="1" ContentSource="SelectedContent" />
