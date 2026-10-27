@@ -287,4 +287,17 @@ internal static class HotkeyHookTests
         Is(Hotkeys.KeyVerdict.Pass, Decide(Press(F9, win: true), new[] { plain }, game: true), "Win+F9");
         Is(Hotkeys.KeyVerdict.Pass, Decide(Press(0x73, alt: true), new[] { Bind(0x73) }, game: true), "Alt+F4 with F4 bound");
     }
+
+    [UnitTest]
+    public static void A_capture_is_armed_only_outside_quiet_mode_and_live_only_in_the_foreground()
+    {
+        Check.True(Hotkeys.MayArm(quiet: false), "a normal or plain --dev instance arms a capture");
+        Check.False(Hotkeys.MayArm(quiet: true), "a quiet instance never gets Deactivated, so it must not arm one");
+        Check.True(Hotkeys.CaptureLive(armed: true, ownsForeground: true));
+        Check.False(Hotkeys.CaptureLive(armed: true, ownsForeground: false), "another program has the focus: its keys are not ours");
+        Check.False(Hotkeys.CaptureLive(armed: false, ownsForeground: true));
+        Check.False(QuietMode.Active, "a test process is not quiet, so CaptureNext arms");
+        Check.True(Hotkeys.CaptureNext((_, _, _, _, _) => { }), "armed");
+        Check.True(Hotkeys.CaptureNext(null), "disarmed");
+    }
 }

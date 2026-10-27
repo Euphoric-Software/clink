@@ -22,21 +22,8 @@
             <Setter Property="Margin" Value="10,0,8,0" />
         </Style>
     </Window.Resources>
-    <Border Background="{DynamicResource Bg}" CornerRadius="10" BorderBrush="{DynamicResource Border}" BorderThickness="1">
+    <Border x:Name="WindowFrame" Background="{DynamicResource Bg}" CornerRadius="10" BorderBrush="{DynamicResource Border}" BorderThickness="1">
         <DockPanel>
-            <!-- header / drag area -->
-            <Grid DockPanel.Dock="Top" Height="44" MouseLeftButtonDown="Header_MouseLeftButtonDown" Background="Transparent">
-                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="16,0,80,0">
-                    <Ellipse x:Name="StatusDot" Width="9" Height="9" Fill="{DynamicResource Muted}" VerticalAlignment="Center" />
-                    <TextBlock Text="Clink" FontWeight="Bold" FontSize="15" Margin="9,0,0,0" VerticalAlignment="Center" />
-                    <TextBlock x:Name="StatusText" Style="{StaticResource MutedText}" Margin="10,1,0,0" VerticalAlignment="Center" Text="Starting…" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
-                </StackPanel>
-                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,8,0">
-                    <Button Style="{StaticResource IconButton}" Content="–" Click="Minimize_Click" ToolTip="Minimize" />
-                    <Button Style="{StaticResource IconButton}" Content="✕" Click="Close_Click" ToolTip="Hide to tray (keeps recording)" />
-                </StackPanel>
-            </Grid>
-
             <!-- footer -->
             <Border DockPanel.Dock="Bottom" Padding="16,8,20,8" BorderBrush="{DynamicResource Border}" BorderThickness="0,1,0,0">
                 <Grid>
@@ -77,15 +64,68 @@
                 </Grid>
             </Border>
 
-            <!-- body: settings tabs (+ Clips tab when narrow) | clips pane when wide -->
-            <Grid x:Name="Body" Margin="16,4,16,8">
+            <!--
+                body. Row 0 is the window's top row, full width: the settings tabs on the left (the TabControl's own strip, which is drawn over
+                this row), then the status group (dot, "Clink", the test badge, the status text) in the room right of them, then minimize / close at the
+                far right. Wide (>= 900): one row, the TabControl spans both rows and the library pane starts under the row. Narrow: the tabs would
+                not fit beside the buttons (the strip alone is ~450 px with the Library tab), so row 0 is a compact header of its own and the tabs
+                are row 1. ApplyLayout / SyncHeader move the TabControl between the two and size TabsSpacer to the strip.
+                An empty spot of the row (the gutters, behind the status text) drags the window; the tabs and buttons take their own clicks, the
+                strip's spot (TabsSpacer) has no drag surface. PlaceHeader puts the header bar before the TabControl in the tree when narrow and
+                after it when wide, so keyboard and screen-reader order follow the picture.
+            -->
+            <!-- the window's top 6 px: part of the drag area, as the header row below it is (a docked strip, so the body keeps its place) -->
+            <Border x:Name="TopEdge" DockPanel.Dock="Top" Height="6" Background="Transparent" MouseLeftButtonDown="Header_MouseLeftButtonDown" />
+            <Grid x:Name="Body" Margin="0,0,0,8">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
                 <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="16" />
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition x:Name="SplitCol" Width="0" />
                     <ColumnDefinition x:Name="RightCol" Width="0" />
+                    <ColumnDefinition Width="16" />
                 </Grid.ColumnDefinitions>
 
-                <TabControl x:Name="Tabs">
+                <!-- header bar / drag area -->
+                <Grid x:Name="HeaderBar" Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="5" MinHeight="30" MouseLeftButtonDown="Header_MouseLeftButtonDown">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="16" />
+                        <ColumnDefinition x:Name="TabsSpacer" Width="0" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <!-- the draggable surface: everything but the tab strip's spot (TabsSpacer), which the tabs below this grid in z-order must keep clicking through to.
+                         (Wide, this grid comes after the TabControl in the tree so the tabs are first in keyboard and screen-reader order.) -->
+                    <Border Grid.Column="0" Background="Transparent" />
+                    <Border Grid.Column="2" Grid.ColumnSpan="2" Background="Transparent" />
+                    <!-- the star column bounds the group: StatusText (the last, star column inside it) ellipsizes instead of running under the buttons -->
+                    <Grid x:Name="StatusHost" Grid.Column="2" VerticalAlignment="Center" Margin="0,0,6,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel x:Name="StatusLead" Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                            <Ellipse x:Name="StatusDot" Width="9" Height="9" Fill="{DynamicResource Muted}" VerticalAlignment="Center" />
+                            <TextBlock Text="Clink" FontWeight="Bold" FontSize="15" Margin="9,0,0,0" VerticalAlignment="Center" TextWrapping="NoWrap" />
+                        </StackPanel>
+                        <!-- a test (dev) instance only, see ApplyDevMarker in MainWindow.xaml.cs: black bold on yellow -->
+                        <Border x:Name="TestBadge" Grid.Column="1" Visibility="Collapsed" Background="#FFD400" CornerRadius="9" Padding="8,1" Margin="9,0,0,0" VerticalAlignment="Center">
+                            <TextBlock x:Name="TestBadgeText" Foreground="#000000" FontWeight="Bold" FontSize="11" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
+                        </Border>
+                        <TextBlock x:Name="StatusText" Grid.Column="2" Style="{StaticResource MutedText}" Margin="10,1,0,0" VerticalAlignment="Center" Text="Starting…" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
+                                   ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                    </Grid>
+                    <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,8,0">
+                        <Button Style="{StaticResource IconButton}" Content="–" Click="Minimize_Click" ToolTip="Minimize" />
+                        <Button Style="{StaticResource IconButton}" Content="✕" Click="Close_Click" ToolTip="Hide to tray (keeps recording)" />
+                    </StackPanel>
+                </Grid>
+
+                <TabControl x:Name="Tabs" Grid.Row="1" Grid.Column="1">
                     <!-- ===================================================== Capture -->
                     <TabItem x:Name="CaptureTab" Header="Capture">
                         <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,0,4,0">
@@ -579,7 +619,7 @@
                     </TabItem>
                 </TabControl>
 
-                <Border x:Name="RightHost" Grid.Column="2" Visibility="Collapsed" />
+                <Border x:Name="RightHost" Grid.Row="1" Grid.Column="3" Margin="0,4,0,0" Visibility="Collapsed" />
             </Grid>
         </DockPanel>
     </Border>

@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
@@ -48,6 +48,7 @@ public partial class MainWindow : Window
     private bool _recheckUpdate;                          // Dev Build switched while a check was running: check again when it ends
     private DateTime _versionPopupClosed = DateTime.MinValue;   // StaysOpen=False closes the popup on the mouse-down of the click that would reopen it
     private bool _wide, _layoutApplied;
+    private FrameworkElement? _tabStrip;                // the TabControl template's strip (PART_TabStrip): the header row leaves room for it when wide
     private List<MonitorInfo>? _shownMonitors;          // the monitor list the map and label were built from (AppController replaces it on a display change)
     private DateTime _noticeUntil = DateTime.MinValue;   // keep a Say() notice visible this long before the stats line takes the footer back
 
@@ -55,6 +56,8 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         AppIcons.Attach(this);   // the taskbar button's own icon size, not WPF's default 32 px frame shrunk to it
+        ApplyDevMarker();
+        StatusHost.SizeChanged += (_, _) => UpdateHeaderFit();
         _restartTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(700) };
         _restartTimer.Tick += (_, _) => { _restartTimer.Stop(); _app.RequestEngineRestart(); };   // postponed while a recording runs
         _saveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(800) };
@@ -66,13 +69,14 @@ public partial class MainWindow : Window
 
         var s = _app.Settings;
         RestoreWindowBounds(s);
+        if (QuietMode.Active) QuietMode.PlaceMainWindow(this);   // --dev-quiet: right of every monitor, never activated, no taskbar button
         Loaded += (_, _) => { ApplyLayout(); Populate(); };
         Closing += (_, e) => { e.Cancel = true; HideToTray(); };
-        LocationChanged += (_, _) => { if (!_loading && IsVisible && WindowState == WindowState.Normal) { s.WindowX = Left; s.WindowY = Top; ScheduleSave(); } };
+        LocationChanged += (_, _) => { if (!_loading && !QuietMode.Active && IsVisible && WindowState == WindowState.Normal) { s.WindowX = Left; s.WindowY = Top; ScheduleSave(); } };
         SizeChanged += (_, _) =>
         {
             ApplyLayout();
-            if (!_loading && IsVisible && WindowState == WindowState.Normal) { s.WindowWidth = ActualWidth; s.WindowHeight = ActualHeight; ScheduleSave(); }
+            if (!_loading && !QuietMode.Active && IsVisible && WindowState == WindowState.Normal) { s.WindowWidth = ActualWidth; s.WindowHeight = ActualHeight; ScheduleSave(); }
         };
 
         _app.StateChanged += RefreshStatus;
@@ -140,12 +144,16 @@ public partial class MainWindow : Window
         if (s.WindowWidth is double ww && ww >= MinWidth) Width = ww;
         if (s.WindowHeight is double wh && wh >= MinHeight) Height = wh;
         var (areas, area) = WorkAreas();   // area: the monitor under the mouse pointer, where CenterScreen opens the window
-        if (s.WindowX is double wx && s.WindowY is double wy && double.IsFinite(wx) && double.IsFinite(wy))
+        // --dev-quiet: the saved position is not used (QuietMode.PlaceMainWindow puts the window off-screen after this).
+        if (!QuietMode.Active && s.WindowX is double wx && s.WindowY is double wy && double.IsFinite(wx) && double.IsFinite(wy))
         {
             // Only where the header (the one place this borderless window can be dragged from) lands on a monitor's work area:
             // the virtual-screen box has corners no monitor covers, and a monitor may have gone away since. Of the monitors it
             // reaches, the one holding most of it counts (the AllScreens order means nothing).
-            var header = new Rect(wx, wy, Width, 44);
+            // The drag area is the top 6 px edge plus the header row (about 38 px: the tab strip's height when wide, the compact header
+            // when narrow), 44 DIP in all. Wide, the left of the row is the tab strip, which does not drag: the drag area is what is right of it.
+            double dragFrom = DragStart(Width);
+            var header = new Rect(wx + dragFrom, wy, Width - dragFrom, HeaderHeight);
             double most = 0;
             foreach (var wa in areas)
             {
@@ -169,13 +177,30 @@ public partial class MainWindow : Window
         Height = Math.Min(Height, area.Height);
         if (WindowStartupLocation == WindowStartupLocation.Manual)
         {
-            // Moved only as far as it takes to keep the header reachable on that work area: all of its height and 120 DIP of its
+            // Moved only as far as it takes to keep the drag area reachable on that work area: all of its height and 120 DIP of its
             // width (also after a narrower Width). A window left reaching onto the next monitor or past the bottom stays put.
-            double grab = Math.Min(120, Width);
-            Left = Math.Max(area.Left + grab - Width, Math.Min(Left, area.Right - grab));
-            Top = Math.Max(area.Top, Math.Min(Top, area.Bottom - 44));
+            var kept = KeepDragAreaReachable(area, new Point(Left, Top), Width);
+            Left = kept.X;
+            Top = kept.Y;
         }
     }
+
+    /// <summary>
+    /// The window position moved only as far as it takes to keep the drag area reachable on <paramref name="area"/> (a monitor's work area):
+    /// all of the header's height and 120 DIP of its width. Pure arithmetic (WindowBoundsTests).
+    /// </summary>
+    internal static Point KeepDragAreaReachable(Rect area, Point position, double width)
+    {
+        double from = DragStart(width), grab = Math.Min(120, width - from);
+        return new Point(Math.Max(area.Left + grab - width, Math.Min(position.X, area.Right - grab - from)),
+            Math.Max(area.Top, Math.Min(position.Y, area.Bottom - HeaderHeight)));
+    }
+
+    /// <summary>The window's top drag area: the 6 px top edge plus the header row (DIP).</summary>
+    private const double HeaderHeight = 44;
+
+    /// <summary>Where the drag area starts, from the window's left edge: 0 narrow (the compact header row drags), right of the tab strip (about 450 DIP, with its gutter) when wide.</summary>
+    private static double DragStart(double width) => width >= WideWidth ? 470 : 0;
 
     /// <summary>
     /// Every monitor's work area, and the one under the mouse pointer (CenterScreen's), in the DIPs Left / Top use before the
@@ -204,6 +229,7 @@ public partial class MainWindow : Window
         bool clips = LibraryView.ShowLibrary(_app.Settings.ClipsEnabled, _app.Settings.ScreenshotsEnabled);
         if (_layoutApplied && wide == _wide && clips == _clipsShown) return;
         _wide = wide; _clipsShown = clips; _layoutApplied = true;
+        PlaceHeader();
         if (wide && clips)
         {
             ClipsTab.Content = null;
@@ -229,6 +255,109 @@ public partial class MainWindow : Window
     }
 
     private bool _clipsShown = true;
+
+    /// <summary>
+    /// The window's top row. Wide: one row, the tab strip on its left (the TabControl spans both body rows, its strip is drawn over the
+    /// row) and the status group and the buttons in the room to its right. Narrow: the strip (about 450 px with the Library tab) does not
+    /// fit beside the buttons at the 470 px minimum, so the row is a compact header of its own and the tabs sit in the row under it.
+    /// </summary>
+    private void PlaceHeader()
+    {
+        FindTabStrip();
+        // Without the strip (a template without PART_TabStrip) the one-row layout cannot size the header: fall back to the two-row one.
+        bool oneRow = _wide && _tabStrip != null;
+        Grid.SetRow(Tabs, oneRow ? 0 : 1);
+        Grid.SetRowSpan(Tabs, oneRow ? 2 : 1);
+        StatusHost.Margin = new Thickness(oneRow ? 12 : 0, 0, 6, 0);
+        // Keyboard and screen-reader order follow the picture: one row has the tabs on the left, so the tabs and the page content come first and
+        // the header (status, minimize, close) after all of them (Tab reaches its buttons last); the header is then the last child of the grid, drawn over the tabs, which is harmless: it
+        // leaves the strip's spot (TabsSpacer) unhittable, so the tabs still take their clicks. (A z-index would reorder the UI Automation
+        // children too.) Two rows: the header row is on top, so it comes first.
+        int at = Body.Children.IndexOf(HeaderBar);
+        int want = oneRow ? Body.Children.Count - 1 : 0;
+        if (at >= 0 && at != want)
+        {
+            // Taking the bar out of the tree drops the keyboard focus from a button in it (a layout switch from a click or key on one): put it back.
+            var focused = Keyboard.FocusedElement as DependencyObject;
+            bool hadFocus = focused is Visual v && HeaderBar.IsAncestorOf(v);   // IsAncestorOf throws for a non-visual (a FrameworkContentElement)
+            Body.Children.RemoveAt(at);
+            Body.Children.Insert(want, HeaderBar);
+            if (hadFocus && focused is IInputElement element)
+            {
+                HeaderBar.UpdateLayout();
+                // Later, only if nothing else has taken the focus meanwhile (it is nowhere, or on the window itself).
+                if (!ReferenceEquals(Keyboard.Focus(element), element))
+                    Dispatcher.BeginInvoke(() =>
+                    {
+                        var now = Keyboard.FocusedElement;
+                        if (now == null || ReferenceEquals(now, this)) Keyboard.Focus(element);
+                    }, System.Windows.Threading.DispatcherPriority.Input);
+            }
+        }
+        SyncHeader();
+    }
+
+    private bool _loggedStripWidth;
+
+    private void FindTabStrip()
+    {
+        if (_tabStrip != null) return;
+        Tabs.ApplyTemplate();
+        _tabStrip = Tabs.Template?.FindName("PART_TabStrip", Tabs) as FrameworkElement;
+        if (_tabStrip != null) _tabStrip.SizeChanged += (_, _) => SyncHeader();
+    }
+
+    /// <summary>Sizes the header row to the tab strip when wide (the strip is part of the TabControl's template, so it is looked up once and watched).</summary>
+    private void SyncHeader()
+    {
+        FindTabStrip();
+        if (_wide && _tabStrip != null)
+        {
+            TabsSpacer.Width = new GridLength(_tabStrip.ActualWidth);
+            if (!_loggedStripWidth && 16 + _tabStrip.ActualWidth > DragStart(ActualWidth))
+            {
+                _loggedStripWidth = true;
+                Log.Warn($"header: the tab strip ({_tabStrip.ActualWidth:0} DIP + 16) is wider than the {DragStart(ActualWidth):0} DIP the window clamp assumes for it");
+            }
+            HeaderBar.Height = Math.Max(_tabStrip.ActualHeight, HeaderBar.MinHeight);
+        }
+        else
+        {
+            TabsSpacer.Width = new GridLength(0);
+            HeaderBar.Height = double.NaN;
+        }
+    }
+
+    /// <summary>
+    /// A test (--dev) instance only: a 3 px yellow frame around the whole window and the badge after "Clink". The badge outranks the status
+    /// text when the row is short of room (<see cref="UpdateHeaderFit"/>). A normal run does none of this.
+    /// </summary>
+    private void ApplyDevMarker()
+    {
+        if (!AppController.IsDev) return;
+        var yellow = (SolidColorBrush)new BrushConverter().ConvertFromInvariantString(DevInstanceMarker.YellowHex)!;
+        WindowFrame.BorderBrush = yellow;
+        WindowFrame.BorderThickness = new Thickness(3);
+        TestBadge.Visibility = Visibility.Visible;
+        TestBadge.ToolTip = DevInstanceMarker.BadgeTooltip(Settings.Dir);
+        TestBadgeText.Text = DevInstanceMarker.BadgeText(Settings.Dir, shortForm: false);
+        Title = DevInstanceMarker.WindowTitle(Settings.Dir);
+    }
+
+    /// <summary>Test instance only: drops the status text before the badge, and cuts the badge to "TEST" last, as the status group's width shrinks.</summary>
+    private void UpdateHeaderFit()
+    {
+        if (!AppController.IsDev || TestBadge.Visibility != Visibility.Visible || StatusHost.ActualWidth <= 0) return;
+        TestBadgeText.Text = DevInstanceMarker.BadgeText(Settings.Dir, shortForm: false);
+        TestBadge.MaxWidth = double.PositiveInfinity;
+        TestBadge.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        StatusLead.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        double fullBadge = TestBadge.DesiredSize.Width, lead = StatusLead.DesiredSize.Width;
+        var (showStatus, shortBadge) = DevInstanceMarker.FitHeader(StatusHost.ActualWidth, lead, fullBadge, minStatus: 90, hasBadge: true);
+        StatusText.Visibility = showStatus ? Visibility.Visible : Visibility.Collapsed;
+        if (shortBadge) TestBadgeText.Text = DevInstanceMarker.BadgeText(Settings.Dir, shortForm: true);
+        TestBadge.MaxWidth = Math.Max(24, StatusHost.ActualWidth - lead);   // last resort: the text ellipsizes rather than reaching the buttons
+    }
 
     /// <summary>The selected tab was hidden (a feature was turned off): the first tab that is still shown takes over.</summary>
     private void SelectFirstVisibleTab()
@@ -1716,7 +1845,18 @@ public partial class MainWindow : Window
 
     private void Header_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
+        // The tabs and the buttons take their own clicks (and keyboard focus): only a press on an empty part of the row, or on the status
+        // group behind them, moves the window.
+        if (IsOnClickable(e.OriginalSource as DependencyObject, (DependencyObject)sender)) return;
         if (e.ButtonState == MouseButtonState.Pressed) DragMove();
+    }
+
+    /// <summary>True when <paramref name="source"/> is, or sits inside, a button, toggle button or tab item below <paramref name="root"/>.</summary>
+    private static bool IsOnClickable(DependencyObject? source, DependencyObject root)
+    {
+        for (var d = source; d != null && !ReferenceEquals(d, root); d = d is Visual or System.Windows.Media.Media3D.Visual3D ? VisualTreeHelper.GetParent(d) : LogicalTreeHelper.GetParent(d))
+            if (d is System.Windows.Controls.Primitives.ButtonBase or TabItem) return true;   // ButtonBase covers Button, ToggleButton, CheckBox, RadioButton
+        return false;
     }
 
     private void Minimize_Click(object sender, RoutedEventArgs e) { HotkeyEditor.CancelCapture(); WindowState = WindowState.Minimized; }
@@ -1726,7 +1866,7 @@ public partial class MainWindow : Window
     public void HideToTray()
     {
         HotkeyEditor.CancelCapture();
-        if (WindowState == WindowState.Normal)
+        if (WindowState == WindowState.Normal && !QuietMode.Active)   // a --dev-quiet position (off-screen) is never saved
         {
             _app.Settings.WindowX = Left; _app.Settings.WindowY = Top;
             _app.Settings.WindowWidth = ActualWidth; _app.Settings.WindowHeight = ActualHeight;
@@ -1744,6 +1884,14 @@ public partial class MainWindow : Window
 
     public void ShowFromTray()
     {
+        if (QuietMode.Active)
+        {
+            // --dev-quiet: shown where it is (off-screen), never activated, never brought to the front.
+            Show();
+            QuietMode.ShowWithoutActivating(this);
+            if (!_loading) SyncScreenshotChecks();
+            return;
+        }
         Show();
         WindowState = WindowState.Normal;
         if (!_loading) SyncScreenshotChecks();

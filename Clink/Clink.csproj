@@ -23,6 +23,8 @@
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <NoWarn>$(NoWarn);CA1416;CS8981</NoWarn>
     <SelfContained>false</SelfContained>
+    <!-- A framework-dependent exe finds its runtime only in the machine-wide install (registry / Program Files\dotnet), never next to itself: an app-local hostfxr.dll planted beside an exe in a user-writable folder (updates\fx) is not loaded. -->
+    <AppHostDotNetSearch Condition="'$(SelfContained)' != 'true'">Global</AppHostDotNetSearch>
     <PublishSingleFile>true</PublishSingleFile>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <DebugType>embedded</DebugType>
@@ -41,10 +43,15 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Capture\Convert.hlsl" LogicalName="Convert.hlsl" />
+    <!-- Trust anchors of the signed update feed (Services/UpdateFeed.cs, FeedTrust): {"schema":1,"feedUrl":"","stableKeys":[],"devKeys":[]}. Empty = GitHub only, as before. -->
+    <EmbeddedResource Include="Assets\feed.json" LogicalName="feed.json" />
   </ItemGroup>
 
   <ItemGroup>
     <AssemblyMetadata Include="UpdateRepo" Value="$(UpdateRepo)" />
+    <!-- What this build is, from $(SelfContained) alone (no separate property to override). Services/Packaging.cs cross-checks it against the runtime. -->
+    <AssemblyMetadata Include="Packaging" Value="SelfContained" Condition="'$(SelfContained)' == 'true'" />
+    <AssemblyMetadata Include="Packaging" Value="Framework" Condition="'$(SelfContained)' != 'true'" />
   </ItemGroup>
 
   <ItemGroup>

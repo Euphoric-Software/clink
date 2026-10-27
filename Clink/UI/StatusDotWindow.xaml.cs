@@ -58,7 +58,7 @@ public partial class StatusDotWindow : Window
         Dot.ToolTip = null;
         // Called about once a second: a game going (DXGI) fullscreen, or any always-on-top window shown later, becomes topmost
         // above the dot, so it is put back on top each time (z-order only, never activated).
-        if (IsVisible)
+        if (IsVisible && !QuietMode.Active)
             PInvoke.SetWindowPos(ScreenPlacement.HwndOf(this), HWND.HWND_TOPMOST, 0, 0, 0, 0,
                 SET_WINDOW_POS_FLAGS.SWP_NOMOVE | SET_WINDOW_POS_FLAGS.SWP_NOSIZE | SET_WINDOW_POS_FLAGS.SWP_NOACTIVATE);
     }

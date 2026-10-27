@@ -221,13 +221,17 @@ internal static class TestRunner
         return failed;
     }
 
-    /// <summary>The process-wide switches a test could change and forget: where the settings, the clip index, the updates, the real Clink's folder and the other apps' packages live, and the --dev state.</summary>
-    private sealed record Shared(string? SettingsDir, string? ClipIndex, string? UpdatesDir, string InstanceSuffix, bool DevHotkeys, bool DevAcceptImport, bool DevToken, bool DevRecord,
-        string? RealDir, string? PackagesRoot)
+    /// <summary>The process-wide switches a test could change and forget: where the settings, the clip index, the updates, the real Clink's folder and the other apps' packages live, the --dev state, and the updater's fake network, feed trust anchors and built-in repository.</summary>
+    private sealed record Shared(string? SettingsDir, string? ClipIndex, string? UpdatesDir, string InstanceSuffix, bool DevHotkeys, bool DevAcceptImport, bool DevToken, bool DevRecord, bool DevQuiet, bool DevQuietRecord,
+        string? RealDir, string? PackagesRoot,
+        Func<System.Net.Http.HttpRequestMessage, CancellationToken, Task<System.Net.Http.HttpResponseMessage>>? UpdaterHttp, FeedTrust? FeedTrust, string? BuiltInRepo,
+        TimeSpan? FeedTimeout, Packaging? Packaging, Func<string, TimeSpan, Updater.PreflightResult>? Preflight, IReadOnlyList<Version>? Runtimes, bool? Elevated)
     {
         public static Shared Capture() => new(Settings.DirOverride, ClipLibrary.IndexPathOverride, Updater.UpdatesDirOverride,
-            AppController.InstanceSuffix, AppController.DevHotkeys, AppController.DevAcceptImport, AppController.DevToken, AppController.DevRecord,
-            Settings.RealDirOverride, SettingsImport.PackagesRoot);
+            AppController.InstanceSuffix, AppController.DevHotkeys, AppController.DevAcceptImport, AppController.DevToken, AppController.DevRecord, AppController.DevQuiet, AppController.DevQuietRecord,
+            Settings.RealDirOverride, SettingsImport.PackagesRoot,
+            Updater.HttpOverride, Updater.FeedOverride, Updater.BuiltInRepoOverride, Updater.FeedTimeoutOverride,
+            Updater.PackagingOverride, Updater.PreflightOverride, DotNetRuntimes.Override, Updater.IsElevatedOverride);
     }
 
     /// <summary>
@@ -245,10 +249,20 @@ internal static class TestRunner
         AppController.DevAcceptImport = before.DevAcceptImport;
         AppController.DevToken = before.DevToken;
         AppController.DevRecord = before.DevRecord;
+        AppController.DevQuiet = before.DevQuiet;
+        AppController.DevQuietRecord = before.DevQuietRecord;
         Settings.DirOverride = scratch ?? before.SettingsDir;
         Settings.RealDirOverride = scratch != null ? Path.Combine(scratch, "RealClink") : before.RealDir;
         ClipLibrary.IndexPathOverride = scratch != null ? Path.Combine(scratch, "clips.json") : before.ClipIndex;
         Updater.UpdatesDirOverride = scratch != null ? Path.Combine(scratch, "updates") : before.UpdatesDir;
+        Updater.HttpOverride = before.UpdaterHttp;          // no test leaves a fake network, feed or repository behind for the next
+        Updater.FeedOverride = before.FeedTrust;
+        Updater.BuiltInRepoOverride = before.BuiltInRepo;
+        Updater.FeedTimeoutOverride = before.FeedTimeout;
+        Updater.PackagingOverride = scratch != null ? Packaging.SelfContained : before.Packaging;   // tests run as the portable flavour (updates\ folder, Clink.exe) unless they say otherwise
+        Updater.PreflightOverride = scratch != null ? static (_, _) => new(0, false, null) : before.Preflight;   // never a real process; a test installs its own fake
+        DotNetRuntimes.Override = scratch != null ? new[] { new Version(10, 0, 0) } : before.Runtimes;
+        Updater.IsElevatedOverride = before.Elevated;   // null = ask Windows; a test that pretends to be elevated does not leave it so
         Settings.ThawSaves();
         Settings.SeedDefaults = scratch == null;   // off during a test (the older tests pin exact hotkey lists); the seeding tests turn it on themselves
         SettingsImport.Reset();

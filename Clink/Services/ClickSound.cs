@@ -12,8 +12,17 @@ internal static unsafe class ClickSound
     private static byte[]? s_wav;
     private static double s_volume = -1;
 
+    /// <summary>The error sound (the system exclamation). Silent in a --dev-quiet instance, like <see cref="Play"/>.</summary>
+    public static void PlayError()
+    {
+        if (QuietMode.Active) return;
+        try { System.Media.SystemSounds.Exclamation.Play(); }
+        catch (Exception ex) { Log.Warn("Error sound: " + ex.Message); }
+    }
+
     public static void Play(double volume)
     {
+        if (QuietMode.Active) return;   // --dev-quiet: every sound is muted
         try
         {
             var previous = s_wav;   // a volume change replaces it while it may still be playing: alive until the next PlaySound stopped it

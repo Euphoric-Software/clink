@@ -48,7 +48,7 @@ public partial class CopiumConsentWindow : Window, ICaptureExcludedWindow
         }
         if (excludeFromCapture)
         {
-            Topmost = true;
+            Topmost = !QuietMode.Active;   // --dev-quiet: never topmost
             SourceInitialized += (_, _) => ScreenPlacement.ExcludeFromCapture(new WindowInteropHelper(this).Handle);
         }
     }

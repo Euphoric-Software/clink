@@ -543,11 +543,12 @@ command does not touch it); `--selftest` / `--probe` / `--trim` write `clink-cli
   code. It sets `CLINK_TESTS_NO_SKIP=1`: the runner image has the AAC encoder, so a skip there would mean the mix tests
   had been switched off. `CLINK_EMULATE_ELST=1` runs the tests on a PC as on a Media Foundation that applies the audio edit
   lists of an MP4, which is what the CI runner (Windows Server 2025) has (`Clink\Tests\EditListEmulation.cs`).
-* `Clink.exe --dev [folder] [--dev-hotkeys] [--dev-record] [--dev-token]` (hidden; `--dev=<folder>` works too) starts a
+* `Clink.exe --dev [folder] [--dev-hotkeys] [--dev-record] [--dev-token] [--dev-quiet]` (hidden; `--dev=<folder>` works too) starts a
   **second Clink next to the real one**, for trying a build out. It has its own data folder (settings, clip index, log
   and clips; `%TEMP%\clink-dev` when no folder is given), its own single-instance mutex and control pipe (named from the
-  folder, so `--clip` or `--show` aimed at it never reach the real Clink and two dev folders never meet), "Clink (dev)" in
-  its title, tray and toasts, no updater (the Updates card says *updates are off in dev mode*) and no Run-key writes.
+  folder, so `--clip` or `--show` aimed at it never reach the real Clink and two dev folders never meet), a **TEST marker**
+  (a 3 px yellow frame and a "TEST · folder" badge on the main window, "Clink TEST (folder)" as its title, "TEST ·" in the
+  tray tooltip, a yellow TEST tag and frame on toasts, " [TEST]" on the titles of its other windows), no updater (the Updates card says *updates are off in dev mode*) and no Run-key writes.
   It starts **paused** (`--dev-record` records), binds **no hotkeys** (`--dev-hotkeys` binds them, and its keyboard hook
   then swallows those combos system-wide while it runs, so use other keys than the real Clink's) and has **no Copium
   token** (`--dev-token` keeps the one its settings hold). A fresh dev folder also switches the *Recording started*
@@ -558,6 +559,30 @@ command does not touch it); `--selftest` / `--probe` / `--trim` write `clink-cli
   **`--dev` is the only safe way to run a second Clink.** A plain second `Clink.exe` does not start another copy: it
   hands its command (`--clip`, `--share-last`, `--trim-last`, or just *show*) to the Clink that is running and exits, so
   a test run that forgets `--dev` acts on your live session.
+  * **`--dev-quiet`** (`Clink.exe --dev <folder> --dev-quiet`, for automated test runs; like every dev switch it is an error without `--dev`, exit code 2 before anything starts, never a normal start) keeps the
+    test instance out of the way of whoever is at the PC. Its windows never take the focus, are never topmost and have no
+    taskbar button; each one is created beyond the right edge of the virtual screen and then **cloaked** (DWM, invisible,
+    no Alt-Tab entry) at the back with a single pixel column over the right-most monitor's edge. The pixel matters: Windows
+    does not draw a window that touches no monitor, so a fully off-screen window gives a blank `PrintWindow`; cloaked with
+    one pixel on a monitor it is drawn, `PrintWindow(PW_RENDERFULLCONTENT)` returns its real picture and UI Automation tree
+    walks work (`FromPoint` does not, the window is not under any point). Nothing activates it (tray click, pipe *show*,
+    second-instance forwarding, toasts), its position is never saved and `RestoreWindowBounds` ignores the saved one. Toasts,
+    the status dot and tray balloons are suppressed or kept off-screen, every sound (save click, error sounds) is muted,
+    no hotkey is bound unless `--dev-hotkeys` is also given, and capture starts **paused** (no capture border on your
+    screen) unless `--dev-quiet-record` is given (`--dev-record` does not override it). The TEST markers stay. The
+    capture overlay (`RegionOverlayWindow`) is left alone: it only appears for an explicit screenshot action and then
+    takes the whole screen like the real one. Every window of the application, recognised by its window class (WPF
+    windows and popups such as tooltips and ComboBox dropdowns, message boxes, Windows common dialogs such as the folder
+    picker; a window the app did not make, like the tray menu, is left alone), is created off-screen with its activation
+    refused, and a cloak is asked for at creation. Windows can refuse that early cloak; what holds is the process-wide
+    window-shown hook, which cloaks each of these windows again when it appears, and a system-wide foreground hook: should
+    a hidden window of the instance get the foreground anyway, it is given straight back to the window of another
+    process that had it last (logged as `quiet: hidden window ... took the foreground`). A hotkey capture
+    is never armed in a quiet instance (nothing would disarm it, and it would swallow the next key pressed anywhere), and a
+    capture only takes a key while a window of Clink has the foreground. The confirmation boxes Clink shows after start-up
+    have a question icon (no system sound); the start-up failure box is shown before the hook and is not covered. Best
+    effort: a shell dialog that runs outside the thread's window hook could still flash on screen. `QuietMode` / `QuietPlacement` (`Clink\Services\QuietMode.cs`) hold the pure placement
+    and gating logic (`QuietModeTests`).
   * **The dev folder must be a leaf Clink can own**: new, empty, or one an earlier dev run made (an existing folder that
     holds other files and no Clink data is refused). A dev instance treats everything in its folder as its own (its
     clips are listed, trimmed, shared, archived and deleted from there), so it is refused, with exit code 2 before

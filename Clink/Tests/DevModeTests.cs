@@ -290,15 +290,6 @@ internal static class DevModeTests
     }
 
     [UnitTest]
-    public static void A_toast_of_a_dev_instance_says_so()
-    {
-        Check.Equal("Clip saved", Toasts.TitleFor("Clip saved"));
-        AppController.InstanceSuffix = ".dev.test";
-        Check.Equal("Clip saved (dev)", Toasts.TitleFor("Clip saved"));
-        Check.Equal("Clip not saved (dev)", Toasts.TitleFor("Clip not saved"));
-    }
-
-    [UnitTest]
     public static void The_updater_does_nothing_in_a_dev_instance()
     {
         using var dir = new TempDir();
@@ -323,7 +314,8 @@ internal static class DevModeTests
         Check.True(up.CheckFailed);
         Check.Equal(Updater.DevModeNote.ToLowerInvariant(), up.LastError);
         Check.Contains(up.LastError, "dev mode");
-        Check.Throws<InvalidOperationException>(() => Updater.LaunchApply(real, @"C:\x\Clink.exe", Array.Empty<string>()));
+        Check.Throws<InvalidOperationException>(() => up.LaunchApply(real, @"C:\x\Clink.exe", Array.Empty<string>()));
+        Check.Throws<InvalidOperationException>(() => up.PrepareApply(real));
         var release = new UpdateInfo(new ReleaseVersion(new Version(9, 9, 9), null), "v9.9.9", "https://example.invalid/Clink.exe", 1, "https://example.invalid/Clink.exe.sha256", "", "");
         Check.Throws<InvalidOperationException>(() => up.DownloadAsync(release, null, CancellationToken.None).GetAwaiter().GetResult());
         Check.Equal("exe", File.ReadAllText(real), "what is in the updates folder is left alone");

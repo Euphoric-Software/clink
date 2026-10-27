@@ -165,6 +165,28 @@ internal sealed class Settings
     public string? PendingUpdateVersion { get; set; }          // written by the updater: version and SHA-256 of the download it verified in %LOCALAPPDATA%\Clink\updates;
     public string? PendingUpdateSha256 { get; set; }           // the file is hashed again against this before it is ever installed
     public string? PendingUpdateFrom { get; set; }             // version of the exe that made that download: only that exe may go from a dev build back to it at startup
+    /// <summary>
+    /// Written by the updater: true when the recorded download (<see cref="PendingUpdateVersion"/>) was verified against a signed
+    /// manifest (<see cref="UpdateFeed"/>), null for one checked against Clink.exe.sha256. A build with the signed feed on installs or
+    /// reuses only a signed download. Per installation (a PendingUpdate* key): never imported. Left out of the file while null.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public bool? PendingUpdateSigned { get; set; }
+    // The same record for the Framework flavour, which downloads into updates\fx\ (the four PendingUpdate* keys above describe the root
+    // updates\ folder: SelfContained copies, and v0.4.1 / dev.10, which keep unknown keys and rewrite only those four). Two records,
+    // so a copy of one flavour never reads, rewrites or deletes on the strength of the other's. Per installation (PendingUpdate* keys):
+    // never imported. Left out of the file while null.
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? PendingUpdateFxVersion { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? PendingUpdateFxSha256 { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? PendingUpdateFxFrom { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public bool? PendingUpdateFxSigned { get; set; }
+    /// <summary>
+    /// Written by the updater: the highest version it has seen in a verified stable / dev manifest of the signed feed (<see cref="UpdateFeed"/>).
+    /// A verified manifest below it is a replayed old one and is not trusted. Per installation: never imported. Left out of the file while
+    /// null, so a settings.json of a build without the feed is exactly what it was.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? FeedFloorStable { get; set; }
+    /// <inheritdoc cref="FeedFloorStable"/>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? FeedFloorDev { get; set; }
 
     // ---- v3 (v0.2.5) ----
     /// <summary>dark | light</summary>
@@ -329,12 +351,13 @@ internal sealed class Settings
 
     internal static bool SavesFrozen => s_frozen;
 
-    // The properties a settings file can set: public with a public setter, not [JsonIgnore], not the extension data.
+    // The properties a settings file can set: public with a public setter, not [JsonIgnore] (a conditional one such as
+    // WhenWritingNull is still read), not the extension data.
     private static Dictionary<string, PropertyInfo>? s_bindable;
     private static Dictionary<string, PropertyInfo> Bindable => s_bindable ??= typeof(Settings)
         .GetProperties(BindingFlags.Public | BindingFlags.Instance)
         .Where(p => p.CanWrite && p.SetMethod!.IsPublic && p.GetIndexParameters().Length == 0
-                    && p.GetCustomAttribute<JsonIgnoreAttribute>() == null && p.GetCustomAttribute<JsonExtensionDataAttribute>() == null)
+                    && p.GetCustomAttribute<JsonIgnoreAttribute>() is not { Condition: JsonIgnoreCondition.Always } && p.GetCustomAttribute<JsonExtensionDataAttribute>() == null)
         .ToDictionary(p => p.Name, StringComparer.OrdinalIgnoreCase);
 
     // The floating-point settings (Window*, HdrKnee, HdrPeak, KeyframeSeconds, ClickVolume, ArchiveWhenLocalExceedsGB, ...) and

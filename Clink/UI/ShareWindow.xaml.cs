@@ -71,7 +71,7 @@ public partial class ShareWindow : Window, ICaptureExcludedWindow
         Loaded += (_, _) => _ = CheckAsync();
         // Whenever the window comes forward (Share pressed again, the user came back to it): look at the clip again, quietly. It may
         // have been archived, replaced by a trim or deleted since, and a share that was down may be back.
-        Activated += (_, _) => { Topmost = true; _ = CheckAsync(); };
+        Activated += (_, _) => { if (!QuietMode.Active) Topmost = true; _ = CheckAsync(); };
         // Not over a game: once the window has lost the focus to the game it goes behind it (Topmost is back when it is activated, or
         // when the game loses the focus; the controller's once-a-second state tick catches a game that took the focus without
         // this window ever having had it).
@@ -243,7 +243,7 @@ public partial class ShareWindow : Window, ICaptureExcludedWindow
         if (_closed) return;
         if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
         _ = CheckAsync();
-        if (activate) Activate();
+        if (activate && !QuietMode.Active) Activate();
     }
 
     /// <summary>
@@ -284,7 +284,7 @@ public partial class ShareWindow : Window, ICaptureExcludedWindow
     /// </summary>
     private void UpdateTopmost()
     {
-        if (_closed) return;
+        if (_closed || QuietMode.Active) return;   // --dev-quiet: never topmost
         bool game = Hotkeys.GameInFront();
         if (game && Topmost)
         {
