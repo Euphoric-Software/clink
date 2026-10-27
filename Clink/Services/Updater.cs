@@ -10,8 +10,12 @@ using System.Text.RegularExpressions;
 
 namespace Clink.Services;
 
-/// <summary>A newer release (or, on the dev channel, dev build) found on GitHub. <see cref="ShaUrl"/> is never null: a release without <c>Clink.exe.sha256</c> is not offered.</summary>
-internal sealed record UpdateInfo(ReleaseVersion Version, string Tag, string ExeUrl, long ExeSize, string ShaUrl, string HtmlUrl, string Notes);
+/// <summary>
+/// A newer release (or, on the dev channel, dev build) found on GitHub or in the signed feed. <see cref="ShaUrl"/> is never null: a GitHub
+/// release without <c>Clink.exe.sha256</c> is not offered. A feed result carries the hash inline in <see cref="Sha256"/> (lowercase hex)
+/// and an empty <see cref="ShaUrl"/>; the download then fetches no hash file.
+/// </summary>
+internal sealed record UpdateInfo(ReleaseVersion Version, string Tag, string ExeUrl, long ExeSize, string ShaUrl, string HtmlUrl, string Notes, string? Sha256 = null);
 
 /// <summary>
 /// Self-update from GitHub Releases. Polls <c>/releases/latest</c> for a newer <c>Clink.exe</c> asset (or, with
@@ -134,6 +138,34 @@ internal sealed class Updater : IDisposable
     private static string? AssemblyRepo =>
         EntryAssembly.GetCustomAttributes<AssemblyMetadataAttribute>().FirstOrDefault(a => a.Key == MetadataKey)?.Value;
 
+    private static string? Metadata(string key) =>
+        EntryAssembly.GetCustomAttributes<AssemblyMetadataAttribute>().FirstOrDefault(a => a.Key == key)?.Value;
+
+    /// <summary>Replaces the network for the update check, the hash file and the exe download: set by the unit tests, null otherwise.</summary>
+    internal static Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>>? HttpOverride { get; set; }
+    /// <summary>Stands in for the UpdateFeed / UpdateFeedPublicKey assembly metadata in the unit tests; null otherwise.</summary>
+    internal static (string Url, string PublicKey)? FeedOverride { get; set; }
+
+    private static Task<HttpResponseMessage> SendAsync(HttpRequestMessage req, CancellationToken ct, HttpCompletionOption option = HttpCompletionOption.ResponseContentRead) =>
+        HttpOverride != null ? HttpOverride(req, ct) : s_http.SendAsync(req, option, ct);
+
+    /// <summary>
+    /// The signed feed to try before GitHub: its base URL (https, ending in '/') and public key, only when BOTH the UpdateFeed and
+    /// UpdateFeedPublicKey metadata are non-empty; null otherwise (local builds: GitHub only, exactly as before).
+    /// </summary>
+    internal static (string BaseUrl, string PublicKey)? FeedConfig
+    {
+        get
+        {
+            string? url = FeedOverride?.Url ?? Metadata("UpdateFeed"), key = FeedOverride?.PublicKey ?? Metadata("UpdateFeedPublicKey");
+            if (string.IsNullOrWhiteSpace(url) || string.IsNullOrWhiteSpace(key)) return null;
+            url = url.Trim();
+            if (!url.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) return null;
+            if (!url.EndsWith('/')) url += "/";
+            return (url, key.Trim());
+        }
+    }
+
     /// <summary>Logs once at startup where updates come from, so a redirected settings.json is visible in the log.</summary>
     public void LogSource()
     {
@@ -144,6 +176,17 @@ internal sealed class Updater : IDisposable
         Log.Info(RepoOverridden
             ? $"updater: updates come from github.com/{repo} (UpdateRepo in settings.json overrides the built-in {builtIn})"
             : $"updater: updates come from github.com/{repo}");
+        if (FeedConfig is { } feed) Log.Info($"updater: the signed feed {feed.BaseUrl} is tried first, GitHub is the fallback");
+    }
+
+    /// <summary>GET for the feed: the body, or an exception for a network error or a non-success status.</summary>
+    private async Task<byte[]> FetchFeedAsync(string url, CancellationToken ct)
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Get, url);
+        AddHeaders(req);
+        using var resp = await SendAsync(req, ct).ConfigureAwait(false);
+        if (!resp.IsSuccessStatusCode) throw new HttpRequestException($"HTTP {(int)resp.StatusCode} for {url}");
+        return await resp.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
     }
 
     // ------------------------------------------------------------------ versions
@@ -238,12 +281,28 @@ internal sealed class Updater : IDisposable
         bool dev = _settings.UseDevBuilds;   // one channel for the whole check, even if the box is ticked meanwhile
         try
         {
+            // The signed feed first. Any problem (and a feed that does not offer anything newer) is logged and GitHub is asked as before;
+            // nothing from an unverified manifest is ever used.
+            if (FeedConfig is { } feed)
+            {
+                var (feedInfo, feedProblem) = await UpdateFeed.TryGetAsync(FetchFeedAsync, feed.BaseUrl, feed.PublicKey, dev, ct).ConfigureAwait(false);
+                if (feedInfo == null)
+                    Log.Warn($"updater: feed unusable ({feedProblem}); falling back to GitHub");
+                else if (!ShouldInstall(feedInfo.Version, Current, dev, allowLeaveDev: manual))
+                    Log.Info($"updater: feed offers {feedInfo.Tag}, not newer than v{VersionDisplay}; falling back to GitHub");
+                else
+                {
+                    LastError = null;
+                    Log.Info($"updater: v{feedInfo.Version} available ({feedInfo.ExeSize / 1024} KB) from the signed feed");
+                    return feedInfo;
+                }
+            }
             string url = dev ? $"https://api.github.com/repos/{repo}/releases?per_page=30" : $"https://api.github.com/repos/{repo}/releases/latest";
             using var req = new HttpRequestMessage(HttpMethod.Get, url);
             AddHeaders(req);
             req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
             // The whole (small) answer is buffered inside SendAsync, so HttpClient.Timeout also covers a body that stalls.
-            using var resp = await s_http.SendAsync(req, ct).ConfigureAwait(false);
+            using var resp = await SendAsync(req, ct).ConfigureAwait(false);
             string body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
             if (!resp.IsSuccessStatusCode)
             {
@@ -379,12 +438,12 @@ internal sealed class Updater : IDisposable
         try
         {
             // The hash first: if it cannot be fetched there is no point transferring 30 MB.
-            string expected = await FetchShaAsync(info.ShaUrl, ct).ConfigureAwait(false);
+            string expected = info.Sha256 ?? await FetchShaAsync(info.ShaUrl, ct).ConfigureAwait(false);
             long done = 0;
             using (var req = new HttpRequestMessage(HttpMethod.Get, info.ExeUrl))
             {
                 AddHeaders(req);
-                using var resp = await s_http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+                using var resp = await SendAsync(req, ct, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
                 resp.EnsureSuccessStatusCode();
                 long total = resp.Content.Headers.ContentLength ?? info.ExeSize;
                 await using var src = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
@@ -450,7 +509,7 @@ internal sealed class Updater : IDisposable
     {
         using var req = new HttpRequestMessage(HttpMethod.Get, url);
         AddHeaders(req);
-        using var resp = await s_http.SendAsync(req, ct).ConfigureAwait(false);
+        using var resp = await SendAsync(req, ct).ConfigureAwait(false);
         resp.EnsureSuccessStatusCode();
         string text = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
         var m = s_hex64.Match(text);
