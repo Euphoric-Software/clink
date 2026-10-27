@@ -1,8 +1,8 @@
-# Builds Clink. Uses the user-local .NET SDK (%USERPROFILE%\.dotnet) if there is no dotnet with an SDK on PATH.
+﻿# Builds Clink. Uses the user-local .NET SDK (%USERPROFILE%\.dotnet) if there is no dotnet with an SDK on PATH.
 param(
     [ValidateSet('Debug', 'Release')] [string]$Configuration = 'Release',
     [switch]$Publish,
-    [switch]$Package,   # publish, then run tools/package.ps1 into dist/package (setup.exe needs Inno Setup 6)
+    [switch]$Package,   # publish, then run tools/package.ps1 into dist/package (setup.exe needs Inno Setup 6.3+)
     [switch]$Run
 )
 $ErrorActionPreference = 'Stop'
@@ -13,7 +13,10 @@ if (-not (Get-Command dotnet -ErrorAction SilentlyContinue) -or -not (& dotnet -
     if (Test-Path $local) { $dotnet = $local } else { throw "No .NET SDK found. Install .NET 10 SDK or run: https://dot.net/v1/dotnet-install.ps1 -Channel 10.0" }
 }
 $proj = Join-Path $root 'Clink\Clink.csproj'
-if ($Package) { $Publish = $true }
+if ($Package) {
+    $Publish = $true
+    if ($Configuration -ne 'Release') { Write-Warning 'Packaging a Debug build: release packages should be built with -Configuration Release (the default).' }
+}
 if ($Publish) {
     & $dotnet publish $proj -c $Configuration -o (Join-Path $root 'dist')
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

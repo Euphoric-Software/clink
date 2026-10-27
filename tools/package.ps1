@@ -1,5 +1,5 @@
-﻿# Packages a published Clink.exe: Clink.exe, Clink.exe.sha256, Clink-<ver>-setup.exe (needs Inno Setup 6),
-# Clink-<ver>-portable.zip and package.json (file/size/sha256 per output, read by make-manifest.ps1).
+﻿# Packages a published Clink.exe: Clink.exe, Clink.exe.sha256, Clink-<ver>-setup.exe (needs Inno Setup 6.3+) and package.json
+# (file/size/sha256 per output, read by make-manifest.ps1). The portable download is the plain Clink.exe.
 param(
     [Parameter(Mandatory)] [string]$ExePath,
     [Parameter(Mandatory)] [string]$Version,
@@ -40,22 +40,7 @@ if ($ExePath -ne $exeOut) { Copy-Item -LiteralPath $ExePath -Destination $exeOut
 $hash = (Get-FileHash -LiteralPath $exeOut -Algorithm SHA256).Hash.ToLowerInvariant()
 [System.IO.File]::WriteAllText((Join-Path $OutDir 'Clink.exe.sha256'), "$hash *Clink.exe`n", $utf8)
 
-# 2. Portable zip: Clink.exe + Clink.portable marker at the zip root.
-$zipName = "Clink-$Version-portable.zip"
-$zipPath = Join-Path $OutDir $zipName
-if (Test-Path -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force }
-$stage = Join-Path ([System.IO.Path]::GetTempPath()) ("clink-portable-" + [guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Path $stage | Out-Null
-try {
-    Copy-Item -LiteralPath $exeOut -Destination (Join-Path $stage 'Clink.exe')
-    [System.IO.File]::WriteAllText((Join-Path $stage 'Clink.portable'),
-        "Clink portable mode: settings and clips stay beside Clink.exe. Delete this file to use the normal per-user locations.`r`n", $utf8)
-    Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zipPath -CompressionLevel Optimal
-} finally {
-    Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
-}
-
-# 3. Installer.
+# 2. Installer.
 $setupName = "Clink-$Version-setup.exe"
 $setupPath = Join-Path $OutDir $setupName
 if (Test-Path -LiteralPath $setupPath) { Remove-Item -LiteralPath $setupPath -Force }
@@ -69,9 +54,9 @@ if ($iscc) {
     Write-Warning 'Inno Setup 6 (ISCC.exe) not found: installer NOT built.'
 }
 
-# 4. package.json summary.
+# 3. package.json summary.
 $files = [ordered]@{}
-$kinds = [ordered]@{ exe = 'Clink.exe'; sha256file = 'Clink.exe.sha256'; installer = $setupName; portable = $zipName }
+$kinds = [ordered]@{ exe = 'Clink.exe'; sha256file = 'Clink.exe.sha256'; installer = $setupName }
 foreach ($k in $kinds.Keys) {
     $p = Join-Path $OutDir $kinds[$k]
     if (-not (Test-Path -LiteralPath $p)) { continue }

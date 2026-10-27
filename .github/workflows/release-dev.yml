@@ -10,8 +10,13 @@
 # final build. N grows with every dev build (run number, or above the highest
 # existing dev tag); the app compares N numerically.
 #
-# The job runs the unit tests before it publishes: a dev build never ships with
-# failing tests. Only the 10 newest dev builds are kept.
+# Two jobs (contract v2, see docs/RELEASING.md):
+#   build   - no secrets, no environment, contents: read. Builds, runs the unit tests (a dev build never ships with failing
+#             tests), packages and uploads the package as an artifact.
+#   publish - environment feed-dev (limited to the dev branch). Guards, re-checks the artifact, signs the dev manifest when
+#             Clink/Assets/feed.json enables the feed, creates a DRAFT prerelease, uploads to the bucket, publishes the
+#             draft, prunes.
+# Only the 10 newest dev builds are kept (GitHub prereleases and bucket folders).
 #
 # Same rules as release.yml: the asset is named exactly "Clink.exe" with a
 # "Clink.exe.sha256" beside it, and every action is pinned to a commit SHA.
@@ -24,15 +29,21 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-dev
   cancel-in-progress: false
 
 jobs:
-  dev-release:
+  build:
     runs-on: windows-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      exe_sha256: ${{ steps.package.outputs.exe_sha256 }}
+      setup_sha256: ${{ steps.package.outputs.setup_sha256 }}
     steps:
       - name: Check out
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -61,6 +72,8 @@ jobs:
         env:
           CLINK_TESTS_NO_SKIP: '1'
         run: |
+          . ./tools/feed-lib.ps1
+          $env:CLINK_EXPECT_FEED = (Get-FeedConfig -Path Clink/Assets/feed.json -Channel dev).Mode
           $exe = Get-ChildItem -Path Clink/bin/Release -Filter Clink.exe -Recurse | Select-Object -First 1
           if (-not $exe) { throw 'Clink.exe was not found under Clink/bin/Release' }
           $run = Start-Process -FilePath $exe.FullName -ArgumentList '--unittest' -Wait -PassThru -NoNewWindow
@@ -109,21 +122,26 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
           UPDATE_REPO: ${{ github.repository }}
-          UPDATE_FEED: ${{ vars.CLINK_FEED_URL }}
-          UPDATE_FEED_PUBLIC_KEY: ${{ vars.CLINK_FEED_PUBLIC_KEY }}
         run: |
-          dotnet publish Clink/Clink.csproj -c Release -o dist "-p:Version=$env:VERSION" "-p:UpdateRepo=$env:UPDATE_REPO" "-p:UpdateFeed=$env:UPDATE_FEED" "-p:UpdateFeedPublicKey=$env:UPDATE_FEED_PUBLIC_KEY"
+          dotnet publish Clink/Clink.csproj -c Release -o dist "-p:Version=$env:VERSION" "-p:UpdateRepo=$env:UPDATE_REPO"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (-not (Test-Path dist/Clink.exe)) { throw 'dist/Clink.exe was not produced' }
           Get-ChildItem dist | Select-Object Name, Length
 
-      - name: Write Clink.exe.sha256
+      # What the BUILT exe embeds from Clink/Assets/feed.json must match what CI reads from the same file (off for an empty
+      # file, on for a complete one; a partly filled file already fails in Get-FeedConfig).
+      - name: Check the embedded feed trust
         shell: pwsh
+        timeout-minutes: 5
         run: |
-          $hash = (Get-FileHash -Path dist/Clink.exe -Algorithm SHA256).Hash.ToLowerInvariant()
-          $path = Join-Path (Get-Location) 'dist/Clink.exe.sha256'
-          [System.IO.File]::WriteAllText($path, "$hash *Clink.exe`n", [System.Text.UTF8Encoding]::new($false))
-          Get-Content $path
+          . ./tools/feed-lib.ps1
+          $cfg = Get-FeedConfig -Path Clink/Assets/feed.json -Channel dev
+          $env:CLINK_EXPECT_FEED = $cfg.Mode
+          $env:CLINK_TESTS_NO_SKIP = '1'
+          $exe = (Resolve-Path dist/Clink.exe).Path
+          Write-Output "Expecting the built exe to embed the feed as: $($cfg.Mode)"
+          $run = Start-Process -FilePath $exe -ArgumentList '--unittest', 'Embedded_feed_trust_matches_ci_expectation' -Wait -PassThru -NoNewWindow
+          if ($run.ExitCode -ne 0) { throw "Embedded_feed_trust_matches_ci_expectation failed (exit code $($run.ExitCode)): the built exe does not embed feed.json as CI expects ($($cfg.Mode))" }
 
       # The app refuses a download whose embedded version differs from its tag (including the -dev.N part).
       - name: Check the embedded version
@@ -135,65 +153,162 @@ jobs:
           if ($embedded -ne $env:VERSION) { throw "dist/Clink.exe reports '$embedded' but the tag will be v$env:VERSION; the updater would refuse it" }
           Write-Output "Clink.exe reports $embedded"
 
-      - name: Create GitHub prerelease
-        uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631 # v2.2.2
+      # Pinned Inno Setup 6.7.3 (>= 6.3 is needed for x64compatible). Official release asset of github.com/jrsoftware/issrc;
+      # the SHA-256 below was computed from a scratch download and matches the digest GitHub shows for the asset.
+      # Installed into the runner temp folder; nothing from it is trusted before the hash matches.
+      - name: Install Inno Setup (pinned, hash-verified)
+        shell: pwsh
+        env:
+          INNO_URL: https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe
+          INNO_SHA256: 9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732
+        run: |
+          $setup = Join-Path $env:RUNNER_TEMP 'innosetup-6.7.3.exe'
+          Invoke-WebRequest -Uri $env:INNO_URL -OutFile $setup -UseBasicParsing
+          $actual = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $env:INNO_SHA256) { throw "Inno Setup installer hash mismatch: got $actual, expected $env:INNO_SHA256" }
+          $dir = Join-Path $env:RUNNER_TEMP 'InnoSetup'
+          $run = Start-Process -FilePath $setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', "/DIR=$dir" -Wait -PassThru
+          if ($run.ExitCode -ne 0) { throw "Inno Setup install failed (exit code $($run.ExitCode))" }
+          if (-not (Test-Path (Join-Path $dir 'ISCC.exe'))) { throw 'ISCC.exe not found after the Inno Setup install' }
+
+      - name: Package (Clink.exe, sha256, installer)
+        id: package
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          ./tools/package.ps1 -ExePath dist/Clink.exe -Version $env:VERSION -OutDir dist/package -IsccPath (Join-Path $env:RUNNER_TEMP 'InnoSetup\ISCC.exe') -RequireInstaller
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $pkg = Get-Content -Raw dist/package/package.json | ConvertFrom-Json
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "exe_sha256=$($pkg.files.exe.sha256)"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "setup_sha256=$($pkg.files.installer.sha256)"
+          Get-Content dist/package/Clink.exe.sha256
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          tag_name: v${{ steps.version.outputs.version }}
-          name: Clink v${{ steps.version.outputs.version }} (dev)
-          target_commitish: ${{ github.sha }}
-          prerelease: true
-          make_latest: false
-          generate_release_notes: false
-          fail_on_unmatched_files: true
-          body: Dev build of ${{ github.sha }} from the dev branch. Clink installs it only with Dev Build turned on (click the version in the footer).
-          files: |
-            dist/Clink.exe
-            dist/Clink.exe.sha256
+          name: clink-package
+          path: dist/package/
+          if-no-files-found: error
+          retention-days: 7
 
-      # Installer + portable zip are extra assets: Clink.exe and Clink.exe.sha256 above stay exactly as v0.4.1 updaters expect.
-      - name: Install Inno Setup (if missing)
+  publish:
+    needs: build
+    runs-on: windows-latest
+    environment: feed-dev
+    # One publisher at a time, never cancelled half way.
+    concurrency:
+      group: feed-dev-publish
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      # Guards run before any secret is referenced by a step.
+      - name: Guard - dev branch only, release not yet there
         shell: pwsh
         run: |
-          $known = @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe")
-          if ((Get-Command ISCC.exe -ErrorAction SilentlyContinue) -or ($known | Where-Object { Test-Path $_ })) { Write-Output 'Inno Setup already present'; return }
-          choco install innosetup -y --no-progress
-          if ($LASTEXITCODE -ne 0) { throw 'Inno Setup install failed' }
+          if ($env:GITHUB_REF -ne 'refs/heads/dev') { throw "dev builds publish only from the dev branch (this run is on $env:GITHUB_REF)" }
+          if ($env:VERSION -notmatch '^\d+\.\d+\.\d+-dev\.\d+$') { throw "'$env:VERSION' is not an X.Y.Z-dev.N version" }
+          $eap = $ErrorActionPreference
+          $ErrorActionPreference = 'Continue'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $probe = (& gh release view "v$env:VERSION" 2>&1 | Out-String)
+          $exists = $LASTEXITCODE -eq 0
+          $ErrorActionPreference = $eap
+          if ($exists) { throw "A GitHub release v$env:VERSION already exists (published or draft); refusing to touch it." }
+          if ($probe -notmatch 'release not found|HTTP 404') { throw "Could not check whether release v$env:VERSION exists: $probe" }
 
-      - name: Package (installer, portable zip)
+      - name: Check out
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Download package artifact
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: clink-package
+          path: dist/package
+
+      - name: Verify the package matches the build job
         shell: pwsh
         env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: ./tools/package.ps1 -ExePath dist/Clink.exe -Version $env:VERSION -OutDir dist/package -RequireInstaller
-
-      - name: Attach installer and portable zip to the release
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.version.outputs.version }}
+          EXE_SHA256: ${{ needs.build.outputs.exe_sha256 }}
+          SETUP_SHA256: ${{ needs.build.outputs.setup_sha256 }}
         run: |
-          gh release upload "v$env:VERSION" "dist/package/Clink-$env:VERSION-setup.exe" "dist/package/Clink-$env:VERSION-portable.zip" --clobber --repo $env:GITHUB_REPOSITORY
-          if ($LASTEXITCODE -ne 0) { throw 'Could not attach the extra assets' }
+          $exe = (Get-FileHash dist/package/Clink.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($exe -ne $env:EXE_SHA256) { throw "Clink.exe in the artifact ($exe) is not what the build job produced ($env:EXE_SHA256)" }
+          $setup = (Get-FileHash "dist/package/Clink-$env:VERSION-setup.exe" -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($setup -ne $env:SETUP_SHA256) { throw "The setup exe in the artifact ($setup) is not what the build job produced ($env:SETUP_SHA256)" }
+          $line = (Get-Content -Raw dist/package/Clink.exe.sha256).Trim()
+          if ($line -ne "$exe *Clink.exe") { throw "Clink.exe.sha256 does not describe Clink.exe: $line" }
+          Write-Output "Package verified (Clink.exe $exe)"
 
-      # Secrets cannot be tested in if:, so a step reports whether the whole set is configured.
-      - name: Check update-feed configuration
+      # Trust anchors come from the committed Clink/Assets/feed.json (the same file that was embedded in Clink.exe).
+      - name: Read feed configuration
         id: feed
+        shell: pwsh
+        run: |
+          . ./tools/feed-lib.ps1
+          $cfg = Get-FeedConfig -Path Clink/Assets/feed.json -Channel dev
+          $enabled = $cfg.Enabled
+          if (-not $enabled) { Write-Output "::warning::Dev update feed is not enabled in Clink/Assets/feed.json ($($cfg.Reason)); publishing the GitHub release without manifest assets." }
+          Add-Content -Path $env:GITHUB_OUTPUT -Value ('enabled=' + $enabled.ToString().ToLowerInvariant())
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "feed_url=$($cfg.FeedUrl)"
+
+      # Fail before anything is published if the bucket credentials are missing. Presence check only; nothing is printed.
+      - name: Check bucket secrets
+        if: steps.feed.outputs.enabled == 'true'
         shell: pwsh
         env:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
-          CLINK_FEED_SIGNING_KEY: ${{ secrets.CLINK_FEED_SIGNING_KEY }}
-          CLINK_FEED_URL: ${{ vars.CLINK_FEED_URL }}
         run: |
-          $missing = @('R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_ENDPOINT', 'R2_BUCKET', 'CLINK_FEED_SIGNING_KEY', 'CLINK_FEED_URL' |
-            Where-Object { [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) })
-          if ($missing) {
-            Write-Output "::warning::Update feed not published; not configured: $($missing -join ', ')"
-            Add-Content -Path $env:GITHUB_OUTPUT -Value 'enabled=false'
-          } else {
-            Add-Content -Path $env:GITHUB_OUTPUT -Value 'enabled=true'
-          }
+          $missing = 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_ENDPOINT', 'R2_BUCKET' |
+            Where-Object { [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) }
+          if ($missing) { throw "The dev feed is enabled in feed.json but these secrets are missing from the feed-dev environment: $($missing -join ', ')" }
+
+      # The signing key exists only in this step's environment.
+      - name: Make and sign the manifest
+        if: steps.feed.outputs.enabled == 'true'
+        shell: pwsh
+        env:
+          CLINK_FEED_SIGNING_KEY: ${{ secrets.CLINK_FEED_SIGNING_KEY }}
+          FEED_URL: ${{ steps.feed.outputs.feed_url }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:CLINK_FEED_SIGNING_KEY)) { throw 'The dev feed is enabled in feed.json but CLINK_FEED_SIGNING_KEY is missing from the feed-dev environment.' }
+          $tag = "v$env:VERSION"
+          ./tools/make-manifest.ps1 -Channel dev -Version $env:VERSION -Tag $tag -BaseUrl "$($env:FEED_URL)dev/$tag/" `
+            -NotesUrl "https://github.com/$env:GITHUB_REPOSITORY/releases/tag/$tag" -PackageDir dist/package -FeedJson Clink/Assets/feed.json
+          Get-ChildItem dist/package | Select-Object Name, Length
+
+      - name: List release assets
+        id: assets
+        shell: pwsh
+        run: |
+          $files = @('dist/package/Clink.exe', 'dist/package/Clink.exe.sha256', "dist/package/Clink-$env:VERSION-setup.exe")
+          if (Test-Path dist/package/dev.json) { $files += 'dist/package/dev.json', 'dist/package/dev.json.sig' }
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "files<<EOF`n$($files -join "`n")`nEOF"
+
+      # A DRAFT first: nothing is visible until the bucket upload succeeded.
+      - name: Create GitHub release (draft)
+        uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631 # v2.2.2
+        with:
+          tag_name: v${{ needs.build.outputs.version }}
+          name: Clink v${{ needs.build.outputs.version }} (dev)
+          target_commitish: ${{ github.sha }}
+          draft: true
+          prerelease: true
+          make_latest: false
+          generate_release_notes: false
+          fail_on_unmatched_files: true
+          body: Dev build of ${{ github.sha }} from the dev branch. Clink installs it only with Dev Build turned on (click the version in the footer).
+          files: ${{ steps.assets.outputs.files }}
 
       - name: Publish to the update feed
         if: steps.feed.outputs.enabled == 'true'
@@ -203,16 +318,20 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
-          CLINK_FEED_SIGNING_KEY: ${{ secrets.CLINK_FEED_SIGNING_KEY }}
-          CLINK_FEED_URL: ${{ vars.CLINK_FEED_URL }}
           CLINK_FEED_KEY_PREFIX: ${{ vars.CLINK_FEED_KEY_PREFIX }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
-          VERSION: ${{ steps.version.outputs.version }}
-        run: ./tools/upload-feed.ps1 -Channel dev -Version $env:VERSION -PackageDir dist/package -NotesUrl "https://github.com/$env:GITHUB_REPOSITORY/releases/tag/v$env:VERSION"
+        run: ./tools/upload-feed.ps1 -Channel dev -Version $env:VERSION -PackageDir dist/package -FeedJson Clink/Assets/feed.json
+
+      - name: Publish the GitHub release
+        shell: pwsh
+        run: |
+          gh release edit "v$env:VERSION" --draft=false --latest=false
+          if ($LASTEXITCODE -ne 0) { throw 'Could not publish the draft release' }
 
       # Housekeeping: a failure here must not fail a build that was already published.
       - name: Prune old dev builds
+        if: ${{ !cancelled() }}
         continue-on-error: true
         shell: pwsh
         env:

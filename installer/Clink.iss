@@ -1,6 +1,7 @@
 ﻿; Clink installer (Inno Setup 6). Build: ISCC.exe /DAppVersion=0.4.2 [/DAppFileVersion=0.4.2.0] [/DSourceExe=path] [/DOutDir=path] installer\Clink.iss
-; Per-user install (no admin) into %LOCALAPPDATA%\Programs\Clink. The same AppId makes a newer setup upgrade in place.
-; The installer never writes Clink.portable, and uninstall never touches %APPDATA%\Clink or clips.
+; Per-user install (no admin) into %LOCALAPPDATA%\Programs\Clink. Needs Inno Setup 6.3+ (x64compatible). The same AppId makes a newer setup upgrade in place.
+; Fixed per-user location (no directory page). Uninstall removes only the program, the autostart entry and %LOCALAPPDATA%\Clink\updates
+; (downloads); it never touches %APPDATA%\Clink (settings) or clips.
 
 #ifndef AppVersion
   #error Pass the version: ISCC.exe /DAppVersion=X.Y.Z installer\Clink.iss
@@ -27,6 +28,7 @@ VersionInfoProductName=Clink
 DefaultDirName={autopf}\Clink
 DefaultGroupName=Clink
 DisableProgramGroupPage=yes
+DisableDirPage=yes
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -62,27 +64,19 @@ Filename: "{app}\Clink.exe"; Description: "{cm:LaunchProgram,Clink}"; Flags: now
 Type: files; Name: "{app}\Clink.exe.bak"
 Type: files; Name: "{app}\Clink.exe.new"
 Type: files; Name: "{app}\Clink.exe.failed"
+; Downloaded updates only. Never %APPDATA%\Clink (settings) or the clips folder.
+Type: filesandordirs; Name: "{localappdata}\Clink\updates"
 
 [Code]
 const
   DotNetUrl = 'https://dotnet.microsoft.com/download/dotnet/10.0';
 
-function HasDesktopRuntime10: Boolean;
+function DirHas10(const Pattern: string): Boolean;
 var
-  Names: TArrayOfString;
-  I: Integer;
   FindRec: TFindRec;
 begin
   Result := False;
-  // 64-bit registry view (setup runs in 64-bit mode).
-  if RegGetValueNames(HKLM, 'SOFTWARE\dotnet\Setup\InstalledVersions\x64\sharedfx\Microsoft.WindowsDesktop.App', Names) then
-    for I := 0 to GetArrayLength(Names) - 1 do
-      if Copy(Names[I], 1, 3) = '10.' then
-      begin
-        Result := True;
-        Exit;
-      end;
-  if FindFirst(ExpandConstant('{commonpf64}\dotnet\shared\Microsoft.WindowsDesktop.App\10.*'), FindRec) then
+  if FindFirst(ExpandConstant(Pattern), FindRec) then
   try
     Result := True;
   finally
@@ -90,6 +84,29 @@ begin
   end;
 end;
 
+function HasDesktopRuntime10: Boolean;
+var
+  Names: TArrayOfString;
+  I: Integer;
+begin
+  Result := False;
+  // The .NET installers register in the 32-bit registry view (HKLM\SOFTWARE\WOW6432Node) even for the x64 runtime.
+  if RegGetValueNames(HKLM32, 'SOFTWARE\dotnet\Setup\InstalledVersions\x64\sharedfx\Microsoft.WindowsDesktop.App', Names) then
+    for I := 0 to GetArrayLength(Names) - 1 do
+      if Copy(Names[I], 1, 3) = '10.' then
+      begin
+        Result := True;
+        Exit;
+      end;
+  // Folder fallbacks (zip installs, registry not written).
+  if DirHas10('{commonpf64}\dotnet\shared\Microsoft.WindowsDesktop.App\10.*') then
+  begin
+    Result := True;
+    Exit;
+  end;
+  if DirHas10('{commonpf64}\dotnet\x64\shared\Microsoft.WindowsDesktop.App\10.*') then
+    Result := True;
+end;
 function InitializeSetup: Boolean;
 var
   ErrCode: Integer;
