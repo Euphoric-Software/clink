@@ -281,7 +281,7 @@ function Split-NoticesText {
 }
 
 # Reads a restore's project.assets.json (parsed as JSON, not searched as text). Returns @{ Downloads = name -> list of versions
-# from project.frameworks.<tfm>.downloadDependencies ("[10.0.13, 10.0.13]" ranges, exact pins); Libraries = names of "libraries" }.
+# from project.frameworks.<tfm>.downloadDependencies ("[10.0.14, 10.0.14]" ranges, exact pins); Libraries = names of "libraries" }.
 function Read-AssetsFile {
     param([string]$Path)
     $assets = [System.IO.File]::ReadAllText($Path, $script:Utf8NoBom) | ConvertFrom-Json

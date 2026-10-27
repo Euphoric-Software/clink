@@ -625,7 +625,7 @@ try {
     Invoke-Test 'dotnet-sdk-lib: only Valid + an exact observed Microsoft subject + an allow-listed root + the pinned version pass' {
         $good = 'CN=.NET, O=Microsoft Corporation, L=Redmond, S=Washington, C=US'
         $root = '8F43288AD272F3103B6FB1428485EA3014C0BCFE'
-        function Get-Refusal { param($Status = 'Valid', $Subject = $good, $Root = $root, $Reported = '10.0.402', $Pinned = '10.0.402') Get-DotNetSdkRefusal -SignatureStatus $Status -SignerSubject $Subject -RootThumbprint $Root -ReportedVersion $Reported -PinnedVersion $Pinned }
+        function Get-Refusal { param($Status = 'Valid', $Subject = $good, $Root = $root, $Reported = '10.0.403', $Pinned = '10.0.403') Get-DotNetSdkRefusal -SignatureStatus $Status -SignerSubject $Subject -RootThumbprint $Root -ReportedVersion $Reported -PinnedVersion $Pinned }
         Assert-True ($null -eq (Get-Refusal)) 'refused a good SDK'
         Assert-True ($null -ne (Get-Refusal -Status 'NotSigned' -Subject '' -Root '')) 'accepted an unsigned dotnet'
         Assert-True ($null -ne (Get-Refusal -Status 'HashMismatch')) 'accepted a hash mismatch'
@@ -636,11 +636,14 @@ try {
         Assert-True ($null -ne (Get-Refusal -Root '')) 'accepted an empty root thumbprint'
         Assert-True ($null -ne (Get-Refusal -Root '0000000000000000000000000000000000000000')) 'accepted another root'
         Assert-True ($null -ne (Get-Refusal -Root ($root.ToLowerInvariant()))) 'root comparison is not case-sensitive'
-        Assert-True ($null -ne (Get-Refusal -Reported '10.0.403')) 'accepted another SDK version'
+        Assert-True ($null -ne (Get-Refusal -Reported '10.0.402')) 'accepted another SDK version'
+        Assert-True ($null -ne (Get-Refusal -Reported '10.0.404')) 'accepted a higher SDK version'
+        Assert-True ($null -ne (Get-Refusal -Reported '10.0.4030')) 'accepted a version that merely starts with the pin'
+        Assert-True ($null -ne (Get-Refusal -Reported '10.0.403-rc.1')) 'accepted a prerelease of the pin'
         Assert-True ($null -ne (Get-Refusal -Reported '')) 'accepted an empty version'
         Assert-True ($null -ne (Get-Refusal -Pinned '')) 'accepted an empty pin'
-        Assert-True ($null -ne (Get-DotNetSdkRefusal -SignatureStatus 'Valid' -SignerSubject $good -RootThumbprint $root -ReportedVersion '10.0.402' -PinnedVersion '10.0.402' -AllowedSubjects @())) 'an empty subject allow-list accepted'
-        Assert-True ($null -ne (Get-DotNetSdkRefusal -SignatureStatus 'Valid' -SignerSubject $good -RootThumbprint $root -ReportedVersion '10.0.402' -PinnedVersion '10.0.402' -AllowedRootThumbprints @())) 'an empty root allow-list accepted'
+        Assert-True ($null -ne (Get-DotNetSdkRefusal -SignatureStatus 'Valid' -SignerSubject $good -RootThumbprint $root -ReportedVersion '10.0.403' -PinnedVersion '10.0.403' -AllowedSubjects @())) 'an empty subject allow-list accepted'
+        Assert-True ($null -ne (Get-DotNetSdkRefusal -SignatureStatus 'Valid' -SignerSubject $good -RootThumbprint $root -ReportedVersion '10.0.403' -PinnedVersion '10.0.403' -AllowedRootThumbprints @())) 'an empty root allow-list accepted'
         Assert-True ($script:AllowedDotNetSdkSignerSubjects.Count -eq 1 -and $script:AllowedDotNetSdkRootThumbprints.Count -eq 1) 'the allow-lists hold more than the observed values'
     }
     Invoke-Test 'dotnet-sdk-lib: the check reads the signature, chain root and version of the resolved dotnet (DOTNET_NOLOGO, last non-empty line)' {

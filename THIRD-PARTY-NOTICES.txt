@@ -3,7 +3,7 @@ Clink third-party notices
 Clink is free software under the MIT licence (section [0]). It includes or builds on the third-party
 components below. Each section says which download carries it.
 
-Pinned .NET runtime version (self-contained Clink.exe): 10.0.13
+Pinned .NET runtime version (self-contained Clink.exe): 10.0.14
 
 ================================================================================
 [0] Clink licence (MIT)
@@ -36,7 +36,7 @@ SOFTWARE.
 ================================================================================
 [1] .NET Runtime licence
 Included in: self-contained Clink.exe, Clink-framework.exe
-Source: NuGet package Microsoft.NETCore.App.Runtime.win-x64 10.0.13, file LICENSE.TXT
+Source: NuGet package Microsoft.NETCore.App.Runtime.win-x64 10.0.14, file LICENSE.TXT
 ================================================================================
 
 The MIT License (MIT)
@@ -66,7 +66,7 @@ SOFTWARE.
 ================================================================================
 [2] .NET Runtime third-party notices
 Included in: self-contained Clink.exe, Clink-framework.exe
-Source: NuGet package Microsoft.NETCore.App.Runtime.win-x64 10.0.13, file THIRD-PARTY-NOTICES.TXT
+Source: NuGet package Microsoft.NETCore.App.Runtime.win-x64 10.0.14, file THIRD-PARTY-NOTICES.TXT
 ================================================================================
 
 .NET Runtime uses third-party libraries or other resources that may be
@@ -1491,7 +1491,7 @@ You are solely responsible for determining the appropriateness of using and dist
 ================================================================================
 [3] Windows Desktop runtime licence (WPF and Windows Forms)
 Included in: self-contained Clink.exe
-Source: NuGet package Microsoft.WindowsDesktop.App.Runtime.win-x64 10.0.13, file LICENSE
+Source: NuGet package Microsoft.WindowsDesktop.App.Runtime.win-x64 10.0.14, file LICENSE
 ================================================================================
 
 The MIT License (MIT)
@@ -1521,7 +1521,7 @@ SOFTWARE.
 ================================================================================
 [4] WPF third-party notices
 Included in: self-contained Clink.exe
-Source: https://raw.githubusercontent.com/dotnet/dotnet/4099f83977f4d29604a9aeb971fb0a7bc1d5f699/src/wpf/THIRD-PARTY-NOTICES.TXT
+Source: https://raw.githubusercontent.com/dotnet/dotnet/0427b9abbead3fa64c6655eb4290c537397131fa/src/wpf/THIRD-PARTY-NOTICES.TXT
 ================================================================================
 
 .NET Core uses third-party libraries or other resources that may be
@@ -1590,7 +1590,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ================================================================================
 [5] Windows Forms third-party notices
 Included in: self-contained Clink.exe
-Source: https://raw.githubusercontent.com/dotnet/dotnet/4099f83977f4d29604a9aeb971fb0a7bc1d5f699/src/winforms/THIRD-PARTY-NOTICES.TXT
+Source: https://raw.githubusercontent.com/dotnet/dotnet/0427b9abbead3fa64c6655eb4290c537397131fa/src/winforms/THIRD-PARTY-NOTICES.TXT
 ================================================================================
 
 .NET Core uses third-party libraries or other resources that may be

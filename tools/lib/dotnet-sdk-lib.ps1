@@ -7,13 +7,13 @@
 . (Join-Path $PSScriptRoot 'dotnet-runtime-lib.ps1')
 
 # Exact signer subjects (X509 Subject, compared with -ceq) accepted for dotnet.exe. OBSERVED ONLY: this is the subject the SDK's
-# dotnet.exe carries today (observed 2026-10-27, SDK 10.0.402). To add one: let the step fail, read the subject it prints, check it
+# dotnet.exe carries today (observed 2026-10-27 on the dotnet.exe host 10.0.13 and on SDK 10.0.403's dotnet.dll). To add one: let the step fail, read the subject it prints, check it
 # against what Microsoft ships, and add that exact string here in a reviewed commit. Never add a subject that has not been observed.
 $script:AllowedDotNetSdkSignerSubjects = @(
     'CN=.NET, O=Microsoft Corporation, L=Redmond, S=Washington, C=US'
 )
 
-# Thumbprints (SHA-1, upper case) of the root the signer chain must end in. Observed: the chain of dotnet.exe (SDK 10.0.402) ends in
+# Thumbprints (SHA-1, upper case) of the root the signer chain must end in. Observed: the chain of the dotnet.exe host 10.0.13 and of SDK 10.0.403's dotnet.dll ends in
 # Microsoft Root Certificate Authority 2011. Same rule: add a root only after observing it and checking it against Microsoft's list.
 $script:AllowedDotNetSdkRootThumbprints = @(
     '8F43288AD272F3103B6FB1428485EA3014C0BCFE'   # Microsoft Root Certificate Authority 2011
