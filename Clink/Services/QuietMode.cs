@@ -76,9 +76,18 @@ internal static class QuietWindows
         if (messageOnly || (style & WS_CHILD) != 0) return QuietWindowKind.NotTopLevel;
         if (title == QuietMode.OverlayTitle) return QuietWindowKind.Overlay;
         if (classAtom == DialogAtom || className == "#32770") return QuietWindowKind.Ours;
+        // WPF's own zero-size helper windows are left unmarked (least risky): they may rely on their placement for per-monitor DPI, they are
+        // never shown and never take the foreground, so there is nothing to hide.
+        if (title is "SystemResourceNotifyWindow" or "MediaContextNotificationWindow") return QuietWindowKind.Foreign;
         if (className != null && className.StartsWith("HwndWrapper[", StringComparison.Ordinal)) return QuietWindowKind.Ours;
         return QuietWindowKind.Foreign;
     }
+
+    /// <summary>
+    /// Whether a remembered window is a valid place to give the foreground back to: it exists, is visible, is not DWM-cloaked and is not a window
+    /// of this process. Minimized is fine (a minimized full-screen game is a valid target).
+    /// </summary>
+    public static bool IsUsableTarget(bool exists, bool visible, bool cloaked, bool ownProcess) => exists && visible && !cloaked && !ownProcess;
 }
 
 /// <summary>What <see cref="QuietForegroundGuard.OnForeground"/> decided.</summary>
@@ -94,6 +103,8 @@ internal enum QuietForegroundAction
     Restore,
     /// <summary>A hidden window of the application has the foreground, but no live window of another process is known to give it back to.</summary>
     NothingToRestore,
+    /// <summary>The event is stale: a hidden window of the application got the foreground but no longer holds it (the user has moved on); left alone.</summary>
+    Stale,
     /// <summary>Too many restores in a short time (something keeps taking it back): this one is skipped, so the two never fight.</summary>
     Throttled,
 }
@@ -116,15 +127,18 @@ internal sealed class QuietForegroundGuard
     /// <summary>
     /// The foreground went to <paramref name="hwnd"/>. <paramref name="ownProcess"/>: it is a window of this process; <paramref name="overlay"/>: it
     /// is the capture overlay; <paramref name="hidden"/>: it is marked as the application's or cloaked (invisible to the user);
-    /// <paramref name="isUsable"/>: whether a remembered window still exists and belongs to another process; <paramref name="nowMs"/>: a
+    /// <paramref name="isUsable"/>: whether a remembered window is a valid target (see <see cref="QuietWindows.IsUsableTarget"/>);
+    /// <paramref name="currentForeground"/>: the window that has the foreground right now (events are handled late; a restore is only done while
+    /// the hidden window still holds it, never over a choice the user has made since); <paramref name="nowMs"/>: a
     /// monotonic clock. Returns the action and, for <see cref="QuietForegroundAction.Restore"/>, the window to give the foreground to.
     /// </summary>
-    public (QuietForegroundAction Action, nint Target) OnForeground(nint hwnd, bool ownProcess, bool overlay, bool hidden, Func<nint, bool> isUsable, long nowMs)
+    public (QuietForegroundAction Action, nint Target) OnForeground(nint hwnd, bool ownProcess, bool overlay, bool hidden, Func<nint, bool> isUsable, nint currentForeground, long nowMs)
     {
         if (hwnd == 0) return (QuietForegroundAction.None, 0);
         if (!ownProcess) { LastOther = hwnd; return (QuietForegroundAction.Remembered, 0); }
         if (overlay) return (QuietForegroundAction.Exempt, 0);
         if (!hidden) return (QuietForegroundAction.None, 0);
+        if (currentForeground != hwnd) return (QuietForegroundAction.Stale, 0);
         if (LastOther == 0 || LastOther == hwnd || !isUsable(LastOther)) { LastOther = 0; return (QuietForegroundAction.NothingToRestore, 0); }
         while (_restores.Count > 0 && nowMs - _restores.Peek() >= WindowMs) _restores.Dequeue();
         if (_restores.Count >= MaxRestores) return (QuietForegroundAction.Throttled, 0);
@@ -185,6 +199,7 @@ internal static unsafe class QuietMode
     [DllImport("user32.dll")] private static extern nint GetForegroundWindow();
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(nint hwnd);
     [DllImport("user32.dll")] private static extern bool IsWindow(nint hwnd);
+    [DllImport("user32.dll")] private static extern bool IsWindowVisible(nint hwnd);
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(nint hwnd, out uint processId);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassNameW(nint hwnd, char* name, int max);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowTextW(nint hwnd, char* text, int max);
@@ -272,7 +287,7 @@ internal static unsafe class QuietMode
             bool own = ProcessOf(hwnd) == self;
             bool overlay = own && TitleOf(hwnd) == OverlayTitle;
             bool hidden = own && !overlay && (IsOurs(hwnd) || IsCloaked(hwnd));
-            var (action, target) = s_guard.OnForeground(hwnd, own, overlay, hidden, h => IsWindow(h) && ProcessOf(h) != self, Environment.TickCount64);
+            var (action, target) = s_guard.OnForeground(hwnd, own, overlay, hidden, h => QuietWindows.IsUsableTarget(IsWindow(h), IsWindowVisible(h), IsCloaked(h), ProcessOf(h) == self), GetForegroundWindow(), Environment.TickCount64);
             switch (action)
             {
                 case QuietForegroundAction.Restore:
@@ -443,10 +458,10 @@ internal static unsafe class QuietMode
     /// <summary>Removes the hooks (called from <c>App.OnExit</c>, and available to tests).</summary>
     public static void RemoveWindowHook()
     {
-        if (s_foregroundHook != 0) { UnhookWinEvent(s_foregroundHook); s_foregroundHook = 0; s_foregroundProc = null; }
+        if (s_foregroundHook != 0) { UnhookWinEvent(s_foregroundHook); s_foregroundHook = 0; }   // the delegate fields stay rooted: a queued out-of-context callback may still be delivered
         s_guard.Reset();
-        if (s_winEventHook != 0) { UnhookWinEvent(s_winEventHook); s_winEventHook = 0; s_winEventProc = null; }
-        if (s_hook != 0) { UnhookWindowsHookEx(s_hook); s_hook = 0; s_proc = null; }
+        if (s_winEventHook != 0) { UnhookWinEvent(s_winEventHook); s_winEventHook = 0; }
+        if (s_hook != 0) { UnhookWindowsHookEx(s_hook); s_hook = 0; }
         lock (s_ours) s_ours.Clear();
     }
 }
