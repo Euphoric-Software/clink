@@ -200,11 +200,12 @@ public partial class ClipsPane : UserControl
         _localAll = LibraryView.Pick(all, LibraryLevel.Local, false, isLocal, isShared, isTrim);
         var local = trimmed ? LibraryView.Pick(all, LibraryLevel.Local, true, isLocal, isShared, isTrim) : _localAll;
         var shared = LibraryView.Pick(all, LibraryLevel.Shared, trimmed, isLocal, isShared, isTrim);
+        ClipGrouping.CarryExpanded(_localAll, r => r.Entry, _lastClipKeys, _expandedClips);   // an archive move changes a path, not the open state
         // A trim that was not in the list before opens its clip, so the user sees it (the first look only remembers what is there).
         foreach (var key in ClipGrouping.TakeNewTrimParents(_localAll, r => r.Entry, _seenClips, seed: !_clipsSeeded)) _expandedClips.Add(key);
         _clipsSeeded = true;
         var localView = LocalView(local, trimmed);
-        SyncRows(_local, localView);
+        ClipGrouping.SyncRows(_local, localView);
         Replace(_shared, shared);
         SetLabels(local.Count, shared.Count);
         var shown = _level == LibraryLevel.Shared ? shared : localView;
@@ -217,6 +218,7 @@ public partial class ClipsPane : UserControl
     private List<ClipRow> _localAll = new();
     private readonly HashSet<string> _seenClips = ClipGrouping.NewExpanded(), _expandedClips = ClipGrouping.NewExpanded();
     private bool _clipsSeeded;
+    private readonly Dictionary<ClipRow, string> _lastClipKeys = new(ReferenceEqualityComparer.Instance as IEqualityComparer<ClipRow>);
 
     /// <summary>The rows the Local list shows: the Trimmed filter's flat list as it is, otherwise the nested list with collapsed parents' trims left out (so their thumbnails are not made either).</summary>
     private List<ClipRow> LocalView(List<ClipRow> filtered, bool trimmedOnly)
@@ -231,30 +233,13 @@ public partial class ClipsPane : UserControl
     {
         var row = RowOf(sender);
         if (row == null || !row.IsParent) return;
+        if (LibraryView.TrimmedOnly(LibraryFeature.Clips, _trimmedChip)) return;   // the Trimmed chip lists trims flat: no chevrons
         string key = ClipGrouping.Key(row.Entry.Path);
         if (!_expandedClips.Remove(key)) _expandedClips.Add(key);
         bool trimmed = LibraryView.TrimmedOnly(LibraryFeature.Clips, _trimmedChip);
         var view = LocalView(_localAll, trimmed);
-        SyncRows(_local, view);
+        ClipGrouping.SyncRows(_local, view);
         if (IsVisible && _level == LibraryLevel.Local) LoadThumbnails(view.Where(r => !r.Checked).ToList());
-    }
-
-    /// <summary>Makes <paramref name="target"/> list <paramref name="rows"/> by inserting and removing only what differs (a rebuild would send the list back to the top). A different order is rebuilt.</summary>
-    private static void SyncRows<T>(ObservableCollection<T> target, IReadOnlyList<T> rows) where T : class
-    {
-        var want = new HashSet<T>(rows);
-        for (int i = target.Count - 1; i >= 0; i--)
-            if (!want.Contains(target[i])) target.RemoveAt(i);
-        var have = new HashSet<T>(target);
-        var common = rows.Where(have.Contains).ToList();
-        if (common.Count != target.Count || !common.Zip(target).All(p => ReferenceEquals(p.First, p.Second)))
-        {
-            target.Clear();
-            foreach (var r in rows) target.Add(r);
-            return;
-        }
-        for (int i = 0; i < rows.Count; i++)
-            if (i >= target.Count || !ReferenceEquals(target[i], rows[i])) target.Insert(i, rows[i]);
     }
 
     /// <summary>

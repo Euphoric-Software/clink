@@ -232,4 +232,110 @@ internal static class NestedTrimTests
         row.SetNesting(ClipRowKind.Plain, 0, expanded: false);
         Check.True(changed.Contains("IsChild") && changed.Contains("NestMargin"));
     }
+
+    // ---- carrying the open state across an archive move ----
+
+    [UnitTest]
+    public static void An_open_parent_stays_open_when_the_archive_moves_it()
+    {
+        var a = Clip(A, 0);
+        var t = Clip(@"C:\Clips\Game A (trim).mp4", 5, trim: true, source: A);
+        var list = Newest(a, t);
+        var last = new Dictionary<ClipEntry, string>(ReferenceEqualityComparer.Instance as IEqualityComparer<ClipEntry>);
+        var open = ClipGrouping.NewExpanded(new[] { A });
+        ClipGrouping.CarryExpanded(list, e => e, last, open);
+        Check.True(open.Contains(ClipGrouping.Key(A)), "nothing moved: still open");
+        // the archive service: same entries, new paths (the trim's source follows)
+        const string moved = @"\\nas\archive\Game A.mp4";
+        a.Path = moved;
+        t.SourcePath = moved;
+        ClipGrouping.CarryExpanded(list, e => e, last, open);
+        Check.False(open.Contains(ClipGrouping.Key(A)), "the old key is dropped");
+        Check.True(open.Contains(ClipGrouping.Key(moved)));
+        Check.Equal(2, Flat(list, open.ToArray()).Count, "the trim is still listed under the moved parent");
+        // a collapsed parent stays collapsed, and a gone entry is forgotten
+        var b = Clip(@"C:\Clips\B.mp4", 1);
+        var closed = ClipGrouping.NewExpanded();
+        ClipGrouping.CarryExpanded(new List<ClipEntry> { b }, e => e, last, closed);
+        b.Path = @"\\nas\archive\B.mp4";
+        ClipGrouping.CarryExpanded(new List<ClipEntry> { b }, e => e, last, closed);
+        Check.Equal(0, closed.Count, "collapsed stays collapsed");
+        Check.Equal(1, last.Count, "entries no longer listed are forgotten");
+    }
+
+    // ---- SyncRows ----
+
+    private sealed class R { public readonly string Name; public R(string n) { Name = n; } public override string ToString() => Name; }
+
+    private static List<R> Rs(int n) => Enumerable.Range(0, n).Select(i => new R("r" + i)).ToList();
+
+    private static void Sync(System.Collections.ObjectModel.ObservableCollection<R> target, IReadOnlyList<R> rows, out int resets)
+    {
+        int r = 0;
+        System.Collections.Specialized.NotifyCollectionChangedEventHandler h = (_, e) => { if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Reset) r++; };
+        target.CollectionChanged += h;
+        ClipGrouping.SyncRows(target, rows);
+        target.CollectionChanged -= h;
+        resets = r;
+        Check.True(target.Count == rows.Count && target.Zip(rows).All(p => ReferenceEquals(p.First, p.Second)), "target equals the wanted rows");
+    }
+
+    [UnitTest]
+    public static void SyncRows_expands_and_collapses_with_inserts_and_removes_only()
+    {
+        var p = Rs(12);
+        var kids = new[] { new R("k1"), new R("k2") };
+        var collapsed = p.ToList();
+        var open = p.Take(3).Concat(kids).Concat(p.Skip(3)).ToList();
+        var target = new System.Collections.ObjectModel.ObservableCollection<R>(collapsed);
+        Sync(target, open, out int resets);
+        Check.Equal(0, resets, "expand: no reset");
+        Sync(target, collapsed, out resets);
+        Check.Equal(0, resets, "collapse: no reset");
+    }
+
+    [UnitTest]
+    public static void SyncRows_handles_a_new_top_row_with_an_expansion_in_one_refresh()
+    {
+        var p = Rs(12);
+        var fresh = new R("new");
+        var kids = new[] { new R("k1"), new R("k2") };
+        var target = new System.Collections.ObjectModel.ObservableCollection<R>(p);
+        var want = new[] { fresh }.Concat(p.Take(5)).Concat(kids).Concat(p.Skip(5)).ToList();
+        Sync(target, want, out int resets);
+        Check.Equal(0, resets, "no reset");
+    }
+
+    [UnitTest]
+    public static void SyncRows_a_removed_parent_turns_its_trim_into_a_top_level_row()
+    {
+        var parent = new R("parent"); var kid = new R("kid"); var other = new R("other");
+        var target = new System.Collections.ObjectModel.ObservableCollection<R> { other, parent, kid };
+        Sync(target, new List<R> { other, kid }, out int resets);
+        Check.Equal(0, resets, "no reset");
+        Check.True(ReferenceEquals(target[1], kid));
+    }
+
+    [UnitTest]
+    public static void SyncRows_rebuilds_when_the_change_is_large_and_always_matches_the_target()
+    {
+        // large change: Clear + Add
+        var many = Rs(200);
+        var target = new System.Collections.ObjectModel.ObservableCollection<R>(many);
+        Sync(target, Rs(200), out int resets);
+        Check.Equal(1, resets, "a wholesale change is rebuilt");
+        // randomized: whatever the target, the list ends up equal to it
+        var rnd = new Random(20261026);
+        for (int iter = 0; iter < 400; iter++)
+        {
+            var pool = Rs(30);
+            var cur = pool.Where(_ => rnd.Next(3) > 0).OrderBy(_ => rnd.Next()).ToList();
+            var want = pool.Where(_ => rnd.Next(3) > 0).ToList();
+            if (rnd.Next(2) == 0) want = want.OrderBy(_ => rnd.Next()).ToList();
+            else if (cur.Count > 0) want = cur.Where(_ => rnd.Next(5) > 0).ToList();   // mostly the same order, a few removed
+            if (rnd.Next(2) == 0) want.Insert(rnd.Next(want.Count + 1), new R("x"));
+            var obs = new System.Collections.ObjectModel.ObservableCollection<R>(cur);
+            Sync(obs, want, out _);
+        }
+    }
 }

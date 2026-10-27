@@ -142,6 +142,61 @@ internal static class ClipGrouping
     }
 
     /// <summary>
+    /// The archive service moves a clip by changing its path (same entry object), which would change its <see cref="Key"/> and
+    /// close it. Carries the open state from the key an item had at the last call (<paramref name="lastKeys"/>, by reference) to
+    /// its key now, and forgets items no longer listed.
+    /// </summary>
+    public static void CarryExpanded<T>(IReadOnlyList<T> items, Func<T, ClipEntry> entryOf, Dictionary<T, string> lastKeys, ICollection<string> expanded) where T : class
+    {
+        var present = new HashSet<T>(items, ReferenceEqualityComparer.Instance as IEqualityComparer<T>);
+        foreach (var gone in lastKeys.Keys.Where(k => !present.Contains(k)).ToList()) lastKeys.Remove(gone);
+        foreach (var item in items)
+        {
+            string key = Key(entryOf(item).Path);
+            if (lastKeys.TryGetValue(item, out var old) && !string.Equals(old, key, StringComparison.OrdinalIgnoreCase) && expanded.Remove(old))
+                expanded.Add(key);
+            lastKeys[item] = key;
+        }
+    }
+
+    /// <summary>
+    /// Makes <paramref name="target"/> equal <paramref name="rows"/> (by reference) with the fewest simple Insert/RemoveAt steps (a
+    /// moved row is a RemoveAt plus an Insert), so a bound list keeps its scroll position. When that would take more than
+    /// <see cref="MaxEdits"/> steps, or more than half the list (but at least 8), it is Clear + Add instead.
+    /// </summary>
+    public static void SyncRows<T>(IList<T> target, IReadOnlyList<T> rows) where T : class
+    {
+        int limit = Math.Min(MaxEdits, Math.Max(8, Math.Max(target.Count, rows.Count) / 2));
+        if (SyncCore(new List<T>(target), rows) > limit)
+        {
+            target.Clear();
+            foreach (var r in rows) target.Add(r);
+            return;
+        }
+        SyncCore(target, rows);
+    }
+
+    /// <summary>Most single-item edits <see cref="SyncRows"/> makes before it rebuilds the list.</summary>
+    public const int MaxEdits = 64;
+
+    private static int SyncCore<T>(IList<T> list, IReadOnlyList<T> rows) where T : class
+    {
+        int edits = 0;
+        var want = new HashSet<T>(rows, ReferenceEqualityComparer.Instance as IEqualityComparer<T>);
+        for (int i = list.Count - 1; i >= 0; i--)
+            if (!want.Contains(list[i])) { list.RemoveAt(i); edits++; }
+        for (int i = 0; i < rows.Count; i++)
+        {
+            if (i < list.Count && ReferenceEquals(list[i], rows[i])) continue;
+            for (int j = i + 1; j < list.Count; j++)
+                if (ReferenceEquals(list[j], rows[i])) { list.RemoveAt(j); edits++; break; }
+            list.Insert(i, rows[i]);
+            edits++;
+        }
+        return edits;
+    }
+
+    /// <summary>
     /// Remembers the clips of <paramref name="items"/> in <paramref name="seen"/> and returns the parents of the trims that were not
     /// in it before (to open them, so a trim just made shows). With <paramref name="seed"/> nothing is returned (the first look at
     /// the list: whatever is there is not new). Archived entries are never new (an archive move changes a path, it makes no clip).
