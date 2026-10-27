@@ -69,13 +69,14 @@ public partial class MainWindow : Window
 
         var s = _app.Settings;
         RestoreWindowBounds(s);
+        if (QuietMode.Active) QuietMode.PlaceMainWindow(this);   // --dev-quiet: right of every monitor, never activated, no taskbar button
         Loaded += (_, _) => { ApplyLayout(); Populate(); };
         Closing += (_, e) => { e.Cancel = true; HideToTray(); };
-        LocationChanged += (_, _) => { if (!_loading && IsVisible && WindowState == WindowState.Normal) { s.WindowX = Left; s.WindowY = Top; ScheduleSave(); } };
+        LocationChanged += (_, _) => { if (!_loading && !QuietMode.Active && IsVisible && WindowState == WindowState.Normal) { s.WindowX = Left; s.WindowY = Top; ScheduleSave(); } };
         SizeChanged += (_, _) =>
         {
             ApplyLayout();
-            if (!_loading && IsVisible && WindowState == WindowState.Normal) { s.WindowWidth = ActualWidth; s.WindowHeight = ActualHeight; ScheduleSave(); }
+            if (!_loading && !QuietMode.Active && IsVisible && WindowState == WindowState.Normal) { s.WindowWidth = ActualWidth; s.WindowHeight = ActualHeight; ScheduleSave(); }
         };
 
         _app.StateChanged += RefreshStatus;
@@ -143,7 +144,8 @@ public partial class MainWindow : Window
         if (s.WindowWidth is double ww && ww >= MinWidth) Width = ww;
         if (s.WindowHeight is double wh && wh >= MinHeight) Height = wh;
         var (areas, area) = WorkAreas();   // area: the monitor under the mouse pointer, where CenterScreen opens the window
-        if (s.WindowX is double wx && s.WindowY is double wy && double.IsFinite(wx) && double.IsFinite(wy))
+        // --dev-quiet: the saved position is not used (QuietMode.PlaceMainWindow puts the window off-screen after this).
+        if (!QuietMode.Active && s.WindowX is double wx && s.WindowY is double wy && double.IsFinite(wx) && double.IsFinite(wy))
         {
             // Only where the header (the one place this borderless window can be dragged from) lands on a monitor's work area:
             // the virtual-screen box has corners no monitor covers, and a monitor may have gone away since. Of the monitors it
@@ -1828,7 +1830,7 @@ public partial class MainWindow : Window
     public void HideToTray()
     {
         HotkeyEditor.CancelCapture();
-        if (WindowState == WindowState.Normal)
+        if (WindowState == WindowState.Normal && !QuietMode.Active)   // a --dev-quiet position (off-screen) is never saved
         {
             _app.Settings.WindowX = Left; _app.Settings.WindowY = Top;
             _app.Settings.WindowWidth = ActualWidth; _app.Settings.WindowHeight = ActualHeight;
@@ -1846,6 +1848,14 @@ public partial class MainWindow : Window
 
     public void ShowFromTray()
     {
+        if (QuietMode.Active)
+        {
+            // --dev-quiet: shown where it is (off-screen), never activated, never brought to the front.
+            Show();
+            QuietMode.ShowWithoutActivating(this);
+            if (!_loading) SyncScreenshotChecks();
+            return;
+        }
         Show();
         WindowState = WindowState.Normal;
         if (!_loading) SyncScreenshotChecks();

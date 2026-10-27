@@ -13,7 +13,7 @@ namespace Clink.Services;
 /// <c>--dev-hotkeys</c> is given, does not record (it starts paused: it would record next to the user's game) unless
 /// <c>--dev-record</c> is given, and has no Copium token unless <c>--dev-token</c> is given. Whatever is in its settings file,
 /// <see cref="Isolate"/> keeps it away from the real clips, archive, updates and account on every start. Not in <c>--help</c>.
-/// Two more switches exist only for testing how settings are taken over from another copy of Clink (SettingsImport), which a
+/// <c>--dev-quiet</c> (see <see cref="QuietMode"/>) keeps the instance out of the way of the person at the PC (no focus, nothing on screen, no sound, no capture\n/// unless <c>--dev-quiet-record</c>); it and <c>--dev-quiet-record</c> are ignored without <c>--dev</c>.\n/// Two more switches exist only for testing how settings are taken over from another copy of Clink (SettingsImport), which a
 /// <c>--dev</c> instance otherwise never looks for: <c>--packages-root &lt;folder&gt;</c> names a fake <c>%LOCALAPPDATA%\Packages</c> to
 /// look in (never the real one), and <c>--dev-accept-import</c> accepts what is offered there at once.
 /// Every <c>--dev*</c> switch is checked, and a mistake (an unknown one, one without <c>--dev</c>, a switch that only looks like one
@@ -31,11 +31,15 @@ internal sealed record DevOptions(string Folder, bool BindHotkeys)
     public bool AllowToken { get; init; }
     /// <summary><c>--dev-record</c>: do not start paused.</summary>
     public bool Record { get; init; }
+    /// <summary><c>--dev-quiet</c> (with <c>--dev</c>): a test instance that never gets in the way of the person at the PC (<see cref="QuietMode"/>).</summary>
+    public bool Quiet { get; init; }
+    /// <summary><c>--dev-quiet-record</c>: a quiet instance records after all (otherwise it starts paused, whatever <c>--dev-record</c> says).</summary>
+    public bool QuietRecord { get; init; }
 
     /// <summary>Where a bare <c>--dev</c> keeps its data.</summary>
     public static string DefaultFolder => Path.Combine(Path.GetTempPath(), "clink-dev");
 
-    private const string Dev = "--dev", DevEquals = "--dev=", Hotkeys = "--dev-hotkeys", Token = "--dev-token", Record_ = "--dev-record",
+    private const string Dev = "--dev", DevEquals = "--dev=", Hotkeys = "--dev-hotkeys", Token = "--dev-token", Record_ = "--dev-record", Quiet_ = "--dev-quiet", QuietRecord_ = "--dev-quiet-record",
         AcceptImport_ = "--dev-accept-import", PackagesRoot_ = "--packages-root";
 
     private static bool Is(string arg, string name) => arg.Equals(name, StringComparison.OrdinalIgnoreCase);
@@ -108,7 +112,7 @@ internal sealed record DevOptions(string Folder, bool BindHotkeys)
     /// </summary>
     public static DevOptions? Parse(string[] args)
     {
-        bool sawDev = false, hotkeys = false, token = false, record = false, accept = false, sawRoot = false;
+        bool sawDev = false, hotkeys = false, token = false, record = false, accept = false, sawRoot = false, quiet = false, quietRecord = false;
         string? folderArg = null, rootArg = null;
         for (int i = 0; i < args.Length; i++)
         {
@@ -129,6 +133,8 @@ internal sealed record DevOptions(string Folder, bool BindHotkeys)
             else if (Is(a, Hotkeys)) hotkeys = true;
             else if (Is(a, Token)) token = true;
             else if (Is(a, Record_)) record = true;
+            else if (Is(a, Quiet_)) quiet = true;               // ignored without --dev (it only changes how a dev instance behaves)
+            else if (Is(a, QuietRecord_)) quietRecord = true;
             else if (Is(a, AcceptImport_)) accept = true;
             else if (Is(a, PackagesRoot_))
             {
@@ -166,7 +172,7 @@ internal sealed record DevOptions(string Folder, bool BindHotkeys)
             if (SamePath(root, realPackages))
                 throw new ArgumentException("--packages-root is the real %LOCALAPPDATA%\\Packages: a test must not take over the settings of whoever owns this machine (make a fake folder)");
         }
-        return new DevOptions(folder, hotkeys) { PackagesRoot = root, AcceptImport = accept, AllowToken = token, Record = record };
+        return new DevOptions(folder, hotkeys) { PackagesRoot = root, AcceptImport = accept, AllowToken = token, Record = record, Quiet = quiet, QuietRecord = quietRecord };
     }
 
     private static bool SamePath(string a, string b) =>
@@ -355,16 +361,18 @@ internal sealed record DevOptions(string Folder, bool BindHotkeys)
 
     /// <summary>
     /// The switches that make a restarted process the same dev instance: <c>--dev &lt;folder&gt;</c> and the flags that are on
-    /// (<c>--dev-hotkeys</c>, <c>--dev-record</c>, <c>--dev-token</c>, <c>--packages-root</c>), but not <c>--dev-accept-import</c>, which
+    /// (<c>--dev-hotkeys</c>, <c>--dev-record</c>, <c>--dev-token</c>, <c>--dev-quiet</c>, <c>--dev-quiet-record</c>, <c>--packages-root</c>), but not <c>--dev-accept-import</c>, which
     /// is for one start. Every restart (an import, an update) puts these on the new command line: a restart without
     /// <c>--dev</c> would be a normal start, which takes the real Clink's mutex or forwards to it.
     /// </summary>
-    public static List<string> Switches(string folder, bool hotkeys, bool record, bool token, string? packagesRoot)
+    public static List<string> Switches(string folder, bool hotkeys, bool record, bool token, string? packagesRoot, bool quiet = false, bool quietRecord = false)
     {
         var list = new List<string> { Dev, folder };
         if (hotkeys) list.Add(Hotkeys);
         if (record) list.Add(Record_);
         if (token) list.Add(Token);
+        if (quiet) list.Add(Quiet_);
+        if (quietRecord) list.Add(QuietRecord_);
         if (packagesRoot != null) { list.Add(PackagesRoot_); list.Add(packagesRoot); }
         return list;
     }
@@ -378,7 +386,7 @@ internal sealed record DevOptions(string Folder, bool BindHotkeys)
         {
             string a = list[i];
             if (Is(a, Dev) || Is(a, PackagesRoot_)) { if (i + 1 < list.Count && IsValue(list[i + 1])) i++; }
-            else if (a.StartsWith(DevEquals, StringComparison.OrdinalIgnoreCase) || Is(a, Hotkeys) || Is(a, Token) || Is(a, Record_) || Is(a, AcceptImport_)) { }
+            else if (a.StartsWith(DevEquals, StringComparison.OrdinalIgnoreCase) || Is(a, Hotkeys) || Is(a, Token) || Is(a, Record_) || Is(a, Quiet_) || Is(a, QuietRecord_) || Is(a, AcceptImport_)) { }
             else rest.Add(a);
         }
         return rest;

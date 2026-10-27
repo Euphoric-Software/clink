@@ -43,7 +43,13 @@ internal sealed partial class AppController : IDisposable
     /// <summary><c>--dev-record</c>: a dev instance records. Without it, it starts paused: recording next to the user's game is not what a test run is for.</summary>
     public static bool DevRecord { get; set; }
     /// <summary>A dev instance that was not asked to record (<c>--dev-record</c>) starts paused.</summary>
-    internal static bool StartsPaused => IsDev && !DevRecord;
+    internal static bool StartsPaused => QuietMode.StartsPaused(IsDev, DevRecord, DevQuiet, DevQuietRecord);
+    /// <summary><c>--dev-quiet</c>: a dev instance that stays out of the user's way (<see cref="QuietMode"/>). Only meaningful with <c>--dev</c> (<see cref="IsQuiet"/>).</summary>
+    public static bool DevQuiet { get; set; }
+    /// <summary><c>--dev-quiet-record</c>: a quiet instance records (otherwise it starts paused).</summary>
+    public static bool DevQuietRecord { get; set; }
+    /// <summary>A dev instance started with <c>--dev-quiet</c>; false for a normal run and for a plain <c>--dev</c> run.</summary>
+    public static bool IsQuiet => QuietMode.IsQuiet(IsDev, DevQuiet);
     public static string PipeName => "Clink.Control" + InstanceSuffix;
     /// <summary>
     /// The pipe both ends really use: <see cref="PipeName"/> plus this Windows session's id, so a Clink in another session (another
@@ -55,7 +61,7 @@ internal sealed partial class AppController : IDisposable
 
     /// <summary>The switches that make a restarted process this same dev instance (see <see cref="DevOptions.Switches"/>); none for a normal run.</summary>
     internal static List<string> DevSwitches() =>
-        IsDev ? DevOptions.Switches(Settings.Dir, DevHotkeys, DevRecord, DevToken, SettingsImport.PackagesRoot) : new List<string>();
+        IsDev ? DevOptions.Switches(Settings.Dir, DevHotkeys, DevRecord, DevToken, SettingsImport.PackagesRoot, DevQuiet, DevQuietRecord) : new List<string>();
     private static readonly TimeSpan GameExitGrace = TimeSpan.FromSeconds(5);   // keep recording this long after the game's process is gone
 
     public static AppController Instance { get; private set; } = null!;
@@ -1330,7 +1336,7 @@ internal sealed partial class AppController : IDisposable
             // notices unless the window is in front of them (with an error sound when the click sound is on: no click played).
             if (!MainWindowInFront)
             {
-                if (Settings.ClickSound) System.Media.SystemSounds.Exclamation.Play();
+                if (Settings.ClickSound) ClickSound.PlayError();
                 NotifyProblem("Clip not saved", waiting ? why + ". If your game is not detected, add it under Capture → Recording → Custom apps." : why);
             }
             return;
@@ -1875,6 +1881,7 @@ internal sealed partial class AppController : IDisposable
 
     public void ShowBalloon(string title, string text)
     {
+        if (IsQuiet) return;   // --dev-quiet: no tray balloon
         if (text.Length > 250) text = text[..249] + "…";   // Shell_NotifyIcon cuts balloon text at 256 characters
         try { _tray?.ShowBalloonTip(3000, title, text, System.Windows.Forms.ToolTipIcon.None); } catch { }
     }

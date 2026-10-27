@@ -148,6 +148,8 @@ public partial class App : System.Windows.Application
             AppController.DevAcceptImport = dev.AcceptImport;
             AppController.DevToken = dev.AllowToken;
             AppController.DevRecord = dev.Record;
+            AppController.DevQuiet = dev.Quiet;
+            AppController.DevQuietRecord = dev.QuietRecord;
             SettingsImport.PackagesRoot = dev.PackagesRoot;   // a --dev instance looks for other copies' settings only where this says (tests)
             SettingsImport.ForeignGuard = s => dev.Isolate(s, freshStore: false);   // and compares them as they would be once loaded here
         }
@@ -161,6 +163,8 @@ public partial class App : System.Windows.Application
         // without touching the log (the running instance holds it).
         if (!AppController.AcquireSingleInstance(args)) { Shutdown(0); return; }
         Log.Init(Settings.Dir);
+        // --dev-quiet: before any window exists, so none of them is ever activated or placed on a monitor (QuietMode).
+        if (AppController.IsQuiet) { QuietMode.InstallWindowHook(); QuietMode.RegisterWindowHandlers(); }
         if (previous != null) Log.Info($"restart: the Clink with pid {previous} {(previousGone ? "has ended" : "was still running after 10 s")}");
 
         // Is this Clink running inside a packaged app (an MSIX/Store desktop app, say), so that the AppData it reads and writes is that app's
@@ -239,7 +243,7 @@ public partial class App : System.Windows.Application
         bool show = args.Any(a => a.Equals("--show", StringComparison.OrdinalIgnoreCase));
         bool minimized = !show && (settings.StartMinimized || cmd != null || args.Any(a => a.Equals("--minimized", StringComparison.OrdinalIgnoreCase)));
         if (!minimized) main.Show();
-        Log.Info($"Clink v{updater.VersionDisplay} started" + (dev != null ? $" (--dev: data in {dev.Folder}, hotkeys {(dev.BindHotkeys ? "on" : "off")})" : ""));
+        Log.Info($"Clink v{updater.VersionDisplay} started" + (dev != null ? $" (--dev: data in {dev.Folder}, hotkeys {(dev.BindHotkeys ? "on" : "off")}{(AppController.IsQuiet ? ", quiet" : "")})" : ""));
         if (cmd != null) _controller.RunStartupCommand(cmd);
     }
 

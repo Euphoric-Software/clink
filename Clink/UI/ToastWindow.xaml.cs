@@ -720,6 +720,7 @@ internal static unsafe class ScreenPlacement
     {
         var hwnd = HwndOf(w);
         if (hwnd.IsNull) return false;
+        if (QuietMode.Active) { QuietMode.Conceal((nint)hwnd.Value); return false; }   // --dev-quiet: toasts, the dot and the share window stay off-screen, behind everything
         var before = SizeOf(w);
         PInvoke.SetWindowPos(hwnd, HWND.HWND_TOPMOST, x, y, 0, 0, SET_WINDOW_POS_FLAGS.SWP_NOSIZE | SET_WINDOW_POS_FLAGS.SWP_NOACTIVATE);
         return SizeOf(w) != before;
