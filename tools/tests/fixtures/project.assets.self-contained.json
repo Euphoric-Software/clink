@@ -1,0 +1,46 @@
+{
+    "version":  3,
+    "libraries":  {
+                      "Microsoft.NET.ILLink.Tasks/10.0.13":  {
+                                                                 "type":  "package"
+                                                             },
+                      "Microsoft.Windows.CsWin32/0.3.366":  {
+                                                                "type":  "package"
+                                                            },
+                      "Microsoft.Windows.SDK.Win32Docs/0.1.42-alpha":  {
+                                                                           "type":  "package"
+                                                                       },
+                      "Microsoft.Windows.SDK.Win32Metadata/71.0.37-preview":  {
+                                                                                  "type":  "package"
+                                                                              },
+                      "Microsoft.Windows.WDK.Win32Metadata/0.13.25-experimental":  {
+                                                                                       "type":  "package"
+                                                                                   }
+                  },
+    "project":  {
+                    "version":  "0.4.2",
+                    "frameworks":  {
+                                       "net10.0-windows10.0.26100.0":  {
+                                                                           "targetAlias":  "net10.0-windows10.0.26100.0",
+                                                                           "downloadDependencies":  [
+                                                                                                        {
+                                                                                                            "name":  "Microsoft.AspNetCore.App.Runtime.win-x64",
+                                                                                                            "version":  "[10.0.13, 10.0.13]"
+                                                                                                        },
+                                                                                                        {
+                                                                                                            "name":  "Microsoft.NETCore.App.Runtime.win-x64",
+                                                                                                            "version":  "[10.0.13, 10.0.13]"
+                                                                                                        },
+                                                                                                        {
+                                                                                                            "name":  "Microsoft.Windows.SDK.NET.Ref",
+                                                                                                            "version":  "[10.0.26100.57, 10.0.26100.57]"
+                                                                                                        },
+                                                                                                        {
+                                                                                                            "name":  "Microsoft.WindowsDesktop.App.Runtime.win-x64",
+                                                                                                            "version":  "[10.0.13, 10.0.13]"
+                                                                                                        }
+                                                                                                    ]
+                                                                       }
+                                   }
+                }
+}
