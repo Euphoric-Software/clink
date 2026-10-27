@@ -43,6 +43,7 @@ jobs:
       exe_sha256: ${{ steps.package.outputs.exe_sha256 }}
       fx_sha256: ${{ steps.package.outputs.fx_sha256 }}
       setup_sha256: ${{ steps.package.outputs.setup_sha256 }}
+      notices_sha256: ${{ steps.package.outputs.notices_sha256 }}
     steps:
       - name: Check out
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -108,20 +109,55 @@ jobs:
           ./tools/publish-flavours.ps1 -Version $env:VERSION -UpdateRepo $env:UPDATE_REPO
           Get-ChildItem dist/sc, dist/fx | Select-Object FullName, Length
 
+      # THIRD-PARTY-NOTICES.txt must match tools/notices/sources.json (hashes of every licence text) and the runtime packs / SDK
+      # reference / CsWin32 this restore actually used. Fails when the file is stale or the assets file lacks the runtime packs.
+      - name: Check the third-party notices
+        shell: pwsh
+        run: |
+          ./tools/notices/make-notices.ps1 -Check -AssetsFile Clink/obj_sc/project.assets.json
+          if ($LASTEXITCODE -ne 0) { throw 'THIRD-PARTY-NOTICES.txt is out of date (see the output above).' }
+
+      # The latest .NET 10 Desktop Runtime installer for the setup exe: release metadata from builds.dotnet.microsoft.com, downloaded
+      # into a scratch folder, SHA-512 and Authenticode (Microsoft signer) verified, SHA-256 computed, the file deleted and NEVER run.
+      # The JSON it prints is kept for package.ps1 (-RuntimeInfoPath); it also writes version/url/sha256/sha512/size to GITHUB_OUTPUT.
+      - name: Resolve the .NET runtime installer
+        id: runtime
+        shell: pwsh
+        timeout-minutes: 15
+        run: |
+          $lines = @(& pwsh -NoProfile -File tools/resolve-dotnet-runtime.ps1)
+          if ($LASTEXITCODE -ne 0) { throw 'resolve-dotnet-runtime.ps1 failed (see the output above).' }
+          $jsonLines = @($lines | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ -match '^\{.*\}$' })
+          if ($jsonLines.Count -eq 0) { throw "resolve-dotnet-runtime.ps1 printed no JSON line: $($lines -join ' | ')" }
+          $json = $jsonLines[-1]
+          $info = $json | ConvertFrom-Json
+          if (-not $info.version -or -not $info.url -or -not $info.sha256) { throw "resolve-dotnet-runtime.ps1 printed no version/url/sha256: $json" }
+          [System.IO.File]::WriteAllText((Join-Path $env:RUNNER_TEMP 'dotnet-runtime.json'), $json, (New-Object System.Text.UTF8Encoding($false)))
+          Write-Output "Runtime installer: $($info.version) $($info.sha256)"
+
+      # Stable releases FAIL when the bundled runtime pack is older than the latest runtime (a security release shipped): bump global.json + notices (docs/RELEASING.md, Runtime freshness).
+      - name: Check the bundled runtime is current
+        shell: pwsh
+        env:
+          LATEST_RUNTIME: ${{ steps.runtime.outputs.version }}
+        run: |
+          ./tools/check-runtime-freshness.ps1 -AssetsFile Clink/obj_sc/project.assets.json -LatestVersion $env:LATEST_RUNTIME -FailOnStale
+          if ($LASTEXITCODE -ne 0) { throw 'The self-contained Clink.exe bundles an outdated .NET runtime (see the output above).' }
+
       # Both published exes: size guards, --packaging-check, --preflight, the embedded-feed self-test (what the BUILT exes embed from
       # Clink/Assets/feed.json must match what CI reads from the same file: off for an empty file, on for a complete one; a partly
       # filled file already fails in Get-FeedConfig) and ProductVersion == the version (the updater refuses a download whose embedded
       # version differs from its tag). The framework exe needs the WindowsDesktop 10 runtime of the runner image.
       - name: Check the published exes
         shell: pwsh
-        timeout-minutes: 10
+        timeout-minutes: 20
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           . ./tools/feed-lib.ps1
           $cfg = Get-FeedConfig -Path Clink/Assets/feed.json -Channel stable
           Write-Output "Expecting the built exes to embed the feed as: $($cfg.Mode)"
-          ./tools/check-published.ps1 -ScExe dist/sc/Clink.exe -FxExe dist/fx/Clink.exe -Version $env:VERSION -ExpectFeed $cfg.Mode
+          ./tools/check-published.ps1 -ScExe dist/sc/Clink.exe -FxExe dist/fx/Clink.exe -Version $env:VERSION -ExpectFeed $cfg.Mode -TimeoutSeconds 90
 
       # Pinned Inno Setup 6.7.3 (>= 6.3 is needed for x64compatible). Official release asset of github.com/jrsoftware/issrc;
       # the SHA-256 below was computed from a scratch download and matches the digest GitHub shows for the asset.
@@ -147,12 +183,13 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          ./tools/package.ps1 -ExePath dist/sc/Clink.exe -FrameworkExePath dist/fx/Clink.exe -Version $env:VERSION -OutDir dist/package -IsccPath (Join-Path $env:RUNNER_TEMP 'InnoSetup\ISCC.exe') -RequireInstaller
+          ./tools/package.ps1 -ExePath dist/sc/Clink.exe -FrameworkExePath dist/fx/Clink.exe -Version $env:VERSION -OutDir dist/package -IsccPath (Join-Path $env:RUNNER_TEMP 'InnoSetup\ISCC.exe') -RuntimeInfoPath (Join-Path $env:RUNNER_TEMP 'dotnet-runtime.json') -RequireInstaller
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $pkg = Get-Content -Raw dist/package/package.json | ConvertFrom-Json
           Add-Content -Path $env:GITHUB_OUTPUT -Value "exe_sha256=$($pkg.files.exe.sha256)"
           Add-Content -Path $env:GITHUB_OUTPUT -Value "fx_sha256=$($pkg.files.exeFramework.sha256)"
           Add-Content -Path $env:GITHUB_OUTPUT -Value "setup_sha256=$($pkg.files.installer.sha256)"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "notices_sha256=$($pkg.files.notices.sha256)"
           Get-Content dist/package/Clink.exe.sha256, dist/package/Clink-framework.exe.sha256
 
       - name: Upload package artifact
@@ -220,6 +257,7 @@ jobs:
           EXE_SHA256: ${{ needs.build.outputs.exe_sha256 }}
           FX_SHA256: ${{ needs.build.outputs.fx_sha256 }}
           SETUP_SHA256: ${{ needs.build.outputs.setup_sha256 }}
+          NOTICES_SHA256: ${{ needs.build.outputs.notices_sha256 }}
         run: |
           $exe = (Get-FileHash dist/package/Clink.exe -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($exe -ne $env:EXE_SHA256) { throw "Clink.exe in the artifact ($exe) is not what the build job produced ($env:EXE_SHA256)" }
@@ -227,6 +265,8 @@ jobs:
           if ($fx -ne $env:FX_SHA256) { throw "Clink-framework.exe in the artifact ($fx) is not what the build job produced ($env:FX_SHA256)" }
           $setup = (Get-FileHash "dist/package/Clink-$env:VERSION-setup.exe" -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($setup -ne $env:SETUP_SHA256) { throw "The setup exe in the artifact ($setup) is not what the build job produced ($env:SETUP_SHA256)" }
+          $notices = (Get-FileHash dist/package/THIRD-PARTY-NOTICES.txt -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($notices -ne $env:NOTICES_SHA256) { throw "THIRD-PARTY-NOTICES.txt in the artifact ($notices) is not what the build job produced ($env:NOTICES_SHA256)" }
           $line = (Get-Content -Raw dist/package/Clink.exe.sha256).Trim()
           if ($line -ne "$exe *Clink.exe") { throw "Clink.exe.sha256 does not describe Clink.exe: $line" }
           $fxLine = (Get-Content -Raw dist/package/Clink-framework.exe.sha256).Trim()
@@ -280,7 +320,7 @@ jobs:
         id: assets
         shell: pwsh
         run: |
-          $files = @('dist/package/Clink.exe', 'dist/package/Clink.exe.sha256', 'dist/package/Clink-framework.exe', 'dist/package/Clink-framework.exe.sha256', "dist/package/Clink-$env:VERSION-setup.exe")
+          $files = @('dist/package/Clink.exe', 'dist/package/Clink.exe.sha256', 'dist/package/Clink-framework.exe', 'dist/package/Clink-framework.exe.sha256', "dist/package/Clink-$env:VERSION-setup.exe", 'dist/package/THIRD-PARTY-NOTICES.txt')
           if (Test-Path dist/package/stable.json) { $files += 'dist/package/stable.json', 'dist/package/stable.json.sig' }
           Add-Content -Path $env:GITHUB_OUTPUT -Value "files<<EOF`n$($files -join "`n")`nEOF"
 

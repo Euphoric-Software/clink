@@ -11,7 +11,8 @@ This file is the canonical spec for how Clink is built, signed and published (co
 | `Clink.exe.sha256` | `<hash> *Clink.exe`. |
 | `Clink-framework.exe` | The FRAMEWORK-DEPENDENT single-file exe (about 32 MiB, needs the .NET 10 Desktop Runtime). This is the exe the installer installs and what installed copies update to. |
 | `Clink-framework.exe.sha256` | `<hash> *Clink-framework.exe`. |
-| `Clink-X.Y.Z-setup.exe` | Inno Setup installer (per user, no admin, fixed location, upgrades in place). |
+| `Clink-X.Y.Z-setup.exe` | Inno Setup installer (per user, no admin, fixed location, upgrades in place). It carries an optional task that installs the Microsoft .NET 10 Desktop Runtime when it is missing. |
+| `THIRD-PARTY-NOTICES.txt` | The third-party licence notices (the same bytes the installer installs next to `Clink.exe` and the app shows in About). Attached to the GitHub release only; it is not part of the feed bucket or the manifest. |
 | `stable.json`, `stable.json.sig` (`dev.json`, ...) | Signed update manifest, only when the feed is enabled for that channel. |
 
 There is no portable zip and no `Clink.portable` marker.
@@ -89,9 +90,12 @@ Both workflows have two jobs.
    or a manual run on `main`, and refuses when `gh release view vX.Y.Z` succeeds), publish BOTH flavours with
    `tools/publish-flavours.ps1` (`dist/sc` self-contained, `dist/fx` framework-dependent; separate `obj_*`/`bin_*` folders, because
    a shared one mixed the flavours and produced an exe that failed with 0x80008096), run `tools/check-published.ps1` on both
-   (size guards; `--packaging-check`, `--preflight`, the embedded-feed self-test and ProductVersion on each exe), install the
-   pinned Inno Setup, run `tools/package.ps1` (both exes, both sha256 files, the setup exe built from the FRAMEWORK exe,
-   `package.json`), record the SHA-256 values as job outputs, upload the package as an artifact. The dev workflow also builds
+   (size guards; `--packaging-check`, `--preflight`, the embedded-feed self-test, `--unittest ThirdPartyNotices` and ProductVersion on
+   each exe, plus the N-1 regression below; every child process gets 90 s), install the
+   pinned Inno Setup, run `tools/package.ps1` (both exes, both sha256 files, the setup exe built from the FRAMEWORK exe, the notices
+   file, `package.json`), record the SHA-256 values (including `notices_sha256`) as job outputs, upload the package as an artifact.
+   Before the package step the build job also runs `make-notices.ps1 -Check -AssetsFile Clink/obj_sc/project.assets.json`, resolves the
+   runtime installer and checks runtime freshness (next sections). The dev workflow also builds
    and runs the unit tests first (on the bin build: 5 tests fail by design when `--unittest` runs from a published exe).
    `build.yml` has a no-secrets "Package dry run" job that does the same without the installer.
 2. `publish` (`needs: build`, environment `feed-stable` / `feed-dev`, `contents: write`, fixed concurrency group
@@ -99,7 +103,7 @@ Both workflows have two jobs.
    the stable job accepts only `^refs/tags/v\d+\.\d+\.\d+$` or a manual run on `main` and checks
    `git merge-base --is-ancestor $GITHUB_SHA origin/main` (full-history checkout); the dev job accepts only `refs/heads/dev`;
    both refuse when a GitHub release `vX.Y.Z` already exists (draft or published). Then: download the artifact, verify
-   `Clink.exe`, `Clink-framework.exe` and the setup exe against the build job's outputs, read `Clink/Assets/feed.json` from the checkout.
+   `Clink.exe`, `Clink-framework.exe`, the setup exe and `THIRD-PARTY-NOTICES.txt` against the build job's outputs, read `Clink/Assets/feed.json` from the checkout.
    The GitHub release is created as a DRAFT with all assets, then `upload-feed.ps1` runs (if the feed is on), and only then
    `gh release edit vX.Y.Z --draft=false` publishes it. A failed bucket upload therefore never leaves a visible release.
    - Feed enabled for the channel: require the environment secrets (fail if missing), make and sign the manifest
@@ -227,7 +231,9 @@ try {
 
 `.\build.ps1 -Package` publishes both flavours (Release by default; it warns for Debug) into `dist\sc` and `dist\fx` and runs
 `tools/package.ps1` into `dist\package`: `Clink.exe`, `Clink.exe.sha256`, `Clink-framework.exe`, `Clink-framework.exe.sha256`,
-`Clink-<ver>-setup.exe` (when `ISCC.exe` is found; `tools/package.ps1 -SkipInstaller` skips it even then, `-RequireInstaller` fails when it is missing), `package.json`. To check the published
+`Clink-<ver>-setup.exe` (when `ISCC.exe` is found; `tools/package.ps1 -SkipInstaller` skips it even then, `-RequireInstaller` fails when it is missing), `THIRD-PARTY-NOTICES.txt` and `package.json`. A local installer
+has no .NET runtime task unless the runtime inputs are passed (see Installer inputs below); the script warns about it. A real ISCC output
+of 1 MiB or less is refused (`-SkipSetupSizeCheck` is for the script tests' fake ISCC only). To check the published
 exes: `tools\check-published.ps1 -ScExe dist\sc\Clink.exe -FxExe dist\fx\Clink.exe`.
 
 ## Pinned SDK (`global.json`)
@@ -235,12 +241,10 @@ exes: `tools\check-published.ps1 -ScExe dist\sc\Clink.exe -FxExe dist\fx\Clink.e
 `global.json` pins the .NET SDK to an exact version with `"rollForward": "disable"`, and every workflow installs it with
 `actions/setup-dotnet` `global-json-file: global.json`. The SDK that builds a release therefore only changes in a reviewed
 commit. Bump it deliberately, once per release, together with the third-party notices (the runtime pack and SDK versions the
-notices describe):
-
-1. Install the new SDK locally, set `"version"` in `global.json` to it, run `.\build.ps1 -Package` and
-   `tools\tests\run-script-tests.ps1`, and run the unit tests.
-2. Regenerate the notices for that SDK/runtime, then commit `global.json` and the notices together.
-3. Check that the version exists for the runner image (`actions/setup-dotnet` downloads it); the next workflow run proves it.
+notices describe). The procedure is the one list under "Runtime freshness gate" below (install the SDK, set `global.json`, publish,
+re-pin and regenerate the notices, raise `MinimumRuntimeVersion` when the runtime moved, then run `tools\tests\run-script-tests.ps1` and
+the unit tests, and commit together). Check that the version exists for the runner image (`actions/setup-dotnet` downloads it); the
+next workflow run proves it.
 
 `build.ps1` and `tools/publish-flavours.ps1` probe `dotnet --version` run in the repo root (which honours `global.json`): the
 `dotnet` on PATH is used when it satisfies the pin, otherwise `%USERPROFILE%\.dotnet\dotnet.exe` is tried, and when neither does
@@ -251,20 +255,73 @@ branch is pinned too.
 
 ## Installer inputs (ISCC)
 
-`tools/package.ps1` feeds the Inno Setup compiler `/DAppVersion`, `/DAppFileVersion`, `/DOutDir` and
-`/DSourceExe=<OutDir>\Clink-framework.exe` (the framework-dependent exe). The runtime-bootstrap slices add
-`/DDotNetRuntimeUrl`, `/DDotNetRuntimeSha256`, `/DDotNetRuntimeVersion` and `/DNoticesFile`; they are mandatory under
-`-RequireInstaller`. `package.ps1` also refuses inputs whose ProductVersion differs from `-Version` (`-SkipVersionCheck` is
-for the script tests only) and reads the default `minRuntime` from exactly one `Clink\bin_fx\**\Clink.runtimeconfig.json`
-(`-RuntimeConfigPath` or `-MinRuntime` override).
+`tools/package.ps1` feeds the Inno Setup compiler `/DAppVersion`, `/DAppFileVersion`, `/DOutDir`,
+`/DSourceExe=<OutDir>\Clink-framework.exe` (the framework-dependent exe), `/DNoticesFile=<OutDir>\THIRD-PARTY-NOTICES.txt` (an absolute
+path; this copy is also the release asset) and, from the runtime inputs, `/DDotNetRuntimeUrl`, `/DDotNetRuntimeSha256` and
+`/DDotNetRuntimeVersion`. The runtime inputs are mandatory under `-RequireInstaller`: the script refuses without them, before it writes
+anything. Without `-RequireInstaller` and without them it warns and builds the installer WITHOUT the runtime task. Pass them as
+`-RuntimeInfoPath <json>` (the JSON printed by `tools/resolve-dotnet-runtime.ps1`) or as `-DotNetRuntimeUrl`, `-DotNetRuntimeSha256`
+and `-DotNetRuntimeVersion` together. `package.ps1` validates them with `tools/lib/dotnet-runtime-lib.ps1` before ISCC sees them: a
+plain `x.y.z` version at or above the lib's `MinimumRuntimeVersion`, the URL equal to the `builds.dotnet.microsoft.com` URL built for
+that version, a 64-hex SHA-256, no quote, space or control character. `-NoticesPath` (default `<repo>\THIRD-PARTY-NOTICES.txt`) must
+exist; it is copied to `-OutDir` and listed in `package.json` as `files.notices`. `package.ps1` also refuses inputs whose ProductVersion
+differs from `-Version` (`-SkipVersionCheck` is for the script tests only) and reads the default `minRuntime` from exactly one
+`Clink\bin_fx\**\Clink.runtimeconfig.json` (`-RuntimeConfigPath` or `-MinRuntime` override).
+
+## .NET runtime for the installer
+
+`tools/resolve-dotnet-runtime.ps1` picks the latest .NET 10 Desktop Runtime (win-x64) installer from Microsoft's release metadata
+(`https://builds.dotnet.microsoft.com/dotnet/release-metadata/10.0/releases.json`; only that host is allowed and redirects are not
+followed), downloads it into a scratch folder, checks the SHA-512 from the metadata and the Authenticode signature (exact signer subject
+and root thumbprint allow-listed in `tools/lib/dotnet-runtime-lib.ps1`), computes the SHA-256 Inno Setup needs and deletes the file. The
+file is never executed. The release workflows run it in the step `Resolve the .NET runtime installer` (`id: runtime`): it prints
+`{version,url,sha256,sha512,size}` as JSON (saved to `$RUNNER_TEMP\dotnet-runtime.json`, which `package.ps1 -RuntimeInfoPath` reads) and
+writes the same values to `GITHUB_OUTPUT` (the freshness step uses `steps.runtime.outputs.version`). A latest version below
+`MinimumRuntimeVersion` in the lib is refused, so a stale or rolled-back `releases.json` cannot make the installer ship an old runtime.
+
+## Runtime freshness gate
+
+The self-contained `Clink.exe` bundles the runtime pack that the pinned SDK (`global.json`) restores, so a .NET security release does
+not reach it until the pin moves. `tools/check-runtime-freshness.ps1 -AssetsFile Clink/obj_sc/project.assets.json -LatestVersion <resolver
+version> [-FailOnStale]` reads the bundled `Microsoft.NETCore.App.Runtime.win-x64` and `Microsoft.WindowsDesktop.App.Runtime.win-x64`
+versions (exact `[x, x]` pins in `downloadDependencies`; a missing pack or file is a failure) and compares them with the latest runtime:
+equal or newer is ok; older FAILS a stable release (`release.yml` passes `-FailOnStale`) and only prints a `::warning::` for a dev build
+(`release-dev.yml`). `build.yml`'s package dry run does not run it (it does not run the resolver, so it has no latest version and makes no
+network call), but it compiles the real installer with the pinned Inno Setup and the committed floor as runtime version (dummy SHA-256, never uploaded); it does run `make-notices.ps1 -Check -AssetsFile ...`.
+
+Bump procedure when it fails or warns (one reviewed commit):
+
+1. Install an SDK that ships the new runtime (`dotnet-install.ps1 -Version <x>`) and set it in `global.json`.
+2. Publish once (`.\build.ps1 -Package` or `tools\publish-flavours.ps1`) so the new runtime packs are in the NuGet cache, then run
+   `tools\notices\make-notices.ps1 -Update -RuntimeVersion <new> -Accept` (read the printed hash changes: a changed hash means the licence
+   text changed), `-Generate`, review the diff of `THIRD-PARTY-NOTICES.txt`, and `-Check -AssetsFile Clink\obj_sc\project.assets.json`.
+3. Raise `$script:MinimumRuntimeVersion` in `tools/lib/dotnet-runtime-lib.ps1` to the new version and run the script tests.
+
+## Third-party notices
+
+`THIRD-PARTY-NOTICES.txt` is generated from `tools/notices/sources.json` (`make-notices.ps1 -Generate`) and verified offline by `-Check`.
+Both release workflows and the dry run run `-Check -AssetsFile Clink/obj_sc/project.assets.json` after the publish: the file's sections
+must match their pinned hashes and the restore must use the pinned runtime packs, SDK reference and CsWin32. The assets file must hold
+both runtime packs (`-AllowMissingRuntimePacks` exists for local use and is never used by CI). `package.ps1` copies the file into the
+package, the installer installs that copy, `package.json` records its SHA-256 (`files.notices`), the build job exposes it as
+`notices_sha256`, and the publish job re-hashes the artifact copy before the GitHub release is created with the file as an asset.
+
+## N-1 regression check
+
+`tools/check-published.ps1` copies `Clink-framework.exe` into a fresh folder next to a garbage `hostfxr.dll`, points `DOTNET_ROOT` (and
+`DOTNET_ROOT_X64`) at an empty folder for that run only, and requires `--packaging-check Framework` and `--preflight` to pass. The
+framework build uses `AppHostDotNetSearch=Global`, so the apphost must ignore both the planted DLL and the environment variable; a
+failure means the exe would load a runtime from a place that is not the registered install.
 
 ## Script tests
 
 `tools\tests\run-script-tests.ps1` (Windows PowerShell 5.1 and pwsh 7, no modules) parses every script under `tools\` and
-`build.ps1`, runs every `tools\tests\*.tests.ps1`, and `packaging.tests.ps1` covers `package.ps1`, `make-manifest.ps1`
-(with a throwaway key made inside the test), `check-published.ps1`'s size guards and text assertions on the workflows (pinned
-`uses:`, the four release asset names, `global-json-file`, no `${{ }}` inside `run:` scripts).
-
+`build.ps1`, runs every `tools\tests\*.tests.ps1`, and `packaging.tests.ps1` covers `package.ps1` (including the runtime and notices
+wiring against a fake `ISCC.cmd`; Inno Setup is not needed), `make-manifest.ps1` (with a throwaway key made inside the test),
+`check-published.ps1`'s size guards and timeout handling, and text assertions on the workflows (pinned `uses:`, the release asset names
+including the notices, the resolver / notices / freshness / Inno steps, `global-json-file`, no `${{ }}` inside `run:` scripts).
+`runtime-freshness.tests.ps1`, `make-notices.tests.ps1`, `resolve-dotnet-runtime.tests.ps1` and `installer-script.tests.ps1` cover the
+other scripts.
 ## Recommended next step: Authenticode
 
 Sign `Clink.exe` and the setup exe with a code-signing certificate (or Azure Trusted Signing) in the `build` or a third job so

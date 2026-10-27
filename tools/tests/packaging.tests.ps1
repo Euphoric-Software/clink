@@ -10,6 +10,11 @@ $utf8 = [System.Text.UTF8Encoding]::new($false)
 $scratch = Join-Path ([System.IO.Path]::GetTempPath()) ('clink-pkgtests-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $scratch | Out-Null
 
+. (Join-Path $toolsDir 'lib\dotnet-runtime-lib.ps1')
+# Runtime inputs for package.ps1 tests, derived from the committed floor of the lib so a floor bump does not break them.
+$rtVersion = $script:MinimumRuntimeVersion
+$rtUrl = Get-ExpectedDotNetRuntimeUrl -Version $rtVersion
+$rtSha256 = 'ab' * 32
 $script:passed = 0
 $script:failed = 0
 
@@ -114,6 +119,7 @@ try {
         $out = Get-ScratchFolder 'pkg-same'
         $r = Invoke-ScriptChild $packageScript @('-ExePath', $scExe, '-FrameworkExePath', $scExe, '-Version', '0.4.2', '-OutDir', $out, '-MinRuntime', '10.0.0', '-SkipInstaller', '-SkipVersionCheck')
         Assert-True ($r.Code -ne 0) 'accepted identical inputs'
+        Assert-True (($r.Out + $r.Err) -match 'same file') "no 'same file' message: $($r.Out) $($r.Err)"
         Assert-True (-not (Test-Path -LiteralPath (Join-Path $out 'package.json'))) 'wrote package.json anyway'
     }
 
@@ -123,22 +129,26 @@ try {
         $out = Get-ScratchFolder 'pkg-copy'
         $r = Invoke-ScriptChild $packageScript @('-ExePath', $scExe, '-FrameworkExePath', $copy, '-Version', '0.4.2', '-OutDir', $out, '-MinRuntime', '10.0.0', '-SkipInstaller', '-SkipVersionCheck')
         Assert-True ($r.Code -ne 0) 'accepted identical content'
+        Assert-True (($r.Out + $r.Err) -match 'must be larger') "no 'must be larger' message (identical content, equal size is caught first): $($r.Out) $($r.Err)"
     }
 
     Invoke-Test 'package.ps1 refuses a self-contained exe that is not larger than the framework exe' {
         $out = Get-ScratchFolder 'pkg-swapped'
         $r = Invoke-ScriptChild $packageScript @('-ExePath', $fxExe, '-FrameworkExePath', $scExe, '-Version', '0.4.2', '-OutDir', $out, '-MinRuntime', '10.0.0', '-SkipInstaller', '-SkipVersionCheck')
         Assert-True ($r.Code -ne 0) 'accepted swapped inputs'
+        Assert-True (($r.Out + $r.Err) -match 'must be larger') "no 'must be larger' message (swapped): $($r.Out) $($r.Err)"
         $equal = Join-Path $fixtures 'equal-size.exe'
         New-FixtureFile -Path $equal -Length 5000
         $r = Invoke-ScriptChild $packageScript @('-ExePath', $scExe, '-FrameworkExePath', $equal, '-Version', '0.4.2', '-OutDir', $out, '-MinRuntime', '10.0.0', '-SkipInstaller', '-SkipVersionCheck')
         Assert-True ($r.Code -ne 0) 'accepted equal sizes'
+        Assert-True (($r.Out + $r.Err) -match 'must be larger') "no 'must be larger' message (equal): $($r.Out) $($r.Err)"
     }
 
     Invoke-Test 'package.ps1 refuses a minRuntime that is not X.Y.Z' {
         $out = Get-ScratchFolder 'pkg-minruntime'
         $r = Invoke-ScriptChild $packageScript @('-ExePath', $scExe, '-FrameworkExePath', $fxExe, '-Version', '0.4.2', '-OutDir', $out, '-MinRuntime', '10.0', '-SkipInstaller', '-SkipVersionCheck')
         Assert-True ($r.Code -ne 0) 'accepted minRuntime 10.0'
+        Assert-True (($r.Out + $r.Err) -match 'is not X\.Y\.Z') "no 'is not X.Y.Z' message: $($r.Out) $($r.Err)"
     }
 
     Invoke-Test 'package.ps1 refuses inputs whose ProductVersion differs from -Version (and says so)' {
@@ -172,38 +182,154 @@ try {
             New-Item -ItemType Directory -Force -Path $d | Out-Null
             [System.IO.File]::WriteAllText((Join-Path $d 'Clink.runtimeconfig.json'), $runtimeConfigText, $utf8)
         }
+        $expectedMessage = @{ $none = 'No Clink\.runtimeconfig\.json found'; $two = 'More than one Clink\.runtimeconfig\.json' }
         foreach ($dir in $none, $two) {
             $out = Get-ScratchFolder ('pkg-rt-bad-' + (Split-Path -Leaf $dir))
             $r = Invoke-ScriptChild $packageScript @('-ExePath', $scExe, '-FrameworkExePath', $fxExe, '-Version', '0.4.2', '-OutDir', $out, '-FxBinDir', $dir, '-SkipInstaller', '-SkipVersionCheck')
             Assert-True ($r.Code -ne 0) "accepted $dir"
+            Assert-True (($r.Out + $r.Err) -match $expectedMessage[$dir]) "no '$($expectedMessage[$dir])' message for $dir : $($r.Out) $($r.Err)"
             Assert-True (-not (Test-Path -LiteralPath (Join-Path $out 'package.json'))) "wrote package.json for $dir"
         }
     }
 
+    # Runtime info file as tools/resolve-dotnet-runtime.ps1 prints it.
+    $runtimeInfo = Join-Path $fixtures 'dotnet-runtime.json'
+    [System.IO.File]::WriteAllText($runtimeInfo, ('{"version":"' + $rtVersion + '","url":"' + $rtUrl + '","sha256":"' + $rtSha256 + '","sha512":"' + ('cd' * 64) + '","size":"123"}'), $utf8)
+    $repoNotices = Join-Path $repo 'THIRD-PARTY-NOTICES.txt'
+    $repoNoticesHash = (Get-FileHash -LiteralPath $repoNotices -Algorithm SHA256).Hash.ToLowerInvariant()
+
+    function New-FakeIscc {
+        # A fake ISCC.cmd in its own folder: records its arguments to <folder>\iscc-args.txt and, when -SetupPath is given, creates it.
+        param([string]$Name, [string]$SetupPath, [int]$ExitCode = 0)
+        $dir = Get-ScratchFolder $Name
+        $cmd = Join-Path $dir 'ISCC.cmd'
+        $text = "@echo off`r`necho %* > `"%~dp0iscc-args.txt`"`r`n"
+        if ($SetupPath) { $text += "echo x> `"$SetupPath`"`r`n" }
+        $text += "exit /b $ExitCode`r`n"
+        [System.IO.File]::WriteAllText($cmd, $text, [System.Text.Encoding]::ASCII)
+        [pscustomobject]@{ Cmd = $cmd; Args = (Join-Path $dir 'iscc-args.txt') }
+    }
+
     Invoke-Test 'package.ps1 passes /DSourceExe=...Clink-framework.exe to ISCC and -RequireInstaller fails when no setup exe appears' {
-        $fake = Get-ScratchFolder 'fake-iscc'
-        $isccCmd = Join-Path $fake 'ISCC.cmd'
-        $argsFile = Join-Path $fake 'iscc-args.txt'
-        [System.IO.File]::WriteAllText($isccCmd, "@echo off`r`necho %*> `"%~dp0iscc-args.txt`"`r`nexit /b 0`r`n", [System.Text.Encoding]::ASCII)
+        $fake = New-FakeIscc 'fake-iscc'
         $out = Get-ScratchFolder 'pkg-iscc-none'
-        $r = Invoke-ScriptChild $packageScript @('-ExePath', $scExe, '-FrameworkExePath', $fxExe, '-Version', '0.4.2', '-OutDir', $out, '-MinRuntime', '10.0.0', '-IsccPath', $isccCmd, '-RequireInstaller', '-SkipVersionCheck')
+        $r = Invoke-ScriptChild $packageScript @('-ExePath', $scExe, '-FrameworkExePath', $fxExe, '-Version', '0.4.2', '-OutDir', $out, '-MinRuntime', '10.0.0', '-IsccPath', $fake.Cmd, '-RuntimeInfoPath', $runtimeInfo, '-RequireInstaller', '-SkipVersionCheck')
         Assert-True ($r.Code -ne 0) "-RequireInstaller succeeded without a setup exe: $($r.Out)"
         Assert-True (($r.Out + $r.Err) -match 'did not produce') "no 'did not produce' message: $($r.Out) $($r.Err)"
-        Assert-True (Test-Path -LiteralPath $argsFile) 'the fake ISCC was not run'
-        $recorded = [System.IO.File]::ReadAllText($argsFile)
-        Assert-True ($recorded -match '/DSourceExe=\S*Clink-framework\.exe(\s|$)') "ISCC arguments lack /DSourceExe=...Clink-framework.exe: $recorded"
+        Assert-True (Test-Path -LiteralPath $fake.Args) 'the fake ISCC was not run'
+        $recorded = [System.IO.File]::ReadAllText($fake.Args)
+        Assert-True ($recorded -match '/DSourceExe=[^\r\n]*?Clink-framework\.exe("|\s|$)') "ISCC arguments lack /DSourceExe=...Clink-framework.exe: $recorded"
         Assert-True ($recorded -match '/DAppVersion=0\.4\.2') "ISCC arguments lack /DAppVersion: $recorded"
         Assert-True (-not (Test-Path -LiteralPath (Join-Path $out 'package.json'))) 'wrote package.json although the installer is missing'
 
         # A fake that does produce the setup exe: package.json lists it.
         $out2 = Get-ScratchFolder 'pkg-iscc-ok'
-        $fake2 = Join-Path $fake 'ISCC2.cmd'
-        [System.IO.File]::WriteAllText($fake2, "@echo off`r`necho x> `"$out2\Clink-0.4.2-setup.exe`"`r`nexit /b 0`r`n", [System.Text.Encoding]::ASCII)
-        $r = Invoke-ScriptChild $packageScript @('-ExePath', $scExe, '-FrameworkExePath', $fxExe, '-Version', '0.4.2', '-OutDir', $out2, '-MinRuntime', '10.0.0', '-IsccPath', $fake2, '-RequireInstaller', '-SkipVersionCheck')
+        $fake2 = New-FakeIscc 'fake-iscc2' (Join-Path $out2 'Clink-0.4.2-setup.exe')
+        $r = Invoke-ScriptChild $packageScript @('-ExePath', $scExe, '-FrameworkExePath', $fxExe, '-Version', '0.4.2', '-OutDir', $out2, '-MinRuntime', '10.0.0', '-IsccPath', $fake2.Cmd, '-RuntimeInfoPath', $runtimeInfo, '-RequireInstaller', '-SkipVersionCheck', '-SkipSetupSizeCheck')
         Assert-True ($r.Code -eq 0) "a produced setup exe was refused: $($r.Out) $($r.Err)"
         Assert-True ((Get-Content -Raw -LiteralPath (Join-Path $out2 'package.json') | ConvertFrom-Json).files.installer.file -eq 'Clink-0.4.2-setup.exe') 'package.json lacks the installer'
     }
 
+    Invoke-Test 'package.ps1 -RequireInstaller passes all four /D values (runtime url, sha256, version, absolute NoticesFile) and lists the notices in package.json' {
+        $out = Get-ScratchFolder 'pkg- spaced out'   # a space in the path: the recorded arguments must still match
+        $fake = New-FakeIscc 'fake iscc spaced' (Join-Path $out 'Clink-0.4.2-setup.exe')
+        $r = Invoke-ScriptChild $packageScript @('-ExePath', $scExe, '-FrameworkExePath', $fxExe, '-Version', '0.4.2', '-OutDir', $out, '-MinRuntime', '10.0.0', '-IsccPath', $fake.Cmd, '-RuntimeInfoPath', $runtimeInfo, '-RequireInstaller', '-SkipVersionCheck', '-SkipSetupSizeCheck')
+        Assert-True ($r.Code -eq 0) "exit code $($r.Code): $($r.Out) $($r.Err)"
+        $recorded = [System.IO.File]::ReadAllText($fake.Args)
+        Assert-True ($recorded.Contains('/DDotNetRuntimeUrl=' + $rtUrl + ' ')) "no /DDotNetRuntimeUrl: $recorded"
+        Assert-True ($recorded.Contains('/DDotNetRuntimeSha256=' + $rtSha256 + ' ')) "no /DDotNetRuntimeSha256: $recorded"
+        Assert-True ($recorded.Contains('/DDotNetRuntimeVersion=' + $rtVersion + ' ')) "no /DDotNetRuntimeVersion: $recorded"
+        $notices = [regex]::Match($recorded, '/DNoticesFile=([^\r\n]*?THIRD-PARTY-NOTICES\.txt)("|\s|$)')
+        Assert-True $notices.Success "no /DNoticesFile=...THIRD-PARTY-NOTICES.txt: $recorded"
+        $noticesPath = $notices.Groups[1].Value
+        Assert-True ([System.IO.Path]::IsPathRooted($noticesPath)) "NoticesFile is not absolute: $noticesPath"
+        Assert-True (Test-Path -LiteralPath $noticesPath -PathType Leaf) "NoticesFile does not exist: $noticesPath"
+        Assert-True ((Get-FileHash -LiteralPath $noticesPath -Algorithm SHA256).Hash.ToLowerInvariant() -eq $repoNoticesHash) 'NoticesFile is not the repo notices'
+        Assert-True ($recorded -match '/DSourceExe=' -and $recorded -match '/DAppVersion=0\.4\.2' -and $recorded -match '/DAppFileVersion=0\.4\.2\.0') "other defines missing: $recorded"
+        $pkg = Get-Content -Raw -LiteralPath (Join-Path $out 'package.json') | ConvertFrom-Json
+        Assert-True ($pkg.files.notices.file -eq 'THIRD-PARTY-NOTICES.txt' -and $pkg.files.notices.sha256 -eq $repoNoticesHash -and $pkg.files.notices.size -eq (Get-Item -LiteralPath $repoNotices).Length) 'files.notices'
+        Assert-True (Test-Path -LiteralPath (Join-Path $out 'THIRD-PARTY-NOTICES.txt')) 'the notices were not copied to OutDir'
+
+        # The explicit parameters give the same defines, and a custom -NoticesPath is used.
+        $custom = Join-Path $fixtures 'custom-notices.txt'
+        [System.IO.File]::WriteAllText($custom, "custom notices`r`n", $utf8)
+        $out2 = Get-ScratchFolder 'pkg-explicit-runtime'
+        $fake2 = New-FakeIscc 'fake-iscc-explicit' (Join-Path $out2 'Clink-0.4.2-setup.exe')
+        $r = Invoke-ScriptChild $packageScript @('-ExePath', $scExe, '-FrameworkExePath', $fxExe, '-Version', '0.4.2', '-OutDir', $out2, '-MinRuntime', '10.0.0', '-IsccPath', $fake2.Cmd,
+            '-DotNetRuntimeUrl', $rtUrl, '-DotNetRuntimeSha256', $rtSha256.ToUpperInvariant(), '-DotNetRuntimeVersion', $rtVersion, '-NoticesPath', $custom, '-RequireInstaller', '-SkipVersionCheck', '-SkipSetupSizeCheck')
+        Assert-True ($r.Code -eq 0) "explicit parameters failed: $($r.Out) $($r.Err)"
+        $recorded2 = [System.IO.File]::ReadAllText($fake2.Args)
+        Assert-True ($recorded2.Contains('/DDotNetRuntimeSha256=' + $rtSha256 + ' ')) "the sha256 was not normalised to lower case: $recorded2"
+        Assert-True ((Get-Content -Raw -LiteralPath (Join-Path $out2 'THIRD-PARTY-NOTICES.txt')) -ceq "custom notices`r`n") 'the custom notices were not used'
+        Assert-True ((Get-Content -Raw -LiteralPath (Join-Path $out2 'package.json') | ConvertFrom-Json).files.notices.size -eq 16) 'files.notices.size of the custom file'
+    }
+
+    Invoke-Test 'package.ps1 -RequireInstaller is refused without runtime info, with bad runtime info, or with a missing notices file (nothing is run or written)' {
+        $fake = New-FakeIscc 'fake-iscc-refuse'
+        $good = @('-ExePath', $scExe, '-FrameworkExePath', $fxExe, '-Version', '0.4.2', '-MinRuntime', '10.0.0', '-IsccPath', $fake.Cmd, '-RequireInstaller', '-SkipVersionCheck')
+        $cases = [ordered]@{
+            'no runtime info'          = @()
+            'only a URL'               = @('-DotNetRuntimeUrl', $rtUrl)
+            'info plus explicit'       = @('-RuntimeInfoPath', $runtimeInfo, '-DotNetRuntimeVersion', $rtVersion)
+            'missing info file'        = @('-RuntimeInfoPath', (Join-Path $fixtures 'nope.json'))
+            'version below the floor'  = @('-DotNetRuntimeUrl', (Get-ExpectedDotNetRuntimeUrl '10.0.1'), '-DotNetRuntimeSha256', $rtSha256, '-DotNetRuntimeVersion', '10.0.1')
+            'version not x.y.z'        = @('-DotNetRuntimeUrl', $rtUrl, '-DotNetRuntimeSha256', $rtSha256, '-DotNetRuntimeVersion', ($rtVersion + '-rc.1'))
+            'URL of another version'   = @('-DotNetRuntimeUrl', (Get-ExpectedDotNetRuntimeUrl '10.99.0'), '-DotNetRuntimeSha256', $rtSha256, '-DotNetRuntimeVersion', $rtVersion)
+            'URL on another host'      = @('-DotNetRuntimeUrl', $rtUrl.Replace('builds.dotnet.microsoft.com', 'example.org'), '-DotNetRuntimeSha256', $rtSha256, '-DotNetRuntimeVersion', $rtVersion)
+            'URL not https'            = @('-DotNetRuntimeUrl', $rtUrl.Replace('https://', 'http://'), '-DotNetRuntimeSha256', $rtSha256, '-DotNetRuntimeVersion', $rtVersion)
+            'sha256 of 63 characters'  = @('-DotNetRuntimeUrl', $rtUrl, '-DotNetRuntimeSha256', $rtSha256.Substring(1), '-DotNetRuntimeVersion', $rtVersion)
+            'sha256 not hex'           = @('-DotNetRuntimeUrl', $rtUrl, '-DotNetRuntimeSha256', ('zz' * 32), '-DotNetRuntimeVersion', $rtVersion)
+            'an apostrophe in the sha256'    = @('-DotNetRuntimeUrl', $rtUrl, '-DotNetRuntimeSha256', ($rtSha256.Substring(1) + "'"), '-DotNetRuntimeVersion', $rtVersion)
+            'missing notices file'     = @('-RuntimeInfoPath', $runtimeInfo, '-NoticesPath', (Join-Path $fixtures 'no-notices.txt'))
+        }
+        $expected = @{
+            'no runtime info'          = 'needs the \.NET runtime inputs'
+            'only a URL'               = 'together'
+            'info plus explicit'       = 'exclude each other'
+            'missing info file'        = 'Runtime info file not found'
+            'version below the floor'  = 'below the committed minimum'
+            'version not x.y.z'        = 'is not x\.y\.z'
+            'URL of another version'   = 'is not the expected'
+            'URL on another host'      = 'not allow-listed'
+            'URL not https'            = 'must be https'
+            'sha256 of 63 characters'  = 'is not 64 hex'
+            'sha256 not hex'           = 'is not 64 hex'
+            'an apostrophe in the sha256' = 'forbidden character'
+            'missing notices file'     = 'notices file not found'
+        }
+        foreach ($name in $cases.Keys) {            $out = Get-ScratchFolder ('pkg-refuse-' + ($name -replace '\W', '-'))
+            $r = Invoke-ScriptChild $packageScript ($good + @('-OutDir', $out) + $cases[$name])
+            Assert-True ($r.Code -ne 0) "accepted: $name"
+            Assert-True (($r.Out + $r.Err) -match $expected[$name]) "no '$($expected[$name])' message for: $name : $($r.Out) $($r.Err)"
+            Assert-True (-not (Test-Path -LiteralPath (Join-Path $out 'package.json'))) "wrote package.json for: $name"
+            Assert-True (-not (Test-Path -LiteralPath (Join-Path $out 'Clink.exe'))) "copied files before refusing: $name"
+            Assert-True (-not (Test-Path -LiteralPath $fake.Args)) "the fake ISCC ran for: $name"
+        }
+        # A refusal for a runtime info file with a missing field names the field.
+        $partial = Join-Path $fixtures 'partial.json'
+        [System.IO.File]::WriteAllText($partial, ('{"version":"' + $rtVersion + '","url":"' + $rtUrl + '"}'), $utf8)
+        $out = Get-ScratchFolder 'pkg-refuse-partial'
+        $r = Invoke-ScriptChild $packageScript ($good + @('-OutDir', $out, '-RuntimeInfoPath', $partial))
+        Assert-True ($r.Code -ne 0 -and (($r.Out + $r.Err) -match "no 'sha256'")) "a runtime info file without sha256 was not refused clearly: $($r.Out) $($r.Err)"
+    }
+
+    Invoke-Test 'package.ps1 without -RequireInstaller and without runtime info warns and builds the installer without the runtime defines' {
+        $out = Get-ScratchFolder 'pkg-no-runtime'
+        $fake = New-FakeIscc 'fake-iscc-noruntime' (Join-Path $out 'Clink-0.4.2-setup.exe')
+        $r = Invoke-ScriptChild $packageScript @('-ExePath', $scExe, '-FrameworkExePath', $fxExe, '-Version', '0.4.2', '-OutDir', $out, '-MinRuntime', '10.0.0', '-IsccPath', $fake.Cmd, '-SkipVersionCheck', '-SkipSetupSizeCheck')
+        Assert-True ($r.Code -eq 0) "exit code $($r.Code): $($r.Out) $($r.Err)"
+        Assert-True (($r.Out + $r.Err) -match 'WITHOUT the runtime task') "no warning: $($r.Out) $($r.Err)"
+        $recorded = [System.IO.File]::ReadAllText($fake.Args)
+        Assert-True ($recorded -notmatch 'DDotNetRuntime') "runtime defines were passed anyway: $recorded"
+        Assert-True ($recorded -match '/DNoticesFile=') "NoticesFile is always passed: $recorded"
+    }
+
+    Invoke-Test 'package.ps1 -SkipInstaller needs no runtime info and still ships the notices' {
+        $out = Get-ScratchFolder 'pkg-skip-notices'
+        $r = Invoke-ScriptChild $packageScript @('-ExePath', $scExe, '-FrameworkExePath', $fxExe, '-Version', '0.4.2', '-OutDir', $out, '-MinRuntime', '10.0.0', '-SkipInstaller', '-SkipVersionCheck')
+        Assert-True ($r.Code -eq 0) "exit code $($r.Code): $($r.Out) $($r.Err)"
+        Assert-True ((Get-Content -Raw -LiteralPath (Join-Path $out 'package.json') | ConvertFrom-Json).files.notices.sha256 -eq $repoNoticesHash) 'files.notices'
+    }
     Invoke-Test 'package.ps1 has LF line endings only' {
         Assert-True (-not ([System.IO.File]::ReadAllText($packageScript).Contains("`r"))) 'package.ps1 contains a CR'
     }
@@ -261,6 +387,7 @@ try {
         Remove-Item -LiteralPath (Join-Path $pkgDir 'stable.json'), (Join-Path $pkgDir 'stable.json.sig') -Force
         $r = Invoke-ScriptChild $manifestScript $manifestArgs @{ CLINK_FEED_SIGNING_KEY = $keys[0].Private }
         Assert-True ($r.Code -ne 0) 'accepted minRuntime 10.0'
+        Assert-True (($r.Out + $r.Err) -match 'is not X\.Y\.Z') "no 'is not X.Y.Z' message: $($r.Out) $($r.Err)"
         Assert-True (-not (Test-Path -LiteralPath (Join-Path $pkgDir 'stable.json'))) 'wrote a manifest with a bad minRuntime'
 
         # A package.json without exeFramework (an old package) must not produce a manifest either.
@@ -313,7 +440,7 @@ try {
     }
 
     Invoke-Test 'check-published.ps1 runs a child with DOTNET_DISABLE_GUI_ERRORS=1, restores the variable and kills a child after the timeout' {
-        . ([scriptblock]::Create((Import-ScriptFunction $checkScript @('Invoke-PublishedExe'))))
+        . ([scriptblock]::Create((Import-ScriptFunction $checkScript @('Invoke-PublishedExe', 'Stop-ProcessTree'))))
         $before = $env:DOTNET_DISABLE_GUI_ERRORS
         $ok = Invoke-PublishedExe $hostExe @('-NoProfile', '-Command', '"Write-Output hi; Write-Output $env:DOTNET_DISABLE_GUI_ERRORS; Write-Output $env:SOME_TEST_VALUE"') 60 @{ SOME_TEST_VALUE = 'xyz' }
         Assert-True ($ok.Code -eq 0) "exit code $($ok.Code): $($ok.Err)"
@@ -325,6 +452,38 @@ try {
         try { Invoke-PublishedExe $hostExe @('-NoProfile', '-Command', '"Start-Sleep -Seconds 60"') 2 | Out-Null } catch { $message = $_.Exception.Message }
         Assert-True ($message -and $message -match 'Timed out') "no timeout error: $message"
         Assert-True ($watch.Elapsed.TotalSeconds -lt 40) "the timeout took $($watch.Elapsed.TotalSeconds) s"
+    }
+
+    Invoke-Test 'check-published.ps1 Stop-ProcessTree survives a taskkill that writes to stderr or fails (the PS 5.1 race) and still kills the process' {
+        . ([scriptblock]::Create((Import-ScriptFunction $checkScript @('Stop-ProcessTree'))))
+        $stubDir = Get-ScratchFolder 'taskkill stub'
+        $stubs = @{
+            'stderr-exit1' = "@echo off`r`necho ERROR: The process was not found. 1>&2`r`nexit /b 128`r`n"
+            'silent-exit0' = "@echo off`r`nexit /b 0`r`n"
+        }
+        foreach ($name in $stubs.Keys) {
+            $stub = Join-Path $stubDir "$name.cmd"
+            [System.IO.File]::WriteAllText($stub, $stubs[$name], [System.Text.Encoding]::ASCII)
+            $child = Start-Process -FilePath $hostExe -ArgumentList @('-NoProfile', '-Command', '"Start-Sleep -Seconds 120"') -PassThru -WindowStyle Hidden
+            try {
+                $null = $child.Handle
+                $savedPreference = $ErrorActionPreference
+                $ErrorActionPreference = 'Stop'   # what the real script runs under
+                try { Stop-ProcessTree -Process $child -TaskKill $stub } finally { $ErrorActionPreference = $savedPreference }
+                Assert-True $child.HasExited "the process survived ($name stub): Kill() was not reached"
+            } finally { if (-not $child.HasExited) { $child.Kill() } }
+        }
+    }
+
+    Invoke-Test 'check-published.ps1 has the TimeoutSeconds range, the whole-token MustContain, the notices self-test and the N-1 regression' {
+        $text = [System.IO.File]::ReadAllText($checkScript)
+        foreach ($needle in '[ValidateRange(1, 3600)] [int]$TimeoutSeconds', "'--unittest', 'ThirdPartyNotices'", 'DOTNET_ROOT', 'hostfxr.dll', "'--packaging-check', 'Framework'", "'(^|\s)' + [regex]::Escape(`$needle) + '(\s|`$)'", 'CLINK_TESTS_NO_SKIP') {
+            Assert-True ($text.Contains($needle)) "check-published.ps1 does not contain $needle"
+        }
+        $r = Invoke-ScriptChild $checkScript @('-ScExe', $scExe, '-FxExe', $fxExe, '-TimeoutSeconds', '0', '-SkipRun')
+        Assert-True ($r.Code -ne 0) 'accepted -TimeoutSeconds 0'
+        $r = Invoke-ScriptChild $checkScript @('-ScExe', $scExe, '-FxExe', $fxExe, '-TimeoutSeconds', '3601', '-SkipRun')
+        Assert-True ($r.Code -ne 0) 'accepted -TimeoutSeconds 3601'
     }
 
     # ------------------------------------------------------------------ publish-flavours.ps1 (validation only; nothing is published)
@@ -379,14 +538,81 @@ try {
         Remove-FlavourDirectory -Path $plain
         Assert-True (-not (Test-Path -LiteralPath $plain)) 'a plain tree was not deleted'
     }
+    Invoke-Test 'publish-flavours.ps1 and build.ps1 Test-DotNetSdk runs "dotnet --version" in the repo root and refuses a failing or silent dotnet' {
+        $stubDir = Get-ScratchFolder 'dotnet stub'
+        $cwdFile = Join-Path $stubDir 'cwd.txt'
+        $ok = Join-Path $stubDir 'dotnet-ok.cmd'
+        $failing = Join-Path $stubDir 'dotnet-fail.cmd'
+        $silent = Join-Path $stubDir 'dotnet-silent.cmd'
+        [System.IO.File]::WriteAllText($ok, "@echo off`r`ncd > `"$cwdFile`"`r`necho 10.0.100`r`nexit /b 0`r`n", [System.Text.Encoding]::ASCII)
+        [System.IO.File]::WriteAllText($failing, "@echo off`r`necho A compatible .NET SDK was not found. 1>&2`r`nexit /b 145`r`n", [System.Text.Encoding]::ASCII)
+        [System.IO.File]::WriteAllText($silent, "@echo off`r`nexit /b 0`r`n", [System.Text.Encoding]::ASCII)
+        . ([scriptblock]::Create((Import-ScriptFunction $publishScript @('Test-DotNetSdk'))))
+        $before = (Get-Location).ProviderPath
+        Assert-True ((Test-DotNetSdk -Exe $ok -WorkingDirectory $repo) -eq $true) 'publish-flavours: rejected a dotnet that prints a version'
+        Assert-True (([System.IO.File]::ReadAllText($cwdFile).Trim()) -eq $repo.TrimEnd('\')) "publish-flavours: dotnet ran in '$([System.IO.File]::ReadAllText($cwdFile).Trim())', not the repo root"
+        Assert-True ((Get-Location).ProviderPath -eq $before) 'publish-flavours: the location was not restored'
+        Assert-True ((Test-DotNetSdk -Exe $failing -WorkingDirectory $repo) -eq $false) 'publish-flavours: accepted a failing dotnet'
+        Assert-True ((Test-DotNetSdk -Exe $silent -WorkingDirectory $repo) -eq $false) 'publish-flavours: accepted a dotnet that prints nothing'
+        Assert-True ((Test-DotNetSdk -Exe (Join-Path $stubDir 'no-such-dotnet.cmd') -WorkingDirectory $repo) -eq $false) 'publish-flavours: accepted a missing dotnet'
+        Assert-True ((Get-Location).ProviderPath -eq $before) 'publish-flavours: the location was not restored after failures'
+        # build.ps1 has its own copy (it reads $root).
+        Remove-Item -LiteralPath $cwdFile -Force
+        $root = $repo
+        . ([scriptblock]::Create((Import-ScriptFunction (Join-Path $repo 'build.ps1') @('Test-DotNetSdk'))))
+        Assert-True ((Test-DotNetSdk $ok) -eq $true) 'build.ps1: rejected a dotnet that prints a version'
+        Assert-True (([System.IO.File]::ReadAllText($cwdFile).Trim()) -eq $repo.TrimEnd('\')) 'build.ps1: dotnet did not run in the repo root'
+        Assert-True ((Test-DotNetSdk $failing) -eq $false) 'build.ps1: accepted a failing dotnet'
+        Assert-True ((Test-DotNetSdk $silent) -eq $false) 'build.ps1: accepted a dotnet that prints nothing'
+        Assert-True ((Get-Location).ProviderPath -eq $before) 'build.ps1: the location was not restored'
+    }
+
+    Invoke-Test 'publish-flavours.ps1 and build.ps1 run every dotnet call from the repo root (Push-Location / Pop-Location in try / finally)' {
+        $publishText = [System.IO.File]::ReadAllText($publishScript)
+        Assert-True ($publishText -match '(?s)Push-Location -LiteralPath \$root\s+try \{.*& \$DotNet @arguments.*\} finally \{ Pop-Location \}') 'publish-flavours.ps1: the publish loop is not inside Push-Location $root / try / finally Pop-Location'
+        $buildText = [System.IO.File]::ReadAllText((Join-Path $repo 'build.ps1'))
+        Assert-True ($buildText -match '(?s)Push-Location -LiteralPath \$root\s+try \{ & \$dotnet build.*\} finally \{ Pop-Location \}') 'build.ps1: dotnet build is not inside Push-Location $root / try / finally Pop-Location'
+    }
+
+    Invoke-Test 'publish-flavours.ps1 Assert-NoReparseParent refuses a junction anywhere between the output folder and the repo root' {
+        . ([scriptblock]::Create((Import-ScriptFunction $publishScript @('Assert-NoReparseParent'))))
+        $fakeRepo = Get-ScratchFolder 'fake-repo'
+        $elsewhere = Get-ScratchFolder 'junction-elsewhere'
+        $plainRoot = Join-Path $fakeRepo 'dist'
+        Assert-NoReparseParent -Path $plainRoot -RepoRoot $fakeRepo   # nothing exists yet: fine
+        New-Item -ItemType Directory -Force -Path (Join-Path $fakeRepo 'plain\sub') | Out-Null
+        Assert-NoReparseParent -Path (Join-Path $fakeRepo 'plain\sub\dist') -RepoRoot $fakeRepo
+        $link = Join-Path $fakeRepo 'linked'
+        & cmd.exe /c mklink /J "$link" "$elsewhere" | Out-Null
+        try {
+            Assert-True (Test-Path -LiteralPath $link) 'could not create the junction'
+            foreach ($candidate in $link, (Join-Path $link 'dist'), (Join-Path $link 'a\b\dist')) {
+                $threw = $false
+                try { Assert-NoReparseParent -Path $candidate -RepoRoot $fakeRepo } catch { $threw = $true }
+                Assert-True $threw "accepted a path below the junction: $candidate"
+            }
+            # a link deeper in the chain (a\link\dist) is found as well
+            New-Item -ItemType Directory -Force -Path (Join-Path $fakeRepo 'deep') | Out-Null
+            $deepLink = Join-Path $fakeRepo 'deep\link'
+            & cmd.exe /c mklink /J "$deepLink" "$elsewhere" | Out-Null
+            try {
+                $threw = $false
+                try { Assert-NoReparseParent -Path (Join-Path $deepLink 'dist') -RepoRoot $fakeRepo } catch { $threw = $true }
+                Assert-True $threw 'accepted a path below a junction in a middle folder'
+            } finally { if (Test-Path -LiteralPath $deepLink) { [System.IO.Directory]::Delete($deepLink) } }
+        } finally { if (Test-Path -LiteralPath $link) { [System.IO.Directory]::Delete($link) } }
+        Assert-True (Test-Path -LiteralPath $elsewhere) 'the junction target is gone'
+    }
+
+    Invoke-Test 'package.ps1 no longer has a one-line if followed by an assignment' {
+        $text = [System.IO.File]::ReadAllText($packageScript)
+        Assert-True ($text -notmatch '(?m)^.*\}[ \t]{2,}\$MinRuntime = ') 'the if / assignment line in package.ps1 is joined again'
+    }
+
     # ------------------------------------------------------------------ build.ps1 / script hygiene
     Invoke-Test 'build.ps1 and the packaging scripts have no BOM and only ASCII (Windows PowerShell 5.1 reads BOM-less files as ANSI)' {
-        $files = @(
-            (Join-Path $repo 'build.ps1'),
-            (Join-Path $toolsDir 'publish-flavours.ps1'), (Join-Path $toolsDir 'check-published.ps1'), (Join-Path $toolsDir 'package.ps1'),
-            (Join-Path $toolsDir 'make-manifest.ps1'), (Join-Path $toolsDir 'upload-feed.ps1'),
-            (Join-Path $toolsDir 'tests\run-script-tests.ps1'), (Join-Path $toolsDir 'tests\packaging.tests.ps1')
-        )
+        $files = @(Join-Path $repo 'build.ps1') + @(Get-ChildItem -LiteralPath $toolsDir -Recurse -Filter '*.ps1' -File | ForEach-Object { $_.FullName })
+        Assert-True ($files.Count -ge 15) "only $($files.Count) scripts found"
         foreach ($file in $files) {
             $bytes = [System.IO.File]::ReadAllBytes($file)
             Assert-True (-not ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)) "$file has a BOM"
@@ -472,16 +698,110 @@ try {
         }
     }
 
+    Invoke-Test 'both release workflows wire the runtime resolver, the notices check, the freshness gate, the pinned Inno Setup and the notices asset' {
+        foreach ($name in 'release.yml', 'release-dev.yml') {
+            $text = [System.IO.File]::ReadAllText((Join-Path $workflowDir $name))
+            $build = $text.Substring($text.IndexOf("`n  build:"), $text.IndexOf("`n  publish:") - $text.IndexOf("`n  build:"))
+            $publish = $text.Substring($text.IndexOf("`n  publish:"))
+            # Order inside the build job: publish -> notices check -> resolver -> freshness -> check-published -> Inno -> package.
+            $order = @('publish-flavours.ps1', 'make-notices.ps1 -Check -AssetsFile Clink/obj_sc/project.assets.json', 'id: runtime', 'resolve-dotnet-runtime.ps1',
+                'check-runtime-freshness.ps1 -AssetsFile Clink/obj_sc/project.assets.json -LatestVersion $env:LATEST_RUNTIME', 'check-published.ps1', 'Install Inno Setup (pinned, hash-verified)', 'tools/package.ps1')
+            $previous = -1
+            foreach ($needle in $order) {
+                $at = $build.IndexOf($needle)
+                Assert-True ($at -gt $previous) "$name build job: '$needle' is missing or out of order"
+                $previous = $at
+            }
+            Assert-True ($build -match 'LATEST_RUNTIME:\s*\$\{\{ steps\.runtime\.outputs\.version \}\}') "${name}: the freshness step does not take the resolver's version through env"
+            Assert-True ($build -match 'dotnet-runtime\.json') "${name}: the resolver JSON is not saved to RUNNER_TEMP"
+            Assert-True ($build -match '-RuntimeInfoPath \(Join-Path \$env:RUNNER_TEMP ''dotnet-runtime\.json''\) -RequireInstaller') "${name}: package.ps1 is not called with -RuntimeInfoPath and -RequireInstaller"
+            Assert-True ($build.Contains('-TimeoutSeconds 90')) "${name}: check-published is not called with -TimeoutSeconds 90"
+            # Inno Setup: hash-pinned download into the runner temp folder, hash compared before the installer runs.
+            Assert-True ($build.Contains('INNO_SHA256: 9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732')) "${name}: Inno Setup SHA-256 pin missing"
+            $hashAt = $build.IndexOf('Get-FileHash -LiteralPath $setup -Algorithm SHA256')
+            $runAt = $build.IndexOf('Start-Process -FilePath $setup')
+            Assert-True ($hashAt -gt 0 -and $runAt -gt $hashAt -and $build.Contains('-ne $env:INNO_SHA256')) "${name}: the Inno Setup hash is not checked before the installer runs"
+            # Notices asset and its hash flow.
+            Assert-True ($text.Contains("'dist/package/THIRD-PARTY-NOTICES.txt'")) "${name}: THIRD-PARTY-NOTICES.txt is not a release asset"
+            Assert-True ($text.Contains('notices_sha256: ${{ steps.package.outputs.notices_sha256 }}') -and $build.Contains('notices_sha256=$($pkg.files.notices.sha256)')) "${name}: notices_sha256 is not a build output"
+            Assert-True ($publish.Contains('NOTICES_SHA256: ${{ needs.build.outputs.notices_sha256 }}') -and $publish.Contains('dist/package/THIRD-PARTY-NOTICES.txt -Algorithm SHA256')) "${name}: the publish job does not verify the notices hash"
+            Assert-True ($publish.Contains('fail_on_unmatched_files: true')) "${name}: fail_on_unmatched_files is gone"
+            Assert-True ($build -notmatch 'secrets\.') "${name}: the build job references secrets"
+        }
+        $stable = [System.IO.File]::ReadAllText((Join-Path $workflowDir 'release.yml'))
+        $dev = [System.IO.File]::ReadAllText((Join-Path $workflowDir 'release-dev.yml'))
+        Assert-True ($stable -match 'LatestVersion \$env:LATEST_RUNTIME -FailOnStale') 'release.yml: the freshness check does not fail on a stale runtime'
+        Assert-True ($dev -notmatch 'FailOnStale') 'release-dev.yml: the freshness check must only warn'
+    }
+
+    Invoke-Test 'build.yml package dry run checks the notices and does not run the resolver (the installer uses the committed floor)' {
+        $text = [System.IO.File]::ReadAllText((Join-Path $workflowDir 'build.yml'))
+        $job = $text.Substring($text.IndexOf('package-dry-run:'))
+        Assert-True ($job.Contains('make-notices.ps1 -Check -AssetsFile Clink/obj_sc/project.assets.json')) 'the dry run does not check the notices'
+        Assert-True ($job -notmatch '(?m)^\s*(?:- )?run:.*resolve-dotnet-runtime|(?m)^\s+\./tools/resolve-dotnet-runtime') 'the dry run runs the resolver'
+        Assert-True ($job.Contains('-TimeoutSeconds 90')) 'the dry run does not pass -TimeoutSeconds 90'
+    }
+
     Invoke-Test 'build.yml has a package dry run without environment or secrets' {
         $text = [System.IO.File]::ReadAllText((Join-Path $workflowDir 'build.yml'))
         $start = $text.IndexOf('package-dry-run:')
         Assert-True ($start -ge 0) 'no package-dry-run job'
         $job = $text.Substring($start)
-        foreach ($needle in 'publish-flavours.ps1', 'check-published.ps1', 'package.ps1', '-SkipInstaller') { Assert-True ($job.Contains($needle)) "dry run lacks $needle" }
+        foreach ($needle in 'publish-flavours.ps1', 'check-published.ps1', 'package.ps1', '-RequireInstaller', 'Install Inno Setup (pinned, hash-verified)', 'MinimumRuntimeVersion', 'Get-ExpectedDotNetRuntimeUrl') { Assert-True ($job.Contains($needle)) "dry run lacks $needle" }
+        Assert-True ($job -notmatch '-SkipInstaller') 'the dry run still skips the installer'
+        Assert-True ($job.Contains('INNO_SHA256: 9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732')) 'dry run: Inno Setup SHA-256 pin missing'
+        $hashAt = $job.IndexOf('Get-FileHash -LiteralPath $setup -Algorithm SHA256')
+        $runAt = $job.IndexOf('Start-Process -FilePath $setup')
+        Assert-True ($hashAt -gt 0 -and $runAt -gt $hashAt -and $job.Contains('-ne $env:INNO_SHA256')) 'dry run: the Inno Setup hash is not checked before the installer runs'
+        Assert-True ($job.Contains("'0' * 64")) 'dry run: the dummy runtime SHA-256 is gone'
+        Assert-True ($job -notmatch 'upload-artifact') 'the dry run uploads something'
+        $inc = [regex]::Matches($text, 'timeout-minutes:\s*20').Count
+        Assert-True ($inc -ge 1) 'Check the published exes has no timeout-minutes: 20'
         Assert-True ($job -notmatch 'secrets\.') 'the dry run references secrets'
         Assert-True ($job -notmatch '(?m)^\s*environment:') 'the dry run uses an environment'
         Assert-True ($job -notmatch 'contents:\s*write') 'the dry run can write contents'
         Assert-True ($job.Contains('run-script-tests.ps1')) 'the dry run does not run the script tests under pwsh'
+    }
+
+    Invoke-Test 'package.ps1 size guard: a real-ISCC setup exe of 0 bytes is refused, one over 1 MiB is accepted' {
+        $zeroOut = Get-ScratchFolder 'pkg-size-zero'
+        $zeroSetup = Join-Path $zeroOut 'Clink-0.4.2-setup.exe'
+        $dir = Get-ScratchFolder 'fake-iscc-zero'
+        $zeroCmd = Join-Path $dir 'ISCC.cmd'
+        [System.IO.File]::WriteAllText($zeroCmd, "@echo off`r`ntype nul > `"$zeroSetup`"`r`nexit /b 0`r`n", [System.Text.Encoding]::ASCII)
+        $r = Invoke-ScriptChild $packageScript @('-ExePath', $scExe, '-FrameworkExePath', $fxExe, '-Version', '0.4.2', '-OutDir', $zeroOut, '-MinRuntime', '10.0.0', '-IsccPath', $zeroCmd, '-RuntimeInfoPath', $runtimeInfo, '-RequireInstaller', '-SkipVersionCheck')
+        Assert-True ($r.Code -ne 0) "a 0-byte setup exe was accepted: $($r.Out)"
+        Assert-True (($r.Out + $r.Err) -match 'only 0 bytes') "no size message: $($r.Out) $($r.Err)"
+        Assert-True (-not (Test-Path -LiteralPath (Join-Path $zeroOut 'package.json'))) 'wrote package.json for a 0-byte setup exe'
+
+        $bigOut = Get-ScratchFolder 'pkg-size-big'
+        $bigSource = Join-Path $fixtures 'big-setup.bin'
+        New-FixtureFile -Path $bigSource -Length 1200000 -Zero
+        $bigCmd = Join-Path (Get-ScratchFolder 'fake-iscc-big') 'ISCC.cmd'
+        [System.IO.File]::WriteAllText($bigCmd, "@echo off`r`ncopy /y `"$bigSource`" `"$(Join-Path $bigOut 'Clink-0.4.2-setup.exe')`" > nul`r`nexit /b 0`r`n", [System.Text.Encoding]::ASCII)
+        $r = Invoke-ScriptChild $packageScript @('-ExePath', $scExe, '-FrameworkExePath', $fxExe, '-Version', '0.4.2', '-OutDir', $bigOut, '-MinRuntime', '10.0.0', '-IsccPath', $bigCmd, '-RuntimeInfoPath', $runtimeInfo, '-RequireInstaller', '-SkipVersionCheck')
+        Assert-True ($r.Code -eq 0) "a 1.2 MB setup exe was refused: $($r.Out) $($r.Err)"
+    }
+
+    Invoke-Test 'the committed runtime floor is at or above the runtimeVersion of tools/notices/sources.json' {
+        $sources = Get-Content -Raw -LiteralPath (Join-Path $toolsDir 'notices\sources.json') | ConvertFrom-Json
+        Assert-True ([version]$script:MinimumRuntimeVersion -ge [version]$sources.runtimeVersion) "MinimumRuntimeVersion $($script:MinimumRuntimeVersion) is below sources.json runtimeVersion $($sources.runtimeVersion)"
+    }
+
+    Invoke-Test 'both release workflows pick the resolver JSON by pattern, and every Check the published exes step has a 20 minute timeout' {
+        foreach ($name in 'release.yml', 'release-dev.yml', 'build.yml') {
+            $text = [System.IO.File]::ReadAllText((Join-Path $workflowDir $name))
+            $step = $text.IndexOf('- name: Check the published exes')
+            Assert-True ($step -ge 0) "${name}: no Check the published exes step"
+            Assert-True ($text.Substring($step, 200) -match 'timeout-minutes: 20\b') "${name}: Check the published exes has no timeout-minutes: 20"
+        }
+        foreach ($name in 'release.yml', 'release-dev.yml') {
+            $text = [System.IO.File]::ReadAllText((Join-Path $workflowDir $name))
+            Assert-True ($text.Contains("-match '^\{.*\}$'")) "${name}: the resolver JSON line is not picked by pattern"
+            Assert-True ($text -notmatch '\$lines -join "`n"\)\.Trim\(\)') "${name}: the resolver output lines are still joined"
+        }
+        $resolver = [System.IO.File]::ReadAllText((Join-Path $toolsDir 'resolve-dotnet-runtime.ps1'))
+        Assert-True ([regex]::Matches($resolver, "ProgressPreference = 'SilentlyContinue'").Count -ge 2) 'resolver does not silence progress around both downloads'
     }
 } finally {
     Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue

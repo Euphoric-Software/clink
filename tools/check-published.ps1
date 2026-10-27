@@ -2,7 +2,9 @@
 #   --packaging-check <SelfContained|Framework>   (stdout has "packaging=<X>" and "result=ok")
 #   --preflight
 #   --unittest Embedded_feed_trust_matches_ci_expectation   (with CLINK_EXPECT_FEED when -ExpectFeed is given)
-# and, when -Version is given, ProductVersion == Version. Clink.exe is a GUI-subsystem exe: Start-Process -PassThru
+#   --unittest ThirdPartyNotices   (CLINK_TESTS_NO_SKIP=1 for that run only; "N passed, 0 failed, 0 skipped" with N > 0)
+# then the N-1 regression on the framework exe (copied beside a garbage hostfxr.dll, DOTNET_ROOT at an empty folder: --packaging-check
+# Framework and --preflight must still pass) and, when -Version is given, ProductVersion == Version. Clink.exe is a GUI-subsystem exe: Start-Process -PassThru
 # -NoNewWindow with redirected stdout/stderr (then WaitForExit with -TimeoutSeconds) is what gives its output and exit code. Every run gets its own fresh TEMP/TMP.
 # Do NOT run the whole --unittest suite on a published exe (5 tests fail there by design); unit tests stay on bin builds.
 # The framework exe needs the WindowsDesktop 10 runtime under Program Files\dotnet (printed first).
@@ -11,7 +13,7 @@ param(
     [Parameter(Mandatory)] [string]$FxExe,
     [string]$Version,
     [ValidateSet('on', 'off')] [string]$ExpectFeed,   # CLINK_EXPECT_FEED for the feed self-test; omitted = the test only checks for problems
-    [int]$TimeoutSeconds = 300,
+    [ValidateRange(1, 3600)] [int]$TimeoutSeconds = 300,   # per child process; the workflows pass 90
     [switch]$SkipRun   # only the size guards (used by the script tests)
 )
 $ErrorActionPreference = 'Stop'
@@ -35,6 +37,18 @@ if ($SkipRun) { 'size guards ok (runs skipped)'; return }
 Write-Host '--- dotnet --list-runtimes'
 $dotnet = Get-Command dotnet -ErrorAction SilentlyContinue
 if ($dotnet) { & $dotnet.Source --list-runtimes } else { Write-Host 'dotnet not on PATH' }
+
+function Stop-ProcessTree {
+    # Kills the process and its children. taskkill writes to stderr when the process is already gone (a race); on Windows
+    # PowerShell 5.1 that stderr, redirected with 2>&1 under ErrorActionPreference Stop, becomes a terminating error, which must
+    # not stop us from reaching Kill() and the "Timed out" error. -TaskKill is the tool to run (a test stubs it).
+    param([System.Diagnostics.Process]$Process, [string]$TaskKill = 'taskkill.exe')
+    $savedPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { & $TaskKill /T /F /PID $Process.Id 2>&1 | Out-Null } catch { } finally { $ErrorActionPreference = $savedPreference }
+    try { $Process.Kill() } catch { }
+    $null = $Process.WaitForExit(10000)
+}
 
 function Invoke-PublishedExe {
     # Runs the exe with the arguments, TEMP/TMP in a fresh folder, stdout/stderr captured. Returns Code, Out, Err.
@@ -60,9 +74,7 @@ function Invoke-PublishedExe {
         $null = $run.Handle   # keeps the handle so ExitCode is available after the process ends (Windows PowerShell 5.1)
         if (-not $run.WaitForExit($TimeoutSeconds * 1000)) {
             $timedOut = $true
-            & taskkill.exe /T /F /PID $run.Id 2>&1 | Out-Null
-            try { $run.Kill() } catch { }
-            $null = $run.WaitForExit(10000)
+            Stop-ProcessTree -Process $run
         } else { $run.WaitForExit() }
         $code = if ($timedOut) { -1 } else { $run.ExitCode }
     } finally { foreach ($n in $names) { [System.Environment]::SetEnvironmentVariable($n, $saved[$n]) } }
@@ -87,7 +99,8 @@ function Assert-Run {
         throw "$Label failed: exit code $($Result.Code)$why. stdout: $($Result.Out.Trim()) stderr: $($Result.Err.Trim())"
     }
     foreach ($needle in $MustContain) {
-        if ($Result.Out -notmatch [regex]::Escape($needle)) { throw "${Label}: stdout does not contain '$needle'. stdout: $($Result.Out.Trim()) stderr: $($Result.Err.Trim())" }
+        # The needle must be a whole token: preceded by a line start or whitespace, followed by whitespace or the end.
+        if ($Result.Out -notmatch ('(^|\s)' + [regex]::Escape($needle) + '(\s|$)')) { throw "${Label}: stdout does not contain '$needle'. stdout: $($Result.Out.Trim()) stderr: $($Result.Err.Trim())" }
     }
 }
 
@@ -111,5 +124,30 @@ foreach ($t in $targets) {
     $feed = Invoke-PublishedExe $t.Exe @('--unittest', 'Embedded_feed_trust_matches_ci_expectation') $TimeoutSeconds $feedEnv
     Assert-Run "$($t.Label) feed self-test" $feed @()
     if ($feed.Out -notmatch '1 passed, 0 failed') { throw "$($t.Label) feed self-test did not report '1 passed, 0 failed'. stdout: $($feed.Out.Trim())" }
+    # The third-party notices tests: the embedded THIRD-PARTY-NOTICES.txt resource and its parser, run on the published exe.
+    # CLINK_TESTS_NO_SKIP only for this run (a skipped test must fail); the summary must say N passed (N > 0), 0 failed, 0 skipped.
+    $notices = Invoke-PublishedExe $t.Exe @('--unittest', 'ThirdPartyNotices') $TimeoutSeconds @{ CLINK_TESTS_NO_SKIP = '1'; CLINK_EXPECT_FEED = $null }
+    Assert-Run "$($t.Label) notices self-test" $notices @()
+    $summary = [regex]::Match($notices.Out, '(?<![0-9])([0-9]+) passed, 0 failed, 0 skipped')
+    if (-not $summary.Success -or [int]$summary.Groups[1].Value -lt 1) { throw "$($t.Label) notices self-test did not report 'N passed, 0 failed, 0 skipped' with N > 0. stdout: $($notices.Out.Trim())" }
+}
+
+# N-1 regression for the framework exe (Windows apphost): a hostfxr.dll planted next to the exe and DOTNET_ROOT pointing at an empty
+# folder must change nothing, because the build uses AppHostDotNetSearch=Global (registry / Program Files, never the exe's folder
+# and never DOTNET_ROOT). The exe is copied to a fresh folder so nothing real is next to it; both folders are deleted afterwards.
+Write-Host '=== framework N-1 regression: planted hostfxr.dll + empty DOTNET_ROOT'
+$n1Base = Join-Path ([System.IO.Path]::GetTempPath()) ('clink-n1-' + [guid]::NewGuid().ToString('N'))
+try {
+    $n1Exe = Join-Path (New-Item -ItemType Directory -Force -Path (Join-Path $n1Base 'app')).FullName 'Clink.exe'
+    $emptyRoot = (New-Item -ItemType Directory -Force -Path (Join-Path $n1Base 'empty-dotnet-root')).FullName
+    Copy-Item -LiteralPath $FxExe -Destination $n1Exe
+    $garbage = New-Object byte[] 4096
+    (New-Object System.Random).NextBytes($garbage)
+    [System.IO.File]::WriteAllBytes((Join-Path (Split-Path -Parent $n1Exe) 'hostfxr.dll'), $garbage)
+    $n1Env = @{ DOTNET_ROOT = $emptyRoot; DOTNET_ROOT_X64 = $emptyRoot }
+    Assert-Run 'N-1 framework --packaging-check' (Invoke-PublishedExe $n1Exe @('--packaging-check', 'Framework') $TimeoutSeconds $n1Env) @('packaging=Framework', 'build=Framework', 'result=ok')
+    Assert-Run 'N-1 framework --preflight' (Invoke-PublishedExe $n1Exe @('--preflight') $TimeoutSeconds $n1Env) @()
+} finally {
+    Remove-Item -LiteralPath $n1Base -Recurse -Force -ErrorAction SilentlyContinue
 }
 'check-published: all ok'

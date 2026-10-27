@@ -73,8 +73,8 @@ jobs:
           $run = Start-Process -FilePath $exe.FullName -ArgumentList '--unittest' -Wait -PassThru -NoNewWindow
           if ($run.ExitCode -ne 0) { throw "Unit tests failed (exit code $($run.ExitCode))" }
 
-  # Packaging dry run: both flavours are published, checked and packaged exactly like the release workflows do, minus the
-  # installer (no Inno Setup) and everything that publishes. No environment, no secrets, contents: read only.
+  # Packaging dry run: both flavours are published, checked and packaged exactly like the release workflows do, including the
+  # real installer compile (pinned Inno Setup, dry-run runtime inputs), minus everything that publishes. No environment, no secrets, contents: read only.
   package-dry-run:
     name: Package dry run
     runs-on: windows-latest
@@ -110,6 +110,15 @@ jobs:
           ./tools/publish-flavours.ps1 -Version $version
           Get-ChildItem dist/sc, dist/fx | Select-Object FullName, Length
 
+      # Same notices gate as the release workflows. The runtime freshness check is NOT run here: it needs the latest runtime version,
+      # which only tools/resolve-dotnet-runtime.ps1 fetches (a network call plus a 60 MB download), and this job does not run the
+      # resolver (the installer here uses the committed floor, not the latest runtime). The release workflows run it.
+      - name: Check the third-party notices
+        shell: pwsh
+        run: |
+          ./tools/notices/make-notices.ps1 -Check -AssetsFile Clink/obj_sc/project.assets.json
+          if ($LASTEXITCODE -ne 0) { throw 'THIRD-PARTY-NOTICES.txt is out of date (see the output above).' }
+
       - name: Script tests (PowerShell 7)
         shell: pwsh
         timeout-minutes: 10
@@ -117,15 +126,50 @@ jobs:
 
       - name: Check the published exes
         shell: pwsh
-        timeout-minutes: 10
+        timeout-minutes: 20
         run: |
           . ./tools/feed-lib.ps1
           $cfg = Get-FeedConfig -Path Clink/Assets/feed.json -Channel stable
-          ./tools/check-published.ps1 -ScExe dist/sc/Clink.exe -FxExe dist/fx/Clink.exe -Version $env:CLINK_DRY_RUN_VERSION -ExpectFeed $cfg.Mode
+          ./tools/check-published.ps1 -ScExe dist/sc/Clink.exe -FxExe dist/fx/Clink.exe -Version $env:CLINK_DRY_RUN_VERSION -ExpectFeed $cfg.Mode -TimeoutSeconds 90
 
-      - name: Package (no installer)
+      # Same pinned, hash-verified Inno Setup as release.yml (6.7.3, >= 6.3 is needed for x64compatible): the dry run compiles the REAL
+      # installer script so a broken installer\Clink.iss fails a pull request, not a release. The setup exe is not uploaded anywhere.
+      - name: Install Inno Setup (pinned, hash-verified)
+        shell: pwsh
+        env:
+          INNO_URL: https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe
+          INNO_SHA256: 9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732
+        run: |
+          $setup = Join-Path $env:RUNNER_TEMP 'innosetup-6.7.3.exe'
+          Invoke-WebRequest -Uri $env:INNO_URL -OutFile $setup -UseBasicParsing
+          $actual = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $env:INNO_SHA256) { throw "Inno Setup installer hash mismatch: got $actual, expected $env:INNO_SHA256" }
+          $dir = Join-Path $env:RUNNER_TEMP 'InnoSetup'
+          $run = Start-Process -FilePath $setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', "/DIR=$dir" -Wait -PassThru
+          if ($run.ExitCode -ne 0) { throw "Inno Setup install failed (exit code $($run.ExitCode))" }
+          if (-not (Test-Path (Join-Path $dir 'ISCC.exe'))) { throw 'ISCC.exe not found after the Inno Setup install' }
+
+      # The runtime task inputs for the dry-run installer need no network: the version is the committed floor of
+      # tools/lib/dotnet-runtime-lib.ps1, the URL is the one built for it, and the SHA-256 is a DRY-RUN DUMMY (64 zeros), good enough
+      # to compile the script; this setup exe is never run or published.
+      - name: Dry-run runtime inputs (committed floor)
+        id: floor
         shell: pwsh
         run: |
-          ./tools/package.ps1 -ExePath dist/sc/Clink.exe -FrameworkExePath dist/fx/Clink.exe -Version $env:CLINK_DRY_RUN_VERSION -OutDir dist/package -SkipInstaller
+          . ./tools/lib/dotnet-runtime-lib.ps1
+          $version = $script:MinimumRuntimeVersion
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "version=$version"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "url=$(Get-ExpectedDotNetRuntimeUrl -Version $version)"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "sha256=$('0' * 64)"
+
+      - name: Package (installer compiled, not uploaded)
+        shell: pwsh
+        env:
+          DRY_RUN_RUNTIME_VERSION: ${{ steps.floor.outputs.version }}
+          DRY_RUN_RUNTIME_URL: ${{ steps.floor.outputs.url }}
+          DRY_RUN_RUNTIME_SHA256: ${{ steps.floor.outputs.sha256 }}
+        run: |
+          ./tools/package.ps1 -ExePath dist/sc/Clink.exe -FrameworkExePath dist/fx/Clink.exe -Version $env:CLINK_DRY_RUN_VERSION -OutDir dist/package -IsccPath (Join-Path $env:RUNNER_TEMP 'InnoSetup\ISCC.exe') -DotNetRuntimeVersion $env:DRY_RUN_RUNTIME_VERSION -DotNetRuntimeUrl $env:DRY_RUN_RUNTIME_URL -DotNetRuntimeSha256 $env:DRY_RUN_RUNTIME_SHA256 -RequireInstaller
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           Get-ChildItem dist/package | Select-Object Name, Length
           Get-Content dist/package/package.json

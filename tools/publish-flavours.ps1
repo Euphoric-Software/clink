@@ -44,6 +44,21 @@ function Remove-FlavourDirectory {
     Remove-Item -LiteralPath $Path -Recurse -Force
 }
 
+function Assert-NoReparseParent {
+    # Refuses a reparse point (junction or symlink) on -Path or on any existing folder between -Path and the repo root (the root
+    # itself is the caller's checkout and is not checked): the flavour folders are deleted below -Path, so a link on the way
+    # could redirect that delete outside the repo.
+    param([string]$Path, [string]$RepoRoot)
+    $repoFull = [System.IO.Path]::GetFullPath($RepoRoot).TrimEnd('\', '/')
+    $dir = [System.IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
+    while ($dir.Length -gt $repoFull.Length -and $dir.StartsWith($repoFull + '\', [System.StringComparison]::OrdinalIgnoreCase)) {
+        if (Test-Path -LiteralPath $dir) {
+            if (((Get-Item -LiteralPath $dir -Force).Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { throw "'$dir' is a reparse point (junction or symlink); refusing to publish below it." }
+        }
+        $dir = Split-Path -Parent $dir
+    }
+}
+
 function Test-DotNetSdk {
     # True when "<dotnet> --version", run in the repo root, succeeds: that honours global.json and fails when the pinned SDK is missing.
     param([string]$Exe, [string]$WorkingDirectory)
@@ -68,13 +83,18 @@ if (-not $DotNet) {
     }
 }
 
+Assert-NoReparseParent -Path $OutRoot -RepoRoot $root
 New-Item -ItemType Directory -Force -Path $OutRoot | Out-Null
 $OutRoot = Resolve-OutRoot -Path (Resolve-Path -LiteralPath $OutRoot).Path -RepoRoot $root
-if (((Get-Item -LiteralPath $OutRoot -Force).Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { throw "-OutRoot '$OutRoot' is a reparse point." }
+Assert-NoReparseParent -Path $OutRoot -RepoRoot $root
 $flavours = @(
     [pscustomobject]@{ Name = 'sc'; SelfContained = 'true' },
     [pscustomobject]@{ Name = 'fx'; SelfContained = 'false' }
 )
+# Every dotnet call runs with the repo root as the working directory, so global.json (the pinned SDK) applies whatever the caller's
+# current directory is.
+Push-Location -LiteralPath $root
+try {
 foreach ($f in $flavours) {
     $out = Join-Path $OutRoot $f.Name
     foreach ($dir in (Join-Path $projDir "obj_$($f.Name)"), (Join-Path $projDir "bin_$($f.Name)"), $out) {
@@ -92,3 +112,4 @@ foreach ($f in $flavours) {
     if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { throw "$exe was not produced" }
     '{0}: {1:N0} bytes' -f $exe, (Get-Item -LiteralPath $exe).Length
 }
+} finally { Pop-Location }

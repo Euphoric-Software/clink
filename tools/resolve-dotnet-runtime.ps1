@@ -31,7 +31,10 @@ try {
         [void](Test-DotNetRuntimeUrl -Url $ReleasesUrl)
         [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
         # Microsoft serves releases.json directly (HTTP 200, checked 2026-10-27), so no redirect is followed.
-        $jsonText = (Invoke-WebRequest -UseBasicParsing -Uri $ReleasesUrl -MaximumRedirection 0 -TimeoutSec 60).Content
+        $oldProgressJson = $ProgressPreference
+        $ProgressPreference = 'SilentlyContinue'
+        try { $jsonText = (Invoke-WebRequest -UseBasicParsing -Uri $ReleasesUrl -MaximumRedirection 0 -TimeoutSec 60).Content }
+        finally { $ProgressPreference = $oldProgressJson }
         if ($jsonText -is [byte[]]) { $jsonText = [System.Text.Encoding]::UTF8.GetString($jsonText) }
     }
     $releases = $jsonText | ConvertFrom-Json

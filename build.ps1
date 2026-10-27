@@ -36,7 +36,9 @@ if ($Publish) {
         if ($LASTEXITCODE) { exit $LASTEXITCODE }
     }
 } else {
-    & $dotnet build $proj -c $Configuration
+    # Repo root as the working directory, so global.json (the pinned SDK) applies whatever the caller's current directory is.
+    Push-Location -LiteralPath $root
+    try { & $dotnet build $proj -c $Configuration } finally { Pop-Location }
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 if ($Run) {
