@@ -393,3 +393,13 @@ CloseClipboard
 GetDriveType
 // library Delete: the Recycle Bin (never a permanent delete), no shell dialogs
 SHFileOperation
+
+// first-run setup (Services/Shortcuts.cs, InstallLocation.cs, SelfInstall.cs): .lnk files, change notification, Downloads folder
+ShellLink
+IShellLinkW
+IPersistFile
+SHChangeNotify
+SHCNE_ID
+SHCNF_FLAGS
+SHGetKnownFolderPath
+KNOWN_FOLDER_FLAG
