@@ -640,7 +640,7 @@ internal sealed class ScreenshotService
     private const ushort FOF_SILENT = 0x4, FOF_NOCONFIRMATION = 0x10, FOF_ALLOWUNDO = 0x40, FOF_NOERRORUI = 0x400, FOF_WANTNUKEWARNING = 0x4000;
 
     /// <summary>The shell wants an STA thread (as for opening an archived file): a dedicated one, never the pool's or the UI's.</summary>
-    private static readonly object s_recycleLock = new();
+    internal static readonly object s_recycleLock = new();   // internal: the first-run setup's old-copy cleanup takes the same lock
 
     private static void RecycleViaShell(string path, nint owner)
     {
