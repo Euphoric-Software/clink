@@ -340,7 +340,9 @@ internal static class ScreenshotSettingsTests
         // public with a public setter, not [JsonIgnore], not the extension data. So a setting added later cannot be forgotten.
         var bindable = typeof(Settings).GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance)
             .Where(p => p.CanWrite && p.SetMethod!.IsPublic && p.GetIndexParameters().Length == 0
-                        && !p.IsDefined(typeof(System.Text.Json.Serialization.JsonIgnoreAttribute), true)
+                        // the same rule as Settings.Bindable: only an unconditional [JsonIgnore] keeps a member from being read
+                        && System.Reflection.CustomAttributeExtensions.GetCustomAttribute<System.Text.Json.Serialization.JsonIgnoreAttribute>(p)
+                            is not { Condition: System.Text.Json.Serialization.JsonIgnoreCondition.Always }
                         && !p.IsDefined(typeof(System.Text.Json.Serialization.JsonExtensionDataAttribute), true))
             .Select(p => p.Name).ToList();
         Check.True(bindable.Count > 40, $"found {bindable.Count} settings");

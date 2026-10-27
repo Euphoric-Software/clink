@@ -112,7 +112,7 @@ internal sealed class Settings
     public string VoiceApp { get; set; } = "auto";
     public bool ClickSound { get; set; } = true;
     public double ClickVolume { get; set; } = 0.5;
-    public string ClipsFolder { get; set; } = DefaultClipsFolder();
+    public string ClipsFolder { get; set; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "Clink");
     public string? CopiumTokenProtected { get; set; }
     public bool StartMinimized { get; set; }
     public bool RunAtStartup { get; set; }
@@ -165,6 +165,20 @@ internal sealed class Settings
     public string? PendingUpdateVersion { get; set; }          // written by the updater: version and SHA-256 of the download it verified in %LOCALAPPDATA%\Clink\updates;
     public string? PendingUpdateSha256 { get; set; }           // the file is hashed again against this before it is ever installed
     public string? PendingUpdateFrom { get; set; }             // version of the exe that made that download: only that exe may go from a dev build back to it at startup
+    /// <summary>
+    /// Written by the updater: true when the recorded download (<see cref="PendingUpdateVersion"/>) was verified against a signed
+    /// manifest (<see cref="UpdateFeed"/>), null for one checked against Clink.exe.sha256. A build with the signed feed on installs or
+    /// reuses only a signed download. Per installation (a PendingUpdate* key): never imported. Left out of the file while null.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public bool? PendingUpdateSigned { get; set; }
+    /// <summary>
+    /// Written by the updater: the highest version it has seen in a verified stable / dev manifest of the signed feed (<see cref="UpdateFeed"/>).
+    /// A verified manifest below it is a replayed old one and is not trusted. Per installation: never imported. Left out of the file while
+    /// null, so a settings.json of a build without the feed is exactly what it was.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? FeedFloorStable { get; set; }
+    /// <inheritdoc cref="FeedFloorStable"/>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? FeedFloorDev { get; set; }
 
     // ---- v3 (v0.2.5) ----
     /// <summary>dark | light</summary>
@@ -299,37 +313,6 @@ internal sealed class Settings
     /// <summary>The real settings folder, <c>%APPDATA%\Clink</c>, whatever <see cref="DirOverride"/> says: what a <c>--dev</c> folder must never be.</summary>
     internal static string RealDir => RealDirOverride ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Clink");
     public static string Dir => DirOverride ?? RealDir;
-
-    /// <summary>
-    /// Portable mode (<see cref="AppLayout"/>): the data root. While set, ClipsFolder / ScreenshotsFolder inside it are saved relative to it
-    /// and resolved against it on load, so the folder can move to another drive letter. Null (every other run) = paths are saved as they are.
-    /// </summary>
-    internal static string? PortableRoot { get; set; }
-    /// <summary>Portable mode: the clips folder a fresh Settings starts with (<c>&lt;data&gt;\Clips</c>). Null = the Videos\Clink default.</summary>
-    internal static string? DefaultClipsFolderOverride { get; set; }
-    private static string DefaultClipsFolder() => DefaultClipsFolderOverride ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "Clink");
-
-    /// <summary>Portable: relative clip/screenshot folders from the file become absolute (before Normalize, which drops a relative screenshots folder).</summary>
-    private void ResolvePortablePaths()
-    {
-        if (PortableRoot == null) return;
-        ClipsFolder = AppLayout.FromStoredPath(ClipsFolder, PortableRoot) ?? ClipsFolder;
-        ScreenshotsFolder = AppLayout.FromStoredPath(ScreenshotsFolder, PortableRoot);
-    }
-
-    /// <summary>The settings JSON as saved: with a portable root, the two folders inside it are written relative; otherwise exactly <see cref="JsonSerializer.Serialize{T}(T, JsonSerializerOptions)"/>.</summary>
-    private string SerializeForSave()
-    {
-        if (PortableRoot == null) return JsonSerializer.Serialize(this, s_json);
-        string clips = ClipsFolder; string? shots = ScreenshotsFolder;
-        try
-        {
-            ClipsFolder = AppLayout.ToStoredPath(clips, PortableRoot) ?? clips;
-            ScreenshotsFolder = AppLayout.ToStoredPath(shots, PortableRoot);
-            return JsonSerializer.Serialize(this, s_json);
-        }
-        finally { ClipsFolder = clips; ScreenshotsFolder = shots; }
-    }
     public static string FilePath => Path.Combine(Dir, "settings.json");
 
     // Lenient reading, because README invites hand edits: a trailing comma, a // comment or a number in quotes must not make
@@ -360,12 +343,13 @@ internal sealed class Settings
 
     internal static bool SavesFrozen => s_frozen;
 
-    // The properties a settings file can set: public with a public setter, not [JsonIgnore], not the extension data.
+    // The properties a settings file can set: public with a public setter, not [JsonIgnore] (a conditional one such as
+    // WhenWritingNull is still read), not the extension data.
     private static Dictionary<string, PropertyInfo>? s_bindable;
     private static Dictionary<string, PropertyInfo> Bindable => s_bindable ??= typeof(Settings)
         .GetProperties(BindingFlags.Public | BindingFlags.Instance)
         .Where(p => p.CanWrite && p.SetMethod!.IsPublic && p.GetIndexParameters().Length == 0
-                    && p.GetCustomAttribute<JsonIgnoreAttribute>() == null && p.GetCustomAttribute<JsonExtensionDataAttribute>() == null)
+                    && p.GetCustomAttribute<JsonIgnoreAttribute>() is not { Condition: JsonIgnoreCondition.Always } && p.GetCustomAttribute<JsonExtensionDataAttribute>() == null)
         .ToDictionary(p => p.Name, StringComparer.OrdinalIgnoreCase);
 
     // The floating-point settings (Window*, HdrKnee, HdrPeak, KeyframeSeconds, ClickVolume, ArchiveWhenLocalExceedsGB, ...) and
@@ -406,7 +390,6 @@ internal sealed class Settings
             problems.Add("settings.json: " + string.Join("; ", what) + (kept ? "; the original is kept as settings.json.unreadable" : ""));
         }
         if (problems.Count > 0) s.LoadProblem = string.Join(". ", problems);
-        s.ResolvePortablePaths();
         s.Normalize();
         s.SeedHotkeyDefaults();   // after Normalize, not inside it: FromJson (import comparisons) normalizes too and must not add rows
         // A NaN / Infinity the file holds (an earlier version wrote them as text) is put back to the default here, before anything
@@ -571,7 +554,7 @@ internal sealed class Settings
         if (string.IsNullOrWhiteSpace(Theme)) Theme = SettingsDefaults.Theme;
         if (string.IsNullOrWhiteSpace(Accent)) Accent = SettingsDefaults.Accent;
         else Accent = Clink.UI.ThemeManager.UpgradeAccent(Accent) ?? SettingsDefaults.Accent;
-        if (string.IsNullOrWhiteSpace(ClipsFolder)) ClipsFolder = DefaultClipsFolder();
+        if (string.IsNullOrWhiteSpace(ClipsFolder)) ClipsFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "Clink");
         if (string.IsNullOrWhiteSpace(ScreenshotsFolder)) ScreenshotsFolder = null;
         // A relative path (a hand edit, an import) would resolve against the current directory, which is System32 at sign-in: the default instead.
         else if (!IsFullPath(ScreenshotsFolder.Trim())) ScreenshotsFolder = null;
@@ -761,7 +744,7 @@ internal sealed class Settings
                 SchemaVersion = CurrentSchema;
                 Directory.CreateDirectory(Dir);
                 KeepPreV3Copy();
-                AtomicFile.WriteAllText(FilePath, SerializeForSave());
+                AtomicFile.WriteAllText(FilePath, JsonSerializer.Serialize(this, s_json));
             }
         }
         catch (Exception ex) { Log.Warn("Settings save failed: " + ex.Message); }

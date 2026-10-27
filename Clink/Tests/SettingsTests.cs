@@ -693,7 +693,11 @@ internal static class SettingsTests
         }
 
         // this version itself never writes a key with the name of a member it leaves out, so such keys can only be someone else's
-        var notSaved = typeof(Settings).GetProperties().Where(p => p.GetCustomAttributes(typeof(System.Text.Json.Serialization.JsonIgnoreAttribute), false).Length > 0).Select(p => p.Name).ToList();
+        // (the same rule as Settings.Bindable: only an unconditional [JsonIgnore]; WhenWritingNull members such as FeedFloorStable are read and saved)
+        var notSaved = typeof(Settings).GetProperties()
+            .Where(p => System.Reflection.CustomAttributeExtensions.GetCustomAttribute<System.Text.Json.Serialization.JsonIgnoreAttribute>(p)
+                is { Condition: System.Text.Json.Serialization.JsonIgnoreCondition.Always })
+            .Select(p => p.Name).ToList();
         Check.True(notSaved.Contains("MainHotkey") && notSaved.Contains("Migrated") && notSaved.Contains("CopiumToken"), "the reflection finds the members");
         using var written = JsonDocument.Parse(Settings.FromJson("{}").ToJson());
         Check.False(written.RootElement.EnumerateObject().Any(p => notSaved.Contains(p.Name)));

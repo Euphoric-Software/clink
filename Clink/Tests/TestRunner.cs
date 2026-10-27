@@ -221,13 +221,16 @@ internal static class TestRunner
         return failed;
     }
 
-    /// <summary>The process-wide switches a test could change and forget: where the settings, the clip index, the updates, the real Clink's folder and the other apps' packages live, and the --dev state.</summary>
+    /// <summary>The process-wide switches a test could change and forget: where the settings, the clip index, the updates, the real Clink's folder and the other apps' packages live, the --dev state, and the updater's fake network, feed trust anchors and built-in repository.</summary>
     private sealed record Shared(string? SettingsDir, string? ClipIndex, string? UpdatesDir, string InstanceSuffix, bool DevHotkeys, bool DevAcceptImport, bool DevToken, bool DevRecord,
-        string? RealDir, string? PackagesRoot)
+        string? RealDir, string? PackagesRoot,
+        Func<System.Net.Http.HttpRequestMessage, CancellationToken, Task<System.Net.Http.HttpResponseMessage>>? UpdaterHttp, FeedTrust? FeedTrust, string? BuiltInRepo,
+        TimeSpan? FeedTimeout)
     {
         public static Shared Capture() => new(Settings.DirOverride, ClipLibrary.IndexPathOverride, Updater.UpdatesDirOverride,
             AppController.InstanceSuffix, AppController.DevHotkeys, AppController.DevAcceptImport, AppController.DevToken, AppController.DevRecord,
-            Settings.RealDirOverride, SettingsImport.PackagesRoot);
+            Settings.RealDirOverride, SettingsImport.PackagesRoot,
+            Updater.HttpOverride, Updater.FeedOverride, Updater.BuiltInRepoOverride, Updater.FeedTimeoutOverride);
     }
 
     /// <summary>
@@ -249,6 +252,10 @@ internal static class TestRunner
         Settings.RealDirOverride = scratch != null ? Path.Combine(scratch, "RealClink") : before.RealDir;
         ClipLibrary.IndexPathOverride = scratch != null ? Path.Combine(scratch, "clips.json") : before.ClipIndex;
         Updater.UpdatesDirOverride = scratch != null ? Path.Combine(scratch, "updates") : before.UpdatesDir;
+        Updater.HttpOverride = before.UpdaterHttp;          // no test leaves a fake network, feed or repository behind for the next
+        Updater.FeedOverride = before.FeedTrust;
+        Updater.BuiltInRepoOverride = before.BuiltInRepo;
+        Updater.FeedTimeoutOverride = before.FeedTimeout;
         Settings.ThawSaves();
         Settings.SeedDefaults = scratch == null;   // off during a test (the older tests pin exact hotkey lists); the seeding tests turn it on themselves
         SettingsImport.Reset();
