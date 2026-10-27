@@ -325,6 +325,7 @@ internal static class SettingsImport
     internal static bool IsOwnKey(string key) =>
         key.StartsWith("Window", StringComparison.OrdinalIgnoreCase)
         || key.StartsWith("PendingUpdate", StringComparison.OrdinalIgnoreCase)
+        || key.StartsWith("FeedFloor", StringComparison.OrdinalIgnoreCase)   // the signed feed's anti-replay floors: another copy's must never lower or raise ours
         || key.Equals(nameof(Settings.LastUpdateCheck), StringComparison.OrdinalIgnoreCase)
         || key.Equals(nameof(Settings.UpdateRepo), StringComparison.OrdinalIgnoreCase)
         || key.Equals(nameof(Settings.UseDevBuilds), StringComparison.OrdinalIgnoreCase)
