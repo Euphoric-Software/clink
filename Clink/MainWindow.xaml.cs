@@ -279,13 +279,19 @@ public partial class MainWindow : Window
         {
             // Taking the bar out of the tree drops the keyboard focus from a button in it (a layout switch from a click or key on one): put it back.
             var focused = Keyboard.FocusedElement as DependencyObject;
-            bool hadFocus = focused != null && HeaderBar.IsAncestorOf(focused);
+            bool hadFocus = focused is Visual v && HeaderBar.IsAncestorOf(v);   // IsAncestorOf throws for a non-visual (a FrameworkContentElement)
             Body.Children.RemoveAt(at);
             Body.Children.Insert(want, HeaderBar);
             if (hadFocus && focused is IInputElement element)
             {
                 HeaderBar.UpdateLayout();
-                if (!ReferenceEquals(Keyboard.Focus(element), element)) Dispatcher.BeginInvoke(() => Keyboard.Focus(element), System.Windows.Threading.DispatcherPriority.Input);
+                // Later, only if nothing else has taken the focus meanwhile (it is nowhere, or on the window itself).
+                if (!ReferenceEquals(Keyboard.Focus(element), element))
+                    Dispatcher.BeginInvoke(() =>
+                    {
+                        var now = Keyboard.FocusedElement;
+                        if (now == null || ReferenceEquals(now, this)) Keyboard.Focus(element);
+                    }, System.Windows.Threading.DispatcherPriority.Input);
             }
         }
         SyncHeader();

@@ -150,4 +150,72 @@ internal static class QuietModeTests
         Check.True(QuietPlacement.Sliver(Array.Empty<Rect>(), size) == null, "no monitor");
         Check.True(QuietPlacement.Sliver(new[] { new Rect(0, 0, 0, 0) }, size) == null, "an empty rectangle is no monitor");
     }
+
+    // ------------------------------------------------------------------ which windows are the application's
+
+    [UnitTest]
+    public static void A_window_is_the_applications_by_its_class_alone_whatever_its_style()
+    {
+        const string wpf = "HwndWrapper[Clink;;e26b1e74-312e-4876-8b99-6c0ace406670]";
+        // the main window (WindowStyle=None, transparent): neither WS_POPUP nor WS_CAPTION, as logged by a quiet instance
+        Check.Equal(QuietWindowKind.Ours, QuietWindows.Classify(false, 0x020F0000, 0, wpf, "Clink TEST (dev1)"), "the main window is marked although it has no popup or caption style");
+        Check.Equal(QuietWindowKind.Ours, QuietWindows.Classify(false, 0x00000000, 0, wpf, null), "a style of 0 does not matter either");
+        Check.Equal(QuietWindowKind.Ours, QuietWindows.Classify(false, 0x80000000, 0, wpf, ""), "a WPF popup (ComboBox dropdown, tooltip)");
+        Check.Equal(QuietWindowKind.Ours, QuietWindows.Classify(false, 0x00CF0000, 0, wpf, "Hidden Window"), "WPF's hidden owner window");
+        Check.Equal(QuietWindowKind.Ours, QuietWindows.Classify(false, 0x94C80000, QuietWindows.DialogAtom, null, "Clink"), "a message box (the dialog class as an atom)");
+        Check.Equal(QuietWindowKind.Ours, QuietWindows.Classify(false, 0x00000000, 0, "#32770", "Select a folder"), "a dialog by name");
+        // left alone
+        Check.Equal(QuietWindowKind.NotTopLevel, QuietWindows.Classify(false, 0x40000000 | 0x10000000, 0, wpf, null), "a child window");
+        Check.Equal(QuietWindowKind.NotTopLevel, QuietWindows.Classify(true, 0x00000000, 0, wpf, null), "a message-only window");
+        Check.Equal(QuietWindowKind.Overlay, QuietWindows.Classify(false, 0x80000000, 0, wpf, QuietMode.OverlayTitle), "the capture overlay is exempt");
+        Check.Equal(QuietWindowKind.Foreign, QuietWindows.Classify(false, 0x00000000, 0, "WindowsForms10.Window.0.app.0.5c39d4_r3_ad1", ""), "the tray icon's WinForms window");
+        Check.Equal(QuietWindowKind.Foreign, QuietWindows.Classify(false, 0x88000000, 0, "CicMarshalWndClass", "CicMarshalWnd"), "a text-services window");
+        Check.Equal(QuietWindowKind.Foreign, QuietWindows.Classify(false, 0x80000000, 0x8000, null, null), "a native menu (#32768, an atom)");
+        Check.Equal(QuietWindowKind.Foreign, QuietWindows.Classify(false, 0x80000000, 0, "hwndwrapper[x]", null), "the class prefix is case-sensitive, as Windows spells it");
+        Check.Equal(QuietWindowKind.Foreign, QuietWindows.Classify(false, 0x80000000, 0, null, null), "no class at all");
+    }
+
+    // ------------------------------------------------------------------ the foreground safety net
+
+    private const nint Other = 0x1111, Other2 = 0x2222, Main = 0x3333, Overlay = 0x4444, Tray = 0x5555;
+
+    [UnitTest]
+    public static void The_foreground_goes_back_to_the_last_window_of_another_process()
+    {
+        var g = new QuietForegroundGuard();
+        Func<nint, bool> alive = _ => true;
+        Check.Equal(QuietForegroundAction.None, g.OnForeground(0, false, false, false, alive, 0).Action, "no window");
+        Check.Equal(QuietForegroundAction.Remembered, g.OnForeground(Other, false, false, false, alive, 0).Action);
+        Check.Equal(Other, g.LastOther);
+        Check.Equal(QuietForegroundAction.Remembered, g.OnForeground(Other2, false, false, false, alive, 10).Action);
+        Check.Equal(Other2, g.LastOther, "the latest one is remembered");
+        var (action, target) = g.OnForeground(Main, true, false, true, alive, 20);
+        Check.Equal(QuietForegroundAction.Restore, action, "a hidden window of ours took the foreground");
+        Check.Equal(Other2, target);
+        Check.Equal(Other2, g.LastOther, "a window of ours is never remembered");
+        // the overlay is meant to have the foreground; a visible window of ours (the tray menu) too
+        Check.Equal(QuietForegroundAction.Exempt, g.OnForeground(Overlay, true, true, false, alive, 30).Action, "the capture overlay");
+        Check.Equal(QuietForegroundAction.None, g.OnForeground(Tray, true, false, false, alive, 40).Action, "a visible window of ours");
+        Check.Equal(Other2, g.LastOther);
+    }
+
+    [UnitTest]
+    public static void The_foreground_is_not_given_to_a_window_that_has_gone_and_never_fought_over()
+    {
+        var g = new QuietForegroundGuard();
+        Check.Equal(QuietForegroundAction.NothingToRestore, g.OnForeground(Main, true, false, true, _ => true, 0).Action, "nothing remembered yet");
+        g.OnForeground(Other, false, false, false, _ => true, 0);
+        Check.Equal(QuietForegroundAction.NothingToRestore, g.OnForeground(Main, true, false, true, h => h != Other, 10).Action, "the remembered window has gone (or its handle is ours now)");
+        Check.Equal((nint)0, g.LastOther, "a dead handle is forgotten");
+        Check.Equal(QuietForegroundAction.NothingToRestore, g.OnForeground(Main, true, false, true, _ => true, 20).Action, "and not used later");
+
+        // a loop: at most MaxRestores in WindowMs, then skipped until the window has passed
+        g.OnForeground(Other, false, false, false, _ => true, 1000);
+        for (int i = 0; i < QuietForegroundGuard.MaxRestores; i++)
+            Check.Equal(QuietForegroundAction.Restore, g.OnForeground(Main, true, false, true, _ => true, 1000 + i).Action, "restore " + i);
+        Check.Equal(QuietForegroundAction.Throttled, g.OnForeground(Main, true, false, true, _ => true, 1100).Action, "one too many in a second");
+        Check.Equal(QuietForegroundAction.Restore, g.OnForeground(Main, true, false, true, _ => true, 1000 + QuietForegroundGuard.WindowMs).Action, "again once the second has passed");
+        g.Reset();
+        Check.Equal((nint)0, g.LastOther);
+    }
 }

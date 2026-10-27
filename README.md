@@ -571,10 +571,13 @@ command does not touch it); `--selftest` / `--probe` / `--trim` write `clink-cli
     no hotkey is bound unless `--dev-hotkeys` is also given, and capture starts **paused** (no capture border on your
     screen) unless `--dev-quiet-record` is given (`--dev-record` does not override it). The TEST markers stay. The
     capture overlay (`RegionOverlayWindow`) is left alone: it only appears for an explicit screenshot action and then
-    takes the whole screen like the real one. Every window of the application is cloaked
-    when it is created, not only the WPF windows: message boxes, Windows common dialogs (folder picker) and WPF popups
-    (tooltips, ComboBox dropdowns) too, each created off-screen with its activation refused (a window the app did not make,
-    like the tray menu, is left alone). A process-wide window-shown hook cloaks them again when they appear. A hotkey capture
+    takes the whole screen like the real one. Every window of the application, recognised by its window class (WPF
+    windows and popups such as tooltips and ComboBox dropdowns, message boxes, Windows common dialogs such as the folder
+    picker; a window the app did not make, like the tray menu, is left alone), is created off-screen with its activation
+    refused, and a cloak is asked for at creation. Windows can refuse that early cloak; what holds is the process-wide
+    window-shown hook, which cloaks each of these windows again when it appears, and a system-wide foreground hook: should
+    a hidden window of the instance get the foreground anyway, it is given straight back to the window of another
+    process that had it last (logged as `quiet: hidden window ... took the foreground`). A hotkey capture
     is never armed in a quiet instance (nothing would disarm it, and it would swallow the next key pressed anywhere), and a
     capture only takes a key while a window of Clink has the foreground. The confirmation boxes Clink shows after start-up
     have a question icon (no system sound); the start-up failure box is shown before the hook and is not covered. Best
