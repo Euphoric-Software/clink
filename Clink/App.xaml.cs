@@ -254,9 +254,7 @@ public partial class App : System.Windows.Application
         EventManager.RegisterClassHandler(typeof(Window), FrameworkElement.LoadedEvent, new RoutedEventHandler((sender, e) =>
         {
             if (sender is not Window w || !ReferenceEquals(e.OriginalSource, w)) return;   // Loaded of a child bubbles up too
-            if (w is Clink.MainWindow or UI.ToastWindow or UI.StatusDotWindow or UI.Screenshots.RegionOverlayWindow) return;
-            string tagged = DevInstanceMarker.TagTitle(w.Title);
-            if (tagged != w.Title) w.Title = tagged;
+            DevInstanceMarker.KeepTitleTagged(w);   // (Loaded fires again if a window is re-parented; a second subscription is harmless)
         }));
     }
 

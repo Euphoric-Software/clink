@@ -546,8 +546,9 @@ command does not touch it); `--selftest` / `--probe` / `--trim` write `clink-cli
 * `Clink.exe --dev [folder] [--dev-hotkeys] [--dev-record] [--dev-token]` (hidden; `--dev=<folder>` works too) starts a
   **second Clink next to the real one**, for trying a build out. It has its own data folder (settings, clip index, log
   and clips; `%TEMP%\clink-dev` when no folder is given), its own single-instance mutex and control pipe (named from the
-  folder, so `--clip` or `--show` aimed at it never reach the real Clink and two dev folders never meet), "Clink (dev)" in
-  its title, tray and toasts, no updater (the Updates card says *updates are off in dev mode*) and no Run-key writes.
+  folder, so `--clip` or `--show` aimed at it never reach the real Clink and two dev folders never meet), a **TEST marker**
+  (a 3 px yellow frame and a "TEST · folder" badge on the main window, "Clink TEST (folder)" as its title, "TEST ·" in the
+  tray tooltip, a yellow TEST tag and frame on toasts, " [TEST]" on the titles of its other windows), no updater (the Updates card says *updates are off in dev mode*) and no Run-key writes.
   It starts **paused** (`--dev-record` records), binds **no hotkeys** (`--dev-hotkeys` binds them, and its keyboard hook
   then swallows those combos system-wide while it runs, so use other keys than the real Clink's) and has **no Copium
   token** (`--dev-token` keeps the one its settings hold). A fresh dev folder also switches the *Recording started*

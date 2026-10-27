@@ -148,7 +148,10 @@ public partial class MainWindow : Window
             // Only where the header (the one place this borderless window can be dragged from) lands on a monitor's work area:
             // the virtual-screen box has corners no monitor covers, and a monitor may have gone away since. Of the monitors it
             // reaches, the one holding most of it counts (the AllScreens order means nothing).
-            var header = new Rect(wx, wy, Width, 44);
+            // The drag area is the top 6 px edge plus the header row (about 38 px: the tab strip's height when wide, the compact header
+            // when narrow), 44 DIP in all. Wide, the left of the row is the tab strip, which does not drag: the drag area is what is right of it.
+            double dragFrom = DragStart(Width);
+            var header = new Rect(wx + dragFrom, wy, Width - dragFrom, HeaderHeight);
             double most = 0;
             foreach (var wa in areas)
             {
@@ -172,13 +175,19 @@ public partial class MainWindow : Window
         Height = Math.Min(Height, area.Height);
         if (WindowStartupLocation == WindowStartupLocation.Manual)
         {
-            // Moved only as far as it takes to keep the header reachable on that work area: all of its height and 120 DIP of its
+            // Moved only as far as it takes to keep the drag area reachable on that work area: all of its height and 120 DIP of its
             // width (also after a narrower Width). A window left reaching onto the next monitor or past the bottom stays put.
-            double grab = Math.Min(120, Width);
-            Left = Math.Max(area.Left + grab - Width, Math.Min(Left, area.Right - grab));
-            Top = Math.Max(area.Top, Math.Min(Top, area.Bottom - 44));
+            double from = DragStart(Width), grab = Math.Min(120, Width - from);
+            Left = Math.Max(area.Left + grab - Width, Math.Min(Left, area.Right - grab - from));
+            Top = Math.Max(area.Top, Math.Min(Top, area.Bottom - HeaderHeight));
         }
     }
+
+    /// <summary>The window's top drag area: the 6 px top edge plus the header row (DIP).</summary>
+    private const double HeaderHeight = 44;
+
+    /// <summary>Where the drag area starts, from the window's left edge: 0 narrow (the compact header row drags), right of the tab strip (about 450 DIP, with its gutter) when wide.</summary>
+    private static double DragStart(double width) => width >= WideWidth ? 470 : 0;
 
     /// <summary>
     /// Every monitor's work area, and the one under the mouse pointer (CenterScreen's), in the DIPs Left / Top use before the
@@ -241,21 +250,34 @@ public partial class MainWindow : Window
     /// </summary>
     private void PlaceHeader()
     {
-        Grid.SetRow(Tabs, _wide ? 0 : 1);
-        Grid.SetRowSpan(Tabs, _wide ? 2 : 1);
-        StatusHost.Margin = new Thickness(_wide ? 12 : 0, 0, 6, 0);
+        FindTabStrip();
+        // Without the strip (a template without PART_TabStrip) the one-row layout cannot size the header: fall back to the two-row one.
+        bool oneRow = _wide && _tabStrip != null;
+        Grid.SetRow(Tabs, oneRow ? 0 : 1);
+        Grid.SetRowSpan(Tabs, oneRow ? 2 : 1);
+        StatusHost.Margin = new Thickness(oneRow ? 12 : 0, 0, 6, 0);
+        // Keyboard and screen-reader order follow the picture: one row has the tabs on the left, so the tabs come first and the header
+        // (status, minimize, close) after them; the header is then the last child of the grid, drawn over the tabs, which is harmless: it
+        // leaves the strip's spot (TabsSpacer) unhittable, so the tabs still take their clicks. (A z-index would reorder the UI Automation
+        // children too.) Two rows: the header row is on top, so it comes first.
+        int at = Body.Children.IndexOf(HeaderBar);
+        int want = oneRow ? Body.Children.Count - 1 : 0;
+        if (at >= 0 && at != want) { Body.Children.RemoveAt(at); Body.Children.Insert(want, HeaderBar); }
         SyncHeader();
+    }
+
+    private void FindTabStrip()
+    {
+        if (_tabStrip != null) return;
+        Tabs.ApplyTemplate();
+        _tabStrip = Tabs.Template?.FindName("PART_TabStrip", Tabs) as FrameworkElement;
+        if (_tabStrip != null) _tabStrip.SizeChanged += (_, _) => SyncHeader();
     }
 
     /// <summary>Sizes the header row to the tab strip when wide (the strip is part of the TabControl's template, so it is looked up once and watched).</summary>
     private void SyncHeader()
     {
-        if (_tabStrip == null)
-        {
-            Tabs.ApplyTemplate();
-            _tabStrip = Tabs.Template?.FindName("PART_TabStrip", Tabs) as FrameworkElement;
-            if (_tabStrip != null) _tabStrip.SizeChanged += (_, _) => SyncHeader();
-        }
+        FindTabStrip();
         if (_wide && _tabStrip != null)
         {
             TabsSpacer.Width = new GridLength(_tabStrip.ActualWidth);

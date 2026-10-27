@@ -293,8 +293,9 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         {
             // a test (--dev) instance: a yellow "TEST" tag by the title and the same yellow frame as its main window
             TestTag.Visibility = Visibility.Visible;
-            Card.BorderBrush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFF, 0xD4, 0x00));
+            Card.BorderBrush = new SolidColorBrush((Color)ColorConverter.ConvertFromString(DevInstanceMarker.YellowHex));
             Card.BorderThickness = new Thickness(3);
+            Card.Padding = new Thickness(12, 10, 12, 10);   // the frame is 2 px thicker per side: the inside stays as wide and as high as a normal toast's
         }
         _owner = owner;
         Kind = kind;

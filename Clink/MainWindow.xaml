@@ -70,10 +70,13 @@
                 far right. Wide (>= 900): one row, the TabControl spans both rows and the library pane starts under the row. Narrow: the tabs would
                 not fit beside the buttons (the strip alone is ~450 px with the Library tab), so row 0 is a compact header of its own and the tabs
                 are row 1. ApplyLayout / SyncHeader move the TabControl between the two and size TabsSpacer to the strip.
-                The header bar is declared before the TabControl, so the strip is drawn over it: an empty spot of the row (the gutters, behind the
-                status text) drags the window, and the tabs and buttons take their own clicks.
+                An empty spot of the row (the gutters, behind the status text) drags the window; the tabs and buttons take their own clicks, the
+                strip's spot (TabsSpacer) has no drag surface. PlaceHeader puts the header bar before the TabControl in the tree when narrow and
+                after it when wide, so keyboard and screen-reader order follow the picture.
             -->
-            <Grid x:Name="Body" Margin="0,6,0,8">
+            <!-- the window's top 6 px: part of the drag area, as the header row below it is (a docked strip, so the body keeps its place) -->
+            <Border x:Name="TopEdge" DockPanel.Dock="Top" Height="6" Background="Transparent" MouseLeftButtonDown="Header_MouseLeftButtonDown" />
+            <Grid x:Name="Body" Margin="0,0,0,8">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="*" />
@@ -87,13 +90,17 @@
                 </Grid.ColumnDefinitions>
 
                 <!-- header bar / drag area -->
-                <Grid x:Name="HeaderBar" Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="5" MinHeight="30" Background="Transparent" MouseLeftButtonDown="Header_MouseLeftButtonDown">
+                <Grid x:Name="HeaderBar" Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="5" MinHeight="30" MouseLeftButtonDown="Header_MouseLeftButtonDown">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="16" />
                         <ColumnDefinition x:Name="TabsSpacer" Width="0" />
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
+                    <!-- the draggable surface: everything but the tab strip's spot (TabsSpacer), which the tabs below this grid in z-order must keep clicking through to.
+                         (Wide, this grid comes after the TabControl in the tree so the tabs are first in keyboard and screen-reader order.) -->
+                    <Border Grid.Column="0" Background="Transparent" />
+                    <Border Grid.Column="2" Grid.ColumnSpan="2" Background="Transparent" />
                     <!-- the star column bounds the group: StatusText (the last, star column inside it) ellipsizes instead of running under the buttons -->
                     <Grid x:Name="StatusHost" Grid.Column="2" VerticalAlignment="Center" Margin="0,0,6,0">
                         <Grid.ColumnDefinitions>

@@ -21,18 +21,42 @@ internal static class DevInstanceMarker
     {
         string f = (folder ?? "").Trim();
         if (f.Length == 0) return "dev";
-        string leaf;
-        try
-        {
-            string trimmed = f.TrimEnd('\\', '/');
-            if (trimmed.Length == 0) trimmed = f;
-            leaf = Path.GetFileName(trimmed);
-            if (leaf.Length == 0) leaf = trimmed;   // "C:\" or "C:": the drive is the name
-        }
-        catch (ArgumentException) { leaf = f; }
+        string trimmed = f.TrimEnd('\\', '/');
+        if (trimmed.Length == 0) trimmed = f;
+        string leaf = Path.GetFileName(trimmed);
+        if (leaf.Length == 0) leaf = trimmed;   // "C:\" or "C:": the drive is the name
         leaf = leaf.Trim();
         if (leaf.Length == 0) return "dev";
-        return leaf.Length > MaxLeaf ? leaf[..(MaxLeaf - 1)] + "…" : leaf;
+        if (leaf.Length <= MaxLeaf) return leaf;
+        int cut = MaxLeaf - 1;
+        if (char.IsHighSurrogate(leaf[cut - 1])) cut--;   // never split a surrogate pair
+        return leaf[..cut] + "…";
+    }
+
+    /// <summary>
+    /// Whether the test (--dev) instance appends " [TEST]" to this window's title: every window but the main window (titled on its own),
+    /// the toasts, the status dot and the capture overlay (the last two can end up in a capture and show no title anyway).
+    /// </summary>
+    public static bool ShouldTagTitle(System.Windows.Window w) => ShouldTagTitle(w.GetType());
+
+    /// <summary>The same rule by window type (so it can be checked for a window that is awkward to construct).</summary>
+    public static bool ShouldTagTitle(Type windowType) =>
+        !(typeof(Clink.MainWindow).IsAssignableFrom(windowType) || typeof(Clink.UI.ToastWindow).IsAssignableFrom(windowType)
+          || typeof(Clink.UI.StatusDotWindow).IsAssignableFrom(windowType) || typeof(Clink.UI.Screenshots.RegionOverlayWindow).IsAssignableFrom(windowType));
+
+    /// <summary>
+    /// Tags a window's title now and again whenever the window sets a new one (the trim window swaps its title between its modes), until
+    /// it closes. Does nothing for the windows <see cref="ShouldTagTitle"/> leaves out. Safe to call again for the same window. Dev instance only.
+    /// </summary>
+    public static void KeepTitleTagged(System.Windows.Window w)
+    {
+        if (!ShouldTagTitle(w)) return;
+        var dpd = System.ComponentModel.DependencyPropertyDescriptor.FromProperty(System.Windows.Window.TitleProperty, typeof(System.Windows.Window));
+        void Tag() { string tagged = TagTitle(w.Title); if (tagged != w.Title) w.Title = tagged; }   // idempotent: the second pass changes nothing
+        EventHandler onChanged = (_, _) => Tag();
+        dpd.AddValueChanged(w, onChanged);
+        w.Closed += (_, _) => dpd.RemoveValueChanged(w, onChanged);
+        Tag();
     }
 
     /// <summary>The main window's title (the taskbar button): "Clink TEST (clink-test)".</summary>
