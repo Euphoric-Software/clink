@@ -45,6 +45,13 @@ internal static class ClipGrouping
     /// <summary>The screen reader name of the chevron: "Show 3 trims of Game" / "Hide 1 trim of Game".</summary>
     public static string ToggleName(bool expanded, int count, string title) => $"{(expanded ? "Hide" : "Show")} {TrimsLabel(count)} of {title}";
 
+    /// <summary>
+    /// A chevron's state changed: show or hide the trims only when the toggle now differs from the model (the model setting the
+    /// toggle comes back here and is ignored), the row is a parent, and the Trimmed chip is off (flat list: no chevrons act).
+    /// </summary>
+    public static bool ShouldToggle(bool? toggleChecked, bool modelExpanded, bool isParent, bool trimmedChipOn) =>
+        isParent && !trimmedChipOn && (toggleChecked == true) != modelExpanded;
+
     private sealed class Plan
     {
         public ClipEntry[] Entries = Array.Empty<ClipEntry>();

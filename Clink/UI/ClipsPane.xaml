@@ -157,7 +157,7 @@
                     <StackPanel Grid.Column="1" Margin="10,0,8,0" VerticalAlignment="Center">
                         <DockPanel LastChildFill="False">
                             <!-- a clip with trims under it: "N trims" and a chevron (a focusable toggle; the pane keeps the state) -->
-                            <ToggleButton DockPanel.Dock="Right" Style="{StaticResource TrimsToggle}" Margin="6,0,0,0" IsChecked="{Binding IsExpanded, Mode=OneWay}" Click="Trims_Click"
+                            <ToggleButton DockPanel.Dock="Right" Style="{StaticResource TrimsToggle}" Margin="6,0,0,0" IsChecked="{Binding IsExpanded, Mode=OneWay}" Checked="Trims_Changed" Unchecked="Trims_Changed"
                                           Visibility="{Binding IsParent, Converter={StaticResource Vis}}" AutomationProperties.Name="{Binding ToggleName}" ToolTip="{Binding ToggleName}" />
                             <ContentPresenter DockPanel.Dock="Right" Content="{Binding}" ContentTemplate="{StaticResource Icons}" />
                             <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap" />

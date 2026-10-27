@@ -229,12 +229,19 @@ public partial class ClipsPane : UserControl
     }
 
     /// <summary>A parent's chevron: show or hide its trims. Only the rows between change (the list keeps its scroll position and the chevron its focus).</summary>
-    private void Trims_Click(object sender, RoutedEventArgs e)
+    private void Trims_Changed(object sender, RoutedEventArgs e)
     {
-        ClipGrouping.CarryExpanded(_localAll, r => r.Entry, _lastClipKeys, _expandedClips);   // an archive move may be queued: toggle the current key
+        // Driven by the toggle's state (not Click), so mouse, Space and UI Automation's Toggle all take this path. The binding
+        // setting the state from the model comes back here too, but then the state equals the model and nothing is done.
         var row = RowOf(sender);
-        if (row == null || !row.IsParent) return;
-        if (LibraryView.TrimmedOnly(LibraryFeature.Clips, _trimmedChip)) return;   // the Trimmed chip lists trims flat: no chevrons
+        if (row == null || sender is not System.Windows.Controls.Primitives.ToggleButton toggle) return;
+        bool chip = LibraryView.TrimmedOnly(LibraryFeature.Clips, _trimmedChip);
+        if (!ClipGrouping.ShouldToggle(toggle.IsChecked, row.IsExpanded, row.IsParent, chip))
+        {
+            if (toggle.IsChecked != row.IsExpanded) toggle.SetCurrentValue(System.Windows.Controls.Primitives.ToggleButton.IsCheckedProperty, row.IsExpanded);   // snap back to the model (the binding stays)
+            return;
+        }
+        ClipGrouping.CarryExpanded(_localAll, r => r.Entry, _lastClipKeys, _expandedClips);   // an archive move may be queued: toggle the current key
         string key = ClipGrouping.Key(row.Entry.Path);
         if (!_expandedClips.Remove(key)) _expandedClips.Add(key);
         var view = LocalView(_localAll, false);   // the Trimmed chip returned above, so this is the nested list
