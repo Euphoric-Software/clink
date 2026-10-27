@@ -1234,6 +1234,8 @@ public partial class MainWindow : Window
         catch (Exception ex) { _app.Say("Could not open the browser: " + ex.Message); }
     }
 
+    private void ThirdPartyNotices_Click(object sender, RoutedEventArgs e) => ThirdPartyNoticesWindow.ShowFor(this);
+
     // ------------------------------------------------------------------ clips
 
     /// <summary>Opens the clip in the trim editor (the Trim button, the toast, --trim-last).</summary>

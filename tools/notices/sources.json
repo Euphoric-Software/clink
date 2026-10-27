@@ -1,0 +1,139 @@
+{
+  "schema": 1,
+  "runtimeVersion": "10.0.13",
+  "vmrCommit": "4099f83977f4d29604a9aeb971fb0a7bc1d5f699",
+  "sections": [
+    {
+      "id": "0",
+      "title": "Clink licence (MIT)",
+      "includedIn": ["SC", "FX", "SETUP"],
+      "kind": "repo",
+      "path": "LICENSE",
+      "sha256Raw": "",
+      "sha256Text": "a24563fa6847e8ad9e061faa9e95af5a3f0e09a372a3720b6accc9f3eb6fb0d9"
+    },
+    {
+      "id": "1",
+      "title": ".NET Runtime licence",
+      "includedIn": ["SC", "FX"],
+      "kind": "nuget",
+      "package": "Microsoft.NETCore.App.Runtime.win-x64",
+      "version": "10.0.13",
+      "path": "LICENSE.TXT",
+      "sha256Raw": "d7a68596ab69b06f51ca278a6545148e4269a9381c26d597c13df5d88e08cf5b",
+      "sha256Text": "cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310"
+    },
+    {
+      "id": "2",
+      "title": ".NET Runtime third-party notices",
+      "includedIn": ["SC", "FX"],
+      "kind": "nuget",
+      "package": "Microsoft.NETCore.App.Runtime.win-x64",
+      "version": "10.0.13",
+      "path": "THIRD-PARTY-NOTICES.TXT",
+      "sha256Raw": "6d15e10a101c6bfff2ab4429ed061bf76c456fc4b23ad6b03e0d0f8377148a21",
+      "sha256Text": "66f1d4e44973185519bb4aa8a9718eb22fc7af2cc532e3ae9cfc4c127ee7fc54"
+    },
+    {
+      "id": "3",
+      "title": "Windows Desktop runtime licence (WPF and Windows Forms)",
+      "includedIn": ["SC"],
+      "kind": "nuget",
+      "package": "Microsoft.WindowsDesktop.App.Runtime.win-x64",
+      "version": "10.0.13",
+      "path": "LICENSE",
+      "sha256Raw": "a89886665765362eb77e0f8e26602c924520041d1711b2eedc136434fe4d01ab",
+      "sha256Text": "ae48df11a335dc1a615f4f938b69cba73bcf4485c4f97af49b38efb0f216353b"
+    },
+    {
+      "id": "4",
+      "title": "WPF third-party notices",
+      "includedIn": ["SC"],
+      "kind": "url",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/4099f83977f4d29604a9aeb971fb0a7bc1d5f699/src/wpf/THIRD-PARTY-NOTICES.TXT",
+      "sha256Raw": "d23dba2fee20c6b59d8f7088ee9ed372459c952a319b7ca90f3eec370cc76eb9",
+      "sha256Text": "d23dba2fee20c6b59d8f7088ee9ed372459c952a319b7ca90f3eec370cc76eb9"
+    },
+    {
+      "id": "5",
+      "title": "Windows Forms third-party notices",
+      "includedIn": ["SC"],
+      "kind": "url",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/4099f83977f4d29604a9aeb971fb0a7bc1d5f699/src/winforms/THIRD-PARTY-NOTICES.TXT",
+      "sha256Raw": "5a412b38efae0b162dc0893b319023f4cd14a8985a0f9f9ae01ac052b37a36eb",
+      "sha256Text": "5a412b38efae0b162dc0893b319023f4cd14a8985a0f9f9ae01ac052b37a36eb"
+    },
+    {
+      "id": "6",
+      "title": "CsWin32 licence (MIT)",
+      "includedIn": ["SC", "FX"],
+      "kind": "url",
+      "url": "https://raw.githubusercontent.com/microsoft/CsWin32/a54876f658937b3c0c45f599e82df9582a97258f/LICENSE",
+      "sha256Raw": "b5cb7ff7859e7d282d98fc43ab081b0dda5dc659dc3385cf65740c759a7e6a6c",
+      "sha256Text": "b5cb7ff7859e7d282d98fc43ab081b0dda5dc659dc3385cf65740c759a7e6a6c"
+    },
+    {
+      "id": "6b",
+      "title": "CsWin32 NOTICE (build-time dependencies of the CsWin32 source generator; not shipped in Clink)",
+      "includedIn": ["NONE"],
+      "kind": "nuget",
+      "package": "Microsoft.Windows.CsWin32",
+      "version": "0.3.366",
+      "path": "NOTICE.txt",
+      "sha256Raw": "88d10d641fc140b6e1ffd1eada0cb5e9bbe0781ef14d372d13977de40ec3e140",
+      "sha256Text": "69b9e0a843c6d2e8c17c4f9a8a6d9446bf9d1b8cbee4fc2397e0e557886ca6cb"
+    },
+    {
+      "id": "7",
+      "title": "C#/WinRT runtime (WinRT.Runtime.dll 2.2.0.48161) licence (MIT)",
+      "includedIn": ["SC", "FX"],
+      "kind": "url",
+      "url": "https://raw.githubusercontent.com/microsoft/CsWinRT/8649ee3eeb2445ca2a36d80d878ef60b96a6c65d/LICENSE",
+      "sha256Raw": "9906940f61b1f0b533fa7d99baf55178b2808fbe113ea51dfbfad8572ccd5f2b",
+      "sha256Text": "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+    },
+    {
+      "id": "8",
+      "title": "Windows SDK for .NET (Microsoft.Windows.SDK.NET.dll 10.0.26100.55)",
+      "includedIn": ["SC", "FX"],
+      "kind": "pointer",
+      "package": "Microsoft.Windows.SDK.NET.Ref",
+      "version": "10.0.26100.57",
+      "body": [
+        "Microsoft.Windows.SDK.NET.dll 10.0.26100.55 (the Windows SDK APIs for .NET) and WinRT.Runtime.dll 2.2.0.48161",
+        "(C#/WinRT, section [7]) are both redistributed from the package Microsoft.Windows.SDK.NET.Ref 10.0.26100.57.",
+        "",
+        "\u00a9 Microsoft Corporation. All rights reserved.",
+        "",
+        "This pointer covers both files. They are provided under the Windows SDK licence terms published at",
+        "https://aka.ms/WinSDKLicenseURL"
+      ],      "sha256Raw": "",
+      "sha256Text": "23e78da0dae91a7f628bf11f7555c211c2da6511340c0a2070299f47a7c43a66"
+    },
+    {
+      "id": "9",
+      "title": "Windows SDK Win32 metadata (build-time input only)",
+      "includedIn": ["NONE"],
+      "kind": "pointer",
+      "package": "Microsoft.Windows.SDK.Win32Metadata",
+      "version": "71.0.37-preview",
+      "body": [
+        "The Win32 declarations Clink uses (functions, structures, constants) are generated at build time by the",
+        "CsWin32 source generator from Microsoft.Windows.SDK.Win32Metadata 71.0.37-preview, which is provided under the",
+        "Windows SDK licence terms (sdk_license.txt in the package). CsWin32 0.3.366 also pulls in the build-time metadata",
+        "packages Microsoft.Windows.WDK.Win32Metadata 0.13.25-experimental and Microsoft.Windows.SDK.Win32Docs",
+        "0.1.42-alpha. None of these packages is shipped in Clink; the generated declarations are part of Clink.exe."
+      ],      "sha256Raw": "",
+      "sha256Text": "1704c37675b9c2a1bfacda0b009fdfd726f7da8f31124541bcaaab945e8ada58"
+    },
+    {
+      "id": "10",
+      "title": "Inno Setup licence",
+      "includedIn": ["SETUP"],
+      "kind": "url",
+      "url": "https://raw.githubusercontent.com/jrsoftware/issrc/4adf37ed7f3fd2bd11c6836ba056e3de170fbabf/license.txt",
+      "sha256Raw": "2e5346868c2a18434489824e11d65c3031620f792fefc415d05f19cd441abf5c",
+      "sha256Text": "3df23505b7ec00dc007a1e1e9ba32ee3895e7ce90043bcd1ac1b9b47155921a7"
+    }
+  ]
+}
