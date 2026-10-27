@@ -159,6 +159,7 @@ internal static class SelfInstall
     /// mutex only after this returned (the child has started by then; the child waits for <c>--after-pid</c>), then exit. The restart
     /// path of the new copy must strip <c>--setup-continue</c> and <c>--setup-moved-from &lt;path&gt; &lt;sha&gt;</c> from the arguments it
     /// restarts with, or every restart would ask to remove the old copy and show the wizard again.
+    /// A backup of the replaced copy (<c>Clink.exe.bak</c>) stays after success until the next install recycles it.
     /// <paramref name="ownerHwnd"/>: owner window for a Recycle Bin dialog (null = none).
     /// </summary>
     public static RelocationResult Execute(RelocationPlan plan, int currentPid, IReadOnlyList<string>? devArgs, ISelfInstallSystem sys, nint? ownerHwnd = null)
@@ -217,7 +218,8 @@ internal static class SelfInstall
                 if (child.WaitForExit(SurvivalMilliseconds))
                     return Failed("The new copy ended right after it started.", Rollback(plan, sys, swapped, backedUp));
             }
-            if (backedUp) TryRecycle(sys, backup, ownerHwnd);   // the new copy lives: the old one's backup is not needed (left if it cannot go to the Recycle Bin)
+            // No recycle here: the shell can block on a prompt while the parent still holds the single-instance mutex, and the child gives up after its
+            // --after-pid wait. The .bak stays; the pre-step above recycles it on the next install.
             return new RelocationResult(RelocationOutcome.Moved, null, hash);
         }
         catch (Exception ex)
@@ -242,12 +244,25 @@ internal static class SelfInstall
         }
     }
 
+    /// <summary>File.Delete retried like <see cref="MoveWithRetry"/> (a virus scanner may hold the file right after a failed launch).</summary>
+    private static void DeleteWithRetry(ISelfInstallSystem sys, string path)
+    {
+        for (int i = 0; ; i++)
+        {
+            try { sys.Delete(path); return; }
+            catch (Exception ex) when (i < MoveAttempts - 1 && (ex is UnauthorizedAccessException || (ex is IOException && ex is not FileNotFoundException && ex is not DirectoryNotFoundException)))
+            {
+                sys.Sleep(MoveDelayMilliseconds);
+            }
+        }
+    }
+
     /// <summary>Undoes what was done. Returns what could not be undone (null = all fine); never throws.</summary>
     private static string? Rollback(RelocationPlan plan, ISelfInstallSystem sys, bool swapped, bool backedUp)
     {
         var problems = new List<string>();
         try { if (sys.FileExists(plan.NewPath)) sys.Delete(plan.NewPath); } catch (Exception ex) { problems.Add("could not remove " + plan.NewPath + ": " + ex.Message); }
-        if (swapped) { try { if (sys.FileExists(plan.Target)) sys.Delete(plan.Target); } catch (Exception ex) { problems.Add("could not remove " + plan.Target + ": " + ex.Message); } }
+        if (swapped) { try { if (sys.FileExists(plan.Target)) DeleteWithRetry(sys, plan.Target); } catch (Exception ex) { problems.Add("could not remove " + plan.Target + ": " + ex.Message); } }
         if (backedUp)
         {
             try { if (sys.FileExists(plan.BackupPath)) MoveWithRetry(sys, plan.BackupPath, plan.Target, overwrite: true); }

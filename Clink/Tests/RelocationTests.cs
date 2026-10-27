@@ -56,7 +56,14 @@ internal static class RelocationTests
             Files.Remove(from);
             if (Versions.TryGetValue(from, out var v)) { Versions[to] = v; Versions.Remove(from); }
         }
-        public void Delete(string path) { Files.Remove(path); Deleted.Add(path); }
+        public int DeleteFailuresLeft;
+        public bool DeleteAlwaysFails;
+        public void Delete(string path)
+        {
+            if (DeleteAlwaysFails) throw new IOException("scanner holds it");
+            if (DeleteFailuresLeft > 0) { DeleteFailuresLeft--; throw new IOException("scanner holds it"); }
+            Files.Remove(path); Deleted.Add(path);
+        }
         public void ClearReadOnly(string path) { ClearedReadOnly.Add(path); ReadOnly.Remove(path); }
         private string Canon(string p) => Aliases.TryGetValue(p, out var c) ? c : p;
         public bool SameFile(string a, string b) => Files.ContainsKey(a) && Files.ContainsKey(b) && string.Equals(Canon(a), Canon(b), StringComparison.OrdinalIgnoreCase);
@@ -161,8 +168,8 @@ internal static class RelocationTests
             Check.Equal("new bits", sys.Text(Target));
             Check.Equal("new bits", sys.Text(Src), "the source stays until the new copy removes it");
             Check.False(sys.Files.ContainsKey(Target + ".new"));
-            Check.False(sys.Files.ContainsKey(Target + ".bak"), "the backup goes once the child lives");
-            Check.Equal(new[] { Target + ".bak" }, sys.Recycled.ToArray());   // to the Recycle Bin, not a permanent delete
+            Check.Equal("old bits", sys.Text(Target + ".bak"), "the backup stays until the next install (no shell call while the parent holds the mutex)");
+            Check.Equal(0, sys.Recycled.Count);
             Check.False(sys.Deleted.Contains(Target + ".bak"), "never File.Delete on the backup");
             Check.Equal(Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes("new bits"))), r.Sha256);
         }
@@ -586,8 +593,30 @@ internal static class RelocationTests
         sys.Put(Target + ".bak", "older");
         var r = SelfInstall.Execute(PlanOf(sys), 1, null, sys);
         Check.Equal(RelocationOutcome.Moved, r.Outcome, r.Error);
-        Check.Equal(2, sys.Recycled.Count(p => p == Target + ".bak"));   // the stale one, then the one made now
+        Check.Equal(1, sys.Recycled.Count(p => p == Target + ".bak"));   // only the stale one; the one made now stays until the next install
+        Check.Equal("old", sys.Text(Target + ".bak"));
         Check.False(sys.Deleted.Contains(Target + ".bak"));
+    }
+
+    [UnitTest]
+    public static void A_rollback_retries_removing_the_failed_copy_and_reports_when_it_cannot()
+    {
+        var flaky = new FakeSystem { ThrowOnStart = true, DeleteFailuresLeft = 2 };
+        flaky.Put(Src, "new");
+        flaky.Put(Target, "old", "0.1.0");
+        var r = SelfInstall.Execute(PlanOf(flaky), 1, null, flaky);
+        Check.Equal(RelocationOutcome.Failed, r.Outcome);
+        Check.True(r.RollbackError == null, r.RollbackError);
+        Check.Equal("old", flaky.Text(Target));
+        Check.False(flaky.Files.ContainsKey(Target + ".bak"));
+
+        var stuck = new FakeSystem { ThrowOnStart = true, DeleteAlwaysFails = true };
+        stuck.Put(Src, "new");
+        stuck.Put(Target, "old", "0.1.0");
+        var f = SelfInstall.Execute(PlanOf(stuck), 1, null, stuck);
+        Check.Equal(RelocationOutcome.Failed, f.Outcome);
+        Check.NotNull(f.RollbackError);
+        Check.Contains(f.RollbackError, "could not remove " + Target);
     }
     // ------------------------------------------------------------------ real disk (temp folder only)
 
