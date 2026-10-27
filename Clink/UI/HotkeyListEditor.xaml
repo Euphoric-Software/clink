@@ -17,15 +17,17 @@
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
-            <Button x:Name="MainKeys" Padding="8,6" HorizontalContentAlignment="Left" FontWeight="SemiBold"
+            <Button x:Name="MainKeys" AutomationProperties.Name="Main hotkey" AutomationProperties.AutomationId="MainHotkeyKeys" Padding="8,6" HorizontalContentAlignment="Left" FontWeight="SemiBold"
                     ToolTip="The keys that save the full replay. Click, then press the key combo you want (Esc cancels)" />
             <TextBlock x:Name="MainHint" Grid.Column="1" Style="{StaticResource MutedText}" Margin="10,0,0,0" VerticalAlignment="Center"
                        TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
-            <Button x:Name="MainClear" Grid.Column="2" Style="{StaticResource GlyphButton}" Content="&#xE711;" Margin="8,0,0,0" Click="MainClear_Click"
+            <Button x:Name="MainClear" AutomationProperties.Name="Clear main hotkey" Grid.Column="2" Style="{StaticResource GlyphButton}" Content="&#xE711;" Margin="8,0,0,0" Click="MainClear_Click"
                     ToolTip="Clear the main hotkey: nothing saves the full replay until you set keys again" />
         </Grid>
         <!-- why the keys just pressed were not taken, for the main row (another row has them, or a bare typing key); shown while its capture stays armed -->
         <TextBlock x:Name="MainCaptureHint" Style="{StaticResource Hint}" Foreground="{DynamicResource Warn}" Margin="2,0,0,4" Visibility="Collapsed" />
+        <!-- everything below the main hotkey; ShowMoreHotkeys=false collapses it (the first-run setup shows the main hotkey only) -->
+        <StackPanel x:Name="MorePanel">
         <Grid Margin="2,8,0,3">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
@@ -39,5 +41,6 @@
         <!-- the same for the rows above -->
         <TextBlock x:Name="CaptureHint" Style="{StaticResource Hint}" Foreground="{DynamicResource Warn}" Margin="2,0,0,4" Visibility="Collapsed" />
         <TextBlock x:Name="EmptyText" Style="{StaticResource Hint}" Margin="2,4,0,0" Text="No more hotkeys. Add one to save a shorter clip, e.g. the last 15 s." Visibility="Collapsed" />
+        </StackPanel>
     </StackPanel>
 </UserControl>

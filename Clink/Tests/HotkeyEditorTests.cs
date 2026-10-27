@@ -116,6 +116,8 @@ internal static class HotkeyEditorTests
         Check.Equal("Alt+C", ed.MainKeys.Content);
         Check.Equal("saves the full replay (0:45)", ed.MainHint.Text);
         Check.True(ed.MainClear.IsEnabled, "a main with keys can be cleared");
+        Check.Equal("Main hotkey, Alt+C", System.Windows.Automation.AutomationProperties.GetName(ed.MainKeys), "the main keys button has an accessible name");
+        Check.Equal("Clear main hotkey", System.Windows.Automation.AutomationProperties.GetName(ed.MainClear));
         Check.Equal(2, ed.Rows.Children.Count);
         Check.Equal(Visibility.Collapsed, ed.EmptyText.Visibility);
 
@@ -263,5 +265,47 @@ internal static class HotkeyEditorTests
         Check.False(Hotkeys.NeedsMenuMask(ctrl: true, alt: true), "Ctrl+Alt+C never opens the menu bar");
         Check.False(Hotkeys.NeedsMenuMask(ctrl: false, alt: false), "F9");
         Check.False(Hotkeys.NeedsMenuMask(ctrl: true, alt: false), "Ctrl+F9");
+    }
+
+    [UnitTest]
+    public static void ShowMoreHotkeys_false_collapses_the_more_part_and_keeps_the_actions()
+    {
+        var main = Row(0x78, "clip", 0);
+        var shorter = Row(0x79, "clip", 15, shift: true);
+        var ed = new HotkeyListEditor();
+        Check.True(ed.ShowMoreHotkeys, "shown by default");
+        ed.Load(new[] { main, shorter }, 45);
+        Check.Equal(Visibility.Visible, ed.MorePanel.Visibility);
+
+        ed.ShowMoreHotkeys = false;
+        Check.False(ed.ShowMoreHotkeys);
+        Check.Equal(Visibility.Collapsed, ed.MorePanel.Visibility);
+        Check.Equal(2, ed.Actions.Count, "the rows are still in the list");
+        Check.True(ReferenceEquals(shorter, ed.Actions[1]));
+        Check.Equal(Visibility.Visible, ed.MainKeys.Visibility, "the main hotkey stays");
+        Check.True(ed.MainKeys.IsEnabled);
+
+        ed.ShowMoreHotkeys = true;
+        Check.Equal(Visibility.Visible, ed.MorePanel.Visibility);
+        Check.Equal(2, ed.Actions.Count);
+        // the header, Add button, rows, hints and empty text all live inside the collapsed panel
+        foreach (var child in new FrameworkElement[] { ed.AddButton, ed.Rows, ed.CaptureHint, ed.EmptyText })
+            Check.True(LogicalTreeHelper.GetParent(child) is not null && IsInside(child, ed.MorePanel), "inside the more panel");
+        Check.False(IsInside(ed.MainKeys, ed.MorePanel), "the main hotkey is outside it");
+    }
+
+    [UnitTest]
+    public static void The_duplicate_hint_points_to_Settings_only_when_the_other_hotkeys_are_hidden()
+    {
+        var keys = new HotkeyBinding { Vk = 0x41, Ctrl = true };
+        Check.True(HotkeyListEditor.DuplicateHint(keys, false).Contains("(see Settings)"), "hidden: points to Settings");
+        Check.False(HotkeyListEditor.DuplicateHint(keys, true).Contains("Settings"), "visible: no pointer");
+        Check.True(HotkeyListEditor.DuplicateHint(keys, true).Contains("already used by another hotkey"), "visible: still says why");
+    }
+    private static bool IsInside(DependencyObject child, DependencyObject ancestor)
+    {
+        for (var p = child; p != null; p = LogicalTreeHelper.GetParent(p))
+            if (ReferenceEquals(p, ancestor)) return true;
+        return false;
     }
 }

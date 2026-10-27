@@ -1,4 +1,5 @@
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Input;
 using Clink.Services;
@@ -61,6 +62,24 @@ public partial class HotkeyListEditor : UserControl
 
     /// <summary>The bindings as edited (same objects as passed to <see cref="Load"/> where unchanged). <c>[0]</c> is the main hotkey.</summary>
     internal IReadOnlyList<HotkeyAction> Actions => _actions;
+
+    /// <summary>
+    /// Whether the "More hotkeys" part (header, Add button, rows and their hints) is shown. False shows the main hotkey alone; the
+    /// rows stay in <see cref="Actions"/> untouched. Default true.
+    /// </summary>
+    public bool ShowMoreHotkeys
+    {
+        get => MorePanel.Visibility == Visibility.Visible;
+        set
+        {
+            if (value == ShowMoreHotkeys) return;
+            if (!value) CancelCapture();   // a capture armed on a row that is about to be hidden
+            MorePanel.Visibility = value ? Visibility.Visible : Visibility.Collapsed;
+        }
+    }
+
+    /// <summary>A key capture is armed (the next combo pressed is meant for a row, so Esc must not also close the window).</summary>
+    internal bool IsCapturing => _capturing != null;
 
     /// <summary>The replay-length slider's value: what the main hotkey saves (its hint), and the ceiling of every additional clip row's length.</summary>
     public int DefaultSeconds
@@ -160,8 +179,12 @@ public partial class HotkeyListEditor : UserControl
         MainKeys.Content = m == null ? "Not set" : KeysLabel(m);
         MainKeys.IsEnabled = m != null;
         MainClear.IsEnabled = m?.Keys is { Vk: > 0 };
+        SyncMainName();
         MainHint.Text = $"saves the full replay ({Capabilities.FormatClipLength(_defaultSeconds)})";
     }
+
+    /// <summary>The main keys button is named "Main hotkey, {keys}" (its content alone would be just "F9" or "Not set").</summary>
+    private void SyncMainName() => AutomationProperties.SetName(MainKeys, $"Main hotkey, {MainKeys.Content}");
 
     private void MainClear_Click(object sender, RoutedEventArgs e)
     {
@@ -283,21 +306,25 @@ public partial class HotkeyListEditor : UserControl
         _capturing = button;
         _capturingLabel = button.Content as string;
         button.Content = "Press keys";
+        if (ReferenceEquals(button, MainKeys)) SyncMainName();
         button.Focus();   // so clicking anywhere else (LostKeyboardFocus) disarms the capture
-        if (!Arm(button, a)) { _capturing = null; button.Content = _capturingLabel; }   // a quiet instance does not capture
+        if (!Arm(button, a)) { _capturing = null; button.Content = _capturingLabel; if (ReferenceEquals(button, MainKeys)) SyncMainName(); }   // a quiet instance does not capture
     }
 
+    /// <summary>The "already used" hint; the other hotkeys are only visible in Settings when the editor hides them (the first-run setup).</summary>
+    internal static string DuplicateHint(HotkeyBinding keys, bool showMoreHotkeys) =>
+        $"{keys} is already used by another hotkey{(showMoreHotkeys ? "" : " (see Settings)")}. Press other keys, or Esc.";
     /// <summary>Waits for the next combo for row <paramref name="a"/>, again after one that could not be taken. Esc cancels.</summary>
     private bool Arm(Button button, HotkeyAction a) => Hotkeys.CaptureNext(
         (vk, ctrl, alt, shift, win) => Dispatcher.BeginInvoke(() =>
         {
             if (!ReferenceEquals(_capturing, button)) return;   // a newer capture replaced this one, or it was cancelled
-            if (vk == 0x1B) { _capturing = null; button.Content = _capturingLabel; Hint(null); return; }   // Esc cancels
+            if (vk == 0x1B) { _capturing = null; button.Content = _capturingLabel; if (ReferenceEquals(button, MainKeys)) SyncMainName(); Hint(null); return; }   // Esc cancels
             var keys = new HotkeyBinding { Vk = vk, Ctrl = ctrl, Alt = alt, Shift = shift, Win = win };
             // Only the first row with a combo ever fires: a second one would look set up and do nothing. Still listening.
             if (_actions.Any(o => !ReferenceEquals(o, a) && o.Keys is { } k && k.Vk == vk && k.Ctrl == ctrl && k.Alt == alt && k.Shift == shift && k.Win == win))
             {
-                Hint($"{keys} is already used by another hotkey. Press other keys, or Esc.");
+                Hint(DuplicateHint(keys, ShowMoreHotkeys));
                 Arm(button, a);
                 return;
             }
@@ -330,7 +357,9 @@ public partial class HotkeyListEditor : UserControl
         if (_capturing == null) return;
         Hotkeys.CaptureNext(null);
         _capturing.Content = _capturingLabel;
+        bool main = ReferenceEquals(_capturing, MainKeys);
         _capturing = null;
+        if (main) SyncMainName();
         Hint(null);
     }
 

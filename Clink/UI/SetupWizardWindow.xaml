@@ -1,0 +1,214 @@
+<Window x:Class="Clink.UI.SetupWizardWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:ui="clr-namespace:Clink.UI"
+        Title="Set up Clink" Width="540" SizeToContent="Height"
+        WindowStyle="None" ResizeMode="NoResize" AllowsTransparency="True" Background="Transparent"
+        WindowStartupLocation="CenterScreen" ShowInTaskbar="True" FontFamily="{StaticResource UiFont}" TextOptions.TextFormattingMode="Display"
+        AutomationProperties.AutomationId="SetupWizard" AutomationProperties.Name="Set up Clink"
+        PreviewKeyDown="Window_PreviewKeyDown" Loaded="Window_Loaded">
+    <Window.Resources>
+        <!-- a big radio card: the dot, the label and its hint. Every colour is a DynamicResource (the window follows the theme). -->
+        <Style x:Key="OptionRadio" TargetType="RadioButton">
+            <Setter Property="Foreground" Value="{DynamicResource Fg}" />
+            <Setter Property="Margin" Value="0,0,0,6" />
+            <Setter Property="Padding" Value="10,8" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="FocusVisualStyle" Value="{StaticResource FocusRing}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RadioButton">
+                        <Border x:Name="B" Background="{DynamicResource Panel2}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="8" Padding="{TemplateBinding Padding}">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Grid Width="18" Height="18" VerticalAlignment="Top" Margin="0,1,10,0">
+                                    <Ellipse Stroke="{DynamicResource Muted}" StrokeThickness="1.5" />
+                                    <Ellipse x:Name="Dot" Fill="{DynamicResource Accent}" Margin="4" Visibility="Collapsed" />
+                                </Grid>
+                                <ContentPresenter Grid.Column="1" VerticalAlignment="Center">
+                                    <ContentPresenter.Resources>
+                                        <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}" />
+                                    </ContentPresenter.Resources>
+                                </ContentPresenter>
+                            </Grid>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="B" Property="Background" Value="{DynamicResource Panel3}" />
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="B" Property="BorderBrush" Value="{DynamicResource Accent}" />
+                                <Setter TargetName="Dot" Property="Visibility" Value="Visible" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.55" />
+                                <Setter Property="Cursor" Value="Arrow" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <Border Background="{DynamicResource Bg}" CornerRadius="10" BorderBrush="{DynamicResource Border}" BorderThickness="1">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <Grid MinHeight="44" MouseLeftButtonDown="Header_MouseLeftButtonDown" Background="Transparent">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock x:Name="TitleText" Style="{StaticResource Display}" Text="Set up Clink" Margin="16,0,0,0" VerticalAlignment="Center" />
+                <TextBlock x:Name="StepText" Grid.Column="1" Style="{StaticResource MutedText}" VerticalAlignment="Center" Margin="8,0,8,0" />
+                <Button x:Name="CloseButton" Grid.Column="2" Style="{StaticResource GlyphButton}" Content="&#xE711;" Margin="0,0,8,0"
+                        AutomationProperties.AutomationId="SetupClose" AutomationProperties.Name="Close setup (same as Skip setup)"
+                        ToolTip="Skip setup" Click="Close_Click" />
+            </Grid>
+
+            <ScrollViewer x:Name="Scroller" Grid.Row="1" Focusable="False" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                <Grid Margin="16,4,16,16">
+                    <!-- ============ Location ============ -->
+                    <StackPanel x:Name="LocationPage">
+                        <TextBlock x:Name="LocationHeading" Style="{StaticResource H}" TextWrapping="Wrap" AutomationProperties.HeadingLevel="Level1" />
+                        <TextBlock x:Name="PlaceLine" TextWrapping="Wrap" Margin="0,4,0,10" />
+                        <Border x:Name="WarningPanel" Margin="0,0,0,10" Padding="12,10" CornerRadius="8" BorderThickness="1"
+                                BorderBrush="{DynamicResource Warn}" Background="{DynamicResource WarnTint}" Visibility="Collapsed">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Style="{StaticResource Glyph}" Text="&#xE7BA;" FontSize="20" Foreground="{DynamicResource Fg}" VerticalAlignment="Top" Margin="0,1,10,0"
+                                           AutomationProperties.Name="Warning" />
+                                <TextBlock x:Name="WarningText" Grid.Column="1" TextWrapping="Wrap" FontWeight="SemiBold" Foreground="{DynamicResource Fg}"
+                                           AutomationProperties.AutomationId="SetupWarning" />
+                            </Grid>
+                        </Border>
+                        <ui:OptionGroup x:Name="LocationGroup">
+                            <RadioButton x:Name="LocInstall" GroupName="Loc" Style="{StaticResource OptionRadio}" AutomationProperties.AutomationId="SetupLocInstall" Checked="Loc_Checked">
+                                <StackPanel>
+                                    <TextBlock x:Name="LocInstallLabel" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                    <TextBlock x:Name="LocInstallHint" Style="{StaticResource Hint}" TextWrapping="Wrap" />
+                                </StackPanel>
+                            </RadioButton>
+                            <RadioButton x:Name="LocDocuments" GroupName="Loc" Style="{StaticResource OptionRadio}" AutomationProperties.AutomationId="SetupLocDocuments" Checked="Loc_Checked">
+                                <StackPanel>
+                                    <TextBlock x:Name="LocDocumentsLabel" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                    <TextBlock x:Name="LocDocumentsHint" Style="{StaticResource Hint}" TextWrapping="Wrap" />
+                                </StackPanel>
+                            </RadioButton>
+                            <RadioButton x:Name="LocProgramFiles" GroupName="Loc" Style="{StaticResource OptionRadio}" AutomationProperties.AutomationId="SetupLocProgramFiles" Checked="Loc_Checked">
+                                <StackPanel>
+                                    <TextBlock x:Name="LocProgramFilesLabel" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                    <TextBlock x:Name="LocProgramFilesHint" Style="{StaticResource Hint}" TextWrapping="Wrap" />
+                                </StackPanel>
+                            </RadioButton>
+                            <RadioButton x:Name="LocKeep" GroupName="Loc" Style="{StaticResource OptionRadio}" AutomationProperties.AutomationId="SetupLocKeep" Checked="Loc_Checked">
+                                <StackPanel>
+                                    <TextBlock x:Name="LocKeepLabel" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                    <TextBlock x:Name="LocKeepHint" Style="{StaticResource Hint}" TextWrapping="Wrap" />
+                                </StackPanel>
+                            </RadioButton>
+                        </ui:OptionGroup>
+                        <TextBlock x:Name="RecycleHint" Style="{StaticResource Hint}" TextWrapping="Wrap" Margin="2,0,0,0" />
+                        <TextBlock x:Name="StatusText" TextWrapping="Wrap" Margin="2,10,0,0" AutomationProperties.AutomationId="SetupStatus"
+                                   AutomationProperties.LiveSetting="Assertive" Visibility="Collapsed" />
+                        <TextBlock x:Name="ErrorText" TextWrapping="Wrap" Margin="2,10,0,0" FontWeight="SemiBold" Foreground="{DynamicResource Danger}" AutomationProperties.AutomationId="SetupError"
+                                   AutomationProperties.LiveSetting="Assertive" Visibility="Collapsed" />
+                    </StackPanel>
+
+                    <!-- ============ Quality ============ -->
+                    <StackPanel x:Name="QualityPage" Visibility="Collapsed">
+                        <TextBlock x:Name="QualityHeading" Style="{StaticResource H}" TextWrapping="Wrap" Margin="0,0,0,10" AutomationProperties.HeadingLevel="Level1" />
+                        <ui:OptionGroup x:Name="QualityGroup">
+                            <RadioButton x:Name="QLight" GroupName="Quality" Style="{StaticResource OptionRadio}" AutomationProperties.AutomationId="SetupQualityLight" Checked="Quality_Checked">
+                                <StackPanel>
+                                    <TextBlock x:Name="QLightLabel" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                    <TextBlock x:Name="QLightHint" Style="{StaticResource Hint}" TextWrapping="Wrap" />
+                                </StackPanel>
+                            </RadioButton>
+                            <RadioButton x:Name="QBalanced" GroupName="Quality" Style="{StaticResource OptionRadio}" AutomationProperties.AutomationId="SetupQualityBalanced" Checked="Quality_Checked">
+                                <StackPanel>
+                                    <TextBlock x:Name="QBalancedLabel" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                    <TextBlock x:Name="QBalancedHint" Style="{StaticResource Hint}" TextWrapping="Wrap" />
+                                </StackPanel>
+                            </RadioButton>
+                            <RadioButton x:Name="QHigh" GroupName="Quality" Style="{StaticResource OptionRadio}" AutomationProperties.AutomationId="SetupQualityHigh" Checked="Quality_Checked">
+                                <StackPanel>
+                                    <TextBlock x:Name="QHighLabel" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                    <TextBlock x:Name="QHighHint" Style="{StaticResource Hint}" TextWrapping="Wrap" />
+                                </StackPanel>
+                            </RadioButton>
+                            <RadioButton x:Name="QCustom" GroupName="Quality" Style="{StaticResource OptionRadio}" AutomationProperties.AutomationId="SetupQualityCustom" Checked="Quality_Checked">
+                                <StackPanel>
+                                    <TextBlock x:Name="QCustomLabel" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                    <TextBlock x:Name="QCustomHint" Style="{StaticResource Hint}" TextWrapping="Wrap" />
+                                </StackPanel>
+                            </RadioButton>
+                        </ui:OptionGroup>
+                        <TextBlock x:Name="ReplayHeading" Style="{StaticResource H}" TextWrapping="Wrap" Margin="0,8,0,6" AutomationProperties.HeadingLevel="Level2" />
+                        <ui:OptionGroup x:Name="ReplayGroup">
+                            <WrapPanel x:Name="ReplayPanel" />
+                        </ui:OptionGroup>
+                        <TextBlock x:Name="ReplayHint" Style="{StaticResource Hint}" TextWrapping="Wrap" Margin="2,2,0,0" />
+                    </StackPanel>
+
+                    <!-- ============ Hotkey ============ -->
+                    <StackPanel x:Name="HotkeyPage" Visibility="Collapsed">
+                        <TextBlock x:Name="HotkeyHeading" Style="{StaticResource H}" TextWrapping="Wrap" AutomationProperties.HeadingLevel="Level1" />
+                        <TextBlock x:Name="HotkeyBody" TextWrapping="Wrap" Margin="0,4,0,12" />
+                        <ui:HotkeyListEditor x:Name="Editor" ShowMoreHotkeys="False" />
+                        <TextBlock x:Name="HotkeyFooter" Style="{StaticResource Hint}" TextWrapping="Wrap" Margin="2,10,0,0" />
+                    </StackPanel>
+
+                    <!-- ============ Startup ============ -->
+                    <StackPanel x:Name="StartupPage" Visibility="Collapsed">
+                        <TextBlock x:Name="StartupHeading" Style="{StaticResource H}" TextWrapping="Wrap" Margin="0,0,0,10" AutomationProperties.HeadingLevel="Level1" />
+                        <ui:OptionGroup x:Name="StartupGroup" KeyboardNavigation.TabNavigation="Continue">
+                            <CheckBox x:Name="RunAtStartupCheck" Margin="2,0,0,10" AutomationProperties.AutomationId="SetupRunAtStartup" Checked="Startup_Changed" Unchecked="Startup_Changed" />
+                            <CheckBox x:Name="StartMenuCheck" Margin="2,0,0,10" AutomationProperties.AutomationId="SetupStartMenu" Checked="Startup_Changed" Unchecked="Startup_Changed" />
+                            <CheckBox x:Name="DesktopCheck" Margin="2,0,0,10" AutomationProperties.AutomationId="SetupDesktop" Checked="Startup_Changed" Unchecked="Startup_Changed" />
+                        </ui:OptionGroup>
+                        <TextBlock x:Name="ShortcutsNote" Style="{StaticResource Hint}" TextWrapping="Wrap" Margin="2,0,0,0" />
+                    </StackPanel>
+
+                    <!-- ============ Done ============ -->
+                    <StackPanel x:Name="DonePage" Visibility="Collapsed">
+                        <TextBlock x:Name="DoneHeading" Style="{StaticResource H}" TextWrapping="Wrap" AutomationProperties.HeadingLevel="Level1" />
+                        <TextBlock x:Name="DoneBody" TextWrapping="Wrap" Margin="0,8,0,0" />
+                    </StackPanel>
+                </Grid>
+            </ScrollViewer>
+
+            <Border Grid.Row="2" Padding="16,10,16,14" BorderBrush="{DynamicResource Border}" BorderThickness="0,1,0,0">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <Button x:Name="SkipButton" Style="{StaticResource LinkButton}" FontSize="12" VerticalAlignment="Center" HorizontalAlignment="Left"
+                            AutomationProperties.AutomationId="SetupSkip" AutomationProperties.Name="Skip setup"
+                            ToolTip="Closes setup and moves nothing" Click="Skip_Click"><AccessText Text="S_kip setup" /></Button>
+                    <StackPanel Grid.Column="1" Orientation="Horizontal">
+                        <Button x:Name="BackButton" MinWidth="84" Margin="0,0,8,0" Click="Back_Click"
+                                AutomationProperties.AutomationId="SetupBack" AutomationProperties.Name="Back"><AccessText Text="_Back" /></Button>
+                        <Button x:Name="NextButton" Style="{StaticResource AccentButton}" MinWidth="84" Padding="14,5" Click="Next_Click" IsDefault="True"
+                                AutomationProperties.AutomationId="SetupNext" AutomationProperties.Name="Next"><AccessText Text="_Next" /></Button>
+                        <Button x:Name="FinishButton" Style="{StaticResource AccentButton}" MinWidth="84" Padding="14,5" Click="Finish_Click" Visibility="Collapsed"
+                                AutomationProperties.AutomationId="SetupFinish" AutomationProperties.Name="Finish"><AccessText Text="_Finish" /></Button>
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </Grid>
+    </Border>
+</Window>
