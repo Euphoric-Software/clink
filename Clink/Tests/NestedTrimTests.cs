@@ -227,16 +227,28 @@ internal static class NestedTrimTests
         var toggle = new System.Windows.Controls.Primitives.ToggleButton();
         toggle.SetBinding(System.Windows.Controls.Primitives.ToggleButton.IsCheckedProperty, new System.Windows.Data.Binding(nameof(ClipRow.IsExpanded)) { Source = row, Mode = System.Windows.Data.BindingMode.OneWay });
         Check.False(toggle.IsChecked == true);
+        int checkedCount = 0, uncheckedCount = 0, clicks = 0;
+        bool shouldToggleOnUnchecked = true;
+        toggle.Checked += (_, _) => checkedCount++;
+        toggle.Unchecked += (_, _) => { uncheckedCount++; shouldToggleOnUnchecked = ClipGrouping.ShouldToggle(toggle.IsChecked, row.IsExpanded, row.IsParent, trimmedChipOn: false); };
+        toggle.Click += (_, _) => clicks++;
         var provider = new System.Windows.Automation.Peers.ToggleButtonAutomationPeer(toggle).GetPattern(System.Windows.Automation.Peers.PatternInterface.Toggle) as System.Windows.Automation.Provider.IToggleProvider;
         Check.True(provider != null, "TogglePattern is offered");
         provider!.Toggle();
         Check.True(toggle.IsChecked == true, "the automation toggle flipped the state");
+        Check.Equal(1, checkedCount, "Checked raised once by the automation toggle");
+        Check.Equal(0, clicks, "UIA Toggle raises no Click");
         row.SetNesting(ClipRowKind.Parent, 2, expanded: true);
+        Check.Equal(1, checkedCount, "the model agreeing raises nothing more");
+        Check.Equal(0, uncheckedCount);
         row.SetNesting(ClipRowKind.Parent, 2, expanded: false);
         Check.False(toggle.IsChecked == true, "the model still drives the toggle after a user toggle");
+        Check.Equal(1, uncheckedCount, "Unchecked raised once by the model collapsing");
+        Check.False(shouldToggleOnUnchecked, "at that moment the state equals the model: no action");
+        Check.Equal(1, checkedCount);
+        Check.Equal(0, clicks);
     }
 
-    private static void Do(Action a) => a();
     [UnitTest]
     public static void The_chevron_has_a_label_and_a_screen_reader_name_and_a_row_knows_its_place()
     {

@@ -243,9 +243,11 @@ public partial class ClipsPane : UserControl
         }
         ClipGrouping.CarryExpanded(_localAll, r => r.Entry, _lastClipKeys, _expandedClips);   // an archive move may be queued: toggle the current key
         string key = ClipGrouping.Key(row.Entry.Path);
-        if (!_expandedClips.Remove(key)) _expandedClips.Add(key);
+        bool want = toggle.IsChecked == true;   // set the state the user asked for rather than flipping membership
+        if (want) _expandedClips.Add(key); else _expandedClips.Remove(key);
         var view = LocalView(_localAll, false);   // the Trimmed chip returned above, so this is the nested list
         ClipGrouping.SyncRows(_local, view, int.MaxValue);   // a toggle is one contiguous block: never rebuild (the chevron keeps focus)
+        if (toggle.IsChecked != row.IsExpanded) toggle.SetCurrentValue(System.Windows.Controls.Primitives.ToggleButton.IsCheckedProperty, row.IsExpanded);
         if (IsVisible && _level == LibraryLevel.Local) LoadThumbnails(view.Where(r => !r.Checked).ToList());
     }
 
