@@ -175,7 +175,7 @@ internal static class UpdateFeedTests
         Check.Equal("v0.4.2", m.Tag);
         Check.Equal(1234L, m.Exe.Size);
         Check.NotNull(m.Installer);
-        Check.Null(m.Portable);
+        Check.Null(m.ExeFramework);
         Check.True(DateTimeOffset.UtcNow - m.Published < TimeSpan.FromDays(2), "published is read");
         var info = UpdateFeed.ToUpdateInfo(m);
         Check.Equal("https://cdn.example/clink/releases/v0.4.2/Clink.exe", info.ExeUrl);
@@ -1464,5 +1464,144 @@ internal static class UpdateFeedTests
         string merged = SettingsImport.KeepOurOwn(theirs, json, keepOurToken: true);
         Check.Equal("0.4.2", Settings.FromJson(merged).FeedFloorStable);
         Check.Null(Settings.FromJson(SettingsImport.KeepOurOwn(theirs, new Settings().ToJson(), keepOurToken: true)).FeedFloorStable, "left out when we have none");
+    }
+
+    // ------------------------------------------------------------------ two flavours (Packaging)
+
+    private static readonly string FxSha = new('e', 64);
+
+    /// <summary>Adds the framework exe (777 bytes, <see cref="FxSha"/>) to a manifest made by <see cref="Manifest"/>.</summary>
+    private static string WithFramework(string manifest, string version) =>
+        manifest.Replace("\"installer\":", $"\"exeFramework\":{{\"url\":\"https://cdn.example/clink/releases/v{version}/Clink-framework.exe\",\"size\":777,\"sha256\":\"{FxSha}\"}},\"installer\":");
+
+    [UnitTest]
+    public static void Feed_a_framework_client_takes_exeFramework_unless_it_cannot_use_it()
+    {
+        var (pub, key) = NewKey();
+        using var k = key;
+        byte[] m = Bytes(WithFramework(Manifest(), "0.4.2"));   // minRuntime "10.0"
+        var trust = Trust(stable: new[] { pub });
+        FakeNet Net() { var n = new FakeNet(); n.Feed("stable", m, Sign(key, m)); return n; }
+
+        DotNetRuntimes.Override = new[] { new Version(10, 0, 1) };
+        Updater.PackagingOverride = Packaging.Framework;
+        var r = Run(Net(), trust);
+        Check.NotNull(r.Info, r.Up.LastError);
+        Check.Equal("https://cdn.example/clink/releases/v0.4.2/Clink-framework.exe", r.Info!.ExeUrl);
+        Check.Equal(777L, r.Info.ExeSize);
+        Check.Equal(FxSha, r.Info.Sha256);
+        Check.Equal(Packaging.Framework, r.Info.Flavour);
+
+        DotNetRuntimes.Override = new[] { new Version(9, 0, 9) };   // minRuntime 10.0 is not installed: the self-contained exe
+        r = Run(Net(), trust);
+        Check.Equal("https://cdn.example/clink/releases/v0.4.2/Clink.exe", r.Info!.ExeUrl);
+        Check.Equal(Sha, r.Info.Sha256);
+        Check.Equal(Packaging.SelfContained, r.Info.Flavour);
+
+        DotNetRuntimes.Override = new[] { new Version(10, 0, 1) };
+        Updater.PackagingOverride = Packaging.SelfContained;       // a portable copy never takes the framework exe
+        r = Run(Net(), trust);
+        Check.Equal("https://cdn.example/clink/releases/v0.4.2/Clink.exe", r.Info!.ExeUrl);
+        Check.Equal(Packaging.SelfContained, r.Info.Flavour);
+
+        byte[] plain = Bytes(Manifest());                           // a manifest without exeFramework
+        var net = new FakeNet(); net.Feed("stable", plain, Sign(key, plain));
+        Updater.PackagingOverride = Packaging.Framework;
+        r = Run(net, trust);
+        Check.Equal("https://cdn.example/clink/releases/v0.4.2/Clink.exe", r.Info!.ExeUrl, "falls back to exe");
+    }
+
+    [UnitTest]
+    public static void Feed_signed_github_path_picks_the_asset_by_packaging()
+    {
+        var (pub, key) = NewKey();
+        using var k = key;
+        string fxAsset = $$"""{"name":"Clink-framework.exe","size":777,"browser_download_url":"{{Gh}}v0.4.9/Clink-framework.exe"},""";
+        string release = Release("v0.4.9", exeSize: 1234).Replace("\"assets\":[", "\"assets\":[" + fxAsset);
+        byte[] withFx = Bytes(WithFramework(Manifest("0.4.9", size: 1234), "0.4.9"));
+        byte[] withoutFx = Bytes(Manifest("0.4.9", size: 1234));
+
+        FakeNet Net(byte[] manifest) { var n = new FakeNet(); GitHub(n, release); GitHubManifest(n, "v0.4.9", manifest, Sign(key, manifest)); return n; }   // the feed itself is unreachable
+        var trust = Trust(stable: new[] { pub });
+        DotNetRuntimes.Override = new[] { new Version(10, 0, 1) };
+
+        Updater.PackagingOverride = Packaging.Framework;
+        var r = Run(Net(withFx), trust);
+        Check.NotNull(r.Info, r.Up.LastError);
+        Check.Equal(Gh + "v0.4.9/Clink-framework.exe", r.Info!.ExeUrl);
+        Check.Equal(777L, r.Info.ExeSize);
+        Check.Equal(FxSha, r.Info.Sha256);
+        Check.Equal(Packaging.Framework, r.Info.Flavour);
+
+        r = Run(Net(withoutFx), trust);
+        Check.NotNull(r.Info, "the manifest has no exeFramework: " + r.Up.LastError);
+        Check.Equal(Gh + "v0.4.9/Clink.exe", r.Info!.ExeUrl, "falls back to Clink.exe");
+        Check.Equal(1234L, r.Info.ExeSize);
+        Check.Equal(Sha, r.Info.Sha256);
+        Check.Equal(Packaging.SelfContained, r.Info.Flavour);
+
+        DotNetRuntimes.Override = new[] { new Version(9, 0, 9) };
+        r = Run(Net(withFx), trust);
+        Check.Equal(Gh + "v0.4.9/Clink.exe", r.Info!.ExeUrl, "minRuntime unmet: Clink.exe");
+
+        DotNetRuntimes.Override = new[] { new Version(10, 0, 1) };
+        Updater.PackagingOverride = Packaging.SelfContained;
+        r = Run(Net(withFx), trust);
+        Check.Equal(Gh + "v0.4.9/Clink.exe", r.Info!.ExeUrl, "a SelfContained copy: unchanged");
+        Check.Equal(Sha, r.Info.Sha256);
+
+        // A framework asset whose size GitHub and the manifest disagree on is refused, like Clink.exe's.
+        byte[] wrongSize = Bytes(WithFramework(Manifest("0.4.9", size: 1234), "0.4.9").Replace("\"size\":777", "\"size\":778"));
+        Updater.PackagingOverride = Packaging.Framework;
+        r = Run(Net(wrongSize), trust);
+        Check.Null(r.Info);
+        Check.Equal(Updater.GitHubRefusedNote, r.Up.LastError);
+    }
+
+    [UnitTest]
+    public static void Feed_signed_github_fallback_exe_must_be_https_too()
+    {
+        var (pub, key) = NewKey();
+        using var k = key;
+        // https Clink-framework.exe, but Clink.exe (the fallback when the manifest has no exeFramework) is an http URL.
+        string fxAsset = $$"""{"name":"Clink-framework.exe","size":777,"browser_download_url":"{{Gh}}v0.4.9/Clink-framework.exe"},""";
+        string release = Release("v0.4.9", exeSize: 1234).Replace("\"assets\":[", "\"assets\":[" + fxAsset).Replace($"\"{Gh}v0.4.9/Clink.exe\"", "\"http://insecure.example/Clink.exe\"");
+        Check.Contains(release, "http://insecure.example/Clink.exe");
+        byte[] withoutFx = Bytes(Manifest("0.4.9", size: 1234));
+        var net = new FakeNet(); GitHub(net, release); GitHubManifest(net, "v0.4.9", withoutFx, Sign(key, withoutFx));
+        net.Ok("http://insecure.example/Clink.exe", new byte[] { (byte)'M', (byte)'Z' });
+        DotNetRuntimes.Override = new[] { new Version(10, 0, 1) };
+        Updater.PackagingOverride = Packaging.Framework;
+        var r = Run(net, Trust(stable: new[] { pub }), settings: new Settings { AutoUpdate = true });
+        Check.Null(r.Info, "no offer");
+        Check.Equal(Updater.GitHubRefusedNote, r.Up.LastError);
+        Check.False(net.Asked.Any(u => u.StartsWith("http://", StringComparison.OrdinalIgnoreCase)), "nothing was requested over http");
+    }
+
+    [UnitTest]
+    public static void Feed_unsigned_github_assets_must_be_https()
+    {
+        FakeNet Net(string release) { var n = new FakeNet(); GitHub(n, release); return n; }
+        string plain = Release("v0.4.9", signedAssets: false);
+        // Sanity: the untouched release is offered.
+        Check.NotNull(Run(Net(plain), FeedTrust.None).Info, "the https release is offered");
+
+        foreach (string asset in new[] { "Clink.exe.sha256", "Clink.exe" })
+        {
+            string bad = plain.Replace($"\"{Gh}v0.4.9/{asset}\"", $"\"http://insecure.example/{asset}\"");
+            Check.Contains(bad, "http://insecure.example/" + asset);
+            var net = Net(bad);
+            var r = Run(net, FeedTrust.None);
+            Check.Null(r.Info, $"http {asset}: no offer");
+            Check.False(net.Asked.Any(u => u.StartsWith("http://", StringComparison.OrdinalIgnoreCase)), $"http {asset}: nothing requested over http");
+        }
+
+        // A framework copy: the http .sha256 of Clink-framework.exe is refused as well.
+        string fxAssets = $$"""{"name":"Clink-framework.exe","size":777,"browser_download_url":"{{Gh}}v0.4.9/Clink-framework.exe"},{"name":"Clink-framework.exe.sha256","size":64,"browser_download_url":"http://insecure.example/Clink-framework.exe.sha256"},""";
+        string fxRelease = plain.Replace("\"assets\":[", "\"assets\":[" + fxAssets);
+        Updater.PackagingOverride = Packaging.Framework;
+        var fxNet = Net(fxRelease);
+        Check.Null(Run(fxNet, FeedTrust.None).Info, "http framework .sha256: no offer");
+        Check.False(fxNet.Asked.Any(u => u.StartsWith("http://", StringComparison.OrdinalIgnoreCase)));
     }
 }

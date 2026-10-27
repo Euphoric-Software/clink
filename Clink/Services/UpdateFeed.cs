@@ -12,9 +12,13 @@ namespace Clink.Services;
 /// <summary>One downloadable file of a feed manifest.</summary>
 internal sealed record FeedAsset(string Url, long Size, string Sha256);
 
-/// <summary>A validated feed manifest (schema 1). <see cref="Installer"/> and <see cref="Portable"/> are optional and unused by the self-updater.</summary>
+/// <summary>
+/// A validated feed manifest (schema 1, contract v2 assets): <see cref="Exe"/> is the self-contained portable <c>Clink.exe</c>,
+/// <see cref="ExeFramework"/> the framework-dependent <c>Clink-framework.exe</c> (optional; a framework client falls back to
+/// <see cref="Exe"/> without it), <see cref="Installer"/> is optional and unused by the self-updater.
+/// </summary>
 internal sealed record FeedManifest(string Channel, ReleaseVersion Version, string Tag, DateTimeOffset Published, string NotesUrl, string MinRuntime,
-    FeedAsset Exe, FeedAsset? Installer, FeedAsset? Portable);
+    FeedAsset Exe, FeedAsset? Installer, FeedAsset? ExeFramework);
 
 /// <summary>What the embedded feed.json says about updates (<see cref="FeedTrust.State"/>).</summary>
 internal enum FeedState
@@ -405,10 +409,10 @@ internal static class UpdateFeed
             if (!assets.TryGetProperty("exe", out var exeEl) || exeEl.ValueKind != JsonValueKind.Object) { problem = "manifest has no exe asset"; return null; }
             var exe = Asset(exeEl, "exe", out problem);
             if (exe == null) return null;
-            FeedAsset? installer = null, portable = null;
+            FeedAsset? installer = null, exeFramework = null;
             if (assets.TryGetProperty("installer", out var inst) && inst.ValueKind == JsonValueKind.Object) { installer = Asset(inst, "installer", out problem); if (installer == null) return null; }
-            if (assets.TryGetProperty("portable", out var port) && port.ValueKind == JsonValueKind.Object) { portable = Asset(port, "portable", out problem); if (portable == null) return null; }
-            return new FeedManifest(ch, version.Value, tag, published, notes, Str(root, "minRuntime"), exe, installer, portable);
+            if (assets.TryGetProperty("exeFramework", out var fx) && fx.ValueKind == JsonValueKind.Object) { exeFramework = Asset(fx, "exeFramework", out problem); if (exeFramework == null) return null; }
+            return new FeedManifest(ch, version.Value, tag, published, notes, Str(root, "minRuntime"), exe, installer, exeFramework);
         }
         catch (JsonException) { problem = "manifest is not valid JSON"; return null; }
 
@@ -446,9 +450,27 @@ internal static class UpdateFeed
     internal static bool IsHttps(string url) =>
         Uri.TryCreate(url, UriKind.Absolute, out var u) && u.Scheme == Uri.UriSchemeHttps && !string.IsNullOrEmpty(u.Host) && u.UserInfo.Length == 0;
 
-    /// <summary>The updater's view of a feed manifest: the exe from the feed, ShaUrl empty, <see cref="UpdateInfo.Sha256"/> carries the hash.</summary>
-    internal static UpdateInfo ToUpdateInfo(FeedManifest m) =>
-        new(m.Version, m.Tag, m.Exe.Url, m.Exe.Size, "", m.NotesUrl, "", m.Exe.Sha256);
+    /// <summary>
+    /// The asset a client of <paramref name="packaging"/> takes from <paramref name="m"/>, and the flavour that asset is.
+    /// SelfContained always takes <see cref="FeedManifest.Exe"/>. Framework takes <see cref="FeedManifest.ExeFramework"/>, unless the
+    /// manifest has none or its minRuntime is newer than every installed Microsoft.WindowsDesktop.App runtime
+    /// (<paramref name="installedRuntimes"/>; <see cref="DotNetRuntimes.InstalledDesktop"/> when null): then <see cref="FeedManifest.Exe"/>
+    /// (self-contained, it needs no runtime).
+    /// </summary>
+    internal static (FeedAsset Asset, Packaging Flavour) PickAsset(FeedManifest m, Packaging packaging, IEnumerable<Version>? installedRuntimes = null)
+    {
+        if (packaging != Packaging.Framework || m.ExeFramework == null) return (m.Exe, Packaging.SelfContained);
+        return DotNetRuntimes.MeetsMinimum(m.MinRuntime, installedRuntimes ?? DotNetRuntimes.InstalledDesktop())
+            ? (m.ExeFramework, Packaging.Framework)
+            : (m.Exe, Packaging.SelfContained);
+    }
+
+    /// <summary>The updater's view of a feed manifest: the asset <see cref="PickAsset"/> chooses, ShaUrl empty, <see cref="UpdateInfo.Sha256"/> carries the hash.</summary>
+    internal static UpdateInfo ToUpdateInfo(FeedManifest m, Packaging packaging = Packaging.SelfContained, IEnumerable<Version>? installedRuntimes = null)
+    {
+        var (a, flavour) = PickAsset(m, packaging, installedRuntimes);
+        return new(m.Version, m.Tag, a.Url, a.Size, "", m.NotesUrl, "", a.Sha256, flavour);
+    }
 
     private static string NameOf(string url) =>
         Uri.TryCreate(url, UriKind.Absolute, out var u) ? u.Segments.LastOrDefault() is { Length: > 0 } last && last != "/" ? Uri.UnescapeDataString(last) : u.Host : "the feed";

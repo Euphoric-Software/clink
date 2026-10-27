@@ -171,6 +171,14 @@ internal sealed class Settings
     /// reuses only a signed download. Per installation (a PendingUpdate* key): never imported. Left out of the file while null.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public bool? PendingUpdateSigned { get; set; }
+    // The same record for the Framework flavour, which downloads into updates\fx\ (the four PendingUpdate* keys above describe the root
+    // updates\ folder: SelfContained copies, and v0.4.1 / dev.10, which keep unknown keys and rewrite only those four). Two records,
+    // so a copy of one flavour never reads, rewrites or deletes on the strength of the other's. Per installation (PendingUpdate* keys):
+    // never imported. Left out of the file while null.
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? PendingUpdateFxVersion { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? PendingUpdateFxSha256 { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? PendingUpdateFxFrom { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public bool? PendingUpdateFxSigned { get; set; }
     /// <summary>
     /// Written by the updater: the highest version it has seen in a verified stable / dev manifest of the signed feed (<see cref="UpdateFeed"/>).
     /// A verified manifest below it is a replayed old one and is not trusted. Per installation: never imported. Left out of the file while

@@ -225,12 +225,13 @@ internal static class TestRunner
     private sealed record Shared(string? SettingsDir, string? ClipIndex, string? UpdatesDir, string InstanceSuffix, bool DevHotkeys, bool DevAcceptImport, bool DevToken, bool DevRecord, bool DevQuiet, bool DevQuietRecord,
         string? RealDir, string? PackagesRoot,
         Func<System.Net.Http.HttpRequestMessage, CancellationToken, Task<System.Net.Http.HttpResponseMessage>>? UpdaterHttp, FeedTrust? FeedTrust, string? BuiltInRepo,
-        TimeSpan? FeedTimeout)
+        TimeSpan? FeedTimeout, Packaging? Packaging, Func<string, TimeSpan, Updater.PreflightResult>? Preflight, IReadOnlyList<Version>? Runtimes, bool? Elevated)
     {
         public static Shared Capture() => new(Settings.DirOverride, ClipLibrary.IndexPathOverride, Updater.UpdatesDirOverride,
             AppController.InstanceSuffix, AppController.DevHotkeys, AppController.DevAcceptImport, AppController.DevToken, AppController.DevRecord, AppController.DevQuiet, AppController.DevQuietRecord,
             Settings.RealDirOverride, SettingsImport.PackagesRoot,
-            Updater.HttpOverride, Updater.FeedOverride, Updater.BuiltInRepoOverride, Updater.FeedTimeoutOverride);
+            Updater.HttpOverride, Updater.FeedOverride, Updater.BuiltInRepoOverride, Updater.FeedTimeoutOverride,
+            Updater.PackagingOverride, Updater.PreflightOverride, DotNetRuntimes.Override, Updater.IsElevatedOverride);
     }
 
     /// <summary>
@@ -258,6 +259,10 @@ internal static class TestRunner
         Updater.FeedOverride = before.FeedTrust;
         Updater.BuiltInRepoOverride = before.BuiltInRepo;
         Updater.FeedTimeoutOverride = before.FeedTimeout;
+        Updater.PackagingOverride = scratch != null ? Packaging.SelfContained : before.Packaging;   // tests run as the portable flavour (updates\ folder, Clink.exe) unless they say otherwise
+        Updater.PreflightOverride = scratch != null ? static (_, _) => new(0, false, null) : before.Preflight;   // never a real process; a test installs its own fake
+        DotNetRuntimes.Override = scratch != null ? new[] { new Version(10, 0, 0) } : before.Runtimes;
+        Updater.IsElevatedOverride = before.Elevated;   // null = ask Windows; a test that pretends to be elevated does not leave it so
         Settings.ThawSaves();
         Settings.SeedDefaults = scratch == null;   // off during a test (the older tests pin exact hotkey lists); the seeding tests turn it on themselves
         SettingsImport.Reset();
