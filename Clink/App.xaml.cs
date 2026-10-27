@@ -148,6 +148,8 @@ public partial class App : System.Windows.Application
             AppController.DevAcceptImport = dev.AcceptImport;
             AppController.DevToken = dev.AllowToken;
             AppController.DevRecord = dev.Record;
+            AppController.DevQuiet = dev.Quiet;
+            AppController.DevQuietRecord = dev.QuietRecord;
             SettingsImport.PackagesRoot = dev.PackagesRoot;   // a --dev instance looks for other copies' settings only where this says (tests)
             SettingsImport.ForeignGuard = s => dev.Isolate(s, freshStore: false);   // and compares them as they would be once loaded here
         }
@@ -161,6 +163,8 @@ public partial class App : System.Windows.Application
         // without touching the log (the running instance holds it).
         if (!AppController.AcquireSingleInstance(args)) { Shutdown(0); return; }
         Log.Init(Settings.Dir);
+        // --dev-quiet: before any window exists, so none of them is ever activated or placed on a monitor (QuietMode).
+        if (AppController.IsQuiet) { QuietMode.InstallWindowHook(); QuietMode.RegisterWindowHandlers(); }
         if (previous != null) Log.Info($"restart: the Clink with pid {previous} {(previousGone ? "has ended" : "was still running after 10 s")}");
 
         // Is this Clink running inside a packaged app (an MSIX/Store desktop app, say), so that the AppData it reads and writes is that app's
@@ -226,7 +230,11 @@ public partial class App : System.Windows.Application
             _controller?.SaveEditorForSessionEnd();            // unsaved screenshot edits: a copy is saved
         };
         var main = new MainWindow();
-        if (dev != null) main.Title = "Clink (dev)";
+        if (dev != null)
+        {
+            main.Title = DevInstanceMarker.WindowTitle(dev.Folder);
+            TagTestWindows();
+        }
         MainWindow = main;
         _controller.Start();
         // "--clip" / "--share-last" / "--trim-last" while Clink was not running: start in the tray and run the command,
@@ -235,14 +243,30 @@ public partial class App : System.Windows.Application
         bool show = args.Any(a => a.Equals("--show", StringComparison.OrdinalIgnoreCase));
         bool minimized = !show && (settings.StartMinimized || cmd != null || args.Any(a => a.Equals("--minimized", StringComparison.OrdinalIgnoreCase)));
         if (!minimized) main.Show();
-        Log.Info($"Clink v{updater.VersionDisplay} started" + (dev != null ? $" (--dev: data in {dev.Folder}, hotkeys {(dev.BindHotkeys ? "on" : "off")})" : ""));
+        Log.Info($"Clink v{updater.VersionDisplay} started" + (dev != null ? $" (--dev: data in {dev.Folder}, hotkeys {(dev.BindHotkeys ? "on" : "off")}{(AppController.IsQuiet ? ", quiet" : "")})" : ""));
         if (cmd != null) _controller.RunStartupCommand(cmd);
+    }
+
+    /// <summary>
+    /// Test (--dev) instance: every other top-level window (trim, screenshot editor, share and other dialogs) gets " [TEST]" at the end of
+    /// its title when it loads, so its taskbar button / Alt+Tab entry is not taken for the main Clink's. One class handler instead of
+    /// a change in each window. Not the main window (titled in OnStartup), the toasts, the status dot or the capture overlay: the last
+    /// two can end up in a capture and show no title anyway.
+    /// </summary>
+    private static void TagTestWindows()
+    {
+        EventManager.RegisterClassHandler(typeof(Window), FrameworkElement.LoadedEvent, new RoutedEventHandler((sender, e) =>
+        {
+            if (sender is not Window w || !ReferenceEquals(e.OriginalSource, w)) return;   // Loaded of a child bubbles up too
+            DevInstanceMarker.KeepTitleTagged(w);   // (Loaded fires again if a window is re-parented; a second subscription is harmless)
+        }));
     }
 
     protected override void OnExit(ExitEventArgs e)
     {
         _controller?.StopRecordingForExit();   // the common exit finishes the file here, not in Dispose's 15 s wait
         _controller?.Dispose();
+        QuietMode.RemoveWindowHook();
         base.OnExit(e);
     }
 

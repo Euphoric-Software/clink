@@ -98,7 +98,7 @@ internal sealed partial class AppController
             Say(why);
             if (!MainWindowInFront)
             {
-                if (Settings.ClickSound) System.Media.SystemSounds.Exclamation.Play();
+                if (Settings.ClickSound) ClickSound.PlayError();
                 NotifyProblem("Recording not started", waiting ? why + ". If your game is not detected, add it under Capture → Recording → Custom apps." : why);
             }
             return;
@@ -109,7 +109,7 @@ internal sealed partial class AppController
         {
             _wantRecording = false;
             Say(problem.Text);
-            if (Settings.ClickSound) System.Media.SystemSounds.Exclamation.Play();
+            if (Settings.ClickSound) ClickSound.PlayError();
             NotifyProblem(problem.Title, problem.Text);
             return;
         }
@@ -268,7 +268,7 @@ internal sealed partial class AppController
         if (RecordingPolicy.Problem(r) is { } problem)
         {
             Say($"{problem.Title}: {problem.Text}");
-            if (Settings.ClickSound) System.Media.SystemSounds.Exclamation.Play();
+            if (Settings.ClickSound) ClickSound.PlayError();
             NotifyProblem(problem.Title, problem.Text);
         }
         else if (again)

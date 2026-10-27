@@ -290,15 +290,6 @@ internal static class DevModeTests
     }
 
     [UnitTest]
-    public static void A_toast_of_a_dev_instance_says_so()
-    {
-        Check.Equal("Clip saved", Toasts.TitleFor("Clip saved"));
-        AppController.InstanceSuffix = ".dev.test";
-        Check.Equal("Clip saved (dev)", Toasts.TitleFor("Clip saved"));
-        Check.Equal("Clip not saved (dev)", Toasts.TitleFor("Clip not saved"));
-    }
-
-    [UnitTest]
     public static void The_updater_does_nothing_in_a_dev_instance()
     {
         using var dir = new TempDir();

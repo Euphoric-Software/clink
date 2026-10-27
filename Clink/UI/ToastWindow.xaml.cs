@@ -198,9 +198,6 @@ internal sealed class Toasts : IScreenshotToasts
 
     private static TimeSpan Duration(ToastSetting s) => TimeSpan.FromSeconds(Math.Clamp(s.Seconds, 1, 30));
 
-    /// <summary>The title a toast shows: a toast of a <c>--dev</c> instance says so ("Clip saved (dev)"), so nobody takes it for the real Clink's.</summary>
-    internal static string TitleFor(string title) => AppController.IsDev ? title + " (dev)" : title;
-
     private static string ClipSubtitle(ClipEntry e)
     {
         string game = string.IsNullOrEmpty(e.Game) ? "" : e.Game + " · ";
@@ -292,6 +289,14 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         bool canUpload = false)
     {
         InitializeComponent();
+        if (AppController.IsDev)
+        {
+            // a test (--dev) instance: a yellow "TEST" tag by the title and the same yellow frame as its main window
+            TestTag.Visibility = Visibility.Visible;
+            Card.BorderBrush = new SolidColorBrush((Color)ColorConverter.ConvertFromString(DevInstanceMarker.YellowHex));
+            Card.BorderThickness = new Thickness(3);
+            Card.Padding = new Thickness(12, 10, 12, 10);   // the frame is 2 px thicker per side: the inside stays as wide and as high as a normal toast's
+        }
         _owner = owner;
         Kind = kind;
         Entry = entry;
@@ -299,7 +304,7 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         Shot = shot;
         _duration = duration;
         _preview = preview;
-        TitleText.Text = Toasts.TitleFor(title);
+        TitleText.Text = title;
         Subtitle.Text = subtitle;
         Subtitle.ToolTip = subtitle;
         Dot.SetResourceReference(System.Windows.Shapes.Shape.FillProperty, kind switch { "shared" or "info" => "Accent", "recording" or "record" => "Danger", "problem" or "border" => "Warn", "paused" => "Muted", _ => "Good" });
@@ -479,7 +484,7 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         _hide.Stop();
         if (!_uploading) _subtitleBeforeUpload = Subtitle.Text;
         _uploading = true;
-        TitleText.Text = Toasts.TitleFor("Uploading screenshot…");
+        TitleText.Text = "Uploading screenshot…";
         Subtitle.Text = "Uploading…";
         // The button is the way out of a slow or stuck upload: Cancel (the progress is the second line, there is no room for both).
         ShotUploadButton.Visibility = Visibility.Visible;
@@ -510,7 +515,7 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         if (_dismissed || Shot == null) return;
         EndUploadState();
         _shotLink = link;
-        TitleText.Text = Toasts.TitleFor(linkCopied ? "Screenshot saved · link copied" : "Screenshot saved · uploaded");
+        TitleText.Text = linkCopied ? "Screenshot saved · link copied" : "Screenshot saved · uploaded";
         Subtitle.Text = link;
         Subtitle.ToolTip = link;
         ShowLinkButton();
@@ -524,7 +529,7 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         _busy = false;
         if (_dismissed || Shot == null) return;
         EndUploadState();
-        TitleText.Text = Toasts.TitleFor("Screenshot saved");
+        TitleText.Text = "Screenshot saved";
         ShotUploadButton.IsEnabled = true;
         ShotUploadButton.Content = "Retry";
         ShotUploadButton.ToolTip = "Upload the screenshot to Copium again";
@@ -537,7 +542,7 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         _busy = false;
         if (_dismissed || Shot == null) return;
         EndUploadState();
-        TitleText.Text = Toasts.TitleFor("Screenshot saved");
+        TitleText.Text = "Screenshot saved";
         ShotUploadButton.Visibility = Visibility.Collapsed;
         StartTimer();
     }
@@ -715,6 +720,7 @@ internal static unsafe class ScreenPlacement
     {
         var hwnd = HwndOf(w);
         if (hwnd.IsNull) return false;
+        if (QuietMode.Active) { QuietMode.Conceal((nint)hwnd.Value); return false; }   // --dev-quiet: toasts, the dot and the share window stay off-screen, behind everything
         var before = SizeOf(w);
         PInvoke.SetWindowPos(hwnd, HWND.HWND_TOPMOST, x, y, 0, 0, SET_WINDOW_POS_FLAGS.SWP_NOSIZE | SET_WINDOW_POS_FLAGS.SWP_NOACTIVATE);
         return SizeOf(w) != before;

@@ -590,7 +590,7 @@ What the app does since v0.2.5. Where this section and §§1, 3, 6, 9 and 10 dif
 - Hidden `Clink.exe --dev [folder] [--dev-hotkeys] [--dev-record] [--dev-token]` (also `--dev=<folder>`) starts a second
   Clink next to the real one: its own data folder (default `%TEMP%\clink-dev`), its own single-instance mutex and control
   pipe (named from a hash of the folder, `.dev.` and eight hex digits, so `--clip` and `--show` only ever reach that
-  instance), no updater, no Run-key writes, "Clink (dev)" in the title, tray and toasts, paused unless `--dev-record`, no
+  instance), no updater, no Run-key writes, a TEST marker (3 px #FFD400 frame and "TEST · folder" badge on the main window, title "Clink TEST (folder)", "TEST ·" in the tray tooltip, a TEST tag and yellow frame on toasts, " [TEST]" on other windows' titles; never on capture overlays), paused unless `--dev-record`, no
   hotkeys bound unless `--dev-hotkeys` (the hook is installed either way, so key capture in the editor works), and no Copium
   token unless `--dev-token`. A fresh dev folder keeps its clips folder inside it, with automatic updates, run at startup
   and the *Recording started* toast off; whatever its settings file says, every start and every import keeps the instance

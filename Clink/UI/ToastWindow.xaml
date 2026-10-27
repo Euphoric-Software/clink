@@ -4,7 +4,7 @@
         Title="Clink" Width="330" SizeToContent="Height"
         WindowStyle="None" ResizeMode="NoResize" AllowsTransparency="True" Background="Transparent"
         Topmost="True" ShowInTaskbar="False" ShowActivated="False" FontFamily="{StaticResource UiFont}">
-    <Border Background="{DynamicResource Panel}" CornerRadius="10" BorderBrush="{DynamicResource Border}" BorderThickness="1" Padding="14,12">
+    <Border x:Name="Card" Background="{DynamicResource Panel}" CornerRadius="10" BorderBrush="{DynamicResource Border}" BorderThickness="1" Padding="14,12">
         <Grid>
             <Grid.RowDefinitions>
                 <RowDefinition />
@@ -12,10 +12,15 @@
                 <RowDefinition />
             </Grid.RowDefinitions>
             <Grid>
-                <StackPanel Orientation="Horizontal" Margin="0,0,24,0">
-                    <Ellipse x:Name="Dot" Width="8" Height="8" Fill="{DynamicResource Good}" VerticalAlignment="Center" />
-                    <TextBlock x:Name="TitleText" Style="{StaticResource Display}" FontSize="13" Text="Clip saved" Margin="8,0,0,0" />
-                </StackPanel>
+                <!-- the dot and the TEST tag keep their size; the title takes what is left and ends in an ellipsis -->
+                <DockPanel Margin="0,0,24,0" LastChildFill="True">
+                    <Ellipse x:Name="Dot" DockPanel.Dock="Left" Width="8" Height="8" Fill="{DynamicResource Good}" VerticalAlignment="Center" />
+                    <!-- a test (dev) instance only (the ToastWindow constructor shows it) -->
+                    <Border x:Name="TestTag" DockPanel.Dock="Right" Visibility="Collapsed" Background="#FFD400" CornerRadius="8" Padding="6,0" Margin="8,0,0,0" VerticalAlignment="Center">
+                        <TextBlock Text="TEST" Foreground="#000000" FontWeight="Bold" FontSize="10.5" TextWrapping="NoWrap" />
+                    </Border>
+                    <TextBlock x:Name="TitleText" Style="{StaticResource Display}" FontSize="13" Text="Clip saved" Margin="8,0,0,0" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
+                </DockPanel>
                 <Button Style="{StaticResource IconButton}" Content="✕" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,-6,-8,0" Click="Close_Click" />
             </Grid>
             <TextBlock x:Name="Subtitle" Grid.Row="1" Style="{StaticResource MutedText}" Margin="16,2,0,0" Text="" TextTrimming="CharacterEllipsis" />
