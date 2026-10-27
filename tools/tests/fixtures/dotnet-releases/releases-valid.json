@@ -1,0 +1,59 @@
+{
+  "channel-version": "10.0",
+  "latest-release": "10.0.14",
+  "latest-runtime": "10.0.14",
+  "releases": [
+    {
+      "release-date": "2026-10-25",
+      "release-version": "10.0.14",
+      "runtime": { "version": "10.0.14" },
+      "windowsdesktop": {
+        "version": "10.0.14",
+        "version-display": "10.0.14",
+        "files": [
+          {
+            "name": "windowsdesktop-runtime-win-arm64.exe",
+            "rid": "win-arm64",
+            "url": "https://builds.dotnet.microsoft.com/dotnet/WindowsDesktop/10.0.14/windowsdesktop-runtime-10.0.14-win-arm64.exe",
+            "hash": "3ea03fbaf7281affa959db52299d2dd198879a10d7db1b58ae09246399f421fa51ed7fb45eca4d4742b98f7d34c0a2d9d412cb6707474a2743b32405ce10a965"
+          },
+          {
+            "name": "windowsdesktop-runtime-win-x64.exe",
+            "rid": "win-x64",
+            "url": "https://builds.dotnet.microsoft.com/dotnet/WindowsDesktop/10.0.14/windowsdesktop-runtime-10.0.14-win-x64.exe",
+            "hash": "337dacab1636219147b3fe75e451bf5b1c17bca2c86328266d40c4ad1ff0a1e8391c4746ca7a5b702b65b61e8bfe834566cfc1b548cc10aef90b441357b10b69"
+          },
+          {
+            "name": "windowsdesktop-runtime-win-x64.zip",
+            "rid": "win-x64",
+            "url": "https://builds.dotnet.microsoft.com/dotnet/WindowsDesktop/10.0.14/windowsdesktop-runtime-10.0.14-win-x64.zip",
+            "hash": "3214913702264452ac4b283b6fb2f6c14ab748cea36c7561608245c4a7d8cc10436a160032038865d039a016eab4975f65f1ae906de7615953fbec760f764ac4"
+          },
+          {
+            "name": "windowsdesktop-runtime-win-x86.exe",
+            "rid": "win-x86",
+            "url": "https://builds.dotnet.microsoft.com/dotnet/WindowsDesktop/10.0.14/windowsdesktop-runtime-10.0.14-win-x86.exe",
+            "hash": "630c9a4a903349e51a887c28469f3866493054190f806d0aff4528de26435c69f0c98e2c6a1fea04752523b35e9320b1f0ce2fc379a9a3e54fd4a206f2740d32"
+          }
+        ]
+      }
+    },
+    {
+      "release-date": "2026-09-08",
+      "release-version": "10.0.13",
+      "runtime": { "version": "10.0.13" },
+      "windowsdesktop": {
+        "version": "10.0.13",
+        "version-display": "10.0.13",
+        "files": [
+          {
+            "name": "windowsdesktop-runtime-win-x64.exe",
+            "rid": "win-x64",
+            "url": "https://builds.dotnet.microsoft.com/dotnet/WindowsDesktop/10.0.13/windowsdesktop-runtime-10.0.13-win-x64.exe",
+            "hash": "abababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab"
+          }
+        ]
+      }
+    }
+  ]
+}
