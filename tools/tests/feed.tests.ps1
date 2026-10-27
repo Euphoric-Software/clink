@@ -551,9 +551,9 @@ try {
         $dir = Get-ScratchFolder "pkg-$Name"
         [System.IO.File]::WriteAllBytes((Join-Path $dir 'Clink.exe'), (New-RandomBytes 5000))
         [System.IO.File]::WriteAllBytes((Join-Path $dir 'Clink-framework.exe'), (New-RandomBytes 2000))
-        [System.IO.File]::WriteAllBytes((Join-Path $dir 'Clink-0.4.2-setup.exe'), (New-RandomBytes 3000))
+        [System.IO.File]::WriteAllBytes((Join-Path $dir 'Clink-Setup.exe'), (New-RandomBytes 3000))
         $files = [ordered]@{}
-        foreach ($pair in @(@('exe', 'Clink.exe'), @('exeFramework', 'Clink-framework.exe'), @('installer', 'Clink-0.4.2-setup.exe'))) {
+        foreach ($pair in @(@('exe', 'Clink.exe'), @('exeFramework', 'Clink-framework.exe'), @('installer', 'Clink-Setup.exe'))) {
             $path = Join-Path $dir $pair[1]
             $files[$pair[0]] = [ordered]@{ file = $pair[1]; size = (Get-Item -LiteralPath $path).Length; sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() }
         }
@@ -600,9 +600,9 @@ try {
         Assert-ManifestRefused 'fx-name' { param($p) $p.files.exeFramework.file = 'Clink.exe' } "files\.exeFramework\.file is 'Clink\.exe', expected 'Clink-framework\.exe'"
         Assert-ManifestRefused 'fx-case' { param($p) $p.files.exeFramework.file = 'CLINK-FRAMEWORK.EXE' } 'files\.exeFramework\.file'
     }
-    Invoke-Test 'make-manifest: files.installer.file other than Clink-<Version>-setup.exe is refused' {
-        Assert-ManifestRefused 'setup-version' { param($p) $p.files.installer.file = 'Clink-0.4.3-setup.exe' } "files\.installer\.file is 'Clink-0\.4\.3-setup\.exe', expected 'Clink-0\.4\.2-setup\.exe'"
-        Assert-ManifestRefused 'setup-case' { param($p) $p.files.installer.file = 'clink-0.4.2-setup.exe' } 'files\.installer\.file'
+    Invoke-Test 'make-manifest: files.installer.file other than exactly Clink-Setup.exe is refused' {
+        Assert-ManifestRefused 'setup-version' { param($p) $p.files.installer.file = 'Clink-0.4.2-setup.exe' } "files\.installer\.file is 'Clink-0\.4\.2-setup\.exe', expected 'Clink-Setup\.exe'"
+        Assert-ManifestRefused 'setup-case' { param($p) $p.files.installer.file = 'clink-setup.exe' } 'files\.installer\.file'
     }
     Invoke-Test 'make-manifest: identical exe and exeFramework hashes are refused' {
         Assert-ManifestRefused 'same-hash' {

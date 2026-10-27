@@ -2,7 +2,7 @@
 # Uploads a package (tools/package.ps1 output) and its signed manifest to an S3-compatible bucket (Cloudflare R2), contract v2.
 #
 # Bucket layout under <prefix> (must match ^clink(-staging)?$; CLINK_FEED_KEY_PREFIX, default "clink"):
-#   releases/vX.Y.Z/{Clink.exe, Clink.exe.sha256, Clink-framework.exe, Clink-framework.exe.sha256, Clink-X.Y.Z-setup.exe}   write-once
+#   releases/vX.Y.Z/{Clink.exe, Clink.exe.sha256, Clink-framework.exe, Clink-framework.exe.sha256, Clink-Setup.exe}   write-once
 #   dev/vX.Y.Z-dev.N/{same}                                                   write-once
 #   stable.json(.sig), dev.json(.sig)                                         replaced on every publish
 # Order: refuse a downgrade (the bucket's current manifest counts only after its signature verified against feed.json), versioned assets
@@ -69,7 +69,7 @@ if (-not (Test-FeedSignature -Bytes $manifestBytes -SigBase64 $sigText -Keys $cf
 $manifest = [System.Text.Encoding]::UTF8.GetString($manifestBytes) | ConvertFrom-Json
 if ($manifest.channel -ne $Channel -or $manifest.version -ne $Version -or $manifest.tag -ne $tag) { throw 'The manifest is for a different channel/version than requested.' }
 
-$setup = "Clink-$Version-setup.exe"
+$setup = 'Clink-Setup.exe'
 $assets = @(
     [pscustomobject]@{ Name = 'Clink.exe'; Type = 'application/vnd.microsoft.portable-executable' }
     [pscustomobject]@{ Name = 'Clink.exe.sha256'; Type = 'text/plain' }

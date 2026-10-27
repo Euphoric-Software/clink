@@ -56,7 +56,7 @@ if ($minRuntime -notmatch '^\d+\.\d+\.\d+$') { throw "package.json minRuntime '$
 # net10.0-windows (Clink/Clink.csproj TargetFramework), so minRuntime (the Microsoft.WindowsDesktop.App version) must be 10.x.y; raise it
 # together with the TargetFramework.
 $expectedRuntimeMajor = 10
-foreach ($pair in @(@('exe', 'Clink.exe'), @('exeFramework', 'Clink-framework.exe'), @('installer', "Clink-$Version-setup.exe"))) {
+foreach ($pair in @(@('exe', 'Clink.exe'), @('exeFramework', 'Clink-framework.exe'), @('installer', 'Clink-Setup.exe'))) {
     $entry = $pkg.files.($pair[0])
     if (-not $entry) { throw "package.json has no '$($pair[0])' entry (installer not built?)." }
     if (([string]$entry.file) -cne $pair[1]) { throw "package.json files.$($pair[0]).file is '$($entry.file)', expected '$($pair[1])'." }

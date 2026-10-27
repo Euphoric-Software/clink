@@ -99,7 +99,7 @@ try {
         foreach ($name in 'Clink.exe', 'Clink.exe.sha256', 'Clink-framework.exe', 'Clink-framework.exe.sha256', 'package.json') {
             Assert-True (Test-Path -LiteralPath (Join-Path $out $name)) "$name is missing"
         }
-        Assert-True (@(Get-ChildItem -LiteralPath $out -Filter '*-setup.exe').Count -eq 0) 'an installer was produced with -SkipInstaller'
+        Assert-True (@(Get-ChildItem -LiteralPath $out -Filter 'Clink-Setup.exe').Count -eq 0) 'an installer was produced with -SkipInstaller'
         $scHash = (Get-FileHash -LiteralPath $scExe -Algorithm SHA256).Hash.ToLowerInvariant()
         $fxHash = (Get-FileHash -LiteralPath $fxExe -Algorithm SHA256).Hash.ToLowerInvariant()
         Assert-True ((Get-FileHash -LiteralPath (Join-Path $out 'Clink.exe') -Algorithm SHA256).Hash.ToLowerInvariant() -eq $scHash) 'Clink.exe is not the self-contained input'
@@ -224,15 +224,53 @@ try {
 
         # A fake that does produce the setup exe: package.json lists it.
         $out2 = Get-ScratchFolder 'pkg-iscc-ok'
-        $fake2 = New-FakeIscc 'fake-iscc2' (Join-Path $out2 'Clink-0.4.2-setup.exe')
+        $fake2 = New-FakeIscc 'fake-iscc2' (Join-Path $out2 'Clink-Setup.exe')
         $r = Invoke-ScriptChild $packageScript @('-ExePath', $scExe, '-FrameworkExePath', $fxExe, '-Version', '0.4.2', '-OutDir', $out2, '-MinRuntime', '10.0.0', '-IsccPath', $fake2.Cmd, '-RuntimeInfoPath', $runtimeInfo, '-RequireInstaller', '-SkipVersionCheck', '-SkipSetupSizeCheck')
         Assert-True ($r.Code -eq 0) "a produced setup exe was refused: $($r.Out) $($r.Err)"
-        Assert-True ((Get-Content -Raw -LiteralPath (Join-Path $out2 'package.json') | ConvertFrom-Json).files.installer.file -eq 'Clink-0.4.2-setup.exe') 'package.json lacks the installer'
+        $pkg2 = Get-Content -Raw -LiteralPath (Join-Path $out2 'package.json') | ConvertFrom-Json
+        Assert-True ($pkg2.files.installer.file -eq 'Clink-Setup.exe') 'package.json lacks the installer'
+        $setupHash = (Get-FileHash -LiteralPath (Join-Path $out2 'Clink-Setup.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
+        $setupShaPath = Join-Path $out2 'Clink-Setup.exe.sha256'
+        Assert-True (Test-Path -LiteralPath $setupShaPath) 'Clink-Setup.exe.sha256 is missing'
+        Assert-True ([System.IO.File]::ReadAllText($setupShaPath) -ceq "$setupHash *Clink-Setup.exe`n") 'Clink-Setup.exe.sha256 line format / hash'
+        Assert-True ($pkg2.files.sha256fileInstaller.file -eq 'Clink-Setup.exe.sha256') 'files.sha256fileInstaller'
+        # The ISCC exit code is echoed.
+        Assert-True (($r.Out) -match 'ISCC exit code: 0') "ISCC exit code not echoed: $($r.Out)"
+        # No setup exe, no setup .sha256.
+        Assert-True (-not (Test-Path -LiteralPath (Join-Path $out 'Clink-Setup.exe.sha256'))) 'a setup .sha256 exists although no setup exe was produced'
+    }
+
+    Invoke-Test 'package.ps1 fails closed on a non-zero ISCC exit (output echoed, stale setup sha256 deleted, no package.json) and echoes ISCC warnings' {
+        # A fake ISCC that prints and exits 2. A stale Clink-Setup.exe.sha256 from an earlier run sits in the out dir.
+        $failOut = Get-ScratchFolder 'pkg-iscc-exit2'
+        [System.IO.File]::WriteAllText((Join-Path $failOut 'Clink-Setup.exe.sha256'), "stale *Clink-Setup.exe`n", $utf8)
+        $failCmd = Join-Path (Get-ScratchFolder 'fake-iscc-exit2') 'ISCC.cmd'
+        [System.IO.File]::WriteAllText($failCmd, "@echo off`r`necho Compiling something`r`necho Error: boom`r`nexit /b 2`r`n", [System.Text.Encoding]::ASCII)
+        $r = Invoke-ScriptChild $packageScript @('-ExePath', $scExe, '-FrameworkExePath', $fxExe, '-Version', '0.4.2', '-OutDir', $failOut, '-MinRuntime', '10.0.0', '-IsccPath', $failCmd, '-RuntimeInfoPath', $runtimeInfo, '-RequireInstaller', '-SkipVersionCheck', '-SkipSetupSizeCheck')
+        Assert-True ($r.Code -ne 0) "a failing ISCC was accepted: $($r.Out)"
+        Assert-True ($r.Out -match 'ISCC exit code: 2') "the exit code is not echoed: $($r.Out)"
+        Assert-True ($r.Out -match 'ISCC: Error: boom' -and $r.Out -match 'ISCC: Compiling something') "the full ISCC output is not echoed on failure: $($r.Out)"
+        Assert-True (-not (Test-Path -LiteralPath (Join-Path $failOut 'package.json'))) 'wrote package.json after a failing ISCC'
+        Assert-True (-not (Test-Path -LiteralPath (Join-Path $failOut 'Clink-Setup.exe.sha256'))) 'a stale Clink-Setup.exe.sha256 survived a failing ISCC run'
+        Assert-True (-not (Test-Path -LiteralPath (Join-Path $failOut 'Clink-Setup.exe'))) 'a Clink-Setup.exe exists after a failing ISCC run'
+
+        # Warnings are echoed on success (and only warnings), and /Qp is not passed.
+        $warnOut = Get-ScratchFolder 'pkg-iscc-warn'
+        $warnDir = Get-ScratchFolder 'fake-iscc-warn'
+        $warnCmd = Join-Path $warnDir 'ISCC.cmd'
+        $warnText = "@echo off`r`necho %* > `"%~dp0iscc-args.txt`"`r`necho Compiling something`r`necho Line 12: Warning: something is odd`r`necho Warning: second one`r`necho x> `"$(Join-Path $warnOut 'Clink-Setup.exe')`"`r`nexit /b 0`r`n"
+        [System.IO.File]::WriteAllText($warnCmd, $warnText, [System.Text.Encoding]::ASCII)
+        $r = Invoke-ScriptChild $packageScript @('-ExePath', $scExe, '-FrameworkExePath', $fxExe, '-Version', '0.4.2', '-OutDir', $warnOut, '-MinRuntime', '10.0.0', '-IsccPath', $warnCmd, '-RuntimeInfoPath', $runtimeInfo, '-RequireInstaller', '-SkipVersionCheck', '-SkipSetupSizeCheck')
+        Assert-True ($r.Code -eq 0) "a warning-only ISCC run failed: $($r.Out) $($r.Err)"
+        Assert-True ($r.Out -match 'ISCC: Line 12: Warning: something is odd' -and $r.Out -match 'ISCC: Warning: second one') "the ISCC warnings are not echoed: $($r.Out)"
+        Assert-True ($r.Out -notmatch 'Compiling something') "a non-warning ISCC line was echoed on success: $($r.Out)"
+        Assert-True ($r.Out -match 'ISCC exit code: 0') "the exit code is not echoed: $($r.Out)"
+        Assert-True (-not ([System.IO.File]::ReadAllText((Join-Path $warnDir 'iscc-args.txt')) -match '/Qp')) 'ISCC was called with /Qp, which suppresses warnings'
     }
 
     Invoke-Test 'package.ps1 -RequireInstaller passes all four /D values (runtime url, sha256, version, absolute NoticesFile) and lists the notices in package.json' {
         $out = Get-ScratchFolder 'pkg- spaced out'   # a space in the path: the recorded arguments must still match
-        $fake = New-FakeIscc 'fake iscc spaced' (Join-Path $out 'Clink-0.4.2-setup.exe')
+        $fake = New-FakeIscc 'fake iscc spaced' (Join-Path $out 'Clink-Setup.exe')
         $r = Invoke-ScriptChild $packageScript @('-ExePath', $scExe, '-FrameworkExePath', $fxExe, '-Version', '0.4.2', '-OutDir', $out, '-MinRuntime', '10.0.0', '-IsccPath', $fake.Cmd, '-RuntimeInfoPath', $runtimeInfo, '-RequireInstaller', '-SkipVersionCheck', '-SkipSetupSizeCheck')
         Assert-True ($r.Code -eq 0) "exit code $($r.Code): $($r.Out) $($r.Err)"
         $recorded = [System.IO.File]::ReadAllText($fake.Args)
@@ -254,7 +292,7 @@ try {
         $custom = Join-Path $fixtures 'custom-notices.txt'
         [System.IO.File]::WriteAllText($custom, "custom notices`r`n", $utf8)
         $out2 = Get-ScratchFolder 'pkg-explicit-runtime'
-        $fake2 = New-FakeIscc 'fake-iscc-explicit' (Join-Path $out2 'Clink-0.4.2-setup.exe')
+        $fake2 = New-FakeIscc 'fake-iscc-explicit' (Join-Path $out2 'Clink-Setup.exe')
         $r = Invoke-ScriptChild $packageScript @('-ExePath', $scExe, '-FrameworkExePath', $fxExe, '-Version', '0.4.2', '-OutDir', $out2, '-MinRuntime', '10.0.0', '-IsccPath', $fake2.Cmd,
             '-DotNetRuntimeUrl', $rtUrl, '-DotNetRuntimeSha256', $rtSha256.ToUpperInvariant(), '-DotNetRuntimeVersion', $rtVersion, '-NoticesPath', $custom, '-RequireInstaller', '-SkipVersionCheck', '-SkipSetupSizeCheck')
         Assert-True ($r.Code -eq 0) "explicit parameters failed: $($r.Out) $($r.Err)"
@@ -315,7 +353,7 @@ try {
 
     Invoke-Test 'package.ps1 without -RequireInstaller and without runtime info warns and builds the installer without the runtime defines' {
         $out = Get-ScratchFolder 'pkg-no-runtime'
-        $fake = New-FakeIscc 'fake-iscc-noruntime' (Join-Path $out 'Clink-0.4.2-setup.exe')
+        $fake = New-FakeIscc 'fake-iscc-noruntime' (Join-Path $out 'Clink-Setup.exe')
         $r = Invoke-ScriptChild $packageScript @('-ExePath', $scExe, '-FrameworkExePath', $fxExe, '-Version', '0.4.2', '-OutDir', $out, '-MinRuntime', '10.0.0', '-IsccPath', $fake.Cmd, '-SkipVersionCheck', '-SkipSetupSizeCheck')
         Assert-True ($r.Code -eq 0) "exit code $($r.Code): $($r.Out) $($r.Err)"
         Assert-True (($r.Out + $r.Err) -match 'WITHOUT the runtime task') "no warning: $($r.Out) $($r.Err)"
@@ -358,7 +396,7 @@ try {
         $r = Invoke-ScriptChild $packageScript @('-ExePath', $scExe, '-FrameworkExePath', $fxExe, '-Version', '0.4.2', '-OutDir', $pkgDir, '-MinRuntime', '10.0.0', '-SkipInstaller', '-SkipVersionCheck')
         Assert-True ($r.Code -eq 0) "package.ps1 failed: $($r.Out) $($r.Err)"
         # make-manifest needs an installer entry: add a fixture setup exe.
-        $setupName = 'Clink-0.4.2-setup.exe'
+        $setupName = 'Clink-Setup.exe'
         New-FixtureFile -Path (Join-Path $pkgDir $setupName) -Length 3000
         $pkgFile = Join-Path $pkgDir 'package.json'
         $pkg = Get-Content -Raw -LiteralPath $pkgFile | ConvertFrom-Json
@@ -698,6 +736,85 @@ try {
         }
     }
 
+    Invoke-Test 'both release workflows upload Clink-Setup.exe.sha256, verify it, and check the release assets by exact name before publishing' {
+        foreach ($name in 'release.yml', 'release-dev.yml') {
+            $text = [System.IO.File]::ReadAllText((Join-Path $workflowDir $name))
+            Assert-True ($text.Contains("'dist/package/Clink-Setup.exe', 'dist/package/Clink-Setup.exe.sha256'")) "${name}: Clink-Setup.exe.sha256 is not in the upload list"
+            Assert-True ($text.Contains('Clink-Setup.exe.sha256 does not describe Clink-Setup.exe')) "${name}: the pre-upload verify does not check Clink-Setup.exe.sha256"
+            $start = $text.IndexOf('- name: Verify the release assets')
+            Assert-True ($start -gt 0) "${name}: no 'Verify the release assets' step"
+            $create = $text.IndexOf('- name: Create GitHub release (draft)')
+            $publishFeed = $text.IndexOf('- name: Publish to the update feed')
+            $publishRelease = $text.IndexOf('- name: Publish the GitHub release')
+            Assert-True ($create -gt 0 -and $start -gt $create -and $start -lt $publishFeed -and $start -lt $publishRelease) "${name}: the asset check is not between the draft upload and the publishing steps"
+            $step = $text.Substring($start, $publishFeed - $start)
+            Assert-True ($step.Contains("'Clink.exe', 'Clink.exe.sha256', 'Clink-framework.exe', 'Clink-framework.exe.sha256', 'Clink-Setup.exe', 'Clink-Setup.exe.sha256', 'THIRD-PARTY-NOTICES.txt'")) "${name}: the asset check lacks one of the seven names"
+            Assert-True ($step.Contains('-ceq "v$env:VERSION"') -and $step.Contains('-ceq $name') -and $step.Contains("-ceq 'uploaded'")) "${name}: the asset check is not case-sensitive"
+            Assert-True ($step.Contains('throw "Release v$env:VERSION lacks')) "${name}: the asset check does not fail on a missing asset"
+            # By release ID, not by tag: draft flag, tag, state, size and digest are all compared.
+            foreach ($needle in 'releases/$env:RELEASE_ID', 'ConvertFrom-Json', '$release.draft -ne $true', '$asset.state', '$asset.size', '$local.Length', '$asset.digest', "'sha256:'", '-ceq $expected', '::warning::') {
+                Assert-True ($step.Contains($needle)) "${name}: the asset check lacks '$needle'"
+            }
+            Assert-True (-not $step.Contains('--paginate') -and -not $step.Contains('.Split(')) "${name}: the asset check still joins/splits asset names"
+            # The expression ${{ ... }} appears only in env:, never inside the script.
+            $runAt = $step.IndexOf('run: |')
+            Assert-True ($runAt -gt 0) "${name}: no run block in the asset check"
+            Assert-True (-not $step.Substring($runAt).Contains('${{')) "${name}: the asset check interpolates an expression into the script"
+            Assert-True ($step.Contains('RELEASE_ID: ${{ steps.draft.outputs.id }}') -and $step.Contains("-cnotmatch '\A[0-9]+\z'")) "${name}: RELEASE_ID is not passed via env and validated as digits"
+        }
+    }
+
+    Invoke-Test 'both release workflows give the draft step an id, pass RELEASE_ID via env only, and publish by release ID' {
+        foreach ($name in 'release.yml', 'release-dev.yml') {
+            $text = [System.IO.File]::ReadAllText((Join-Path $workflowDir $name))
+            $create = $text.IndexOf('- name: Create GitHub release (draft)')
+            Assert-True ($create -gt 0 -and $text.Substring($create, 120).Contains('id: draft')) "${name}: the draft step has no 'id: draft'"
+            # steps.draft.outputs.id is only ever the value of an env entry.
+            $uses = [regex]::Matches($text, '[^\r\n]*steps\.draft\.outputs\.id[^\r\n]*')
+            Assert-True ($uses.Count -eq 2) "${name}: expected 2 uses of steps.draft.outputs.id (verify and publish), found $($uses.Count)"
+            foreach ($u in $uses) { Assert-True ($u.Value.Trim() -ceq 'RELEASE_ID: ${{ steps.draft.outputs.id }}') "${name}: steps.draft.outputs.id used outside an env entry: $($u.Value.Trim())" }
+            $publishAt = $text.IndexOf('- name: Publish the GitHub release')
+            $nextAt = $text.IndexOf("`n      - name:", $publishAt + 10)
+            $publish = if ($nextAt -gt 0) { $text.Substring($publishAt, $nextAt - $publishAt) } else { $text.Substring($publishAt) }
+            Assert-True ($publish.Contains('RELEASE_ID: ${{ steps.draft.outputs.id }}')) "${name}: the publish step has no RELEASE_ID env"
+            Assert-True ($publish.Contains('gh api -X PATCH "repos/$env:GITHUB_REPOSITORY/releases/$env:RELEASE_ID" -F draft=false -f make_latest=')) "${name}: the release is not published by ID"
+            Assert-True ($publish -notmatch 'gh release edit') "${name}: the publish step still edits the release by tag"
+            Assert-True ($publish.Contains("-cnotmatch '\A[0-9]+\z'")) "${name}: the publish step does not validate RELEASE_ID"
+            $publishRun = $publish.Substring($publish.IndexOf('run: |'))
+            Assert-True (-not $publishRun.Contains('${{')) "${name}: the publish script interpolates an expression"
+        }
+        $stable = [System.IO.File]::ReadAllText((Join-Path $workflowDir 'release.yml'))
+        $dev = [System.IO.File]::ReadAllText((Join-Path $workflowDir 'release-dev.yml'))
+        $stablePublish = $stable.Substring($stable.IndexOf('- name: Publish the GitHub release'))
+        Assert-True ($stablePublish.Contains('Get-MakeLatestValue -Version $env:VERSION -LatestTag $latestTag') -and $stablePublish.Contains('-f make_latest=$makeLatest') -and $stablePublish.Contains('releases/latest" --jq .tag_name')) 'release.yml: make_latest is not computed from the current latest release'
+        Assert-True ($stablePublish.Contains('. ./tools/lib/release-latest-lib.ps1')) 'release.yml: the make_latest helper is not loaded'
+        $devPublish = $dev.Substring($dev.IndexOf('- name: Publish the GitHub release'))
+        $devPublish = $devPublish.Substring(0, $devPublish.IndexOf('- name: Prune'))
+        Assert-True ($devPublish.Contains('-f make_latest=false') -and $devPublish -notmatch 'make_latest=\$') 'release-dev.yml: the dev publish must pass make_latest=false'
+    }
+
+    Invoke-Test 'Get-MakeLatestValue: higher gives true, equal or lower false, no latest true, garbage throws' {
+        . (Join-Path $toolsDir 'lib\release-latest-lib.ps1')
+        Assert-True ((Get-MakeLatestValue -Version '0.4.2' -LatestTag 'v0.4.1') -ceq 'true') 'higher patch'
+        Assert-True ((Get-MakeLatestValue -Version '0.10.0' -LatestTag 'v0.9.9') -ceq 'true') 'numeric (not text) comparison'
+        Assert-True ((Get-MakeLatestValue -Version '1.0.0' -LatestTag 'v0.99.99') -ceq 'true') 'higher major'
+        Assert-True ((Get-MakeLatestValue -Version '0.4.1' -LatestTag 'v0.4.1') -ceq 'false') 'equal'
+        Assert-True ((Get-MakeLatestValue -Version '0.4.0' -LatestTag 'v0.4.1') -ceq 'false') 'lower'
+        Assert-True ((Get-MakeLatestValue -Version '0.9.9' -LatestTag 'v0.10.0') -ceq 'false') 'lower (numeric)'
+        Assert-True ((Get-MakeLatestValue -Version '0.4.2' -LatestTag '') -ceq 'true') 'missing latest (empty)'
+        Assert-True ((Get-MakeLatestValue -Version '0.4.2') -ceq 'true') 'missing latest (omitted)'
+        foreach ($bad in 'latest', '0.4.1', 'v0.4', 'v0.4.1-dev.3', 'V0.4.1', 'v0.4.1 extra', 'HTTP 500') {
+            $threw = $false
+            try { [void](Get-MakeLatestValue -Version '0.4.2' -LatestTag $bad) } catch { $threw = $true }
+            Assert-True $threw "garbage latest tag '$bad' did not throw"
+        }
+        foreach ($bad in '', '0.4', 'v0.4.2', '0.4.2-dev.1', '0.4.2; rm') {
+            $threw = $false
+            try { [void](Get-MakeLatestValue -Version $bad -LatestTag 'v0.4.1') } catch { $threw = $true }
+            Assert-True $threw "garbage version '$bad' did not throw"
+        }
+    }
+
     Invoke-Test 'both release workflows wire the runtime resolver, the notices check, the freshness gate, the pinned Inno Setup and the notices asset' {
         foreach ($name in 'release.yml', 'release-dev.yml') {
             $text = [System.IO.File]::ReadAllText((Join-Path $workflowDir $name))
@@ -765,7 +882,7 @@ try {
 
     Invoke-Test 'package.ps1 size guard: a real-ISCC setup exe of 0 bytes is refused, one over 1 MiB is accepted' {
         $zeroOut = Get-ScratchFolder 'pkg-size-zero'
-        $zeroSetup = Join-Path $zeroOut 'Clink-0.4.2-setup.exe'
+        $zeroSetup = Join-Path $zeroOut 'Clink-Setup.exe'
         $dir = Get-ScratchFolder 'fake-iscc-zero'
         $zeroCmd = Join-Path $dir 'ISCC.cmd'
         [System.IO.File]::WriteAllText($zeroCmd, "@echo off`r`ntype nul > `"$zeroSetup`"`r`nexit /b 0`r`n", [System.Text.Encoding]::ASCII)
@@ -778,7 +895,7 @@ try {
         $bigSource = Join-Path $fixtures 'big-setup.bin'
         New-FixtureFile -Path $bigSource -Length 1200000 -Zero
         $bigCmd = Join-Path (Get-ScratchFolder 'fake-iscc-big') 'ISCC.cmd'
-        [System.IO.File]::WriteAllText($bigCmd, "@echo off`r`ncopy /y `"$bigSource`" `"$(Join-Path $bigOut 'Clink-0.4.2-setup.exe')`" > nul`r`nexit /b 0`r`n", [System.Text.Encoding]::ASCII)
+        [System.IO.File]::WriteAllText($bigCmd, "@echo off`r`ncopy /y `"$bigSource`" `"$(Join-Path $bigOut 'Clink-Setup.exe')`" > nul`r`nexit /b 0`r`n", [System.Text.Encoding]::ASCII)
         $r = Invoke-ScriptChild $packageScript @('-ExePath', $scExe, '-FrameworkExePath', $fxExe, '-Version', '0.4.2', '-OutDir', $bigOut, '-MinRuntime', '10.0.0', '-IsccPath', $bigCmd, '-RuntimeInfoPath', $runtimeInfo, '-RequireInstaller', '-SkipVersionCheck')
         Assert-True ($r.Code -eq 0) "a 1.2 MB setup exe was refused: $($r.Out) $($r.Err)"
     }

@@ -75,9 +75,10 @@ internal static class PackagingCheck
     internal const int ExitDisagreement = 1, ExitUnexpected = 2, ExitFailed = 5, ExitBadArgument = 64;
 
     /// <summary>The pure part: the exit code and the output line for a decision, the signals it was made from and the optional expected packaging text.</summary>
-    internal static int Evaluate(PackagingDecision d, string? coreLibLocation, string? fxDepsFile, string? expected, out string line)
+    internal static int Evaluate(PackagingDecision d, string? coreLibLocation, string? fxDepsFile, string runtimeVersion, string? runtimeDir, string? expected, out string line)
     {
-        string signals = $"packaging={d.Packaging} build={d.BuildLabel ?? "none"} runtime={d.RuntimeSays} corelib={(string.IsNullOrEmpty(coreLibLocation) ? "bundled" : "on-disk")} fx_deps={(string.IsNullOrEmpty(fxDepsFile) ? "absent" : "present")}";
+        // runtimeVersion/runtimeDir say which runtime was loaded (Environment.Version and the folder of System.Private.CoreLib; empty when bundled). The dir is quoted: it can contain spaces.
+        string signals = $"packaging={d.Packaging} build={d.BuildLabel ?? "none"} runtime={d.RuntimeSays} corelib={(string.IsNullOrEmpty(coreLibLocation) ? "bundled" : "on-disk")} fx_deps={(string.IsNullOrEmpty(fxDepsFile) ? "absent" : "present")} fx_version={runtimeVersion} fx_dir=\"{runtimeDir ?? ""}\"";
         Packaging? want = null;
         if (expected != null)
         {
@@ -100,7 +101,10 @@ internal static class PackagingCheck
     internal static int Run(string[] args)
     {
         var (location, deps) = PackagingInfo.RuntimeSignals();
-        int code = Evaluate(PackagingInfo.Current, location, deps, args.Length > 1 ? args[1] : null, out string line);
+        // location is typeof(object).Assembly.Location (empty when bundled), so its folder is the runtime directory that was loaded.
+        string runtimeDir = "";
+        try { runtimeDir = string.IsNullOrEmpty(location) ? "" : System.IO.Path.GetDirectoryName(location) ?? ""; } catch { }
+        int code = Evaluate(PackagingInfo.Current, location, deps, Environment.Version.ToString(), runtimeDir, args.Length > 1 ? args[1] : null, out string line);
         Console.WriteLine(line);
         return code;
     }

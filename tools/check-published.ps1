@@ -116,7 +116,10 @@ foreach ($t in $targets) {
         Write-Host "[$($t.Label)] ProductVersion $product"
     }
     $must = @("packaging=$($t.Packaging)", "build=$($t.Packaging)", 'result=ok')
-    Assert-Run "$($t.Label) --packaging-check" (Invoke-PublishedExe $t.Exe @('--packaging-check', $t.Packaging) $TimeoutSeconds) $must
+    $packagingRun = Invoke-PublishedExe $t.Exe @('--packaging-check', $t.Packaging) $TimeoutSeconds
+    Assert-Run "$($t.Label) --packaging-check" $packagingRun $must
+    $versionMatch = [regex]::Match($packagingRun.Out, '(^|\s)fx_version=(\S+)')
+    Write-Host "[$($t.Label)] runtime fx_version $(if ($versionMatch.Success) { $versionMatch.Groups[2].Value } else { '(not reported)' })"
     Assert-Run "$($t.Label) --preflight" (Invoke-PublishedExe $t.Exe @('--preflight') $TimeoutSeconds) @()
     # CLINK_EXPECT_FEED / CLINK_TESTS_NO_SKIP only for the feed self-test run.
     $feedEnv = @{ CLINK_TESTS_NO_SKIP = '1' }
@@ -145,7 +148,13 @@ try {
     (New-Object System.Random).NextBytes($garbage)
     [System.IO.File]::WriteAllBytes((Join-Path (Split-Path -Parent $n1Exe) 'hostfxr.dll'), $garbage)
     $n1Env = @{ DOTNET_ROOT = $emptyRoot; DOTNET_ROOT_X64 = $emptyRoot }
-    Assert-Run 'N-1 framework --packaging-check' (Invoke-PublishedExe $n1Exe @('--packaging-check', 'Framework') $TimeoutSeconds $n1Env) @('packaging=Framework', 'build=Framework', 'result=ok')
+    $n1Run = Invoke-PublishedExe $n1Exe @('--packaging-check', 'Framework') $TimeoutSeconds $n1Env
+    Assert-Run 'N-1 framework --packaging-check' $n1Run @('packaging=Framework', 'build=Framework', 'result=ok')
+    # The runtime must come from the machine's install, not from the planted folder: fx_dir is non-empty and not below the N-1 base.
+    $n1Dir = [regex]::Match($n1Run.Out, '(^|\s)fx_dir="([^"]*)"')
+    if (-not $n1Dir.Success -or -not $n1Dir.Groups[2].Value) { throw "N-1 framework --packaging-check reported no fx_dir. stdout: $($n1Run.Out.Trim())" }
+    if ($n1Dir.Groups[2].Value.StartsWith($n1Base, [System.StringComparison]::OrdinalIgnoreCase)) { throw "N-1 framework runtime directory '$($n1Dir.Groups[2].Value)' is inside the planted folder '$n1Base'." }
+    Write-Host "[N-1] runtime fx_dir $($n1Dir.Groups[2].Value)"
     Assert-Run 'N-1 framework --preflight' (Invoke-PublishedExe $n1Exe @('--preflight') $TimeoutSeconds $n1Env) @()
 } finally {
     Remove-Item -LiteralPath $n1Base -Recurse -Force -ErrorAction SilentlyContinue

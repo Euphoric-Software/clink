@@ -29,6 +29,84 @@ foreach ($file in $files) {
 if (-not ('  #13#10 + x' -cmatch '\A\s*#[0-9$''"]')) { $failures.Add('self-check: rule does not match a #13#10 continuation line') }
 if ('  #ifdef X' -cmatch '\A\s*#[0-9$''"]') { $failures.Add('self-check: rule matches a real directive') }
 
+# 3. [UninstallDelete] must not remove the shared updates folder (portable copies use it) or anything under %APPDATA%.
+# The only entries allowed under {localappdata}\Clink: exactly what Updater.cs writes into updates\fx (Clink-<version>.exe, its
+# .partial download and the .failed/.timeout/.installed markers), then the three folders, only when empty. Compared as "type|name"
+# (lower case, forward slashes and doubled backslashes normalised, trailing backslash removed), so a parameter order or case change
+# cannot slip through. Anything else under {localappdata}\Clink (any type, any wildcard) fails.
+$allowedLocal = @(
+    'files|{localappdata}\clink\updates\fx\clink-*.exe',
+    'files|{localappdata}\clink\updates\fx\clink-*.exe.partial',
+    'files|{localappdata}\clink\updates\fx\clink-*.exe.failed',
+    'files|{localappdata}\clink\updates\fx\clink-*.exe.timeout',
+    'files|{localappdata}\clink\updates\fx\clink-*.exe.installed',
+    'dirifempty|{localappdata}\clink\updates\fx',
+    'dirifempty|{localappdata}\clink\updates',
+    'dirifempty|{localappdata}\clink'
+)
+
+function Get-InstallerUninstallFailures {
+    param([string]$Text, [string]$Label)
+    $out = New-Object System.Collections.Generic.List[string]
+    $inSection = $false
+    $seen = New-Object System.Collections.Generic.List[string]
+    $lineNo = 0
+    foreach ($line in ($Text -split "\r?\n")) {
+        $lineNo++
+        if ($line -cmatch '\A\s*\[(?<name>[^\]]+)\]') { $inSection = ($Matches['name'] -ieq 'UninstallDelete'); continue }
+        if ($line -match '\A\s*[^;\s].*\bRedirectionGuard\s*=\s*no\b' -or $line -match '\A\s*RedirectionGuard\s*=\s*no\b') {
+            $out.Add("${Label}:${lineNo}: RedirectionGuard=no is not allowed")
+        }
+        if (-not $inSection -or $line -cmatch '\A\s*(;|\z)') { continue }
+        # Type and Name are parsed independently, so the order of the parameters does not matter.
+        $typeMatch = [regex]::Match($line, '(?:\A|;)\s*Type:\s*(?<v>\w+)', 'IgnoreCase')
+        $nameMatch = [regex]::Match($line, '(?:\A|;)\s*Name:\s*"(?<v>[^"]*)"', 'IgnoreCase')
+        if (-not $typeMatch.Success -or -not $nameMatch.Success) { $out.Add("${Label}:${lineNo}: [UninstallDelete] entry has no parsable Type and Name: $line"); continue }
+        $type = $typeMatch.Groups['v'].Value.ToLowerInvariant()
+        $name = ($nameMatch.Groups['v'].Value.ToLowerInvariant() -replace '/', '\' -replace '\\{2,}', '\').TrimEnd('\')
+        $seen.Add("$type|$name")
+        if ($name.StartsWith('{userappdata}')) { $out.Add("${Label}:${lineNo}: [UninstallDelete] touches {userappdata}: $name") }
+        if ($name.StartsWith('{localappdata}')) {
+            if ($type -eq 'filesandordirs') { $out.Add("${Label}:${lineNo}: [UninstallDelete] filesandordirs under {localappdata}: $name") }
+            if (($name -eq '{localappdata}\clink' -or $name.StartsWith('{localappdata}\clink\')) -and "$type|$name" -notin $allowedLocal) {
+                $out.Add("${Label}:${lineNo}: [UninstallDelete] '$type $name' is not one of the updater's own files or an empty-folder cleanup")
+            }
+        }
+    }
+    foreach ($want in $allowedLocal) {
+        if (@($seen | Where-Object { $_ -eq $want }).Count -ne 1) { $out.Add("${Label}: [UninstallDelete] needs exactly one entry '$want'") }
+    }
+    $out.ToArray()
+}
+
+foreach ($file in $files) {
+    foreach ($f in @(Get-InstallerUninstallFailures -Text ([System.IO.File]::ReadAllText($file.FullName)) -Label $file.Name)) { $failures.Add($f) }
+}
+
+# Negative tests: the real script, edited into each broken form, must fail; the real script itself must pass (above).
+$realIss = Join-Path $installerDir 'Clink.iss'
+if (Test-Path -LiteralPath $realIss) {
+    $real = [System.IO.File]::ReadAllText($realIss)
+    $pass = @(Get-InstallerUninstallFailures -Text $real -Label 'real')
+    if ($pass.Count -ne 0) { $failures.Add("negative-test baseline: the real script reports $($pass.Count) problem(s)") }
+    $anchor = 'Type: dirifempty; Name: "{localappdata}\Clink\updates"'
+    if (-not $real.Contains($anchor)) { $failures.Add('negative-test setup: anchor line not found in Clink.iss') }
+    else {
+        $variants = [ordered]@{
+            'old filesandordirs updates'      = $real.Replace($anchor, 'Type: filesandordirs; Name: "{localappdata}\Clink\updates"')
+            'filesandordirs updates wildcard' = $real.Replace($anchor, "$anchor`r`nType: filesandordirs; Name: `"{localappdata}\Clink\updates\*`"")
+            'reversed order filesandordirs'   = $real.Replace($anchor, "$anchor`r`nName: `"{localappdata}\Clink\updates`"; Type: filesandordirs")
+            'reversed order files wildcard'   = $real.Replace($anchor, "$anchor`r`nName: `"{localappdata}\Clink\*`"; Type: files")
+            'userappdata entry'               = $real.Replace($anchor, "$anchor`r`nName: `"{userappdata}\Clink\settings.json`"; Type: files")
+            'RedirectionGuard=no'             = $real.Replace('[Setup]', "[Setup]`r`nRedirectionGuard=no")
+        }
+        foreach ($k in $variants.Keys) {
+            $res = @(Get-InstallerUninstallFailures -Text $variants[$k] -Label $k)
+            if ($res.Count -eq 0) { $failures.Add("negative test '$k' was NOT rejected by the lint") }
+        }
+    }
+}
+
 if ($failures.Count -gt 0) {
     $failures | ForEach-Object { Write-Host "FAIL $_" }
     Write-Host "Failed: $($failures.Count)"

@@ -876,11 +876,11 @@ internal static class PackagingTests
         var split = PackagingInfo.Decide("", null, "Framework");   // label and runtime disagree
         var rows = new (PackagingDecision D, string? Core, string? Deps, string? Expected, int Code, string Text)[]
         {
-            (sc, "", null, null, 0, "packaging=SelfContained build=SelfContained runtime=SelfContained corelib=bundled fx_deps=absent result=ok"),
+            (sc, "", null, null, 0, "packaging=SelfContained build=SelfContained runtime=SelfContained corelib=bundled fx_deps=absent fx_version=10.0.1 fx_dir=\"\" result=ok"),
             (sc, "", null, "SelfContained", 0, "result=ok"),
             (sc, "", null, "selfcontained", 0, "case does not matter"),
             (sc, "", null, "Framework", PackagingCheck.ExitUnexpected, "result=unexpected (wanted Framework)"),
-            (fx, core, deps, "Framework", 0, "packaging=Framework build=Framework runtime=Framework corelib=on-disk fx_deps=present result=ok"),
+            (fx, core, deps, "Framework", 0, "packaging=Framework build=Framework runtime=Framework corelib=on-disk fx_deps=present fx_version=10.0.1 fx_dir=\"C:\\Program Files\\dotnet\\shared\\Microsoft.NETCore.App\\10.0.1\" result=ok"),
             (fx, core, deps, "SelfContained", PackagingCheck.ExitUnexpected, "result=unexpected (wanted SelfContained)"),
             (fx, core, deps, null, 0, "result=ok"),
             (split, "", null, null, PackagingCheck.ExitDisagreement, "result=disagreement"),
@@ -891,14 +891,27 @@ internal static class PackagingTests
         };
         foreach (var r in rows)
         {
-            int code = PackagingCheck.Evaluate(r.D, r.Core, r.Deps, r.Expected, out string line);
+            string dir = ReferenceEquals(r.D, fx) ? @"C:\Program Files\dotnet\shared\Microsoft.NETCore.App\10.0.1" : "";
+            int code = PackagingCheck.Evaluate(r.D, r.Core, r.Deps, "10.0.1", dir, r.Expected, out string line);
             Check.Equal(r.Code, code, r.Text);
             Check.DoesNotContain(line, "\n", "one line");
             if (r.Text.Contains('=')) Check.Contains(line, r.Text);
         }
         Check.Equal("--packaging-check", PackagingCheck.Verb);
         // This very process: label and runtime agree (the same facts Packaging_of_this_process_matches_its_build_label states).
-        Check.Equal(0, PackagingCheck.Evaluate(PackagingInfo.Current, PackagingInfo.RuntimeSignals().CoreLibLocation, PackagingInfo.RuntimeSignals().FxDepsFile, PackagingInfo.Current.Packaging.ToString(), out _));
+        Check.Equal(0, PackagingCheck.Evaluate(PackagingInfo.Current, PackagingInfo.RuntimeSignals().CoreLibLocation, PackagingInfo.RuntimeSignals().FxDepsFile, Environment.Version.ToString(), "", PackagingInfo.Current.Packaging.ToString(), out _));
+    }
+
+    [UnitTest]
+    public static void Packaging_check_line_shows_runtime_version_and_quoted_dir_in_order()
+    {
+        var fx = PackagingInfo.Decide(@"C:\dotnet\System.Private.CoreLib.dll", @"C:\dotnet\x.deps.json", "Framework");
+        PackagingCheck.Evaluate(fx, @"C:\dotnet\System.Private.CoreLib.dll", @"C:\dotnet\x.deps.json", "10.0.7", @"D:\My Programs\dotnet\shared\App\10.0.7", null, out string line);
+        int deps = line.IndexOf("fx_deps=present", StringComparison.Ordinal), ver = line.IndexOf(" fx_version=10.0.7 ", StringComparison.Ordinal);
+        int dir = line.IndexOf(" fx_dir=\"D:\\My Programs\\dotnet\\shared\\App\\10.0.7\" ", StringComparison.Ordinal), result = line.IndexOf(" result=ok", StringComparison.Ordinal);
+        Check.True(deps >= 0 && deps < ver && ver < dir && dir < result, "fx_deps, fx_version, fx_dir, result in that order: " + line);
+        PackagingCheck.Evaluate(PackagingInfo.Decide("", null, "SelfContained"), "", null, "10.0.7", null, null, out string bundled);
+        Check.Contains(bundled, " fx_dir=\"\" result=ok");
     }
 
     [UnitTest]

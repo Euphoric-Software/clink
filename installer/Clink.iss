@@ -4,8 +4,8 @@
 ; DotNetRuntimeUrl/DotNetRuntimeSha256 come from tools\resolve-dotnet-runtime.ps1 (SHA-256 of the verified Microsoft installer).
 ; Without DotNetRuntimeUrl (offline local compile) there is no runtime task and Setup only warns when the runtime is missing.
 ; Per-user install (no admin) into %LOCALAPPDATA%\Programs\Clink. Needs Inno Setup 6.3+ (x64compatible). The same AppId makes a newer setup upgrade in place.
-; Fixed per-user location (no directory page). Uninstall removes only the program, the autostart entry and %LOCALAPPDATA%\Clink\updates
-; (downloads); it never touches %APPDATA%\Clink (settings) or clips.
+; Fixed per-user location (no directory page). Uninstall removes only the program, the autostart entry and the updater's own files in %LOCALAPPDATA%\Clink\updates\fx
+; (empty folders are removed; the shared updates folder is otherwise kept); it never touches %APPDATA%\Clink (settings) or clips.
 
 #ifndef AppVersion
   #error Pass the version: ISCC.exe /DAppVersion=X.Y.Z /DSourceExe=path installer\Clink.iss
@@ -66,7 +66,7 @@ SetupIconFile=..\Clink\Assets\clink.ico
 UninstallDisplayIcon={app}\Clink.exe
 UninstallDisplayName=Clink
 OutputDir={#OutDir}
-OutputBaseFilename=Clink-{#AppVersion}-setup
+OutputBaseFilename=Clink-Setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -100,8 +100,18 @@ Filename: "{app}\Clink.exe"; Description: "{cm:LaunchProgram,Clink}"; Flags: now
 Type: files; Name: "{app}\Clink.exe.bak"
 Type: files; Name: "{app}\Clink.exe.new"
 Type: files; Name: "{app}\Clink.exe.failed"
-; Downloaded updates only. Never %APPDATA%\Clink (settings) or the clips folder.
-Type: filesandordirs; Name: "{localappdata}\Clink\updates"
+; Only what the updater itself writes into updates\fx (the installed Framework copy's folder; Updater.cs: Clink-<version>.exe, its
+; .partial download and the .failed/.timeout/.installed markers next to it), one file pattern each, never a recursive delete.
+; Then the folders, only when empty: updates is shared with portable copies and %LOCALAPPDATA%\Clink holds other data.
+; Never %APPDATA%\Clink (settings) or the clips folder.
+Type: files; Name: "{localappdata}\Clink\updates\fx\Clink-*.exe"
+Type: files; Name: "{localappdata}\Clink\updates\fx\Clink-*.exe.partial"
+Type: files; Name: "{localappdata}\Clink\updates\fx\Clink-*.exe.failed"
+Type: files; Name: "{localappdata}\Clink\updates\fx\Clink-*.exe.timeout"
+Type: files; Name: "{localappdata}\Clink\updates\fx\Clink-*.exe.installed"
+Type: dirifempty; Name: "{localappdata}\Clink\updates\fx"
+Type: dirifempty; Name: "{localappdata}\Clink\updates"
+Type: dirifempty; Name: "{localappdata}\Clink"
 
 [Code]
 const

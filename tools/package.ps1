@@ -1,6 +1,6 @@
 # Packages the two published flavours (tools/publish-flavours.ps1): Clink.exe (self-contained, the portable download),
 # Clink-framework.exe (framework-dependent, what the installer ships), their .sha256 files ("<hash> *<name>"),
-# Clink-<ver>-setup.exe (needs Inno Setup 6.3+; built from the FRAMEWORK exe) and package.json (minRuntime plus file/size/sha256
+# Clink-Setup.exe (needs Inno Setup 6.3+; built from the FRAMEWORK exe) and package.json (minRuntime plus file/size/sha256
 # per output, read by make-manifest.ps1), plus THIRD-PARTY-NOTICES.txt (copied to OutDir, listed in package.json, embedded in the
 # installer). The installer's optional .NET Desktop Runtime task needs the runtime URL / SHA-256 / version from
 # tools/resolve-dotnet-runtime.ps1 (-RuntimeInfoPath, or the three explicit parameters); they are validated here and are mandatory
@@ -130,19 +130,21 @@ $exeOut = Join-Path $OutDir 'Clink.exe'
 $fxOut = Join-Path $OutDir 'Clink-framework.exe'
 if ($ExePath -ne $exeOut) { Copy-Item -LiteralPath $ExePath -Destination $exeOut -Force }
 if ($FrameworkExePath -ne $fxOut) { Copy-Item -LiteralPath $FrameworkExePath -Destination $fxOut -Force }
-foreach ($name in 'Clink.exe', 'Clink-framework.exe') {
-    $hash = (Get-FileHash -LiteralPath (Join-Path $OutDir $name) -Algorithm SHA256).Hash.ToLowerInvariant()
-    [System.IO.File]::WriteAllText((Join-Path $OutDir "$name.sha256"), "$hash *$name`n", $utf8)
+function Write-Sha256File([string]$Name) {
+    $hash = (Get-FileHash -LiteralPath (Join-Path $OutDir $Name) -Algorithm SHA256).Hash.ToLowerInvariant()
+    [System.IO.File]::WriteAllText((Join-Path $OutDir "$Name.sha256"), "$hash *$Name`n", $utf8)
 }
+foreach ($name in 'Clink.exe', 'Clink-framework.exe') { Write-Sha256File $name }
 
 # 1b. The notices file next to them (the installer embeds this copy, so the release asset and the installed file are the same bytes).
 $noticesOut = Join-Path $OutDir 'THIRD-PARTY-NOTICES.txt'
 if ($NoticesPath -ne $noticesOut) { Copy-Item -LiteralPath $NoticesPath -Destination $noticesOut -Force }
 
 # 2. Installer (from the framework-dependent exe; it installs the .NET Desktop Runtime when missing).
-$setupName = "Clink-$Version-setup.exe"
+$setupName = 'Clink-Setup.exe'
 $setupPath = Join-Path $OutDir $setupName
 if (Test-Path -LiteralPath $setupPath) { Remove-Item -LiteralPath $setupPath -Force }
+if (Test-Path -LiteralPath "$setupPath.sha256") { Remove-Item -LiteralPath "$setupPath.sha256" -Force }
 if ($iscc) {
     $numeric = ($Version -replace '-.*$', '') + '.0'
     $iss = Join-Path $root 'installer\Clink.iss'
@@ -152,21 +154,29 @@ if ($iscc) {
     } else {
         Write-Warning 'No .NET runtime inputs (-RuntimeInfoPath): the installer is built WITHOUT the runtime task (Setup only warns when the runtime is missing).'
     }
-    & $iscc @isccArguments /Qp $iss
-    if ($LASTEXITCODE -ne 0) { throw "ISCC failed (exit code $LASTEXITCODE)" }
+    # No /Qp (it would suppress warnings). stdout is captured: only warning lines are echoed on success, everything on failure.
+    $isccOutput = @(& $iscc @isccArguments $iss)
+    $isccExit = $LASTEXITCODE
+    foreach ($line in $isccOutput) { if ([string]$line -match '^\s*(Line \d+:\s*)?Warning:') { Write-Output "ISCC: $line" } }
+    Write-Output "ISCC exit code: $isccExit"
+    if ($isccExit -ne 0) {
+        $isccOutput | ForEach-Object { Write-Output "ISCC: $_" }
+        throw "ISCC failed (exit code $isccExit)"
+    }
     if (-not (Test-Path -LiteralPath $setupPath)) { throw "ISCC did not produce $setupPath" }
     # A real setup exe embeds the framework exe (megabytes); an empty or stub file means ISCC went wrong without failing.
     if (-not $SkipSetupSizeCheck) {
         $setupLength = (Get-Item -LiteralPath $setupPath).Length
         if ($setupLength -le 1048576) { throw "The setup exe $setupPath is only $setupLength bytes (expected more than 1 MiB): ISCC output is not a real installer." }
     }
+    Write-Sha256File $setupName
 } else {
     if (-not $SkipInstaller) { Write-Warning 'Inno Setup 6 (ISCC.exe) not found: installer NOT built.' }
 }
 
 # 3. package.json summary.
 $files = [ordered]@{}
-$kinds = [ordered]@{ exe = 'Clink.exe'; sha256file = 'Clink.exe.sha256'; exeFramework = 'Clink-framework.exe'; sha256fileFramework = 'Clink-framework.exe.sha256'; installer = $setupName; notices = 'THIRD-PARTY-NOTICES.txt' }
+$kinds = [ordered]@{ exe = 'Clink.exe'; sha256file = 'Clink.exe.sha256'; exeFramework = 'Clink-framework.exe'; sha256fileFramework = 'Clink-framework.exe.sha256'; installer = $setupName; sha256fileInstaller = "$setupName.sha256"; notices = 'THIRD-PARTY-NOTICES.txt' }
 foreach ($k in $kinds.Keys) {
     $p = Join-Path $OutDir $kinds[$k]
     if (-not (Test-Path -LiteralPath $p)) { continue }

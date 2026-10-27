@@ -11,7 +11,8 @@ This file is the canonical spec for how Clink is built, signed and published (co
 | `Clink.exe.sha256` | `<hash> *Clink.exe`. |
 | `Clink-framework.exe` | The FRAMEWORK-DEPENDENT single-file exe (about 32 MiB, needs the .NET 10 Desktop Runtime). This is the exe the installer installs and what installed copies update to. |
 | `Clink-framework.exe.sha256` | `<hash> *Clink-framework.exe`. |
-| `Clink-X.Y.Z-setup.exe` | Inno Setup installer (per user, no admin, fixed location, upgrades in place). It carries an optional task that installs the Microsoft .NET 10 Desktop Runtime when it is missing. |
+| `Clink-Setup.exe` | Inno Setup installer (fixed name so `releases/latest/download/Clink-Setup.exe` always works; per user, no admin, fixed location, upgrades in place). It carries an optional task that installs the Microsoft .NET 10 Desktop Runtime when it is missing. |
+| `Clink-Setup.exe.sha256` | `<hash> *Clink-Setup.exe` (what the website's "SHA-256 checksum" refers to for the installer). Attached to the GitHub release; the publish job's `Verify the release assets` step fails the run (before the feed upload and before the draft is published) unless the release carries all of these names: `Clink.exe`, `Clink.exe.sha256`, `Clink-framework.exe`, `Clink-framework.exe.sha256`, `Clink-Setup.exe`, `Clink-Setup.exe.sha256`, `THIRD-PARTY-NOTICES.txt`, so the site's `releases/latest/download/...` links cannot silently 404. The step reads the draft by its release ID (`gh api repos/.../releases/<id>`, the ID of the draft the previous step created, passed only through `env`), requires it to still be a draft with tag `vX.Y.Z`, and for each of the seven names requires exactly one asset of that exact (case-sensitive) name, in state `uploaded`, with the size of the local file and, when GitHub reports a `digest`, `sha256:` plus the local file's hash (without a digest it warns and relies on the size and the hash check made before the upload). |
 | `THIRD-PARTY-NOTICES.txt` | The third-party licence notices (the same bytes the installer installs next to `Clink.exe` and the app shows in About). Attached to the GitHub release only; it is not part of the feed bucket or the manifest. |
 | `stable.json`, `stable.json.sig` (`dev.json`, ...) | Signed update manifest, only when the feed is enabled for that channel. |
 
@@ -51,7 +52,7 @@ Committed and embedded in `Clink.exe`; the only place the app learns where the f
   "notesUrl": "https://github.com/Euphoric-Software/clink/releases/tag/v0.4.2", "minRuntime": "10.0.0",
   "assets": { "exe":          { "url": ".../releases/v0.4.2/Clink.exe",              "size": 1, "sha256": "<64 hex>" },
               "exeFramework": { "url": ".../releases/v0.4.2/Clink-framework.exe",    "size": 1, "sha256": "<64 hex>" },
-              "installer":    { "url": ".../releases/v0.4.2/Clink-0.4.2-setup.exe",   "size": 1, "sha256": "<64 hex>" } } }
+              "installer":    { "url": ".../releases/v0.4.2/Clink-Setup.exe",   "size": 1, "sha256": "<64 hex>" } } }
 ```
 
 - `exe` is the self-contained exe (what portable copies take); `exeFramework` is what framework (installed) copies take, unless
@@ -69,7 +70,7 @@ Signature file: one line of Base64, ECDSA P-256 / SHA-256 over the exact manifes
 
 ```
 <prefix>/releases/vX.Y.Z/{Clink.exe, Clink.exe.sha256, Clink-framework.exe, Clink-framework.exe.sha256,
-                            Clink-X.Y.Z-setup.exe}
+                            Clink-Setup.exe}
 <prefix>/dev/vX.Y.Z-dev.N/{same}                 (10 newest kept)
 <prefix>/stable.json, stable.json.sig, dev.json, dev.json.sig
 ```
@@ -108,7 +109,10 @@ Both workflows have two jobs.
    both refuse when a GitHub release `vX.Y.Z` already exists (draft or published). Then: download the artifact, verify
    `package.json`, `Clink.exe`, `Clink-framework.exe`, the setup exe and `THIRD-PARTY-NOTICES.txt` against the build job's outputs, read `Clink/Assets/feed.json` from the checkout.
    The GitHub release is created as a DRAFT with all assets, then `upload-feed.ps1` runs (if the feed is on), and only then
-   `gh release edit vX.Y.Z --draft=false` publishes it. A failed bucket upload therefore never leaves a visible release.
+   the draft is published by release ID (`gh api -X PATCH repos/.../releases/<id> -F draft=false -f make_latest=...`). A failed bucket upload therefore never leaves a visible release.
+   The "latest" flag is set explicitly: the stable job (`tools/lib/release-latest-lib.ps1`, `Get-MakeLatestValue`) sets `make_latest=true` only when
+   the version is higher than the current latest stable release (`releases/latest`; none yet counts as higher; an unparsable tag fails the run), so
+   re-cutting or backporting an older version never takes over `releases/latest/download/...`. The dev job always passes `make_latest=false`.
    - Feed enabled for the channel: require the environment secrets (fail if missing), make and sign the manifest
      (`tools/make-manifest.ps1`; the key is only in that step's environment; the signature is verified against the keys in
      `feed.json` before it is written; a mismatch fails the run), create the GitHub release with all assets including the
@@ -119,7 +123,7 @@ Both workflows have two jobs.
      (`gh api repos/<repo>/releases --paginate`, GET only) and FAILS when one carried `<channel>.json` (see "The feed cannot be switched off");
      otherwise warn and create the GitHub release (exe, sha256, setup exe) without manifest assets.
    - `make-manifest.ps1` binds `package.json` to the manifest: `files.exe.file` must be exactly `Clink.exe`, `files.exeFramework.file`
-     `Clink-framework.exe` and `files.installer.file` `Clink-<version>-setup.exe` (case-sensitive), the `exe` and `exeFramework` hashes must differ,
+     `Clink-framework.exe` and `files.installer.file` `Clink-Setup.exe` (case-sensitive), the `exe` and `exeFramework` hashes must differ,
      and `minRuntime` must be `10.x.y` (the app targets `net10.0-windows`; raise the constant in `make-manifest.ps1` with the `TargetFramework`).
      Each file is then re-hashed against `package.json`, and the publish job has already compared `package.json` itself with the build job's `pkg_sha256`.
    - `upload-feed.ps1` (entry point, `#requires -Version 7`; the decisions are in `tools/lib/feed-publish-lib.ps1` and are tested with a fake aws in
@@ -300,7 +304,7 @@ try {
 
 `.\build.ps1 -Package` publishes both flavours (Release by default; it warns for Debug) into `dist\sc` and `dist\fx` and runs
 `tools/package.ps1` into `dist\package`: `Clink.exe`, `Clink.exe.sha256`, `Clink-framework.exe`, `Clink-framework.exe.sha256`,
-`Clink-<ver>-setup.exe` (when `ISCC.exe` is found; `tools/package.ps1 -SkipInstaller` skips it even then, `-RequireInstaller` fails when it is missing), `THIRD-PARTY-NOTICES.txt` and `package.json`. A local installer
+`Clink-Setup.exe` (when `ISCC.exe` is found; `tools/package.ps1 -SkipInstaller` skips it even then, `-RequireInstaller` fails when it is missing), `THIRD-PARTY-NOTICES.txt` and `package.json`. A local installer
 has no .NET runtime task unless the runtime inputs are passed (see Installer inputs below); the script warns about it. A real ISCC output
 of 1 MiB or less is refused (`-SkipSetupSizeCheck` is for the script tests' fake ISCC only). To check the published
 exes: `tools\check-published.ps1 -ScExe dist\sc\Clink.exe -FxExe dist\fx\Clink.exe`.

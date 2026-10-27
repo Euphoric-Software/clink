@@ -32,7 +32,7 @@ internal static class UpdateFeedTests
         string assets = (exe ? $$"""
             "exe":{"url":"{{exeUrl}}","size":{{size}},"sha256":"{{sha ?? Sha}}"},
             """ : "") + """
-            "installer":{"url":"https://cdn.example/clink/releases/Clink-setup.exe","size":99,"sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+            "installer":{"url":"https://cdn.example/clink/releases/Clink-Setup.exe","size":99,"sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
             """;
         string pub = published ? $"\"published\":\"{Ago(publishedDaysAgo)}\"," : "";
         return $$"""

@@ -262,7 +262,7 @@ jobs:
           if ($exe -ne $env:EXE_SHA256) { throw "Clink.exe in the artifact ($exe) is not what the build job produced ($env:EXE_SHA256)" }
           $fx = (Get-FileHash dist/package/Clink-framework.exe -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($fx -ne $env:FX_SHA256) { throw "Clink-framework.exe in the artifact ($fx) is not what the build job produced ($env:FX_SHA256)" }
-          $setup = (Get-FileHash "dist/package/Clink-$env:VERSION-setup.exe" -Algorithm SHA256).Hash.ToLowerInvariant()
+          $setup = (Get-FileHash "dist/package/Clink-Setup.exe" -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($setup -ne $env:SETUP_SHA256) { throw "The setup exe in the artifact ($setup) is not what the build job produced ($env:SETUP_SHA256)" }
           $notices = (Get-FileHash dist/package/THIRD-PARTY-NOTICES.txt -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($notices -ne $env:NOTICES_SHA256) { throw "THIRD-PARTY-NOTICES.txt in the artifact ($notices) is not what the build job produced ($env:NOTICES_SHA256)" }
@@ -270,6 +270,8 @@ jobs:
           if ($line -ne "$exe *Clink.exe") { throw "Clink.exe.sha256 does not describe Clink.exe: $line" }
           $fxLine = (Get-Content -Raw dist/package/Clink-framework.exe.sha256).Trim()
           if ($fxLine -ne "$fx *Clink-framework.exe") { throw "Clink-framework.exe.sha256 does not describe Clink-framework.exe: $fxLine" }
+          $setupLine = (Get-Content -Raw dist/package/Clink-Setup.exe.sha256).Trim()
+          if ($setupLine -ne "$setup *Clink-Setup.exe") { throw "Clink-Setup.exe.sha256 does not describe Clink-Setup.exe: $setupLine" }
           Write-Output "Package verified (Clink.exe $exe, Clink-framework.exe $fx)"
 
       # Trust anchors come from the committed Clink/Assets/feed.json (the same file that was embedded in Clink.exe).
@@ -340,12 +342,13 @@ jobs:
         id: assets
         shell: pwsh
         run: |
-          $files = @('dist/package/Clink.exe', 'dist/package/Clink.exe.sha256', 'dist/package/Clink-framework.exe', 'dist/package/Clink-framework.exe.sha256', "dist/package/Clink-$env:VERSION-setup.exe", 'dist/package/THIRD-PARTY-NOTICES.txt')
+          $files = @('dist/package/Clink.exe', 'dist/package/Clink.exe.sha256', 'dist/package/Clink-framework.exe', 'dist/package/Clink-framework.exe.sha256', 'dist/package/Clink-Setup.exe', 'dist/package/Clink-Setup.exe.sha256', 'dist/package/THIRD-PARTY-NOTICES.txt')
           if (Test-Path dist/package/stable.json) { $files += 'dist/package/stable.json', 'dist/package/stable.json.sig' }
           Add-Content -Path $env:GITHUB_OUTPUT -Value "files<<EOF`n$($files -join "`n")`nEOF"
 
       # A DRAFT first: nothing is visible to users (or to the updater's GitHub fallback) until the bucket upload succeeded.
       - name: Create GitHub release (draft)
+        id: draft
         uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631 # v2.2.2
         with:
           tag_name: v${{ needs.build.outputs.version }}
@@ -356,6 +359,39 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: ${{ steps.assets.outputs.files }}
+
+      # The site links releases/latest/download/Clink-Setup.exe and Clink.exe: refuse to publish a release that lacks any asset.
+      # Looked up by the draft's release ID (never by tag), so a same-named release cannot stand in for it. The ID reaches the script only
+      # through env. Every required name must exist exactly once, uploaded, with the size of the local file and, when GitHub reports a
+      # digest, the SHA-256 of the local file (the local files were hash-checked against the build job before the upload).
+      - name: Verify the release assets
+        shell: pwsh
+        env:
+          RELEASE_ID: ${{ steps.draft.outputs.id }}
+        run: |
+          if ($env:RELEASE_ID -cnotmatch '\A[0-9]+\z') { throw 'The draft release ID is missing or not numeric.' }
+          $json = (& gh api "repos/$env:GITHUB_REPOSITORY/releases/$env:RELEASE_ID" | Out-String)
+          if ($LASTEXITCODE -ne 0) { throw "Could not read release $env:RELEASE_ID." }
+          $release = $json | ConvertFrom-Json
+          if ($release.draft -ne $true) { throw "Release $env:RELEASE_ID is not a draft." }
+          if (-not ($release.tag_name -ceq "v$env:VERSION")) { throw "Release $env:RELEASE_ID has tag '$($release.tag_name)', expected v$env:VERSION." }
+          $required = 'Clink.exe', 'Clink.exe.sha256', 'Clink-framework.exe', 'Clink-framework.exe.sha256', 'Clink-Setup.exe', 'Clink-Setup.exe.sha256', 'THIRD-PARTY-NOTICES.txt'
+          foreach ($name in $required) {
+            $found = @($release.assets | Where-Object { $_.name -ceq $name })
+            if ($found.Count -ne 1) { throw "Release v$env:VERSION lacks exactly one asset named $name (found $($found.Count); has: $((@($release.assets) | ForEach-Object { $_.name }) -join ', '))" }
+            $asset = $found[0]
+            if (-not ($asset.state -ceq 'uploaded')) { throw "Asset $name is in state '$($asset.state)', expected 'uploaded'." }
+            $local = Get-Item -LiteralPath (Join-Path 'dist/package' $name)
+            if ([int64]$asset.size -ne $local.Length) { throw "Asset $name has $($asset.size) bytes on GitHub, the local file has $($local.Length)." }
+            $digest = [string]$asset.digest
+            if ($digest) {
+              $expected = 'sha256:' + (Get-FileHash -LiteralPath $local.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+              if (-not ($digest -ceq $expected)) { throw "Asset $name has digest $digest on GitHub, expected $expected." }
+            } else {
+              Write-Output "::warning::GitHub reports no digest for $name; relying on its size and the hash check before the upload."
+            }
+          }
+          Write-Output "Release v$env:VERSION (id $env:RELEASE_ID) has all $($required.Count) required assets"
 
       - name: Publish to the update feed
         if: steps.feed.outputs.enabled == 'true'
@@ -374,8 +410,26 @@ jobs:
         run: ./tools/upload-feed.ps1 -Channel stable -Version $env:VERSION -PackageDir dist/package -FeedJson Clink/Assets/feed.json -HistoryFloor $env:HISTORY_FLOOR
 
       # Only now does the release become visible. With GitHub immutable releases enabled this also locks the assets and tag.
+      # Published by ID, and "latest" is set explicitly: only a version higher than the current latest stable release takes it
+      # (a re-cut or backport of an older version must not become what releases/latest/download points at).
       - name: Publish the GitHub release
         shell: pwsh
+        env:
+          RELEASE_ID: ${{ steps.draft.outputs.id }}
         run: |
-          gh release edit "v$env:VERSION" --draft=false
+          . ./tools/lib/release-latest-lib.ps1
+          if ($env:RELEASE_ID -cnotmatch '\A[0-9]+\z') { throw 'The draft release ID is missing or not numeric.' }
+          if ($env:VERSION -cnotmatch '\A[0-9]+\.[0-9]+\.[0-9]+\z') { throw "'$env:VERSION' is not a valid version." }
+          $eap = $ErrorActionPreference
+          $ErrorActionPreference = 'Continue'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $latestOut = (& gh api "repos/$env:GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>&1 | Out-String).Trim()
+          $latestCode = $LASTEXITCODE
+          $ErrorActionPreference = $eap
+          if ($latestCode -eq 0) { $latestTag = $latestOut }
+          elseif ($latestOut -match 'HTTP 404|Not Found') { $latestTag = '' }
+          else { throw "Could not read the latest release: $latestOut" }
+          $makeLatest = Get-MakeLatestValue -Version $env:VERSION -LatestTag $latestTag
+          Write-Output "Current latest release: '$latestTag'; v$env:VERSION gets make_latest=$makeLatest"
+          gh api -X PATCH "repos/$env:GITHUB_REPOSITORY/releases/$env:RELEASE_ID" -F draft=false -f make_latest=$makeLatest
           if ($LASTEXITCODE -ne 0) { throw 'Could not publish the draft release' }

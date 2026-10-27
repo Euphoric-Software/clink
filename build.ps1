@@ -2,7 +2,7 @@
 param(
     [ValidateSet('Debug', 'Release')] [string]$Configuration = 'Release',
     [switch]$Publish,
-    [switch]$Package,   # publish, then run tools/package.ps1 into dist/package (setup.exe needs Inno Setup 6.3+)
+    [switch]$Package,   # publish, then run tools/package.ps1 into dist/package (Clink-Setup.exe needs Inno Setup 6.3+)
     [switch]$Run
 )
 $ErrorActionPreference = 'Stop'
