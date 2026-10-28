@@ -240,7 +240,7 @@ Write-Host ("wide:   {0}x{1} DIP   narrow: {2}x{3} DIP" -f $wide.W, $wide.H, $na
 try {
     # ---- sample clips (drawn frames; no capture)
     $samplesLog = Join-Path $WorkDir 'samples.txt'
-    $gen = Start-Process -FilePath $Exe -ArgumentList @('--dev-make-samples', "`"$clipsDir`"") -NoNewWindow -PassThru -RedirectStandardOutput $samplesLog
+    $gen = Start-Process -FilePath $Exe -ArgumentList @('--dev-make-samples', "`"$clipsDir`"", '--dev') -NoNewWindow -PassThru -RedirectStandardOutput $samplesLog
     $null = $gen.Handle   # keep the process handle open so ExitCode is still readable after it exits
     if (-not $gen.WaitForExit(120000)) {
         try { $gen.Kill() } catch { }   # only this generator process

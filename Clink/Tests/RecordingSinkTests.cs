@@ -555,10 +555,22 @@ internal static class RecordingSinkTests
     {
         using var dir = new TempDir();
         var log = new Written();
-        var s = Sink(Cfg(dir, log, 1));
+        // The sink gives up on its own thread and then detaches, closes and releases its queue. A producer that is inside OnVideo
+        // at that moment could still enqueue after the release, which would leave bytes in the queue for good. A real producer stops at
+        // Detach; so does this one: it feeds under a gate that Detach takes, so nothing is mid-enqueue once the flag is set.
+        var cfg = Cfg(dir, log, 1);
+        object gate = new();
+        bool detached = false;
+        cfg.Detach = _ => { lock (gate) detached = true; };
+        var s = Sink(cfg);
         byte[] bare = { 0, 0, 0, 1, 0x65, 0x88, 0x84, 0x00, 0x10 };     // an IDR slice, no SPS / PPS
-        s.OnVideo(VideoPts(0), true, bare);
-        for (int i = 1; i < 400; i++) s.OnVideo(VideoPts(i), false, Frame(i, false));
+        lock (gate) { if (!detached) s.OnVideo(VideoPts(0), true, bare); }
+        for (int i = 1; i < 400; i++)
+            lock (gate)
+            {
+                if (detached) break;
+                s.OnVideo(VideoPts(i), false, Frame(i, false));
+            }
         var r = Done(s);
         Check.Equal(RecordingEndReason.WriteFailed, r.Reason);
         Check.Contains(r.Error, "parameter sets");
