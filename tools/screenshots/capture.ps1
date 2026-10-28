@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
   Produces fresh documentation screenshots of the current Clink UI: no TEST marker, sample clips, nothing on screen, nothing touched.
 

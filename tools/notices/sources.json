@@ -1,7 +1,7 @@
 {
   "schema": 1,
-  "runtimeVersion": "10.0.13",
-  "vmrCommit": "4099f83977f4d29604a9aeb971fb0a7bc1d5f699",
+  "runtimeVersion": "10.0.14",
+  "vmrCommit": "0427b9abbead3fa64c6655eb4290c537397131fa",
   "sections": [
     {
       "id": "0",
@@ -18,7 +18,7 @@
       "includedIn": ["SC", "FX"],
       "kind": "nuget",
       "package": "Microsoft.NETCore.App.Runtime.win-x64",
-      "version": "10.0.13",
+      "version": "10.0.14",
       "path": "LICENSE.TXT",
       "sha256Raw": "d7a68596ab69b06f51ca278a6545148e4269a9381c26d597c13df5d88e08cf5b",
       "sha256Text": "cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310"
@@ -29,7 +29,7 @@
       "includedIn": ["SC", "FX"],
       "kind": "nuget",
       "package": "Microsoft.NETCore.App.Runtime.win-x64",
-      "version": "10.0.13",
+      "version": "10.0.14",
       "path": "THIRD-PARTY-NOTICES.TXT",
       "sha256Raw": "6d15e10a101c6bfff2ab4429ed061bf76c456fc4b23ad6b03e0d0f8377148a21",
       "sha256Text": "66f1d4e44973185519bb4aa8a9718eb22fc7af2cc532e3ae9cfc4c127ee7fc54"
@@ -40,7 +40,7 @@
       "includedIn": ["SC"],
       "kind": "nuget",
       "package": "Microsoft.WindowsDesktop.App.Runtime.win-x64",
-      "version": "10.0.13",
+      "version": "10.0.14",
       "path": "LICENSE",
       "sha256Raw": "a89886665765362eb77e0f8e26602c924520041d1711b2eedc136434fe4d01ab",
       "sha256Text": "ae48df11a335dc1a615f4f938b69cba73bcf4485c4f97af49b38efb0f216353b"
@@ -50,7 +50,7 @@
       "title": "WPF third-party notices",
       "includedIn": ["SC"],
       "kind": "url",
-      "url": "https://raw.githubusercontent.com/dotnet/dotnet/4099f83977f4d29604a9aeb971fb0a7bc1d5f699/src/wpf/THIRD-PARTY-NOTICES.TXT",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/0427b9abbead3fa64c6655eb4290c537397131fa/src/wpf/THIRD-PARTY-NOTICES.TXT",
       "sha256Raw": "d23dba2fee20c6b59d8f7088ee9ed372459c952a319b7ca90f3eec370cc76eb9",
       "sha256Text": "d23dba2fee20c6b59d8f7088ee9ed372459c952a319b7ca90f3eec370cc76eb9"
     },
@@ -59,7 +59,7 @@
       "title": "Windows Forms third-party notices",
       "includedIn": ["SC"],
       "kind": "url",
-      "url": "https://raw.githubusercontent.com/dotnet/dotnet/4099f83977f4d29604a9aeb971fb0a7bc1d5f699/src/winforms/THIRD-PARTY-NOTICES.TXT",
+      "url": "https://raw.githubusercontent.com/dotnet/dotnet/0427b9abbead3fa64c6655eb4290c537397131fa/src/winforms/THIRD-PARTY-NOTICES.TXT",
       "sha256Raw": "5a412b38efae0b162dc0893b319023f4cd14a8985a0f9f9ae01ac052b37a36eb",
       "sha256Text": "5a412b38efae0b162dc0893b319023f4cd14a8985a0f9f9ae01ac052b37a36eb"
     },

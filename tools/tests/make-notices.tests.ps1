@@ -120,36 +120,84 @@ try {
     $result = Invoke-Tool -Arguments @('-Check', '-SourcesFile', $badSources)
     Assert-That 'An unknown includedIn code (wrong case) is an error' ($result.Code -eq 1 -and $result.Output -match 'Unknown includedIn code') $result.Output
 
-    # project.assets.json: a trimmed real self-contained restore (downloadDependencies) and a copy with another runtime version.
+    # project.assets.json: a trimmed real self-contained restore (downloadDependencies) and copies with other versions. The fixture's
+    # versions are rewritten at test time to what sources.json pins (runtimeVersion, section [8], section [6b]), so a re-pin of the
+    # notices does not break these tests; the drift versions are derived from the pins.
     $sources = $sourcesText | ConvertFrom-Json
+    $runtimeVersion = [string]$sources.runtimeVersion
+    $sdkSection = @($sources.sections | Where-Object { $_.id -ceq '8' })[0]
+    $cswinSection = @($sources.sections | Where-Object { $_.id -ceq '6b' })[0]
+    $runtimeParts = $runtimeVersion.Split('.')
+    $driftVersion = '{0}.{1}.{2}' -f $runtimeParts[0], $runtimeParts[1], ([int]$runtimeParts[2] + 1)
+    $sdkDriftVersion = [string]$sdkSection.version + '9'
+    $cswinDriftVersion = [string]$cswinSection.version + '9'
     $fixture = Join-Path $PSScriptRoot 'fixtures\project.assets.self-contained.json'
     $fixtureText = [System.IO.File]::ReadAllText($fixture, $utf8NoBom)
-    Assert-That 'The fixture is at the pinned runtime version' ($fixtureText.Contains('"[' + $sources.runtimeVersion + ', ' + $sources.runtimeVersion + ']"')) ''
-    $result = Invoke-Tool -Arguments @('-Check', '-AssetsFile', $fixture)
+    $fixtureText = [regex]::Replace($fixtureText, '\[[0-9]+\.[0-9]+\.[0-9]+, [0-9]+\.[0-9]+\.[0-9]+\]', ('[' + $runtimeVersion + ', ' + $runtimeVersion + ']'))
+    $fixtureText = [regex]::Replace($fixtureText, '("Microsoft\.Windows\.SDK\.NET\.Ref",\s*"version":\s*")[^"]*(")', ('${1}[' + $sdkSection.version + ', ' + $sdkSection.version + ']${2}'))
+    $fixtureText = [regex]::Replace($fixtureText, '"Microsoft\.Windows\.CsWin32/[^"]*"', ('"Microsoft.Windows.CsWin32/' + $cswinSection.version + '"'))
+    $fixtureNormalized = Join-Path $scratch 'assets-pinned.json'
+    Write-TextFile -Path $fixtureNormalized -Text $fixtureText
+    Assert-That 'The normalised fixture is at the pinned runtime version' ($fixtureText.Contains('"[' + $runtimeVersion + ', ' + $runtimeVersion + ']"') -and $fixtureText.Contains('"[' + $sdkSection.version + ', ' + $sdkSection.version + ']"')) ''
+    $result = Invoke-Tool -Arguments @('-Check', '-AssetsFile', $fixtureNormalized)
     Assert-That 'Check passes when the restored runtime matches' ($result.Code -eq 0) $result.Output
 
-    $badAssets = Join-Path $scratch 'assets-10.0.14.json'
-    Write-TextFile -Path $badAssets -Text $fixtureText.Replace('[' + $sources.runtimeVersion + ', ' + $sources.runtimeVersion + ']', '[10.0.14, 10.0.14]')
+    $badAssets = Join-Path $scratch 'assets-drift.json'
+    Write-TextFile -Path $badAssets -Text $fixtureText.Replace('[' + $runtimeVersion + ', ' + $runtimeVersion + ']', '[' + $driftVersion + ', ' + $driftVersion + ']')
     $result = Invoke-Tool -Arguments @('-Check', '-AssetsFile', $badAssets)
-    Assert-That 'Check fails when the restored runtime differs' ($result.Code -eq 1 -and $result.Output -match 'Microsoft\.NETCore\.App\.Runtime\.win-x64 10\.0\.14' -and $result.Output -match 'Microsoft\.WindowsDesktop\.App\.Runtime\.win-x64 10\.0\.14') $result.Output
-    Assert-That 'A runtime drift prints -Update -RuntimeVersion <restored version>' ($result.Output -match '-Update -RuntimeVersion 10\.0\.14 -Accept') $result.Output
+    $driftPattern = [regex]::Escape($driftVersion)
+    Assert-That 'Check fails when the restored runtime differs' ($result.Code -eq 1 -and $result.Output -match ('Microsoft\.NETCore\.App\.Runtime\.win-x64 ' + $driftPattern) -and $result.Output -match ('Microsoft\.WindowsDesktop\.App\.Runtime\.win-x64 ' + $driftPattern)) $result.Output
+    Assert-That 'A runtime drift prints -Update -RuntimeVersion <restored version>' ($result.Output -match ('-Update -RuntimeVersion ' + $driftPattern + ' -Accept')) $result.Output
 
-    $sdkSection = @($sources.sections | Where-Object { $_.id -ceq '8' })[0]
     $badSdk = Join-Path $scratch 'assets-sdk.json'
-    Write-TextFile -Path $badSdk -Text $fixtureText.Replace('[' + $sdkSection.version + ', ' + $sdkSection.version + ']', '[10.0.26100.99, 10.0.26100.99]')
+    Write-TextFile -Path $badSdk -Text $fixtureText.Replace('[' + $sdkSection.version + ', ' + $sdkSection.version + ']', '[' + $sdkDriftVersion + ', ' + $sdkDriftVersion + ']')
     $result = Invoke-Tool -Arguments @('-Check', '-AssetsFile', $badSdk)
-    Assert-That 'Check fails when Microsoft.Windows.SDK.NET.Ref differs from section [8]' ($result.Code -eq 1 -and $result.Output -match 'SDK\.NET\.Ref 10\.0\.26100\.99') $result.Output
+    Assert-That 'Check fails when Microsoft.Windows.SDK.NET.Ref differs from section [8]' ($result.Code -eq 1 -and $result.Output -match ('SDK\.NET\.Ref ' + [regex]::Escape($sdkDriftVersion))) $result.Output
 
     $badCsWin32 = Join-Path $scratch 'assets-cswin32.json'
-    Write-TextFile -Path $badCsWin32 -Text $fixtureText.Replace('Microsoft.Windows.CsWin32/0.3.366', 'Microsoft.Windows.CsWin32/0.3.999')
+    Write-TextFile -Path $badCsWin32 -Text $fixtureText.Replace('Microsoft.Windows.CsWin32/' + $cswinSection.version, 'Microsoft.Windows.CsWin32/' + $cswinDriftVersion)
     $result = Invoke-Tool -Arguments @('-Check', '-AssetsFile', $badCsWin32)
-    Assert-That 'Check fails when CsWin32 differs from section [6b]' ($result.Code -eq 1 -and $result.Output -match 'CsWin32 0\.3\.999') $result.Output
+    Assert-That 'Check fails when CsWin32 differs from section [6b]' ($result.Code -eq 1 -and $result.Output -match ('CsWin32 ' + [regex]::Escape($cswinDriftVersion))) $result.Output
 
+    # A missing SDK reference download dependency or a missing CsWin32 library is a problem too (same rule as the runtime packs).
+    $noSdk = Join-Path $scratch 'assets-no-sdk.json'
+    Write-TextFile -Path $noSdk -Text ($fixtureText -replace '"name":\s*"Microsoft\.Windows\.SDK\.NET\.Ref"', '"name": "Other.Sdk.Ref"')
+    Assert-That 'The no-SDK fixture really lacks the SDK reference' ((Get-Content -Raw -LiteralPath $noSdk) -notmatch 'Windows\.SDK\.NET\.Ref') ''
+    $result = Invoke-Tool -Arguments @('-Check', '-AssetsFile', $noSdk)
+    Assert-That 'Check FAILS when Microsoft.Windows.SDK.NET.Ref is not in downloadDependencies' ($result.Code -eq 1 -and $result.Output -match 'Microsoft\.Windows\.SDK\.NET\.Ref is not in downloadDependencies') $result.Output
+    $result = Invoke-Tool -Arguments @('-Check', '-AssetsFile', $noSdk, '-AllowMissingRuntimePacks')
+    Assert-That '-AllowMissingRuntimePacks turns the missing SDK reference into a note' ($result.Code -eq 0 -and $result.Output -match 'SDK\.NET\.Ref is not in downloadDependencies') $result.Output
+
+    $noCsWin32 = Join-Path $scratch 'assets-no-cswin32.json'
+    Write-TextFile -Path $noCsWin32 -Text $fixtureText.Replace('Microsoft.Windows.CsWin32/' + $cswinSection.version, 'Other.Library/1.0.0')
+    Assert-That 'The no-CsWin32 fixture really lacks the library' ((Get-Content -Raw -LiteralPath $noCsWin32) -notmatch 'CsWin32/') ''
+    $result = Invoke-Tool -Arguments @('-Check', '-AssetsFile', $noCsWin32)
+    Assert-That 'Check FAILS when Microsoft.Windows.CsWin32 is not in libraries' ($result.Code -eq 1 -and $result.Output -match 'Microsoft\.Windows\.CsWin32 is not in libraries') $result.Output
+    $result = Invoke-Tool -Arguments @('-Check', '-AssetsFile', $noCsWin32, '-AllowMissingRuntimePacks')
+    Assert-That '-AllowMissingRuntimePacks turns the missing CsWin32 library into a note' ($result.Code -eq 0 -and $result.Output -match 'CsWin32 is not in libraries') $result.Output
+
+    # A restore without the runtime packs (a framework-dependent restore) is a FAILURE, not a note, unless -AllowMissingRuntimePacks.
     $fxAssets = Join-Path $scratch 'assets-fx.json'
-    Write-TextFile -Path $fxAssets -Text '{ "version": 3, "libraries": { "Microsoft.Windows.CsWin32/0.3.366": { "type": "package" } }, "project": { "frameworks": { "net10.0-windows10.0.26100.0": { } } } }'
+    Write-TextFile -Path $fxAssets -Text ('{ "version": 3, "libraries": { "Microsoft.Windows.CsWin32/' + $cswinSection.version + '": { "type": "package" } }, "project": { "frameworks": { "net10.0-windows10.0.26100.0": { } } } }')
     $result = Invoke-Tool -Arguments @('-Check', '-AssetsFile', $fxAssets)
-    Assert-That 'Check passes with no runtime pack, and says it is not in downloadDependencies' ($result.Code -eq 0 -and $result.Output -match 'not in downloadDependencies') $result.Output
+    Assert-That 'Check FAILS with no downloadDependencies / no runtime pack' ($result.Code -eq 1 -and $result.Output -match 'no downloadDependencies' -and $result.Output -match 'Microsoft\.NETCore\.App\.Runtime\.win-x64 is not in downloadDependencies') $result.Output
+    $result = Invoke-Tool -Arguments @('-Check', '-AssetsFile', $fxAssets, '-AllowMissingRuntimePacks')
+    Assert-That '-AllowMissingRuntimePacks turns the missing runtime packs into notes' ($result.Code -eq 0 -and $result.Output -match 'not in downloadDependencies') $result.Output
 
+    $emptyAssets = Join-Path $scratch 'assets-empty.json'
+    Write-TextFile -Path $emptyAssets -Text '{}'
+    $result = Invoke-Tool -Arguments @('-Check', '-AssetsFile', $emptyAssets)
+    Assert-That 'Check FAILS when the assets file is {}' ($result.Code -eq 1 -and $result.Output -match 'no project\.frameworks') $result.Output
+    $result = Invoke-Tool -Arguments @('-Check', '-AssetsFile', $emptyAssets, '-AllowMissingRuntimePacks')
+    Assert-That '-AllowMissingRuntimePacks accepts {} (local use only)' ($result.Code -eq 0) $result.Output
+
+    $result = Invoke-Tool -Arguments @('-Check', '-AssetsFile', (Join-Path $repoRoot 'tools\notices\sources.json'))
+    Assert-That 'Check FAILS when sources.json is passed as the assets file' ($result.Code -eq 1) $result.Output
+
+    $oneFramework = Join-Path $scratch 'assets-one-pack.json'
+    Write-TextFile -Path $oneFramework -Text ($fixtureText -replace '(?s)\{\s*"name":\s*"Microsoft\.WindowsDesktop\.App\.Runtime\.win-x64",\s*"version":\s*"[^"]*"\s*\}', '{ "name": "Other.Pack", "version": "[1.0.0, 1.0.0]" }')
+    $result = Invoke-Tool -Arguments @('-Check', '-AssetsFile', $oneFramework)
+    Assert-That 'Check FAILS when only one of the two runtime packs is restored' ($result.Code -eq 1 -and $result.Output -match 'Microsoft\.WindowsDesktop\.App\.Runtime\.win-x64 is not in downloadDependencies') $result.Output
     $brokenAssets = Join-Path $scratch 'assets-broken.json'
     Write-TextFile -Path $brokenAssets -Text '{ not json'
     $result = Invoke-Tool -Arguments @('-Check', '-AssetsFile', $brokenAssets)

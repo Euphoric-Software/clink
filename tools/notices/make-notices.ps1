@@ -16,8 +16,12 @@
              of each body) and the repo's LICENSE (-RepoRoot) against its pinned hash. With -AssetsFile
              <project.assets.json> it also parses the JSON and requires the downloadDependencies versions of the two
              runtime packs to equal runtimeVersion, of Microsoft.Windows.SDK.NET.Ref to equal section [8]'s version and
-             the Microsoft.Windows.CsWin32 library to equal section [6b]'s version. Exit 1 when something is off:
-             after a runtime drift it prints the -Update command to run, for other failures it suggests -Generate.
+             the Microsoft.Windows.CsWin32 library to equal section [6b]'s version. A file without project.frameworks,
+             without downloadDependencies, or without either runtime pack FAILS (CI must be looking at the self-contained
+             restore), as does a missing Microsoft.Windows.SDK.NET.Ref download dependency or a missing Microsoft.Windows.CsWin32 library;
+             -AllowMissingRuntimePacks turns all of those into notes (local use only, never used by CI).
+             Exit 1 when something is off: after a runtime drift it prints the -Update command to run, for other
+             failures it suggests -Generate.
 
   Works on Windows PowerShell 5.1 and PowerShell 7.
 #>
@@ -29,6 +33,7 @@ param(
     [string]$RuntimeVersion,
     [switch]$Accept,
     [string]$AssetsFile,
+    [switch]$AllowMissingRuntimePacks,
     [string]$NoticesFile,
     [string]$SourcesFile,
     [string]$RepoRoot
@@ -276,7 +281,7 @@ function Split-NoticesText {
 }
 
 # Reads a restore's project.assets.json (parsed as JSON, not searched as text). Returns @{ Downloads = name -> list of versions
-# from project.frameworks.<tfm>.downloadDependencies ("[10.0.13, 10.0.13]" ranges, exact pins); Libraries = names of "libraries" }.
+# from project.frameworks.<tfm>.downloadDependencies ("[10.0.14, 10.0.14]" ranges, exact pins); Libraries = names of "libraries" }.
 function Read-AssetsFile {
     param([string]$Path)
     $assets = [System.IO.File]::ReadAllText($Path, $script:Utf8NoBom) | ConvertFrom-Json
@@ -284,6 +289,8 @@ function Read-AssetsFile {
     $badRanges = New-Object System.Collections.Generic.List[string]
     $project = Get-JsonMember -Object $assets -Name 'project'
     $frameworks = Get-JsonMember -Object $project -Name 'frameworks'
+    $hasFrameworks = ($null -ne $frameworks -and @($frameworks.PSObject.Properties).Count -gt 0)
+    $hasDownloads = $false
     if ($null -ne $frameworks) {
         foreach ($framework in $frameworks.PSObject.Properties) {
             $list = Get-JsonMember -Object $framework.Value -Name 'downloadDependencies'
@@ -292,6 +299,7 @@ function Read-AssetsFile {
                 $name = [string](Get-JsonMember -Object $entry -Name 'name')
                 $range = [string](Get-JsonMember -Object $entry -Name 'version')
                 if (-not $name) { continue }
+                $hasDownloads = $true
                 $version = $null
                 if ($range -cmatch '^\[\s*([^,\s\]]+)\s*,\s*([^,\s\]]+)\s*\]$' -and $Matches[1] -ceq $Matches[2]) { $version = $Matches[1] }
                 elseif ($range -cmatch '^[0-9][^,\s\[\]()]*$') { $version = $range }
@@ -304,7 +312,7 @@ function Read-AssetsFile {
     $libraries = New-Object System.Collections.Generic.List[string]
     $libraryObject = Get-JsonMember -Object $assets -Name 'libraries'
     if ($null -ne $libraryObject) { foreach ($property in $libraryObject.PSObject.Properties) { $libraries.Add($property.Name) } }
-    return @{ Downloads = $downloads; Libraries = $libraries; BadRanges = $badRanges }
+    return @{ Downloads = $downloads; Libraries = $libraries; BadRanges = $badRanges; HasFrameworks = $hasFrameworks; HasDownloads = $hasDownloads }
 }
 
 # $Object.$Name, or $null when the member is absent (strict mode throws on a missing property).
@@ -324,8 +332,21 @@ function Test-AssetsAgainstSources {
     try { $assets = Read-AssetsFile -Path $Path } catch { $Problems.Add("Assets file is not readable JSON: $Path ($($_.Exception.Message))"); return }
     foreach ($bad in $assets.BadRanges) { $Problems.Add("Assets file: downloadDependencies version is not an exact pin: $bad") }
     $downloads = $assets.Downloads
+    # CI must be looking at the self-contained restore: a missing section is a failure unless -AllowMissingRuntimePacks.
+    if (-not $assets.HasFrameworks) {
+        if ($AllowMissingRuntimePacks) { Write-Host 'note: the assets file has no project.frameworks; nothing to compare.' }
+        else { $Problems.Add("Assets file has no project.frameworks (is it the obj_sc project.assets.json of a restore?): $Path") }
+    }
+    elseif (-not $assets.HasDownloads) {
+        if ($AllowMissingRuntimePacks) { Write-Host 'note: the assets file has no downloadDependencies; nothing to compare.' }
+        else { $Problems.Add("Assets file has no downloadDependencies in any framework (not the restore of a self-contained publish): $Path") }
+    }
     foreach ($package in @('Microsoft.NETCore.App.Runtime.win-x64', 'Microsoft.WindowsDesktop.App.Runtime.win-x64')) {
-        if (-not $downloads.ContainsKey($package)) { Write-Host "note: $package is not in downloadDependencies of any framework in the assets file; nothing to compare."; continue }
+        if (-not $downloads.ContainsKey($package)) {
+            if ($AllowMissingRuntimePacks) { Write-Host "note: $package is not in downloadDependencies of any framework in the assets file; nothing to compare." }
+            else { $Problems.Add("$package is not in downloadDependencies of any framework in the assets file: the bundled runtime cannot be checked.") }
+            continue
+        }
         foreach ($version in $downloads[$package]) {
             if ($version -cne [string]$Sources.runtimeVersion) {
                 $Problems.Add("$package $version is restored (downloadDependencies) but the notices are for .NET runtime $($Sources.runtimeVersion).")
@@ -339,12 +360,18 @@ function Test-AssetsAgainstSources {
             if ($version -cne [string]$sdkSection[0].version) { $Problems.Add("$($sdkSection[0].package) $version is restored but section [8] is for $($sdkSection[0].version): update section [8] in sources.json, then -Generate.") }
         }
     }
-    elseif ($sdkSection.Count -eq 1) { Write-Host "note: $($sdkSection[0].package) is not in downloadDependencies of any framework in the assets file; nothing to compare." }
+    elseif ($sdkSection.Count -eq 1) {
+        if ($AllowMissingRuntimePacks) { Write-Host "note: $($sdkSection[0].package) is not in downloadDependencies of any framework in the assets file; nothing to compare." }
+        else { $Problems.Add("$($sdkSection[0].package) is not in downloadDependencies of any framework in the assets file: the SDK reference cannot be checked against section [8].") }
+    }
     $cswinSection = @($Sources.sections | Where-Object { $_.id -ceq '6b' })
     if ($cswinSection.Count -eq 1) {
         $prefix = [string]$cswinSection[0].package + '/'
         $restored = @($assets.Libraries | Where-Object { $_.StartsWith($prefix, [StringComparison]::Ordinal) } | ForEach-Object { $_.Substring($prefix.Length) })
-        if ($restored.Count -eq 0) { Write-Host "note: $($cswinSection[0].package) is not in libraries of the assets file; nothing to compare." }
+        if ($restored.Count -eq 0) {
+            if ($AllowMissingRuntimePacks) { Write-Host "note: $($cswinSection[0].package) is not in libraries of the assets file; nothing to compare." }
+            else { $Problems.Add("$($cswinSection[0].package) is not in libraries of the assets file: it cannot be checked against sections [6] and [6b].") }
+        }
         foreach ($version in $restored) {
             if ($version -cne [string]$cswinSection[0].version) { $Problems.Add("$($cswinSection[0].package) $version is restored but sections [6] and [6b] are for $($cswinSection[0].version): update them in sources.json, then -Generate.") }
         }
@@ -504,7 +531,7 @@ function Update-SourcesText {
 
 $modes = @($Generate, $Update, $Check) | Where-Object { $_ }
 if (@($modes).Count -ne 1) {
-    Write-Host 'Usage: make-notices.ps1 -Generate | -Update -RuntimeVersion 10.0.N [-Accept] | -Check [-AssetsFile <project.assets.json>] [-NoticesFile <path>]'
+    Write-Host 'Usage: make-notices.ps1 -Generate | -Update -RuntimeVersion 10.0.N [-Accept] | -Check [-AssetsFile <project.assets.json> [-AllowMissingRuntimePacks]] [-NoticesFile <path>]'
     exit 2
 }
 try {

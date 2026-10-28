@@ -10,11 +10,16 @@
 # final build. N grows with every dev build (run number, or above the highest
 # existing dev tag); the app compares N numerically.
 #
-# The job runs the unit tests before it publishes: a dev build never ships with
-# failing tests. Only the 10 newest dev builds are kept.
+# Two jobs (contract v2, see docs/RELEASING.md):
+#   build   - no secrets, no environment, contents: read. Builds, runs the unit tests (a dev build never ships with failing
+#             tests), packages and uploads the package as an artifact.
+#   publish - environment feed-dev (limited to the dev branch). Guards, re-checks the artifact, signs the dev manifest when
+#             Clink/Assets/feed.json enables the feed, creates a DRAFT prerelease, uploads to the bucket, publishes the
+#             draft, prunes.
+# Only the 10 newest dev builds are kept (GitHub prereleases and bucket folders).
 #
-# Same rules as release.yml: the asset is named exactly "Clink.exe" with a
-# "Clink.exe.sha256" beside it, and every action is pinned to a commit SHA.
+# Same rules as release.yml: the assets are named exactly "Clink.exe" and "Clink-framework.exe", each with a
+# ".sha256" beside it, and every action is pinned to a commit SHA.
 name: Release (dev build)
 
 on:
@@ -24,15 +29,24 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-dev
   cancel-in-progress: false
 
 jobs:
-  dev-release:
+  build:
     runs-on: windows-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      exe_sha256: ${{ steps.package.outputs.exe_sha256 }}
+      fx_sha256: ${{ steps.package.outputs.fx_sha256 }}
+      pkg_sha256: ${{ steps.package.outputs.pkg_sha256 }}
+      setup_sha256: ${{ steps.package.outputs.setup_sha256 }}
+      notices_sha256: ${{ steps.package.outputs.notices_sha256 }}
     steps:
       - name: Check out
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -42,7 +56,15 @@ jobs:
       - name: Set up .NET
         uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
-          dotnet-version: 10.0.x
+          global-json-file: global.json
+
+      # setup-dotnet downloads the SDK: the dotnet.exe this job resolves must be Authenticode-valid with an exact Microsoft signer subject
+      # and report the version global.json pins (tools/lib/dotnet-sdk-lib.ps1).
+      - name: Verify the .NET SDK (Authenticode, pinned version)
+        shell: pwsh
+        run: |
+          . ./tools/lib/dotnet-sdk-lib.ps1
+          Assert-DotNetSdk -GlobalJsonPath global.json
 
       - name: Only the dev branch publishes
         shell: pwsh
@@ -61,6 +83,8 @@ jobs:
         env:
           CLINK_TESTS_NO_SKIP: '1'
         run: |
+          . ./tools/feed-lib.ps1
+          $env:CLINK_EXPECT_FEED = (Get-FeedConfig -Path Clink/Assets/feed.json -Channel dev).Mode
           $exe = Get-ChildItem -Path Clink/bin/Release -Filter Clink.exe -Recurse | Select-Object -First 1
           if (-not $exe) { throw 'Clink.exe was not found under Clink/bin/Release' }
           $run = Start-Process -FilePath $exe.FullName -ArgumentList '--unittest' -Wait -PassThru -NoNewWindow
@@ -84,7 +108,7 @@ jobs:
           $code = $LASTEXITCODE
           $ErrorActionPreference = $eap
           if ($code -eq 0) { $latest = [version](($out.Trim() -replace '^v', '') -replace '-.*$', '') }
-          elseif ($out -match 'HTTP 404') { $latest = [version]'0.0.0' }
+          elseif ($out -cmatch '\(HTTP 404\)') { $latest = [version]'0.0.0' }
           else { throw "Could not read the latest release: $out" }
 
           if ($csproj -gt $latest) { $xyz = "$($csproj.Major).$($csproj.Minor).$($csproj.Build)" }
@@ -95,61 +119,339 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Could not list the releases' }
           $maxN = 0
           foreach ($tag in $tags) {
-            if ($tag -match '^v\d+\.\d+\.\d+-dev\.(\d+)$') { $maxN = [Math]::Max($maxN, [int]$Matches[1]) }
+            if ($tag -match '^v[0-9]+\.[0-9]+\.[0-9]+-dev\.([0-9]+)$') { $maxN = [Math]::Max($maxN, [int]$Matches[1]) }
           }
           $n = [Math]::Max([int]$env:GITHUB_RUN_NUMBER, $maxN + 1)
 
           $version = "$xyz-dev.$n"
-          if ($version -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$') { throw "'$version' is not a valid version (expected X.Y.Z-dev.N)" }
+          if ($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+-dev\.[0-9]+$') { throw "'$version' is not a valid version (expected X.Y.Z-dev.N)" }
           Add-Content -Path $env:GITHUB_OUTPUT -Value "version=$version"
           Write-Output "Building Clink $version (csproj $csproj, latest release $latest)"
 
-      - name: Publish
+      # Self-contained (dist/sc, the portable Clink.exe) and framework-dependent (dist/fx, the installer's exe), separate obj/bin.
+      - name: Publish both flavours
         shell: pwsh
         env:
           VERSION: ${{ steps.version.outputs.version }}
           UPDATE_REPO: ${{ github.repository }}
         run: |
-          dotnet publish Clink/Clink.csproj -c Release -o dist "-p:Version=$env:VERSION" "-p:UpdateRepo=$env:UPDATE_REPO"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          if (-not (Test-Path dist/Clink.exe)) { throw 'dist/Clink.exe was not produced' }
-          Get-ChildItem dist | Select-Object Name, Length
+          ./tools/publish-flavours.ps1 -Version $env:VERSION -UpdateRepo $env:UPDATE_REPO
+          Get-ChildItem dist/sc, dist/fx | Select-Object FullName, Length
 
-      - name: Write Clink.exe.sha256
+      # THIRD-PARTY-NOTICES.txt must match tools/notices/sources.json (hashes of every licence text) and the runtime packs / SDK
+      # reference / CsWin32 this restore actually used. Fails when the file is stale or the assets file lacks the runtime packs.
+      - name: Check the third-party notices
         shell: pwsh
         run: |
-          $hash = (Get-FileHash -Path dist/Clink.exe -Algorithm SHA256).Hash.ToLowerInvariant()
-          $path = Join-Path (Get-Location) 'dist/Clink.exe.sha256'
-          [System.IO.File]::WriteAllText($path, "$hash *Clink.exe`n", [System.Text.UTF8Encoding]::new($false))
-          Get-Content $path
+          ./tools/notices/make-notices.ps1 -Check -AssetsFile Clink/obj_sc/project.assets.json
+          if ($LASTEXITCODE -ne 0) { throw 'THIRD-PARTY-NOTICES.txt is out of date (see the output above).' }
 
-      # The app refuses a download whose embedded version differs from its tag (including the -dev.N part).
-      - name: Check the embedded version
+      # The latest .NET 10 Desktop Runtime installer for the setup exe: release metadata from builds.dotnet.microsoft.com, downloaded
+      # into a scratch folder, SHA-512 and Authenticode (Microsoft signer) verified, SHA-256 computed, the file deleted and NEVER run.
+      # The JSON it prints is kept for package.ps1 (-RuntimeInfoPath); it also writes version/url/sha256/sha512/size to GITHUB_OUTPUT.
+      - name: Resolve the .NET runtime installer
+        id: runtime
+        shell: pwsh
+        timeout-minutes: 15
+        run: |
+          $lines = @(& pwsh -NoProfile -File tools/resolve-dotnet-runtime.ps1)
+          if ($LASTEXITCODE -ne 0) { throw 'resolve-dotnet-runtime.ps1 failed (see the output above).' }
+          $jsonLines = @($lines | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ -match '^\{.*\}$' })
+          if ($jsonLines.Count -eq 0) { throw "resolve-dotnet-runtime.ps1 printed no JSON line: $($lines -join ' | ')" }
+          $json = $jsonLines[-1]
+          $info = $json | ConvertFrom-Json
+          if (-not $info.version -or -not $info.url -or -not $info.sha256) { throw "resolve-dotnet-runtime.ps1 printed no version/url/sha256: $json" }
+          [System.IO.File]::WriteAllText((Join-Path $env:RUNNER_TEMP 'dotnet-runtime.json'), $json, (New-Object System.Text.UTF8Encoding($false)))
+          Write-Output "Runtime installer: $($info.version) $($info.sha256)"
+
+      # Dev builds only WARN (::warning::) when the bundled runtime pack is older than the latest runtime; stable releases fail.
+      - name: Check the bundled runtime is current
+        shell: pwsh
+        env:
+          LATEST_RUNTIME: ${{ steps.runtime.outputs.version }}
+        run: |
+          ./tools/check-runtime-freshness.ps1 -AssetsFile Clink/obj_sc/project.assets.json -LatestVersion $env:LATEST_RUNTIME
+          if ($LASTEXITCODE -ne 0) { throw 'The self-contained Clink.exe bundles an outdated .NET runtime (see the output above).' }
+
+      # Both published exes: size guards, --packaging-check, --preflight, the embedded-feed self-test (what the BUILT exes embed from
+      # Clink/Assets/feed.json must match what CI reads from the same file: off for an empty file, on for a complete one; a partly
+      # filled file already fails in Get-FeedConfig) and ProductVersion == the version (the updater refuses a download whose embedded
+      # version differs from its tag). The framework exe needs the WindowsDesktop 10 runtime of the runner image.
+      - name: Check the published exes
+        shell: pwsh
+        timeout-minutes: 20
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          . ./tools/feed-lib.ps1
+          $cfg = Get-FeedConfig -Path Clink/Assets/feed.json -Channel dev
+          Write-Output "Expecting the built exes to embed the feed as: $($cfg.Mode)"
+          ./tools/check-published.ps1 -ScExe dist/sc/Clink.exe -FxExe dist/fx/Clink.exe -Version $env:VERSION -ExpectFeed $cfg.Mode -TimeoutSeconds 90
+
+      # Pinned Inno Setup 6.7.3 (>= 6.3 is needed for x64compatible). Official release asset of github.com/jrsoftware/issrc;
+      # the SHA-256 below was computed from a scratch download and matches the digest GitHub shows for the asset.
+      # Installed into the runner temp folder; nothing from it is trusted before the hash matches.
+      - name: Install Inno Setup (pinned, hash-verified)
+        shell: pwsh
+        env:
+          INNO_URL: https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe
+          INNO_SHA256: 9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732
+        run: |
+          $setup = Join-Path $env:RUNNER_TEMP 'innosetup-6.7.3.exe'
+          Invoke-WebRequest -Uri $env:INNO_URL -OutFile $setup -UseBasicParsing
+          $actual = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $env:INNO_SHA256) { throw "Inno Setup installer hash mismatch: got $actual, expected $env:INNO_SHA256" }
+          $dir = Join-Path $env:RUNNER_TEMP 'InnoSetup'
+          $run = Start-Process -FilePath $setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', "/DIR=$dir" -Wait -PassThru
+          if ($run.ExitCode -ne 0) { throw "Inno Setup install failed (exit code $($run.ExitCode))" }
+          if (-not (Test-Path (Join-Path $dir 'ISCC.exe'))) { throw 'ISCC.exe not found after the Inno Setup install' }
+
+      - name: Package (Clink.exe, Clink-framework.exe, sha256 files, installer)
+        id: package
         shell: pwsh
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          $embedded = ((Get-Item dist/Clink.exe).VersionInfo.ProductVersion -split '\+')[0]
-          if ($embedded -ne $env:VERSION) { throw "dist/Clink.exe reports '$embedded' but the tag will be v$env:VERSION; the updater would refuse it" }
-          Write-Output "Clink.exe reports $embedded"
+          ./tools/package.ps1 -ExePath dist/sc/Clink.exe -FrameworkExePath dist/fx/Clink.exe -Version $env:VERSION -OutDir dist/package -IsccPath (Join-Path $env:RUNNER_TEMP 'InnoSetup\ISCC.exe') -RuntimeInfoPath (Join-Path $env:RUNNER_TEMP 'dotnet-runtime.json') -RequireInstaller
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $pkg = Get-Content -Raw dist/package/package.json | ConvertFrom-Json
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "exe_sha256=$($pkg.files.exe.sha256)"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "fx_sha256=$($pkg.files.exeFramework.sha256)"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "pkg_sha256=$((Get-FileHash dist/package/package.json -Algorithm SHA256).Hash.ToLowerInvariant())"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "setup_sha256=$($pkg.files.installer.sha256)"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "notices_sha256=$($pkg.files.notices.sha256)"
+          Get-Content dist/package/Clink.exe.sha256, dist/package/Clink-framework.exe.sha256
 
-      - name: Create GitHub prerelease
+      - name: Upload package artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: clink-package
+          path: dist/package/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: windows-latest
+    environment: feed-dev
+    # One publisher at a time, never cancelled half way.
+    concurrency:
+      group: feed-dev-publish
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      # Guards run before any secret is referenced by a step.
+      - name: Guard - dev branch only, release not yet there
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -ne 'refs/heads/dev') { throw "dev builds publish only from the dev branch (this run is on $env:GITHUB_REF)" }
+          if ($env:VERSION -notmatch '^[0-9]+\.[0-9]+\.[0-9]+-dev\.[0-9]+$') { throw "'$env:VERSION' is not an X.Y.Z-dev.N version" }
+          $eap = $ErrorActionPreference
+          $ErrorActionPreference = 'Continue'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $probe = (& gh release view "v$env:VERSION" 2>&1 | Out-String)
+          $exists = $LASTEXITCODE -eq 0
+          $global:LASTEXITCODE = 0                       # the runner appends an exit-code check; "not found" is handled below
+          $ErrorActionPreference = $eap
+          if ($exists) { throw "A GitHub release v$env:VERSION already exists (published or draft); refusing to touch it." }
+          if ($probe -notmatch 'release not found|HTTP 404') { throw "Could not check whether release v$env:VERSION exists: $probe" }
+
+      - name: Check out
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Download package artifact
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: clink-package
+          path: dist/package
+
+      - name: Verify the package matches the build job
+        shell: pwsh
+        env:
+          EXE_SHA256: ${{ needs.build.outputs.exe_sha256 }}
+          FX_SHA256: ${{ needs.build.outputs.fx_sha256 }}
+          PKG_SHA256: ${{ needs.build.outputs.pkg_sha256 }}
+          SETUP_SHA256: ${{ needs.build.outputs.setup_sha256 }}
+          NOTICES_SHA256: ${{ needs.build.outputs.notices_sha256 }}
+        run: |
+          # package.json drives the manifest script (file names, hashes, minRuntime): it must be the one the build job wrote.
+          $pkgHash = (Get-FileHash dist/package/package.json -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($pkgHash -ne $env:PKG_SHA256) { throw "package.json in the artifact ($pkgHash) is not what the build job produced ($env:PKG_SHA256)" }
+          $exe = (Get-FileHash dist/package/Clink.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($exe -ne $env:EXE_SHA256) { throw "Clink.exe in the artifact ($exe) is not what the build job produced ($env:EXE_SHA256)" }
+          $fx = (Get-FileHash dist/package/Clink-framework.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($fx -ne $env:FX_SHA256) { throw "Clink-framework.exe in the artifact ($fx) is not what the build job produced ($env:FX_SHA256)" }
+          $setup = (Get-FileHash "dist/package/Clink-Setup.exe" -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($setup -ne $env:SETUP_SHA256) { throw "The setup exe in the artifact ($setup) is not what the build job produced ($env:SETUP_SHA256)" }
+          $notices = (Get-FileHash dist/package/THIRD-PARTY-NOTICES.txt -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($notices -ne $env:NOTICES_SHA256) { throw "THIRD-PARTY-NOTICES.txt in the artifact ($notices) is not what the build job produced ($env:NOTICES_SHA256)" }
+          $line = (Get-Content -Raw dist/package/Clink.exe.sha256).Trim()
+          if ($line -ne "$exe *Clink.exe") { throw "Clink.exe.sha256 does not describe Clink.exe: $line" }
+          $fxLine = (Get-Content -Raw dist/package/Clink-framework.exe.sha256).Trim()
+          if ($fxLine -ne "$fx *Clink-framework.exe") { throw "Clink-framework.exe.sha256 does not describe Clink-framework.exe: $fxLine" }
+          $setupLine = (Get-Content -Raw dist/package/Clink-Setup.exe.sha256).Trim()
+          if ($setupLine -ne "$setup *Clink-Setup.exe") { throw "Clink-Setup.exe.sha256 does not describe Clink-Setup.exe: $setupLine" }
+          Write-Output "Package verified (Clink.exe $exe, Clink-framework.exe $fx)"
+
+      # Trust anchors come from the committed Clink/Assets/feed.json (the same file that was embedded in Clink.exe).
+      - name: Read feed configuration
+        id: feed
+        shell: pwsh
+        run: |
+          . ./tools/feed-lib.ps1
+          $cfg = Get-FeedConfig -Path Clink/Assets/feed.json -Channel dev
+          $enabled = $cfg.Enabled
+          if (-not $enabled) { Write-Output "::warning::Dev update feed is not enabled in Clink/Assets/feed.json ($($cfg.Reason)); publishing the GitHub release without manifest assets." }
+          Add-Content -Path $env:GITHUB_OUTPUT -Value ('enabled=' + $enabled.ToString().ToLowerInvariant())
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "feed_url=$($cfg.FeedUrl)"
+
+      # The feed cannot be switched off once it was on (docs/RELEASING.md): refuse a feed-less publish when any earlier release (drafts
+      # included) of this repository carried dev.json. Read-only API calls (gh api GET, paginated) with the job token.
+      - name: Guard - a feed that was on stays on
+        if: steps.feed.outputs.enabled != 'true'
+        shell: pwsh
+        run: |
+          . ./tools/lib/feed-publish-lib.ps1
+          $names = @(& gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" --paginate --jq '.[].assets[].name')
+          if ($LASTEXITCODE -ne 0) { throw 'Could not list the assets of the earlier releases.' }
+          Assert-FeedNeverWasOn -Channel dev -AssetNames $names
+
+      # Fail before anything is published if the bucket credentials are missing. Presence check only; nothing is printed.
+      - name: Check bucket secrets
+        if: steps.feed.outputs.enabled == 'true'
+        shell: pwsh
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_DEV_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_DEV_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_DEV_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_DEV_BUCKET }}
+        run: |
+          $missing = 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_ENDPOINT', 'R2_BUCKET' |
+            Where-Object { [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) }
+          if ($missing) { throw "The dev feed is enabled in feed.json but these secrets are missing from the feed-dev environment (R2_DEV_ACCESS_KEY_ID, R2_DEV_SECRET_ACCESS_KEY, R2_DEV_ENDPOINT, R2_DEV_BUCKET): $($missing -join ', ')" }
+
+      # Security M1: the highest earlier PUBLISHED (non-draft) release of this repository that carried dev.json is a second downgrade
+      # floor, so an emptied or rolled-back bucket cannot lower it (docs/RELEASING.md, "Recovering a stuck feed"). Read-only GET.
+      - name: Find the GitHub history floor
+        id: history
+        if: steps.feed.outputs.enabled == 'true'
+        shell: pwsh
+        run: |
+          . ./tools/lib/feed-publish-lib.ps1
+          $listing = @(& gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" --paginate --jq '.[] | [.tag_name, (.draft | tostring), ([.assets[].name] | join(","))] | @tsv')
+          if ($LASTEXITCODE -ne 0) { throw 'Could not list the earlier releases.' }
+          $floor = Get-FeedHistoryFloor -Channel dev -Listing $listing
+          Write-Output "GitHub history floor: $floor"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "floor=$floor"
+      # The signing key exists only in this step's environment.
+      - name: Make and sign the manifest
+        if: steps.feed.outputs.enabled == 'true'
+        shell: pwsh
+        env:
+          CLINK_FEED_SIGNING_KEY: ${{ secrets.CLINK_FEED_DEV_SIGNING_KEY }}
+          FEED_URL: ${{ steps.feed.outputs.feed_url }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:CLINK_FEED_SIGNING_KEY)) { throw 'The dev feed is enabled in feed.json but CLINK_FEED_DEV_SIGNING_KEY is missing from the feed-dev environment.' }
+          $tag = "v$env:VERSION"
+          ./tools/make-manifest.ps1 -Channel dev -Version $env:VERSION -Tag $tag -BaseUrl "$($env:FEED_URL)dev/$tag/" `
+            -NotesUrl "https://github.com/$env:GITHUB_REPOSITORY/releases/tag/$tag" -PackageDir dist/package -FeedJson Clink/Assets/feed.json
+          Get-ChildItem dist/package | Select-Object Name, Length
+
+      - name: List release assets
+        id: assets
+        shell: pwsh
+        run: |
+          $files = @('dist/package/Clink.exe', 'dist/package/Clink.exe.sha256', 'dist/package/Clink-framework.exe', 'dist/package/Clink-framework.exe.sha256', 'dist/package/Clink-Setup.exe', 'dist/package/Clink-Setup.exe.sha256', 'dist/package/THIRD-PARTY-NOTICES.txt')
+          if (Test-Path dist/package/dev.json) { $files += 'dist/package/dev.json', 'dist/package/dev.json.sig' }
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "files<<EOF`n$($files -join "`n")`nEOF"
+
+      # A DRAFT first: nothing is visible until the bucket upload succeeded.
+      - name: Create GitHub release (draft)
+        id: draft
         uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631 # v2.2.2
         with:
-          tag_name: v${{ steps.version.outputs.version }}
-          name: Clink v${{ steps.version.outputs.version }} (dev)
+          tag_name: v${{ needs.build.outputs.version }}
+          name: Clink v${{ needs.build.outputs.version }} (dev)
           target_commitish: ${{ github.sha }}
+          draft: true
           prerelease: true
           make_latest: false
           generate_release_notes: false
           fail_on_unmatched_files: true
           body: Dev build of ${{ github.sha }} from the dev branch. Clink installs it only with Dev Build turned on (click the version in the footer).
-          files: |
-            dist/Clink.exe
-            dist/Clink.exe.sha256
+          files: ${{ steps.assets.outputs.files }}
+
+      # Refuse to publish a release that lacks any of the expected assets. Looked up by the draft's release ID (never by tag); the ID
+      # reaches the script only through env. Every required name must exist exactly once, uploaded, with the size of the local file and,
+      # when GitHub reports a digest, the SHA-256 of the local file (hash-checked against the build job before the upload).
+      - name: Verify the release assets
+        shell: pwsh
+        env:
+          RELEASE_ID: ${{ steps.draft.outputs.id }}
+        run: |
+          if ($env:RELEASE_ID -cnotmatch '\A[0-9]+\z') { throw 'The draft release ID is missing or not numeric.' }
+          $json = (& gh api "repos/$env:GITHUB_REPOSITORY/releases/$env:RELEASE_ID" | Out-String)
+          if ($LASTEXITCODE -ne 0) { throw "Could not read release $env:RELEASE_ID." }
+          $release = $json | ConvertFrom-Json
+          if ($release.draft -ne $true) { throw "Release $env:RELEASE_ID is not a draft." }
+          if (-not ($release.tag_name -ceq "v$env:VERSION")) { throw "Release $env:RELEASE_ID has tag '$($release.tag_name)', expected v$env:VERSION." }
+          if ($release.prerelease -ne $true) { throw "Release $env:RELEASE_ID is not flagged as a prerelease; a dev build must never be a normal release." }
+          $required = @('Clink.exe', 'Clink.exe.sha256', 'Clink-framework.exe', 'Clink-framework.exe.sha256', 'Clink-Setup.exe', 'Clink-Setup.exe.sha256', 'THIRD-PARTY-NOTICES.txt')
+          # The channel manifest and its signature, when this build produced them (feed enabled): they were attached with the other assets.
+          if (Test-Path -LiteralPath dist/package/dev.json) { $required += 'dev.json', 'dev.json.sig' }
+          foreach ($name in $required) {
+            $found = @($release.assets | Where-Object { $_.name -ceq $name })
+            if ($found.Count -ne 1) { throw "Release v$env:VERSION lacks exactly one asset named $name (found $($found.Count); has: $((@($release.assets) | ForEach-Object { $_.name }) -join ', '))" }
+            $asset = $found[0]
+            if (-not ($asset.state -ceq 'uploaded')) { throw "Asset $name is in state '$($asset.state)', expected 'uploaded'." }
+            $local = Get-Item -LiteralPath (Join-Path 'dist/package' $name)
+            if ([int64]$asset.size -ne $local.Length) { throw "Asset $name has $($asset.size) bytes on GitHub, the local file has $($local.Length)." }
+            $digest = [string]$asset.digest
+            if ($digest) {
+              $expected = 'sha256:' + (Get-FileHash -LiteralPath $local.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+              if (-not ($digest -ceq $expected)) { throw "Asset $name has digest $digest on GitHub, expected $expected." }
+            } else {
+              Write-Output "::warning::GitHub reports no digest for $name; relying on its size and the hash check before the upload."
+            }
+          }
+          Write-Output "Release v$env:VERSION (id $env:RELEASE_ID) has all $($required.Count) required assets"
+
+      - name: Publish to the update feed
+        if: steps.feed.outputs.enabled == 'true'
+        shell: pwsh
+        timeout-minutes: 30
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_DEV_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_DEV_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_DEV_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_DEV_BUCKET }}
+          HISTORY_FLOOR: ${{ steps.history.outputs.floor }}
+          CLINK_FEED_BUCKET_RESET_VERSION: ${{ vars.CLINK_FEED_BUCKET_RESET_VERSION }}
+          CLINK_FEED_KEY_PREFIX: ${{ vars.CLINK_FEED_KEY_PREFIX }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+        run: ./tools/upload-feed.ps1 -Channel dev -Version $env:VERSION -PackageDir dist/package -FeedJson Clink/Assets/feed.json -HistoryFloor $env:HISTORY_FLOOR
+
+      # Published by ID; a dev build is a prerelease and never becomes "latest".
+      - name: Publish the GitHub release
+        shell: pwsh
+        env:
+          RELEASE_ID: ${{ steps.draft.outputs.id }}
+        run: |
+          if ($env:RELEASE_ID -cnotmatch '\A[0-9]+\z') { throw 'The draft release ID is missing or not numeric.' }
+          gh api -X PATCH "repos/$env:GITHUB_REPOSITORY/releases/$env:RELEASE_ID" -F draft=false -f make_latest=false
+          if ($LASTEXITCODE -ne 0) { throw 'Could not publish the draft release' }
 
       # Housekeeping: a failure here must not fail a build that was already published.
       - name: Prune old dev builds
+        if: ${{ !cancelled() }}
         continue-on-error: true
         shell: pwsh
         env:
@@ -157,8 +459,8 @@ jobs:
         run: |
           $tags = & gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" --jq '.[].tag_name'
           if ($LASTEXITCODE -ne 0) { throw 'Could not list the releases' }
-          $dev = @($tags | Where-Object { $_ -match '^v\d+\.\d+\.\d+-dev\.(\d+)$' } |
-            Sort-Object { [int]([regex]::Match($_, '-dev\.(\d+)$').Groups[1].Value) } -Descending)
+          $dev = @($tags | Where-Object { $_ -match '^v[0-9]+\.[0-9]+\.[0-9]+-dev\.([0-9]+)$' } |
+            Sort-Object { [int]([regex]::Match($_, '-dev\.([0-9]+)$').Groups[1].Value) } -Descending)
           foreach ($t in ($dev | Select-Object -Skip 10)) {
             Write-Output "Deleting $t"
             & gh release delete $t --cleanup-tag --yes --repo $env:GITHUB_REPOSITORY
