@@ -50,6 +50,18 @@ internal sealed partial class AppController : IDisposable
     public static bool DevQuietRecord { get; set; }
     /// <summary>A dev instance started with <c>--dev-quiet</c>; false for a normal run and for a plain <c>--dev</c> run.</summary>
     public static bool IsQuiet => QuietMode.IsQuiet(IsDev, DevQuiet);
+    /// <summary><c>--dev-no-marker</c> (quiet dev instances only): documentation screenshots without the TEST marker.</summary>
+    public static bool DevNoMarker { get; set; }
+    /// <summary><c>--dev-demo-status "game"</c> (quiet dev instances only): the game the header pretends to record.</summary>
+    public static string? DevDemoStatus { get; set; }
+    /// <summary>The TEST frame, badge and tags are drawn: a dev instance, unless <c>--dev-no-marker</c> hides them.</summary>
+    public static bool ShowsDevMarker => IsDev && !DocShots;
+    /// <summary>Documentation-screenshot mode: <c>--dev</c> with <c>--dev-quiet</c> and <c>--dev-no-marker</c> (nothing else turns it on).</summary>
+    public static bool DocShots => QuietMode.HidesMarker(IsDev, DevQuiet, DevNoMarker);
+    /// <summary>"Recording · game" while <c>--dev-demo-status</c> is in force, otherwise null.</summary>
+    public static string? DemoStatusText => QuietMode.DemoStatusText(IsDev, DevQuiet, DevDemoStatus);
+    /// <summary>The game <c>--dev-demo-status</c> pretends to have detected, otherwise null.</summary>
+    public static string? DemoGame => QuietMode.DemoGameName(IsDev, DevQuiet, DevDemoStatus);
     public static string PipeName => "Clink.Control" + InstanceSuffix;
     /// <summary>
     /// The pipe both ends really use: <see cref="PipeName"/> plus this Windows session's id, so a Clink in another session (another
@@ -61,7 +73,7 @@ internal sealed partial class AppController : IDisposable
 
     /// <summary>The switches that make a restarted process this same dev instance (see <see cref="DevOptions.Switches"/>); none for a normal run.</summary>
     internal static List<string> DevSwitches() =>
-        IsDev ? DevOptions.Switches(Settings.Dir, DevHotkeys, DevRecord, DevToken, SettingsImport.PackagesRoot, DevQuiet, DevQuietRecord) : new List<string>();
+        IsDev ? DevOptions.Switches(Settings.Dir, DevHotkeys, DevRecord, DevToken, SettingsImport.PackagesRoot, DevQuiet, DevQuietRecord, DevNoMarker, DevDemoStatus) : new List<string>();
     private static readonly TimeSpan GameExitGrace = TimeSpan.FromSeconds(5);   // keep recording this long after the game's process is gone
 
     public static AppController Instance { get; private set; } = null!;

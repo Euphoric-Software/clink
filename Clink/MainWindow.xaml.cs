@@ -334,7 +334,7 @@ public partial class MainWindow : Window
     /// </summary>
     private void ApplyDevMarker()
     {
-        if (!AppController.IsDev) return;
+        if (!AppController.ShowsDevMarker) return;   // a normal run, or --dev-quiet --dev-no-marker (documentation screenshots)
         var yellow = (SolidColorBrush)new BrushConverter().ConvertFromInvariantString(DevInstanceMarker.YellowHex)!;
         WindowFrame.BorderBrush = yellow;
         WindowFrame.BorderThickness = new Thickness(3);
@@ -488,7 +488,7 @@ public partial class MainWindow : Window
         TokenSaveButton.IsEnabled = false;
         CopiumPlusCheck.IsChecked = s.CopiumPlus;
 
-        ClipsFolderBox.Text = s.ClipsFolder;
+        ClipsFolderBox.Text = QuietMode.Shown(AppController.DocShots, s.ClipsFolder, QuietMode.DocClipsFolder);   // display only: the handler returns at once in doc-shot mode
         ArchiveCheck.IsChecked = s.ArchiveEnabled;
         ArchivePathBox.Text = s.ArchivePath ?? "";
         ArchiveDaysBox.Text = s.ArchiveAfterDays.ToString(CultureInfo.InvariantCulture);
@@ -496,7 +496,7 @@ public partial class MainWindow : Window
         UpdateArchiveEnabled();
         RefreshArchiveStatus();
 
-        ScreenshotFolderBox.Text = ScreenshotService.FolderFor(s);
+        ScreenshotFolderBox.Text = QuietMode.Shown(AppController.DocShots, ScreenshotService.FolderFor(s), QuietMode.DocScreenshotsFolder);
         ScreenshotCopyCheck.IsChecked = s.ScreenshotCopyImage;
         ScreenshotLoupeCheck.IsChecked = s.ScreenshotLoupe;
         var (shotUpload, shotCopyLink) = ScreenshotChecksFor(s);
@@ -533,7 +533,7 @@ public partial class MainWindow : Window
             ? $"Updates come from github.com/{repo}{(_app.Updater.RepoOverridden ? " (UpdateRepo in settings.json)" : "")} · click for update options"
             : NoUpdatesText;
         RefreshUpdateState();
-        SettingsDirText.Text = "Saved in " + Settings.Dir;
+        SettingsDirText.Text = "Saved in " + QuietMode.Shown(AppController.DocShots, Settings.Dir, QuietMode.DocSettingsDir);
         RefreshSettingsBanners();
         SettingsImport.PendingChanged -= OnImportPendingChanged;
         SettingsImport.PendingChanged += OnImportPendingChanged;
@@ -907,9 +907,12 @@ public partial class MainWindow : Window
         }
         var eng = _app.Engine;
         var state = _app.State;
-        StatusDot.SetResourceReference(System.Windows.Shapes.Shape.FillProperty, StatusDotWindow.KeyFor(state, _app.IsManualRecording));
+        // --dev-demo-status (quiet dev instances only, documentation screenshots): the normal recording look without recording anything.
+        string? demo = _app.Settings.ClipsEnabled ? AppController.DemoStatusText : null;
+        if (demo != null) state = RecordingState.Recording;
+        StatusDot.SetResourceReference(System.Windows.Shapes.Shape.FillProperty, StatusDotWindow.KeyFor(state, demo == null && _app.IsManualRecording));
         StatusDot.Visibility = _app.Settings.ClipsEnabled ? Visibility.Visible : Visibility.Collapsed;
-        StatusText.Text = _app.StatusText;
+        StatusText.Text = demo ?? _app.StatusText;
 
         bool noticeShowing = DateTime.UtcNow < _noticeUntil;
         if (eng.IsRunning)
@@ -927,7 +930,7 @@ public partial class MainWindow : Window
         else
         {
             if (!noticeShowing)
-                FooterText.Text = !_app.Settings.ClipsEnabled ? "" : state switch
+                FooterText.Text = !_app.Settings.ClipsEnabled || demo != null ? "" : state switch
                 {
                     RecordingState.Error => eng.Error ?? "Error",
                     RecordingState.WaitingForGame => "Not recording until a game or custom app runs (Capture → Recording)",
@@ -936,7 +939,7 @@ public partial class MainWindow : Window
                 };
             // Never leave the previous run's "● Mix   ● Game" line under a Paused / Error / Starting header: with the pickers
             // right above it, that reads as "my new selection is active".
-            AudioStatus.Text = state switch
+            AudioStatus.Text = demo != null ? "" : state switch   // the demo status: nothing is really captured, so no audio line
             {
                 RecordingState.Paused => "Paused",
                 RecordingState.WaitingForGame => "Starts with the game",
@@ -945,7 +948,7 @@ public partial class MainWindow : Window
             };
         }
 
-        string? game2 = _app.CurrentGame;
+        string? game2 = demo != null ? AppController.DemoGame : _app.CurrentGame;   // the demo game reads as detected
         string source = _app.CurrentGameSource switch { "fullscreen" => "fullscreen window", "library" => "game library folder", "custom" => "custom app", _ => "" };
         ModeStatus.Text = _app.GameOnly
             ? game2 != null ? $"Detected: {game2}{(source.Length > 0 ? $" ({source})" : "")}" : "Waiting for a game… detected by a fullscreen window on the captured monitor, a known game-library folder (Steam, Epic, Riot, Battle.net, Ubisoft, EA, GOG, Xbox, Rockstar) or a custom app below."
@@ -1120,7 +1123,7 @@ public partial class MainWindow : Window
         UpdateProblemText.Text = problem ?? "";
         UpdateProblemText.Visibility = problem != null ? Visibility.Visible : Visibility.Collapsed;
         CheckUpdateButton.IsEnabled = _app.Updater.Repo != null;
-        if (_app.Updater.Repo == null) UpdateVersionText.Text = $"Clink v{_app.Updater.VersionDisplay} · {NoUpdatesText.ToLowerInvariant()}";
+        if (_app.Updater.Repo == null && !AppController.DocShots) UpdateVersionText.Text = $"Clink v{_app.Updater.VersionDisplay} · {NoUpdatesText.ToLowerInvariant()}";
     }
 
     /// <summary>Why there is nothing to check: a --dev instance never looks for updates; any other build has no update repository.</summary>
@@ -1495,7 +1498,7 @@ public partial class MainWindow : Window
 
     private void ClipsFolderBox_LostFocus(object sender, RoutedEventArgs e)
     {
-        if (_loading) return;
+        if (_loading || AppController.DocShots) return;   // doc-shot mode shows a placeholder here: never read back, never saved
         var s = _app.Settings;
         string path = ClipsFolderBox.Text.Trim().Trim('"');
         if (path.Length == 0 || string.Equals(path, s.ClipsFolder, StringComparison.OrdinalIgnoreCase)) { ClipsFolderBox.Text = s.ClipsFolder; return; }
@@ -1621,7 +1624,7 @@ public partial class MainWindow : Window
 
     private void ScreenshotFolderBox_LostFocus(object sender, RoutedEventArgs e)
     {
-        if (_loading) return;
+        if (_loading || AppController.DocShots) return;   // shows a placeholder in doc-shot mode (see ClipsFolderBox_LostFocus)
         var s = _app.Settings;
         string path = ScreenshotFolderBox.Text.Trim().Trim('"');
         if (path.Length == 0)

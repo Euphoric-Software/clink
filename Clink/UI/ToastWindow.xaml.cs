@@ -166,14 +166,15 @@ internal sealed class Toasts : IScreenshotToasts
     /// <summary>Shows a sample toast of a kind ("clip" | "shared" | "recording" | "screenshot") with the current position and duration, ignoring the enable switch.</summary>
     public void Preview(string kind) => Post(() =>
     {
-        var sample = new ClipEntry { Path = "Overwatch 2026-10-20 21-04-11.mp4", Game = "Overwatch", Duration = 90, Size = 190_000_000, Created = DateTime.Now };
+        string game = QuietMode.SampleToastGame(AppController.DemoGame);
+        var sample = new ClipEntry { Path = game + " 2026-10-20 21-04-11.mp4", Game = game, Duration = 90, Size = 190_000_000, Created = DateTime.Now };
         switch ((kind ?? "clip").Trim().ToLowerInvariant())
         {
             case "shared":
                 Add(new ToastWindow(this, "shared", sample, "https://copium.pics/v/example", "Shared · link copied", "https://copium.pics/v/example", Duration(_settings.ToastShared), true));
                 break;
             case "recording":
-                Add(new ToastWindow(this, "recording", null, null, "Recording started", "Overwatch", Duration(_settings.ToastRecording), true));
+                Add(new ToastWindow(this, "recording", null, null, "Recording started", game, Duration(_settings.ToastRecording), true));
                 break;
             case "screenshot":
                 var shot = new ScreenshotEntry { Path = "Screenshot 2026-10-20 21-04-11.png", Width = 2560, Height = 1440, Size = 1_200_000, Created = DateTime.Now };
@@ -289,9 +290,9 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         bool canUpload = false)
     {
         InitializeComponent();
-        if (AppController.IsDev)
+        if (AppController.ShowsDevMarker)
         {
-            // a test (--dev) instance: a yellow "TEST" tag by the title and the same yellow frame as its main window
+            // a test (--dev) instance (unless --dev-no-marker): a yellow "TEST" tag by the title and the same yellow frame as its main window
             TestTag.Visibility = Visibility.Visible;
             Card.BorderBrush = new SolidColorBrush((Color)ColorConverter.ConvertFromString(DevInstanceMarker.YellowHex));
             Card.BorderThickness = new Thickness(3);
@@ -326,7 +327,7 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         _hide.Tick += (_, _) => { if (!_busy) Dismiss(); };
         MouseEnter += (_, _) => _hide.Stop();
         MouseLeave += (_, _) => { if (!_busy && !_dismissed) _hide.Start(); };
-        SourceInitialized += (_, _) => ScreenPlacement.ExcludeFromCapture(new WindowInteropHelper(this).Handle);
+        SourceInitialized += (_, _) => ScreenPlacement.ExcludeFromCaptureUnlessDocShots(new WindowInteropHelper(this).Handle);
     }
 
     /// <summary>
@@ -696,6 +697,15 @@ internal static unsafe class ScreenPlacement
     public static void ExcludeFromCapture(nint hwnd)
     {
         if (hwnd != 0) SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
+    }
+
+    /// <summary>
+    /// <see cref="ExcludeFromCapture"/> for the toast and the share window only: in documentation-screenshot mode (<see cref="AppController.DocShots"/>)
+    /// they are off-screen and the display affinity would blank their PrintWindow pictures. Every other window always stays excluded.
+    /// </summary>
+    public static void ExcludeFromCaptureUnlessDocShots(nint hwnd)
+    {
+        if (!AppController.DocShots) ExcludeFromCapture(hwnd);
     }
 
     /// <summary>Current size in physical pixels.</summary>

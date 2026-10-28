@@ -79,7 +79,7 @@ public partial class ShareWindow : Window, ICaptureExcludedWindow
         SourceInitialized += (_, _) =>
         {
             // Topmost and on the captured monitor: keep it out of the clips, like the toasts and the status dot.
-            ScreenPlacement.ExcludeFromCapture(new WindowInteropHelper(this).Handle);
+            ScreenPlacement.ExcludeFromCaptureUnlessDocShots(new WindowInteropHelper(this).Handle);
             AppController.Instance.StateChanged += UpdateTopmost;   // once there is a window; it is let go of when it closes
         };
         Closed += (_, _) =>
