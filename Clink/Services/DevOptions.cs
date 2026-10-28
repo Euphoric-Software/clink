@@ -173,6 +173,10 @@ internal sealed record DevOptions(string Folder, bool BindHotkeys)
             throw new ArgumentException("--dev-no-marker cannot be used with --dev-quiet-record: a recording instance must keep its TEST marker");
 
         string folder = folderArg == null ? DefaultFolder : Unquote(folderArg);
+        if (AppDataRedirect.IsDevicePath(folder))
+            throw new ArgumentException($"the data folder '{folder}' is written in the device form (\\\\?\\, \\\\.\\, \\??\\): that says nothing about where it is, so use a plain path like .\\devdata");
+        if (AppDataRedirect.HasStreamColon(folder))
+            throw new ArgumentException($"the data folder '{folder}' has a ':' after the drive (an alternate data stream, not a folder): use a plain path");
         try { folder = Path.GetFullPath(folder); }
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
         {
@@ -257,6 +261,10 @@ internal sealed record DevOptions(string Folder, bool BindHotkeys)
     private static void RefuseUnsafeFolder(string folder)
     {
         string? resolved = AppDataRedirect.ResolvedPath(folder);
+        // Fail closed: a folder that cannot be resolved (no part of it exists, or Windows will not say, a junction whose target is gone,
+        // say) cannot be judged by where it really is.
+        if (resolved == null)
+            throw new ArgumentException($"the data folder {folder} cannot be checked: Windows will not say where it really is (its drive or a junction or symbolic link in it does not lead anywhere): use another folder");
         var candidates = new List<string> { folder };
         if (resolved != null && !SamePath(resolved, folder)) candidates.Add(resolved);
 

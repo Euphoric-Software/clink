@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using Clink.Services;
 
 namespace Clink.Tests;
@@ -21,11 +22,71 @@ internal static class TestJunction
             using var p = Process.Start(psi)!;
             string output = p.StandardOutput.ReadToEnd() + p.StandardError.ReadToEnd();
             if (!p.WaitForExit(15000)) { try { p.Kill(); } catch { } why = "mklink did not finish"; return false; }
-            if (p.ExitCode != 0 || !Directory.Exists(link)) { why = $"mklink exited with {p.ExitCode}: {output.Trim()}"; return false; }
-            return true;
+            if (p.ExitCode == 0 && Resolves(link, target)) return true;
+            // mklink (cmd.exe) cannot do paths past MAX_PATH where LongPathsEnabled is off, and can leave a link that points nowhere:
+            // remove what it left and set the reparse point ourselves, on \\?\ paths.
+            string mklinkSaid = $"mklink exited with {p.ExitCode}: {output.Trim()}";
+            Remove(link);
+            if (TryMakeDirect(link, target, out string direct) && Resolves(link, target)) return true;
+            why = $"{mklinkSaid}; direct: {direct}";
+            Remove(link);
+            return false;
         }
         catch (Exception ex) { why = ex.Message; return false; }
     }
+
+    /// <summary>The link is a junction whose target is <paramref name="target"/> and that opens (a junction that points nowhere is not one).</summary>
+    private static bool Resolves(string link, string target)
+    {
+        try
+        {
+            var info = new DirectoryInfo(link);
+            var resolved = info.ResolveLinkTarget(returnFinalTarget: false);
+            if (resolved == null) return false;
+            string a = Path.GetFullPath(resolved.FullName).TrimEnd('\\', '/'), b = Path.GetFullPath(target).TrimEnd('\\', '/');
+            return a.Equals(b, StringComparison.OrdinalIgnoreCase) && Directory.Exists(link) && Directory.Exists(target);
+        }
+        catch (Exception) { return false; }
+    }
+
+    /// <summary>A junction made with FSCTL_SET_REPARSE_POINT on a \\?\ path of the (new, empty) folder <paramref name="link"/>.</summary>
+    private static bool TryMakeDirect(string link, string target, out string why)
+    {
+        why = "";
+        try
+        {
+            string full = Path.GetFullPath(target).TrimEnd('\\', '/');
+            byte[] sub = System.Text.Encoding.Unicode.GetBytes(@"\??\" + full), print = System.Text.Encoding.Unicode.GetBytes(full);
+            var buf = new byte[8 + 8 + sub.Length + 2 + print.Length + 2];
+            BitConverter.GetBytes(0xA0000003u).CopyTo(buf, 0);                         // IO_REPARSE_TAG_MOUNT_POINT
+            BitConverter.GetBytes((ushort)(buf.Length - 8)).CopyTo(buf, 4);            // ReparseDataLength
+            BitConverter.GetBytes((ushort)0).CopyTo(buf, 8);                           // SubstituteNameOffset
+            BitConverter.GetBytes((ushort)sub.Length).CopyTo(buf, 10);                 // SubstituteNameLength
+            BitConverter.GetBytes((ushort)(sub.Length + 2)).CopyTo(buf, 12);           // PrintNameOffset
+            BitConverter.GetBytes((ushort)print.Length).CopyTo(buf, 14);               // PrintNameLength
+            sub.CopyTo(buf, 16);
+            print.CopyTo(buf, 16 + sub.Length + 2);
+            Directory.CreateDirectory(link);
+            nint h = CreateFileW(AppDataRedirect.ExtendedPath(link), 0x40000000, 7, 0, 3, 0x02000000 | 0x00200000, 0);   // GENERIC_WRITE, OPEN_EXISTING, BACKUP_SEMANTICS | OPEN_REPARSE_POINT
+            if (h == -1) { why = "CreateFile failed, error " + Marshal.GetLastWin32Error(); return false; }
+            try
+            {
+                if (!DeviceIoControl(h, 0x000900A4, buf, (uint)buf.Length, 0, 0, out _, 0)) { why = "FSCTL_SET_REPARSE_POINT failed, error " + Marshal.GetLastWin32Error(); return false; }
+                return true;
+            }
+            finally { CloseHandle(h); }
+        }
+        catch (Exception ex) { why = ex.Message; return false; }
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern nint CreateFileW(string fileName, uint access, uint share, nint security, uint disposition, uint flags, nint template);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool DeviceIoControl(nint device, uint code, byte[] inBuffer, uint inSize, nint outBuffer, uint outSize, out uint returned, nint overlapped);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(nint handle);
 
     /// <summary>Removes the junction itself (not what it points to).</summary>
     public static void Remove(string link)
@@ -33,13 +94,14 @@ internal static class TestJunction
         try { if (Directory.Exists(link)) Directory.Delete(link, recursive: false); } catch { }
     }
 
-    /// <summary>Says that a test did not check what it is for, in the log and on the console. Always true, so a test can `return Skipped(...)`-style.</summary>
-    public static bool Skipped(string test, string why)
+    /// <summary>
+    /// Ends the test as skipped (<see cref="Check.Skip"/>: the runner prints SKIP and counts it, and CLINK_TESTS_NO_SKIP=1 turns it into a
+    /// failure), because no junction could be made here. Never returns.
+    /// </summary>
+    public static void Skipped(string test, string why)
     {
-        string line = $"SKIP  {test}: no junction could be made here ({why}); not checked";
-        Log.Warn("[unittest] " + line);
-        try { Console.WriteLine(line); } catch { }
-        return true;
+        Log.Warn($"[unittest] {test}: no junction could be made here ({why}); not checked");
+        Check.Skip($"no junction could be made here ({why}); not checked");
     }
 }
 
@@ -155,15 +217,17 @@ internal static class DevFolderTests
         using var dir = new TempDir();
         // another profile, another drive, a folder under Temp that is shaped like a private copy: the shape is what Windows shows for a
         // folder that a packaged app made in its AppData, whoever's Packages folder it is
+        // (On the drive of the Temp folder: a path on a drive that does not exist cannot be checked at all and is refused for that.)
+        string drive = Path.GetPathRoot(dir.Path)!.TrimEnd('\\');
         foreach (string path in new[]
         {
-            @"D:\Users\Someone\AppData\Local\Packages\Fake_abc\LocalCache\Roaming\Clink-dev",
-            @"E:\x\AppData\Local\Packages\Foo_1\LocalCache\Local\dev",
+            drive + @"\Users\Someone\AppData\Local\Packages\Fake_abc\LocalCache\Roaming\Clink-dev",
+            drive + @"\x\AppData\Local\Packages\Foo_1\LocalCache\Local\dev",
             dir.File(@"AppData\Local\Packages\Fake_abc\LocalCache\Roaming\dev"),
             dir.File(@"appdata\local\packages\fake_abc\localcache\roaming\dev"),
         })
             Check.Contains(Problem("--dev", path), "private copy of AppData", path);
-        Check.Contains(Problem("--dev", @"D:\Users\Someone\AppData\Local\Packages\Fake_abc\LocalCache\Roaming\Clink-dev"), "Fake_abc");
+        Check.Contains(Problem("--dev", drive + @"\Users\Someone\AppData\Local\Packages\Fake_abc\LocalCache\Roaming\Clink-dev"), "Fake_abc");
 
         // what is not a packaged app's AppData is fine: LocalState and RoamingState are the app's own data, not the AppData redirect
         Check.NotNull(DevOptions.Parse(new[] { "--dev", dir.File(@"AppData\Local\Packages\Foo_1\LocalState\dev") }));

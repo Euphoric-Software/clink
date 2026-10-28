@@ -72,12 +72,19 @@ internal static class AppDataRedirect
     public static bool Detect()
     {
         Package = FriendlyName = FinalFolder = null;
+        Unknown = false;
         try
         {
             string dir = Settings.Dir;
             Directory.CreateDirectory(dir);
             string? folder = FinalFolderOf(dir);
-            string? package = folder == null ? null : PackageFromFinalPath(folder + "\\");
+            if (folder == null)
+            {
+                Unknown = true;
+                Log.Warn($"settings: could not tell whether AppData is redirected ({dir})");
+                return false;
+            }
+            string? package = PackageFromFinalPath(folder + "\\");
             if (package == null) return false;
             Package = package;
             FriendlyName = FriendlyNameOf(package);
@@ -87,13 +94,21 @@ internal static class AppDataRedirect
         }
         catch (Exception ex)
         {
-            Log.Warn("settings: could not tell whether AppData is redirected: " + ex.Message);
+            Unknown = true;
+            Log.Warn($"settings: could not tell whether AppData is redirected ({Settings.Dir}): " + ex.Message);
             return false;
         }
     }
 
     /// <summary>Back to "not found yet". For the unit tests.</summary>
-    internal static void Reset() => Package = FriendlyName = FinalFolder = null;
+    internal static void Reset() { Package = FriendlyName = FinalFolder = null; Unknown = false; }
+
+    /// <summary>
+    /// True when the last <see cref="Detect"/> could not tell whether AppData is redirected (nothing could be opened, or it threw).
+    /// The third state next to redirected and not redirected: <see cref="SettingsImport.CanTakeOverAtStart"/> then does not take a
+    /// copy over by itself (offering it later, <see cref="SettingsImport.CanOffer"/>, is fine: the user decides).
+    /// </summary>
+    public static bool Unknown { get; private set; }
 
     /// <summary>The package a final path (<c>GetFinalPathNameByHandle</c> form) belongs to, or null when it is an ordinary path.</summary>
     public static string? PackageFromFinalPath(string finalPath)
@@ -122,7 +137,7 @@ internal static class AppDataRedirect
     internal static string? FinalFolderOf(string dir)
     {
         string probe = Path.Combine(dir, ".clink-probe-" + Guid.NewGuid().ToString("N"));
-        nint h = CreateFile(probe, GENERIC_WRITE | DELETE, FILE_SHARE_ALL, 0, CREATE_NEW, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_DELETE_ON_CLOSE, 0);
+        nint h = CreateFileExt(probe, GENERIC_WRITE | DELETE, FILE_SHARE_ALL, 0, CREATE_NEW, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_DELETE_ON_CLOSE, 0);
         if (h != InvalidHandle)
         {
             try { return ParentOf(FinalPathOf(h)); }
@@ -176,23 +191,87 @@ internal static class AppDataRedirect
     private static string? FinalPathOfExisting(string path)
     {
         // Access 0 is enough to ask where a handle points; BACKUP_SEMANTICS lets a folder be opened.
-        nint h = CreateFile(path, 0, FILE_SHARE_ALL, 0, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, 0);
+        nint h = CreateFileExt(path, 0, FILE_SHARE_ALL, 0, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, 0);
         if (h == InvalidHandle) return null;
         try { return FinalPathOf(h); }
         finally { CloseHandle(h); }
     }
 
+    /// <summary>
+    /// <paramref name="path"/> in the <c>\\?\C:\...</c> / <c>\\?\UNC\server\share\...</c> form, which CreateFileW takes past MAX_PATH even
+    /// where LongPathsEnabled is off. A relative path is made absolute first (the \\?\ form is never relative and is not normalised by
+    /// Windows); a path that already starts with <c>\\?\</c> or <c>\\.\</c> is returned as it is. An empty path is returned as it is.
+    /// </summary>
+    internal static string ExtendedPath(string path)
+    {
+        if (string.IsNullOrEmpty(path)) return path;
+        if (IsDeviceForm(path)) return path;
+        string full = Path.GetFullPath(path);
+        if (IsDeviceForm(full)) return full;
+        return full.StartsWith(@"\\", StringComparison.Ordinal) ? @"\\?\UNC\" + full[2..] : @"\\?\" + full;
+    }
+
+    /// <summary>True when a ':' follows the drive (or share) part of the path: an alternate data stream ("C:\a\b:stream"), never a folder.</summary>
+    internal static bool HasStreamColon(string path)
+    {
+        try
+        {
+            string full = Path.GetFullPath(path.Trim());
+            string root = Path.GetPathRoot(full) ?? "";
+            return full[root.Length..].Contains(':');
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException) { return false; }
+    }
+
+    private static bool IsDeviceForm(string path) =>
+        path.StartsWith(@"\\?\", StringComparison.Ordinal) || path.StartsWith(@"\\.\", StringComparison.Ordinal) || path.StartsWith(@"\??\", StringComparison.Ordinal);
+
+    /// <summary>
+    /// True for a path in the device / extended form (<c>\\?\</c>, <c>\\.\</c>, <c>\??\</c>, <c>//?/</c>; this covers GLOBALROOT and
+    /// Volume{GUID} too), as given and once <see cref="Path.GetFullPath(string)"/> has had its say. A data folder or index written like
+    /// that is refused outright: its text says nothing about where it is. A path .NET cannot make sense of counts as one.
+    /// </summary>
+    internal static bool IsDevicePath(string path)
+    {
+        try
+        {
+            foreach (string p in new[] { path.Trim(), Path.GetFullPath(path.Trim()) })
+            {
+                string n = p.Replace('/', '\\');
+                if (n.StartsWith(@"\\?\", StringComparison.Ordinal) || n.StartsWith(@"\\.\", StringComparison.Ordinal) || n.StartsWith(@"\??\", StringComparison.Ordinal)) return true;
+            }
+            return false;
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException) { return false; }   // the caller's own GetFullPath says "not a valid path"
+    }
+
+    private static nint CreateFileExt(string path, uint access, uint share, nint security, uint disposition, uint flags, nint template)
+    {
+        string ext;
+        try { ext = ExtendedPath(path); }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException) { return InvalidHandle; }
+        return CreateFile(ext, access, share, security, disposition, flags | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, template);   // never lets a server impersonate us
+    }
+
     private static string? FinalPathOf(nint handle)
     {
+        // FILE_NAME_NORMALIZED (0) first; some file systems cannot normalise, so then FILE_NAME_OPENED (8) rather than "unknown".
+        return FinalPathOf(handle, 0) ?? FinalPathOf(handle, FILE_NAME_OPENED);
+    }
+
+    private static string? FinalPathOf(nint handle, uint flags)
+    {
         var sb = new StringBuilder(512);
-        uint n = GetFinalPathNameByHandle(handle, sb, (uint)sb.Capacity, 0);   // FILE_NAME_NORMALIZED | VOLUME_NAME_DOS
+        uint n = GetFinalPathNameByHandle(handle, sb, (uint)sb.Capacity, flags);   // VOLUME_NAME_DOS
         if (n > sb.Capacity)
         {
             sb = new StringBuilder((int)n + 1);
-            n = GetFinalPathNameByHandle(handle, sb, (uint)sb.Capacity, 0);
+            n = GetFinalPathNameByHandle(handle, sb, (uint)sb.Capacity, flags);
         }
-        return n == 0 ? null : sb.ToString();
+        return n == 0 || n > sb.Capacity ? null : sb.ToString();
     }
+
+    private const uint FILE_NAME_OPENED = 0x8, SECURITY_SQOS_PRESENT = 0x00100000, SECURITY_IDENTIFICATION = 0x00010000;
 
     private const uint GENERIC_WRITE = 0x40000000, DELETE = 0x00010000, FILE_SHARE_ALL = 7;
     private const uint CREATE_NEW = 1, OPEN_EXISTING = 3;
@@ -1003,7 +1082,7 @@ internal static class SettingsImport
     /// (<see cref="PackagesRoot"/>): a test never takes over the settings of the person whose machine it runs on.
     /// </summary>
     internal static bool CanTakeOverAtStart(bool freshStore, bool isDev) =>
-        freshStore && AppDataRedirect.Package == null && (!isDev || PackagesRoot != null);
+        freshStore && AppDataRedirect.Package == null && !AppDataRedirect.Unknown && (!isDev || PackagesRoot != null);
 
     /// <summary>
     /// A start with settings of its own that were not just taken over from a copy looks for other copies to offer
