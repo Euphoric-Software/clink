@@ -89,6 +89,144 @@ function Invoke-PublishedExe {
     [pscustomobject]@{ Code = $code; Out = $text; Err = $err }
 }
 
+function Test-AdminOnlyAcl {
+    # True when the access control list is admin-only: owned by SYSTEM, Administrators or TrustedInstaller, and no Allow entry gives
+    # Users, Authenticated Users, Everyone, INTERACTIVE (or, stricter, any other account such as a single user) any write, delete,
+    # change-permissions or take-ownership right.
+    param($Acl)
+    $owner = $Acl.GetOwner([System.Security.Principal.SecurityIdentifier])
+    $trustedOwners = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+    if (-not $owner -or $trustedOwners -notcontains $owner.Value) { return $false }
+    $writers = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464', 'S-1-3-0')   # SYSTEM, Administrators, TrustedInstaller, CREATOR OWNER
+    $writeMask = [int][System.Security.AccessControl.FileSystemRights]'Write, Delete, DeleteSubdirectoriesAndFiles, ChangePermissions, TakeOwnership'
+    $writeMask = $writeMask -bor 0x40000000 -bor 0x10000000   # GenericWrite, GenericAll
+    foreach ($rule in $Acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])) {
+        if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
+        if ($writers -notcontains $rule.IdentityReference.Value -and (([int]$rule.FileSystemRights) -band $writeMask)) { return $false }
+    }
+    $true
+}
+
+function Get-TrustedDotNetRoots {
+    # The machine-wide dotnet roots the Windows apphost may load a runtime from: <Program Files>\dotnet, plus the HKLM install location the
+    # apphost reads (the 32-bit registry view, SOFTWARE\dotnet\Setup\InstalledVersions\x64, value InstallLocation), but only when that
+    # location is <Program Files>\dotnet itself or its ACL is admin-only. Normalised and de-duplicated. -ReadInstallLocation is the registry
+    # reader (a test replaces it).
+    param([scriptblock]$ReadInstallLocation = {
+            $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', 'Registry32')
+            try {
+                $key = $base.OpenSubKey('SOFTWARE\dotnet\Setup\InstalledVersions\x64')
+                if ($key) { try { [string]$key.GetValue('InstallLocation') } finally { $key.Dispose() } }
+            } finally { $base.Dispose() }
+        })
+    $programFiles = if ([Environment]::Is64BitProcess) { [Environment]::GetFolderPath('ProgramFiles') } else { $env:ProgramW6432 }
+    $default = [System.IO.Path]::GetFullPath((Join-Path $programFiles 'dotnet')).TrimEnd('\')
+    $roots = New-Object System.Collections.Generic.List[string]
+    $roots.Add($default)
+    try {
+        $registered = [string](& $ReadInstallLocation)
+        if ($registered -and $registered.Trim()) {
+            $location = [System.IO.Path]::GetFullPath($registered.Trim()).TrimEnd('\')
+            if ($location -ieq $default) { $roots.Add($location) }
+            elseif ((Test-Path -LiteralPath $location -PathType Container) -and (Test-AdminOnlyAcl (Get-Acl -LiteralPath $location))) { $roots.Add($location) }
+        }
+    } catch { }
+    $unique = New-Object System.Collections.Generic.List[string]
+    foreach ($root in $roots) { if (-not ($unique | Where-Object { $_ -ieq $root })) { $unique.Add($root) } }
+    @($unique)
+}
+
+function Get-FinalPath {
+    # The path with every junction, symbolic link, subst drive and 8.3 name resolved (GetFinalPathNameByHandle), without the \\?\ prefix.
+    param([string]$Path)
+    if (-not ('ClinkFinalPath' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class ClinkFinalPath {
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern IntPtr CreateFileW(string name, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern uint GetFinalPathNameByHandleW(IntPtr handle, StringBuilder buffer, uint length, uint flags);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool CloseHandle(IntPtr handle);
+    public static string Resolve(string path) {
+        IntPtr handle = CreateFileW(path, 0, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero);   // share all, OPEN_EXISTING, BACKUP_SEMANTICS (folders too)
+        if (handle == new IntPtr(-1)) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        try {
+            StringBuilder buffer = new StringBuilder(1024);
+            uint length = GetFinalPathNameByHandleW(handle, buffer, (uint)buffer.Capacity, 0);
+            if (length == 0) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+            if (length >= buffer.Capacity) { buffer = new StringBuilder((int)length + 1); length = GetFinalPathNameByHandleW(handle, buffer, (uint)buffer.Capacity, 0); }
+            return buffer.ToString();
+        } finally { CloseHandle(handle); }
+    }
+}
+'@
+    }
+    $final = [ClinkFinalPath]::Resolve($Path)
+    if ($final.StartsWith('\\?\UNC\')) { $final = '\\' + $final.Substring(8) } elseif ($final.StartsWith('\\?\')) { $final = $final.Substring(4) }
+    $final.TrimEnd('\')
+}
+
+function Assert-NoReparseComponent {
+    # Throws when any component of the path, from the drive root down to the last one, is a junction or symbolic link (a reparse point).
+    param([string]$Label, [string]$Path)
+    $current = [System.IO.Path]::GetPathRoot($Path)
+    $names = @($Path.Substring($current.Length) -split '\\' | Where-Object { $_ })
+    $checked = @($current)
+    foreach ($name in $names) { $checked += (Join-Path $checked[-1] $name) }
+    foreach ($item in $checked) {
+        $info = Get-Item -LiteralPath $item -Force -ErrorAction Stop
+        if ($info.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { throw "$Label '$Path': '$item' is a junction or symbolic link." }
+    }
+}
+
+function Assert-FrameworkRuntimeDir {
+    # Positive check of the framework flavour's fx_dir: it must be <trusted root>\shared\Microsoft.NETCore.App\<fx_version>, with no junction
+    # or symbolic link at any component from the drive root down (the trusted root included), and System.Private.CoreLib.dll a real file;
+    # the final (link-resolved) paths of the folder and of the trusted root must agree too. Throws with the reason, returns the normalised path.
+    param([string]$Label, [string]$Dir, [string]$Version, [string[]]$TrustedRoots)
+    if (-not $Dir) { throw "$Label reported no fx_dir (a framework-dependent exe must load its runtime from disk)." }
+    if (-not $Version) { throw "$Label reported no fx_version." }
+    if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]+)?$') { throw "$Label reported a malformed fx_version '$Version'." }
+    if (@($Dir -split '[\\/]') -contains '..') { throw "$Label fx_dir '$Dir' contains '..'." }
+    try { $full = [System.IO.Path]::GetFullPath($Dir).TrimEnd('\', '/') } catch { throw "$Label fx_dir '$Dir' is not a valid path." }
+    $versionFolder = Split-Path -Leaf $full
+    $appFolder = Split-Path -Parent $full
+    $sharedFolder = if ($appFolder) { Split-Path -Parent $appFolder } else { $null }
+    $rootFolder = if ($sharedFolder) { Split-Path -Parent $sharedFolder } else { $null }
+    if (-not $rootFolder -or (Split-Path -Leaf $appFolder) -ne 'Microsoft.NETCore.App' -or (Split-Path -Leaf $sharedFolder) -ne 'shared') {
+        throw "$Label fx_dir '$Dir' is not of the form <dotnet root>\shared\Microsoft.NETCore.App\<version>."
+    }
+    if ($versionFolder -ne $Version) { throw "$Label fx_dir '$Dir' ends in '$versionFolder' but fx_version is '$Version'." }
+    $trusted = @($TrustedRoots | Where-Object { $_ } | ForEach-Object { try { [System.IO.Path]::GetFullPath($_).TrimEnd('\', '/') } catch { } })
+    if (-not ($trusted | Where-Object { $_ -ieq $rootFolder })) { throw "$Label fx_dir '$Dir' is under '$rootFolder', not under a trusted dotnet root ($($trusted -join '; '))." }
+    foreach ($folder in $full, $appFolder, $sharedFolder, $rootFolder) {
+        if (-not (Test-Path -LiteralPath $folder -PathType Container)) { throw "$Label fx_dir '$Dir': '$folder' is not an existing folder." }
+    }
+    Assert-NoReparseComponent "$Label fx_dir" $full
+    $corelib = Join-Path $full 'System.Private.CoreLib.dll'
+    if (-not (Test-Path -LiteralPath $corelib -PathType Leaf)) { throw "$Label fx_dir '$Dir' has no System.Private.CoreLib.dll (not a real runtime folder)." }
+    if ((Get-Item -LiteralPath $corelib -Force).Attributes -band [System.IO.FileAttributes]::ReparsePoint) { throw "$Label fx_dir '$Dir': System.Private.CoreLib.dll is a symbolic link." }
+    $finalDir = Get-FinalPath $full
+    $finalRoot = Get-FinalPath $rootFolder
+    if ($finalDir -ine (Join-Path $finalRoot "shared\Microsoft.NETCore.App\$Version")) { throw "$Label fx_dir '$Dir' resolves to '$finalDir', which is not below the trusted root's real path '$finalRoot'." }
+    $finalCorelib = Get-FinalPath $corelib
+    if ($finalCorelib -ine (Join-Path $finalDir 'System.Private.CoreLib.dll')) { throw "$Label fx_dir '$Dir': System.Private.CoreLib.dll resolves to '$finalCorelib', outside the runtime folder." }
+    $full
+}
+
+function Assert-BundledRuntime {
+    # The self-contained flavour must say its runtime is bundled: corelib=bundled, no framework deps file, empty fx_dir.
+    param([string]$Label, [string]$Output)
+    foreach ($needle in 'corelib=bundled', 'fx_deps=absent') {
+        if ($Output -notmatch ('(^|\s)' + [regex]::Escape($needle) + '(\s|$)')) { throw "$Label did not report $needle. stdout: $($Output.Trim())" }
+    }
+    if ($Output -notmatch '(^|\s)fx_dir=""(\s|$)') { throw "$Label did not report an empty fx_dir (a bundled runtime has no runtime folder). stdout: $($Output.Trim())" }
+}
+
 $exitMeaning = @{ 1 = 'the build label and the runtime disagree'; 2 = 'unexpected packaging state'; 5 = 'the check itself failed'; 64 = 'bad argument' }
 function Assert-Run {
     param([string]$Label, $Result, [string[]]$MustContain)
@@ -120,6 +258,16 @@ foreach ($t in $targets) {
     Assert-Run "$($t.Label) --packaging-check" $packagingRun $must
     $versionMatch = [regex]::Match($packagingRun.Out, '(^|\s)fx_version=(\S+)')
     Write-Host "[$($t.Label)] runtime fx_version $(if ($versionMatch.Success) { $versionMatch.Groups[2].Value } else { '(not reported)' })"
+    if ($t.Packaging -eq 'Framework') {
+        $dirMatch = [regex]::Match($packagingRun.Out, '(^|\s)fx_dir="([^"]*)"')
+        $fxVersion = if ($versionMatch.Success) { $versionMatch.Groups[2].Value } else { '' }
+        $fxDir = if ($dirMatch.Success) { $dirMatch.Groups[2].Value } else { '' }
+        $resolvedDir = Assert-FrameworkRuntimeDir "$($t.Label) --packaging-check" $fxDir $fxVersion (Get-TrustedDotNetRoots)
+        Write-Host "[$($t.Label)] runtime fx_dir $resolvedDir (trusted dotnet root)"
+    } else {
+        Assert-BundledRuntime "$($t.Label) --packaging-check" $packagingRun.Out
+        Write-Host "[$($t.Label)] runtime bundled"
+    }
     Assert-Run "$($t.Label) --preflight" (Invoke-PublishedExe $t.Exe @('--preflight') $TimeoutSeconds) @()
     # CLINK_EXPECT_FEED / CLINK_TESTS_NO_SKIP only for the feed self-test run.
     $feedEnv = @{ CLINK_TESTS_NO_SKIP = '1' }
@@ -154,7 +302,9 @@ try {
     $n1Dir = [regex]::Match($n1Run.Out, '(^|\s)fx_dir="([^"]*)"')
     if (-not $n1Dir.Success -or -not $n1Dir.Groups[2].Value) { throw "N-1 framework --packaging-check reported no fx_dir. stdout: $($n1Run.Out.Trim())" }
     if ($n1Dir.Groups[2].Value.StartsWith($n1Base, [System.StringComparison]::OrdinalIgnoreCase)) { throw "N-1 framework runtime directory '$($n1Dir.Groups[2].Value)' is inside the planted folder '$n1Base'." }
-    Write-Host "[N-1] runtime fx_dir $($n1Dir.Groups[2].Value)"
+    $n1Version = [regex]::Match($n1Run.Out, '(^|\s)fx_version=(\S+)').Groups[2].Value
+    $n1Resolved = Assert-FrameworkRuntimeDir 'N-1 framework --packaging-check' $n1Dir.Groups[2].Value $n1Version (Get-TrustedDotNetRoots)
+    Write-Host "[N-1] runtime fx_dir $n1Resolved"
     Assert-Run 'N-1 framework --preflight' (Invoke-PublishedExe $n1Exe @('--preflight') $TimeoutSeconds $n1Env) @()
 } finally {
     Remove-Item -LiteralPath $n1Base -Recurse -Force -ErrorAction SilentlyContinue

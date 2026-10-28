@@ -136,6 +136,21 @@ try {
     $fixtureText = [regex]::Replace($fixtureText, '\[[0-9]+\.[0-9]+\.[0-9]+, [0-9]+\.[0-9]+\.[0-9]+\]', ('[' + $runtimeVersion + ', ' + $runtimeVersion + ']'))
     $fixtureText = [regex]::Replace($fixtureText, '("Microsoft\.Windows\.SDK\.NET\.Ref",\s*"version":\s*")[^"]*(")', ('${1}[' + $sdkSection.version + ', ' + $sdkSection.version + ']${2}'))
     $fixtureText = [regex]::Replace($fixtureText, '"Microsoft\.Windows\.CsWin32/[^"]*"', ('"Microsoft.Windows.CsWin32/' + $cswinSection.version + '"'))
+    # A scratch NuGet package folder holding the two restored runtime packs' versions.txt (line 1 = vmrCommit, line 2 = runtime version),
+    # named by "packageFolders" of the assets file (the fixture has none: it is injected here).
+    $vmrCommit = [string]$sources.vmrCommit
+    $packFolder = Join-Path $scratch 'packages'
+    foreach ($pair in @(@('microsoft.netcore.app.runtime.win-x64', 'Microsoft.NETCore.App.versions.txt'), @('microsoft.windowsdesktop.app.runtime.win-x64', 'Microsoft.WindowsDesktop.App.versions.txt'))) {
+        $packDirectory = Join-Path (Join-Path $packFolder $pair[0]) $runtimeVersion
+        New-Item -ItemType Directory -Path $packDirectory -Force | Out-Null
+        Write-TextFile -Path (Join-Path $packDirectory $pair[1]) -Text ($vmrCommit + "`n" + $runtimeVersion + "`n" + "some-other-line`n")
+    }
+    function Add-PackageFolder {
+        param([string]$Text, [string]$Folder)
+        $json = $Folder.Replace('\', '\\')
+        return ('{ "packageFolders": { "' + $json + '\\": {} },' + $Text.TrimStart().Substring(1))
+    }
+    $fixtureText = Add-PackageFolder -Text $fixtureText -Folder $packFolder
     $fixtureNormalized = Join-Path $scratch 'assets-pinned.json'
     Write-TextFile -Path $fixtureNormalized -Text $fixtureText
     Assert-That 'The normalised fixture is at the pinned runtime version' ($fixtureText.Contains('"[' + $runtimeVersion + ', ' + $runtimeVersion + ']"') -and $fixtureText.Contains('"[' + $sdkSection.version + ', ' + $sdkSection.version + ']"')) ''
@@ -202,6 +217,105 @@ try {
     Write-TextFile -Path $brokenAssets -Text '{ not json'
     $result = Invoke-Tool -Arguments @('-Check', '-AssetsFile', $brokenAssets)
     Assert-That 'Check fails when the assets file is not JSON' ($result.Code -eq 1) $result.Output
+
+    # vmrCommit binding. (a) The restored packs' versions.txt must name the pinned commit and runtime version.
+    $netVersionsPath = Join-Path (Join-Path (Join-Path $packFolder 'microsoft.netcore.app.runtime.win-x64') $runtimeVersion) 'Microsoft.NETCore.App.versions.txt'
+    $desktopVersionsPath = Join-Path (Join-Path (Join-Path $packFolder 'microsoft.windowsdesktop.app.runtime.win-x64') $runtimeVersion) 'Microsoft.WindowsDesktop.App.versions.txt'
+    $otherCommit = ('0' * 40)
+    Write-TextFile -Path $netVersionsPath -Text ($otherCommit + "`n" + $runtimeVersion + "`n")
+    $result = Invoke-Tool -Arguments @('-Check', '-AssetsFile', $fixtureNormalized)
+    Assert-That 'Check FAILS when a restored pack names another commit than vmrCommit' ($result.Code -eq 1 -and $result.Output -match ('names commit ' + $otherCommit) -and $result.Output -match 'vmrCommit') $result.Output
+    Write-TextFile -Path $netVersionsPath -Text ($vmrCommit + "`n10.0.99`n")
+    $result = Invoke-Tool -Arguments @('-Check', '-AssetsFile', $fixtureNormalized)
+    Assert-That 'Check FAILS when line 2 of a restored pack is not the runtime version' ($result.Code -eq 1 -and $result.Output -match 'names runtime 10\.0\.99') $result.Output
+    Write-TextFile -Path $netVersionsPath -Text "not-a-commit`n$runtimeVersion`n"
+    $result = Invoke-Tool -Arguments @('-Check', '-AssetsFile', $fixtureNormalized)
+    Assert-That 'Check FAILS when line 1 of a restored pack is not a 40-hex commit' ($result.Code -eq 1 -and $result.Output -match 'not a 40-hex commit') $result.Output
+    Write-TextFile -Path $netVersionsPath -Text ($vmrCommit.ToUpperInvariant() + "`n" + $runtimeVersion + "`n")
+    $result = Invoke-Tool -Arguments @('-Check', '-AssetsFile', $fixtureNormalized)
+    Assert-That 'Check FAILS on an upper-case commit (case-sensitive)' ($result.Code -eq 1) $result.Output
+    Write-TextFile -Path $desktopVersionsPath -Text ($otherCommit + "`n" + $runtimeVersion + "`n")
+    Write-TextFile -Path $netVersionsPath -Text ($vmrCommit + "`n" + $runtimeVersion + "`n")
+    $result = Invoke-Tool -Arguments @('-Check', '-AssetsFile', $fixtureNormalized)
+    Assert-That 'Check FAILS when only the desktop pack names another commit' ($result.Code -eq 1 -and $result.Output -match 'WindowsDesktop\.App\.Runtime\.win-x64 .*names commit') $result.Output
+    Remove-Item -LiteralPath $desktopVersionsPath -Force
+    $result = Invoke-Tool -Arguments @('-Check', '-AssetsFile', $fixtureNormalized)
+    Assert-That 'Check FAILS when a restored pack has no versions.txt' ($result.Code -eq 1 -and $result.Output -match 'WindowsDesktop\.App\.versions\.txt not found') $result.Output
+    $result = Invoke-Tool -Arguments @('-Check', '-AssetsFile', $fixtureNormalized, '-AllowMissingRuntimePacks')
+    Assert-That '-AllowMissingRuntimePacks turns the missing versions.txt into a note' ($result.Code -eq 0 -and $result.Output -match 'vmrCommit not compared') $result.Output
+    Write-TextFile -Path $desktopVersionsPath -Text ($vmrCommit + "`n" + $runtimeVersion + "`n")
+    $result = Invoke-Tool -Arguments @('-Check', '-AssetsFile', $fixtureNormalized)
+    Assert-That 'Check passes again once both packs name vmrCommit and the runtime version' ($result.Code -eq 0) $result.Output
+
+    # (b) sources.json itself: vmrCommit must be a full commit and every dotnet/dotnet URL must carry it.
+    $badVmr = Join-Path $scratch 'sources-bad-vmr.json'
+    Write-TextFile -Path $badVmr -Text $sourcesText.Replace('"vmrCommit": "' + $vmrCommit + '"', '"vmrCommit": "' + $otherCommit + '"')
+    $result = Invoke-Tool -Arguments @('-Check', '-SourcesFile', $badVmr)
+    Assert-That 'Check FAILS when the dotnet/dotnet URLs name another commit than vmrCommit' ($result.Code -eq 1 -and $result.Output -match ('names dotnet/dotnet commit ' + $vmrCommit)) $result.Output
+    $shortVmr = Join-Path $scratch 'sources-short-vmr.json'
+    Write-TextFile -Path $shortVmr -Text $sourcesText.Replace('"vmrCommit": "' + $vmrCommit + '"', '"vmrCommit": "main"')
+    $result = Invoke-Tool -Arguments @('-Check', '-SourcesFile', $shortVmr)
+    Assert-That 'Check FAILS when vmrCommit is not a 40-hex commit' ($result.Code -eq 1 -and $result.Output -match 'vmrCommit is not a 40-hex commit') $result.Output
+    $oneUrl = Join-Path $scratch 'sources-one-url.json'
+    Write-TextFile -Path $oneUrl -Text ([regex]::Replace($sourcesText, ('dotnet/dotnet/' + $vmrCommit + '/src/wpf'), ('dotnet/dotnet/' + $otherCommit + '/src/wpf')))
+    $result = Invoke-Tool -Arguments @('-Check', '-SourcesFile', $oneUrl)
+    Assert-That 'Check FAILS when one dotnet/dotnet URL names another commit' ($result.Code -eq 1 -and $result.Output -match ('names dotnet/dotnet commit ' + $otherCommit)) $result.Output
+
+    # (b2) Sections 4 (WPF) and 5 (WinForms) are bound by section to the exact URL; every URL section must be a plain pinned URL.
+    $wpfUrl = "https://raw.githubusercontent.com/dotnet/dotnet/$vmrCommit/src/wpf/THIRD-PARTY-NOTICES.TXT"
+    $cswinUrl = 'https://raw.githubusercontent.com/microsoft/CsWin32/a54876f658937b3c0c45f599e82df9582a97258f/LICENSE'
+    Assert-That 'the fixture finds the WPF and CsWin32 URLs in sources.json' ($sourcesText.Contains('"' + $wpfUrl + '"') -and $sourcesText.Contains('"' + $cswinUrl + '"')) 'sources.json changed shape'
+    $variants = [ordered]@{
+        'owner in other case'      = @($wpfUrl, "https://raw.githubusercontent.com/Dotnet/dotnet/$otherCommit/src/wpf/THIRD-PARTY-NOTICES.TXT", 'Section \[4\]')
+        'wpf repository'           = @($wpfUrl, "https://raw.githubusercontent.com/dotnet/wpf/$vmrCommit/THIRD-PARTY-NOTICES.TXT", 'Section \[4\]')
+        'leading space'            = @($wpfUrl, (' ' + $wpfUrl), 'Section \[4\]')
+        'host in upper case'       = @($wpfUrl, $wpfUrl.Replace('raw.githubusercontent.com', 'RAW.githubusercontent.com'), 'Section \[4\]')
+        'percent-encoded path'     = @($wpfUrl, $wpfUrl.Replace('/src/wpf/', '/src/%77pf/'), 'Section \[4\]')
+        'file name in other case'  = @($wpfUrl, $wpfUrl.Replace('NOTICES.TXT', 'NOTICES.txt'), 'Section \[4\]')
+        'winforms path for wpf'    = @($wpfUrl, $wpfUrl.Replace('/src/wpf/', '/src/winforms/'), 'Section \[4\]')
+        'query string'             = @($wpfUrl, ($wpfUrl + '?x=1'), 'Section \[4\]')
+        'fragment'                 = @($wpfUrl, ($wpfUrl + '#x'), 'Section \[4\]')
+        'dotdot'                   = @($wpfUrl, $wpfUrl.Replace('/src/wpf/', '/src/../src/wpf/'), 'Section \[4\]')
+        'double slash'             = @($wpfUrl, $wpfUrl.Replace('/src/wpf/', '/src//wpf/'), 'Section \[4\]')
+        'other section: percent'   = @($cswinUrl, $cswinUrl.Replace('/LICENSE', '/LICEN%53E'), 'Section \[6\]')
+        'other section: query'     = @($cswinUrl, ($cswinUrl + '?raw=1'), 'Section \[6\]')
+        'other section: dotdot'    = @($cswinUrl, $cswinUrl.Replace('/LICENSE', '/x/../LICENSE'), 'Section \[6\]')
+        'other section: double slash' = @($cswinUrl, $cswinUrl.Replace('/LICENSE', '//LICENSE'), 'Section \[6\]')
+        'other section: space'     = @($cswinUrl, ($cswinUrl + ' '), 'Section \[6\]')
+        'other section: fragment'  = @($cswinUrl, ($cswinUrl + '#top'), 'Section \[6\]')
+    }
+    $variantIndex = 0
+    foreach ($name in $variants.Keys) {
+        $variantIndex++
+        $variant = $variants[$name]
+        $variantFile = Join-Path $scratch "sources-url-variant-$variantIndex.json"
+        Write-TextFile -Path $variantFile -Text $sourcesText.Replace('"' + $variant[0] + '"', '"' + $variant[1] + '"')
+        $result = Invoke-Tool -Arguments @('-Check', '-SourcesFile', $variantFile)
+        Assert-That "Check FAILS for the URL variant: $name" ($result.Code -eq 1 -and $result.Output -match $variant[2]) $result.Output
+    }
+    # A bound section that is missing: drop section 5 (WinForms) by renaming its id.
+    $noWinForms = Join-Path $scratch 'sources-no-winforms.json'
+    $winformsUrl = "https://raw.githubusercontent.com/dotnet/dotnet/$vmrCommit/src/winforms/THIRD-PARTY-NOTICES.TXT"
+    $winformsIdMatch = [regex]::Match($sourcesText, '"id"\s*:\s*"5"(?=[^{}]*' + [regex]::Escape($winformsUrl) + ')')
+    Assert-That 'the fixture finds section 5 (WinForms) in sources.json' $winformsIdMatch.Success 'sources.json changed shape'
+    Write-TextFile -Path $noWinForms -Text $sourcesText.Remove($winformsIdMatch.Index, $winformsIdMatch.Length).Insert($winformsIdMatch.Index, '"id": "5x"')
+    $result = Invoke-Tool -Arguments @('-Check', '-SourcesFile', $noWinForms)
+    Assert-That 'Check FAILS when the WinForms section (5) is missing' ($result.Code -eq 1 -and $result.Output -match 'Section \[5\] \(the winforms notices') $result.Output
+
+    # (c) -Update refuses a pack whose line 2 is not the requested runtime version, or whose two packs disagree (before any download).
+    $savedNuGet = $env:NUGET_PACKAGES
+    try {
+        $env:NUGET_PACKAGES = $packFolder
+        Write-TextFile -Path $netVersionsPath -Text ($vmrCommit + "`n10.0.99`n")
+        $result = Invoke-Tool -Arguments @('-Update', '-RuntimeVersion', $runtimeVersion)
+        Assert-That '-Update refuses a pack whose line 2 differs from -RuntimeVersion' ($result.Code -ne 0 -and $result.Output -match 'not the requested runtime') $result.Output
+        Write-TextFile -Path $netVersionsPath -Text ($vmrCommit + "`n" + $runtimeVersion + "`n")
+        Write-TextFile -Path $desktopVersionsPath -Text ($otherCommit + "`n" + $runtimeVersion + "`n")
+        $result = Invoke-Tool -Arguments @('-Update', '-RuntimeVersion', $runtimeVersion)
+        Assert-That '-Update refuses two packs naming different commits' ($result.Code -ne 0 -and $result.Output -match 'different commits') $result.Output
+        Write-TextFile -Path $desktopVersionsPath -Text ($vmrCommit + "`n" + $runtimeVersion + "`n")
+    }
+    finally { $env:NUGET_PACKAGES = $savedNuGet }
 
     $result = Invoke-Tool -Arguments @('-Check', '-AssetsFile', (Join-Path $scratch 'missing.json'))
     Assert-That 'Check fails when the assets file does not exist' ($result.Code -eq 1) $result.Output
