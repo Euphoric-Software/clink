@@ -19,7 +19,10 @@
              the Microsoft.Windows.CsWin32 library to equal section [6b]'s version. A file without project.frameworks,
              without downloadDependencies, or without either runtime pack FAILS (CI must be looking at the self-contained
              restore), as does a missing Microsoft.Windows.SDK.NET.Ref download dependency or a missing Microsoft.Windows.CsWin32 library;
-             -AllowMissingRuntimePacks turns all of those into notes (local use only, never used by CI).
+             -AllowMissingRuntimePacks turns all of those into notes (local use only, never used by CI). With -AssetsFile it also reads each runtime pack's
+             *.versions.txt from the assets file's package folders and requires its commit and runtime version to equal vmrCommit and runtimeVersion.
+             Without -AssetsFile it still checks, offline: every URL section is a plain pinned raw.githubusercontent.com URL (no %, whitespace, '..', '//',
+             '?' or '#'), and sections 4 and 5 (WPF, WinForms) are exactly .../dotnet/dotnet/<vmrCommit>/src/(wpf|winforms)/THIRD-PARTY-NOTICES.TXT.
              Exit 1 when something is off: after a runtime drift it prints the -Update command to run, for other
              failures it suggests -Generate.
 
@@ -176,7 +179,10 @@ function Get-SectionFileText {
 
 function Assert-PinnedUrl {
     param([string]$Url)
-    if (-not $Url.StartsWith('https://raw.githubusercontent.com/')) { throw "Not a raw.githubusercontent.com https URL: $Url" }
+    if (-not $Url.StartsWith('https://raw.githubusercontent.com/', [StringComparison]::Ordinal)) { throw "Not a raw.githubusercontent.com https URL: '$Url'" }
+    # Plain printable ASCII only, and no percent-encoding, query, fragment, '..' or empty path segment: the URL is exactly what it reads.
+    if ($Url -cmatch '[^\x21-\x7E]|%|\?|#|\.\.') { throw "URL has whitespace, a control or non-ASCII character, '%', '?', '#' or '..': '$Url'" }
+    if ($Url.Substring('https://'.Length) -cmatch '//') { throw "URL has an empty path segment ('//'): '$Url'" }
     if ($Url -cnotmatch '^https://raw\.githubusercontent\.com/[^/]+/[^/]+/([0-9a-f]{40}|[A-Za-z0-9._-]+)/') { throw "URL is not pinned to a commit or tag: $Url" }
     if ($Url -cmatch '/(main|master|dev|HEAD)/') { throw "URL is pinned to a moving branch: $Url" }
 }
@@ -312,9 +318,50 @@ function Read-AssetsFile {
     $libraries = New-Object System.Collections.Generic.List[string]
     $libraryObject = Get-JsonMember -Object $assets -Name 'libraries'
     if ($null -ne $libraryObject) { foreach ($property in $libraryObject.PSObject.Properties) { $libraries.Add($property.Name) } }
-    return @{ Downloads = $downloads; Libraries = $libraries; BadRanges = $badRanges; HasFrameworks = $hasFrameworks; HasDownloads = $hasDownloads }
+    $folders = New-Object System.Collections.Generic.List[string]
+    $folderObject = Get-JsonMember -Object $assets -Name 'packageFolders'
+    if ($null -ne $folderObject) { foreach ($property in $folderObject.PSObject.Properties) { $folders.Add($property.Name) } }
+    return @{ Downloads = $downloads; Libraries = $libraries; BadRanges = $badRanges; HasFrameworks = $hasFrameworks; HasDownloads = $hasDownloads; PackageFolders = $folders }
 }
 
+# The first two lines of a runtime pack's *.versions.txt: the dotnet/dotnet (VMR) commit and the runtime version it was built from.
+# Returns @{ Commit; Version } or throws when the file is not of that shape.
+function Read-PackVersionsFile {
+    param([string]$Path)
+    $lines = [System.IO.File]::ReadAllLines($Path)
+    if ($lines.Length -lt 2) { throw "$Path has fewer than two lines." }
+    $commit = $lines[0].Trim()
+    $version = $lines[1].Trim()
+    if ($commit -cnotmatch '\A[0-9a-f]{40}\z') { throw "First line of $Path is not a 40-hex commit: '$commit'" }
+    if ($version -cnotmatch '\A[0-9]+\.[0-9]+\.[0-9]+\z') { throw "Second line of $Path is not a runtime version x.y.z: '$version'" }
+    return @{ Commit = $commit; Version = $version }
+}
+
+# vmrCommit must be a full commit. The WPF (section 4) and WinForms (section 5) notices are bound to it by section: each must be exactly
+# https://raw.githubusercontent.com/dotnet/dotnet/<vmrCommit>/src/(wpf|winforms)/THIRD-PARTY-NOTICES.TXT (case-sensitive; a missing section or any other
+# spelling fails), and any other dotnet/dotnet URL must carry the same commit. Offline; this binds the pinned texts to the runtime the notices are for.
+function Test-VmrCommitBinding {
+    param($Sources, $Problems)
+    $commit = [string]$Sources.vmrCommit
+    if ($commit -cnotmatch '\A[0-9a-f]{40}\z') { $Problems.Add("sources.json vmrCommit is not a 40-hex commit: '$commit'"); return }
+    $bound = [ordered]@{ '4' = 'wpf'; '5' = 'winforms' }
+    foreach ($id in $bound.Keys) {
+        $section = @(@($Sources.sections) | Where-Object { [string]$_.id -ceq $id })
+        if ($section.Count -ne 1) { $Problems.Add("Section [$id] (the $($bound[$id]) notices, bound to vmrCommit) is missing or not unique in sources.json."); continue }
+        $expected = "https://raw.githubusercontent.com/dotnet/dotnet/$commit/src/$($bound[$id])/THIRD-PARTY-NOTICES.TXT"
+        if ($section[0].kind -cne 'url' -or [string]$section[0].url -cne $expected) {
+            $named = [regex]::Match([string]$section[0].url, '\Ahttps://raw\.githubusercontent\.com/dotnet/dotnet/([^/]+)/')
+            if ($named.Success -and $named.Groups[1].Value -cne $commit) { $Problems.Add("Section [$id]: the URL names dotnet/dotnet commit $($named.Groups[1].Value) but vmrCommit is $commit.") }
+            else { $Problems.Add("Section [$id]: the URL must be exactly $expected but is '$($section[0].url)'.") }
+        }
+    }
+    foreach ($section in @($Sources.sections)) {
+        if ($section.kind -cne 'url' -or $bound.Contains([string]$section.id)) { continue }
+        $match = [regex]::Match([string]$section.url, '\Ahttps://raw\.githubusercontent\.com/dotnet/dotnet/([^/]+)/')
+        if (-not $match.Success) { continue }
+        if ($match.Groups[1].Value -cne $commit) { $Problems.Add("Section [$($section.id)]: the URL names dotnet/dotnet commit $($match.Groups[1].Value) but vmrCommit is $commit.") }
+    }
+}
 # $Object.$Name, or $null when the member is absent (strict mode throws on a missing property).
 function Get-JsonMember {
     param($Object, [string]$Name)
@@ -351,6 +398,26 @@ function Test-AssetsAgainstSources {
             if ($version -cne [string]$Sources.runtimeVersion) {
                 $Problems.Add("$package $version is restored (downloadDependencies) but the notices are for .NET runtime $($Sources.runtimeVersion).")
                 if (-not $RuntimeDrift.Contains($version)) { $RuntimeDrift.Add($version) }
+            }
+            else {
+                # The restored pack itself (its .nupkg was hash/signature verified by the restore) must name the pinned vmrCommit and runtime version.
+                $versionsName = if ($package -ceq 'Microsoft.NETCore.App.Runtime.win-x64') { 'Microsoft.NETCore.App.versions.txt' } else { 'Microsoft.WindowsDesktop.App.versions.txt' }
+                $found = $null
+                foreach ($folder in $assets.PackageFolders) {
+                    $candidate = Join-Path (Join-Path (Join-Path $folder $package.ToLowerInvariant()) $version) $versionsName
+                    if (Test-Path -LiteralPath $candidate -PathType Leaf) { $found = $candidate; break }
+                }
+                if ($null -eq $found) {
+                    if ($AllowMissingRuntimePacks) { Write-Host "note: $package $version has no $versionsName in the assets file's package folders; vmrCommit not compared." }
+                    else { $Problems.Add("$package ${version}: $versionsName not found in the package folders of the assets file ($(@($assets.PackageFolders) -join '; ')): vmrCommit cannot be checked against the restored pack.") }
+                    continue
+                }
+                try {
+                    $packInfo = Read-PackVersionsFile -Path $found
+                    if ($packInfo.Commit -cne [string]$Sources.vmrCommit) { $Problems.Add("$package ${version}: $versionsName names commit $($packInfo.Commit) but vmrCommit is $($Sources.vmrCommit).") }
+                    if ($packInfo.Version -cne [string]$Sources.runtimeVersion) { $Problems.Add("$package ${version}: $versionsName names runtime $($packInfo.Version) but runtimeVersion is $($Sources.runtimeVersion).") }
+                }
+                catch { $Problems.Add("$package ${version}: $($_.Exception.Message)") }
             }
         }
     }
@@ -426,6 +493,12 @@ function Invoke-Check {
         $repoHash = Get-TextSha256Hex -Text (ConvertTo-NormalizedText -Bytes ([System.IO.File]::ReadAllBytes($repoPath)))
         if ($repoHash -cne $section.sha256Text) { $problems.Add("Section [$($section.id)]: repo file $($section.path) has SHA-256 $repoHash, sources.json says $($section.sha256Text).") }
     }
+    # Every URL section must be a plain pinned raw.githubusercontent.com URL (the same check -Generate applies before it downloads).
+    foreach ($section in @($sources.sections)) {
+        if ($section.kind -cne 'url') { continue }
+        try { Assert-PinnedUrl -Url ([string]$section.url) } catch { $problems.Add("Section [$($section.id)]: $($_.Exception.Message)") }
+    }
+    Test-VmrCommitBinding -Sources $sources -Problems $problems
     if ($AssetsFile) { Test-AssetsAgainstSources -Sources $sources -Path $AssetsFile -Problems $problems -RuntimeDrift $runtimeDrift }
     if ($problems.Count -gt 0) {
         foreach ($problem in $problems) { Write-Host "FAIL: $problem" }
@@ -454,10 +527,13 @@ function Invoke-Update {
     foreach ($path in @($netVersions, $desktopVersions)) {
         if (-not (Test-Path -LiteralPath $path)) { throw "Not in the NuGet cache: $path. Restore a self-contained build for $RuntimeVersion first." }
     }
-    $newCommit = ([System.IO.File]::ReadAllLines($netVersions)[0]).Trim()
-    $desktopCommit = ([System.IO.File]::ReadAllLines($desktopVersions)[0]).Trim()
-    if ($newCommit -notmatch '^[0-9a-f]{40}$') { throw "First line of $netVersions is not a commit: $newCommit" }
-    if ($newCommit -ne $desktopCommit) { throw "The two runtime packs name different commits ($newCommit vs $desktopCommit)." }
+    $netInfo = Read-PackVersionsFile -Path $netVersions
+    $desktopInfo = Read-PackVersionsFile -Path $desktopVersions
+    $newCommit = $netInfo.Commit
+    foreach ($pair in @(@($netVersions, $netInfo), @($desktopVersions, $desktopInfo))) {
+        if ($pair[1].Version -cne $RuntimeVersion) { throw "Second line of $($pair[0]) is '$($pair[1].Version)', not the requested runtime $RuntimeVersion (wrong or tampered pack)." }
+    }
+    if ($newCommit -ne $desktopInfo.Commit) { throw "The two runtime packs name different commits ($newCommit vs $($desktopInfo.Commit))." }
     $oldCommit = [string]$sources.vmrCommit
     $fetchDirectory = New-FetchDirectory
     try {
