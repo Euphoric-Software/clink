@@ -11,7 +11,7 @@
 #   stable.json(.sig), dev.json(.sig)                                         replaced on every publish
 # Order: refuse a downgrade (the bucket's current manifest counts only after its signature verified against feed.json), versioned assets
 # (write-once, compared by their real downloaded bytes; every key is checked before the first one is written), GET-and-hash their PUBLIC
-# URLs, manifest, then signature.
+# URLs, manifest, then signature, optional cache purge, then the manifest and .sig are read back from their PUBLIC URLs (bytes, signature, headers).
 # The decisions live in tools/lib/feed-publish-lib.ps1 (testable with a fake aws); this script only wires the real aws CLI and web client.
 #
 # The manifest and .sig must already be in -PackageDir (tools/make-manifest.ps1, run with the signing key in its own step).
@@ -77,7 +77,7 @@ $manifestBytes = [System.IO.File]::ReadAllBytes($manifestPath)
 $sigText = [System.IO.File]::ReadAllText($sigPath).Trim()
 if (-not (Test-FeedSignature -Bytes $manifestBytes -SigBase64 $sigText -Keys $cfg.Keys)) { throw "$Channel.json.sig does not verify against the $Channel keys in feed.json." }
 $manifest = [System.Text.Encoding]::UTF8.GetString($manifestBytes) | ConvertFrom-Json
-if ($manifest.channel -ne $Channel -or $manifest.version -ne $Version -or $manifest.tag -ne $tag) { throw 'The manifest is for a different channel/version than requested.' }
+if ($manifest.channel -cne $Channel -or $manifest.version -cne $Version -or $manifest.tag -cne $tag) { throw 'The manifest is for a different channel/version than requested.' }
 
 $setup = 'Clink-Setup.exe'
 $assets = @(
@@ -103,7 +103,7 @@ foreach ($a in $assets) {
 foreach ($pair in @(@('exe', 'Clink.exe'), @('exeFramework', 'Clink-framework.exe'), @('installer', $setup))) {
     $entry = $manifest.assets.($pair[0])
     $a = $assets | Where-Object { $_.Name -eq $pair[1] }
-    if ($entry.url -ne $a.Url -or $entry.sha256 -ne $a.Sha256 -or [int64]$entry.size -ne $a.Size) { throw "The manifest entry '$($pair[0])' does not match $($a.Name) in the package." }
+    if ($entry.url -cne $a.Url -or $entry.sha256 -cne $a.Sha256 -or [int64]$entry.size -ne $a.Size) { throw "The manifest entry '$($pair[0])' does not match $($a.Name) in the package." }
 }
 
 # The real invokers (tools/lib/feed-publish-lib.ps1 holds the decisions; the script tests fake these two).
@@ -144,7 +144,14 @@ if ($env:CLOUDFLARE_API_TOKEN -and $env:CLOUDFLARE_ZONE_ID) {
             -Headers @{ Authorization = "Bearer $($env:CLOUDFLARE_API_TOKEN)" } -ContentType 'application/json' -Body $body | Out-Null
         'purged Cloudflare cache'
     } catch { Write-Host "::warning::Cloudflare cache purge failed: $($_.Exception.Message)" }
+} else {
+    'cache purge skipped (no Cloudflare token configured)'
 }
+
+# 6b. Read the two manifest files back over the PUBLIC host (after the optional cache purge, so a cached older copy is not what we read; the retry window of about 70 s outlasts the 60 s max-age): the bytes must equal
+#     the local files, the signature must verify under the channel's keys, and the content type and cache lifetime must be what the upload set.
+#     A failure throws, so the step is red and the GitHub release stays a draft ("Re-verify the release before publishing" comes after).
+Assert-FeedPublishedManifest -Http $httpInvoker -BaseUrl $feed -Channel $Channel -ManifestPath $manifestPath -SigPath $sigPath -Keys $cfg.Keys -Attempts 8 -DelaySeconds 10
 
 # 7. Dev only: keep the 10 newest dev folders, deleting strictly under <prefix>/dev/<vX.Y.Z-dev.N>/. Housekeeping: nothing in here may
 #    fail a publish that already succeeded (dev.json is live), so every error, a parse error included, is only a warning.

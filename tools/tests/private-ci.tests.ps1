@@ -1117,6 +1117,18 @@ try {
         }
     }
 
+    Invoke-Test 'N3: both "Check bucket secrets" steps require the exact bucket name (clink-stable / clink-dev, case-sensitive), before the endpoint check, and print the expected name but never the endpoint' {
+        foreach ($triple in @(@('release.yml', 'clink-stable', 'R2_STABLE_BUCKET'), @('release-dev.yml', 'clink-dev', 'R2_DEV_BUCKET'))) {
+            $run = Get-StepRunText (Get-PublishStep $triple[0] 'Check bucket secrets')
+            $check = "if (`$env:R2_BUCKET -cne '$($triple[1])') { throw "
+            Assert-True ($run.Contains($check)) "$($triple[0]) : no strict bucket-name comparison"
+            Assert-True ($run.IndexOf($check) -lt $run.IndexOf('Assert-FeedR2Endpoint')) "$($triple[0]) : the bucket-name check is not before the endpoint check"
+            Assert-True ($run -match [regex]::Escape("$($triple[2]) must be exactly '$($triple[1])'")) "$($triple[0]) : the message does not name the expected bucket"
+            Assert-True ($run -notmatch 'throw[^\n]*\$env:R2_ENDPOINT') "$($triple[0]) : the endpoint may be printed"
+            Assert-True ($run -notmatch "(?i)-ceq 'clink-(stable|dev)'|-eq 'clink-") "$($triple[0]) : the comparison is not -cne"
+        }
+    }
+
     Invoke-Test 'I-3: client-source guard - recursive Clink\**\*.cs scan (Tests, bin*, obj* excluded), lenient only while a DEFINITION of VerifyGitHubReleaseAsync exists, the HttpClient x = new( form counted' {
         . (Join-Path $toolsDir 'lib\client-guard-lib.ps1')
         $guard = Join-Path $PSScriptRoot 'client-source-guard.tests.ps1'

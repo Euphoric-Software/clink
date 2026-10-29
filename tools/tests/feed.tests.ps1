@@ -715,9 +715,25 @@ try {
             $off = Get-FeedConfig -Path (New-FeedJsonFile 'cfg-off' -FeedUrl '' -Stable @() -Dev @() -Extra $extra) -Channel dev
             Assert-True ((-not $off.Enabled) -and $off.Mode -eq 'off' -and $off.FeedUrl -ceq '') "an empty file is not off (extra [$extra])"
         }
-        # The committed file must keep parsing (it is on).
-        $committed = Get-FeedConfig -Path (Join-Path $repo 'Clink\Assets\feed.json') -Channel dev
-        Assert-True ($committed.Mode -eq 'off' -or $committed.Mode -eq 'on') 'the committed feed.json does not parse'
+    }
+
+    # S2. Pins the SHIPPED feed.json (the real Clink\Assets\feed.json). Changing any value below means re-keying (or re-pointing) every
+    # shipped client: installed apps trust only the URLs and keys baked into their own build. Do it only through docs/RELEASING.md
+    # ("Rotation" and "The feed-on change"), never just to make this test pass.
+    Invoke-Test 'S2: the shipped feed.json is ON for both channels with the pinned URLs and the pinned key fingerprints, in order (changing them re-keys shipped clients: docs/RELEASING.md)' {
+        $shippedPath = Join-Path $repo 'Clink\Assets\feed.json'
+        $shippedStable = Get-FeedConfig -Path $shippedPath -Channel stable
+        $shippedDev = Get-FeedConfig -Path $shippedPath -Channel dev
+        Assert-True ($shippedStable.Mode -ceq 'on') "stable Mode is '$($shippedStable.Mode)'"
+        Assert-True ($shippedDev.Mode -ceq 'on') "dev Mode is '$($shippedDev.Mode)'"
+        Assert-True ($shippedStable.FeedUrl -ceq 'https://dl.euphoric.software/clink/') "stable FeedUrl is '$($shippedStable.FeedUrl)'"
+        Assert-True ($shippedDev.FeedUrl -ceq 'https://dl-dev.euphoric.software/clink/') "dev FeedUrl is '$($shippedDev.FeedUrl)'"
+        $pinnedStable = @('13DAED66E5D84B7C', '4C5A7362D57D4CFC')
+        $pinnedDev = @('C6BD21736DB3196C', 'A99B2A33AD8651BA')
+        $actualStable = @($shippedStable.Keys | ForEach-Object { Get-FeedKeyFingerprint -Base64 $_ })
+        $actualDev = @($shippedDev.Keys | ForEach-Object { Get-FeedKeyFingerprint -Base64 $_ })
+        Assert-True ($actualStable.Count -eq 2 -and $actualStable[0] -ceq $pinnedStable[0] -and $actualStable[1] -ceq $pinnedStable[1]) "stable key fingerprints are [$($actualStable -join ', ')]"
+        Assert-True ($actualDev.Count -eq 2 -and $actualDev[0] -ceq $pinnedDev[0] -and $actualDev[1] -ceq $pinnedDev[1]) "dev key fingerprints are [$($actualDev -join ', ')]"
     }
 
     Invoke-Test 'devFeedUrl: make-manifest binds a manifest to its OWN channel base (dev under devFeedUrl, stable under feedUrl)' {
@@ -745,6 +761,166 @@ try {
         $d3 = New-PackageDir 'dev-nodev' { param($p) $p.version = '0.4.2-dev.1' }
         $r = Invoke-MakeManifest $d3 -Channel dev -Version '0.4.2-dev.1' -BaseUrl 'https://downloads.example/clink/dev/v0.4.2-dev.1/' -KeyIndex 1
         Assert-True ($r.Code -eq 0) "a dev manifest under feedUrl (no devFeedUrl) was refused: $($r.Text)"
+    }
+
+    Invoke-Test 'S1: make-manifest logs which key signed (channel list index and SPKI fingerprint); index 0 gives no warning, index 1 warns that the CI key is the spare' {
+        $spare = New-FeedJsonFile 's1-feed' -Stable @($keyPem[0].Public, $keyPem[1].Public) -Dev @((New-TestKey).Public) -FeedUrl 'https://downloads.example/clink/'
+        $dirZero = New-PackageDir 's1-zero'
+        $r = Invoke-MakeManifest $dirZero -Feed $spare -KeyIndex 0
+        Assert-True ($r.Code -eq 0) "index 0 was refused: $($r.Text)"
+        $fingerprintZero = Get-FeedKeyFingerprint -Base64 $keyPem[0].Public
+        Assert-True ($fingerprintZero -cmatch '\A[0-9A-F]{16}\z') "fingerprint shape: $fingerprintZero"
+        Assert-True ($r.Text.Contains("signed with stableKeys[0] (spki sha256 $fingerprintZero)")) "no or wrong signed-with line for index 0: $($r.Text)"
+        Assert-True ($r.Text -notmatch '::warning::') "index 0 printed a warning: $($r.Text)"
+        $dirOne = New-PackageDir 's1-one'
+        $r = Invoke-MakeManifest $dirOne -Feed $spare -KeyIndex 1
+        Assert-True ($r.Code -eq 0) "index 1 was refused: $($r.Text)"
+        $fingerprintOne = Get-FeedKeyFingerprint -Base64 $keyPem[1].Public
+        Assert-True ($fingerprintOne -cne $fingerprintZero) 'the two scratch keys have the same fingerprint'
+        Assert-True ($r.Text.Contains("signed with stableKeys[1] (spki sha256 $fingerprintOne)")) "no or wrong signed-with line for index 1: $($r.Text)"
+        Assert-True ($r.Text -match '::warning::[^\r\n]*spare \(next\) key[^\r\n]*Rotation') "no spare-key warning for index 1: $($r.Text)"
+        # The dev channel names its own list.
+        $devFeed = New-FeedJsonFile 's1-devfeed' -Stable @((New-TestKey).Public) -Dev @($keyPem[0].Public, $keyPem[1].Public) -FeedUrl 'https://downloads.example/clink/'
+        $dirDev = New-PackageDir 's1-dev' { param($p) $p.version = '0.4.2-dev.1' }
+        $r = Invoke-MakeManifest $dirDev -Channel dev -Version '0.4.2-dev.1' -BaseUrl 'https://downloads.example/clink/dev/v0.4.2-dev.1/' -Feed $devFeed -KeyIndex 1
+        Assert-True ($r.Code -eq 0 -and $r.Text.Contains('signed with devKeys[1] (spki sha256 ') -and $r.Text -match '::warning::') "dev index 1: $($r.Text)"
+    }
+
+    Invoke-Test 'S1: Get-FeedSignatureKeyIndex returns the matching index (-1 for none, a bad signature or an empty list) and Test-FeedSignature keeps its boolean contract' {
+        $a = New-TestKey; $b = New-TestKey; $c = New-TestKey
+        $data = New-RandomBytes 100
+        $sig = Get-SigText $b $data
+        Assert-True ((Get-FeedSignatureKeyIndex -Bytes $data -SigBase64 $sig -Keys @($a.Public, $b.Public)) -eq 1) 'index of the second key'
+        Assert-True ((Get-FeedSignatureKeyIndex -Bytes $data -SigBase64 $sig -Keys @($b.Public, $a.Public)) -eq 0) 'index of the first key'
+        Assert-True ((Get-FeedSignatureKeyIndex -Bytes $data -SigBase64 $sig -Keys @($a.Public, $c.Public)) -eq -1) 'unlisted key'
+        Assert-True ((Get-FeedSignatureKeyIndex -Bytes $data -SigBase64 'not base64!' -Keys @($b.Public)) -eq -1) 'bad signature text'
+        Assert-True ((Get-FeedSignatureKeyIndex -Bytes $data -SigBase64 $sig -Keys @()) -eq -1) 'empty key list'
+        Assert-True ((Test-FeedSignature -Bytes $data -SigBase64 $sig -Keys @($a.Public, $b.Public)) -eq $true) 'Test-FeedSignature true'
+        Assert-True ((Test-FeedSignature -Bytes $data -SigBase64 $sig -Keys @($a.Public)) -eq $false) 'Test-FeedSignature false'
+        foreach ($k in $a, $b, $c) { $k.Ec.Dispose() }
+    }
+
+    Invoke-Test 'S3: Assert-FeedPublishedManifest - the live pair passes; other bytes, a wrong content type, a missing max-age (and max-age=600), a bad signature and a missing nosniff (warning only unless required) are handled; a transient failure is retried' {
+        $key = New-TestKey
+        $other = New-TestKey
+        $json = $utf8.GetBytes('{"schema":1,"channel":"stable","version":"0.4.2"}')
+        $sigText = Get-SigText $key $json
+        $dir = Get-ScratchFolder 's3'
+        $manifestFile = Join-Path $dir 'stable.json'
+        $sigFile = Join-Path $dir 'stable.json.sig'
+        [System.IO.File]::WriteAllBytes($manifestFile, $json)
+        [System.IO.File]::WriteAllBytes($sigFile, $utf8.GetBytes($sigText))
+        $base = 'https://dl.example/clink/'
+        $dl = Get-ScratchFolder 's3dl'
+        $goodJson = @{ 'content-type' = 'application/json'; 'cache-control' = 'public, max-age=60'; 'x-content-type-options' = 'nosniff' }
+        $goodSig = @{ 'content-type' = 'text/plain; charset=utf-8'; 'cache-control' = 'public, max-age=60'; 'x-content-type-options' = 'nosniff' }
+        # The fake web client: $script:live maps URL -> @{ Status; Bytes; Headers }; $script:liveCalls counts the requests.
+        $http = {
+            param([string]$Url, [string]$OutFile)
+            $script:liveCalls++
+            $entry = $script:live[$Url]
+            if ($script:failFirst -and $script:liveCalls -le $script:failFirst) { throw 'connection reset' }
+            if ($entry.Bytes) { [System.IO.File]::WriteAllBytes($OutFile, [byte[]]$entry.Bytes) }
+            @{ Status = $entry.Status; Headers = $entry.Headers }
+        }
+        function Set-LivePair {
+            param($JsonBytes = $json, $SigBytes = ($utf8.GetBytes($sigText)), $JsonHeaders = $goodJson, $SigHeaders = $goodSig)
+            $script:live = @{
+                ($base + 'stable.json') = @{ Status = 200; Bytes = $JsonBytes; Headers = $JsonHeaders }
+                ($base + 'stable.json.sig') = @{ Status = 200; Bytes = $SigBytes; Headers = $SigHeaders }
+            }
+            $script:liveCalls = 0
+            $script:failFirst = 0
+        }
+        function Invoke-LiveCheck {
+            param([int]$Attempts = 1, [switch]$RequireNoSniff)
+            Assert-FeedPublishedManifest -Http $http -BaseUrl $base -Channel stable -ManifestPath $manifestFile -SigPath $sigFile -Keys @($key.Public) -Attempts $Attempts -DelaySeconds 0 -ScratchDir $dl -RequireNoSniff:$RequireNoSniff
+        }
+        # OK (the .sig with and without a charset; the .json with a charset too).
+        Set-LivePair
+        Invoke-LiveCheck
+        Set-LivePair -SigHeaders @{ 'content-type' = 'text/plain'; 'cache-control' = 'max-age=60'; 'x-content-type-options' = 'nosniff' }
+        Invoke-LiveCheck
+        Set-LivePair -JsonHeaders @{ 'content-type' = 'Application/JSON; charset=utf-8'; 'cache-control' = 'public, max-age=60, must-revalidate'; 'x-content-type-options' = 'nosniff' }
+        Invoke-LiveCheck
+        # Bytes mismatch (same length, and different length), in the manifest and in the signature file.
+        $changed = [byte[]]$json.Clone(); $changed[10] = [byte]([int]$changed[10] -bxor 1)
+        Set-LivePair -JsonBytes $changed
+        Assert-Throws { Invoke-LiveCheck } 'stable\.json: served bytes differ' 'same-length other bytes'
+        Set-LivePair -JsonBytes ($json + [byte]10)
+        Assert-Throws { Invoke-LiveCheck } 'served bytes differ' 'longer manifest'
+        Set-LivePair -SigBytes ($utf8.GetBytes($sigText + "`n"))
+        Assert-Throws { Invoke-LiveCheck } 'stable\.json\.sig: served bytes differ' 'sig with a trailing newline'
+        # Wrong content type.
+        Set-LivePair -JsonHeaders @{ 'content-type' = 'text/html'; 'cache-control' = 'public, max-age=60'; 'x-content-type-options' = 'nosniff' }
+        Assert-Throws { Invoke-LiveCheck } "Content-Type 'text/html', expected 'application/json'" 'json as html'
+        Set-LivePair -SigHeaders @{ 'content-type' = 'application/octet-stream'; 'cache-control' = 'public, max-age=60'; 'x-content-type-options' = 'nosniff' }
+        Assert-Throws { Invoke-LiveCheck } "expected 'text/plain'" 'sig as octet-stream'
+        # Missing, wrong or look-alike max-age.
+        foreach ($cache in $null, 'no-store', 'public, max-age=600', 'public, max-age=6', 'public, s-maxage=60') {
+            Set-LivePair -JsonHeaders @{ 'content-type' = 'application/json'; 'cache-control' = $cache; 'x-content-type-options' = 'nosniff' }
+            Assert-Throws { Invoke-LiveCheck } 'expected it to contain max-age=60' "cache-control [$cache]"
+        }
+        # A served pair whose signature does not verify under the channel keys (identical bytes to the local files, which are wrong too).
+        $badSig = Get-SigText $other $json
+        [System.IO.File]::WriteAllBytes($sigFile, $utf8.GetBytes($badSig))
+        Set-LivePair -SigBytes ($utf8.GetBytes($badSig))
+        Assert-Throws { Invoke-LiveCheck } 'does not verify' 'signature of an unlisted key'
+        [System.IO.File]::WriteAllBytes($sigFile, $utf8.GetBytes($sigText))
+        # A 404 and a transport error fail.
+        Set-LivePair
+        $script:live[$base + 'stable.json'] = @{ Status = 404; Bytes = $null; Headers = @{} }
+        Assert-Throws { Invoke-LiveCheck } 'status 404' 'manifest 404'
+        # nosniff: a warning by default (the Cloudflare rule is the owner's), a failure with -RequireNoSniff.
+        Set-LivePair -JsonHeaders @{ 'content-type' = 'application/json'; 'cache-control' = 'public, max-age=60' }
+        $sniffOut = @(Invoke-LiveCheck *>&1 | ForEach-Object { [string]$_ })
+        Assert-True (@($sniffOut | Where-Object { $_ -match '::warning::.*nosniff' }).Count -ge 1) "no nosniff warning in the output: $($sniffOut -join ' | ')"
+        Assert-Throws { Invoke-LiveCheck -RequireNoSniff } 'nosniff' 'required nosniff'
+        # Transient failure then success: the first request throws, the retry passes (and a persistent failure uses up its attempts).
+        Set-LivePair
+        $script:failFirst = 1
+        Invoke-LiveCheck -Attempts 3
+        Assert-True ($script:liveCalls -eq 3) "requests after one transient failure: $($script:liveCalls)"
+        Set-LivePair -JsonBytes $changed
+        Assert-Throws { Invoke-LiveCheck -Attempts 5 } 'served bytes differ' 'persistent mismatch'
+        Assert-True ($script:liveCalls -eq 5) "attempts used by a persistent failure: $($script:liveCalls)"
+        Assert-True (@(Get-ChildItem -LiteralPath $dl -Filter 'clink-feed-*.tmp').Count -eq 0) 'scratch files were left behind'
+        $key.Ec.Dispose(); $other.Ec.Dispose()
+    }
+
+    Invoke-Test 'S3: Assert-FeedPublishedManifest normalises raw PowerShell 7 headers (mixed-case names, array values) and -RequireNoSniff still passes' {
+        $key = New-TestKey
+        $json = $utf8.GetBytes('{"schema":1,"channel":"stable","version":"0.4.2"}')
+        $sigText = Get-SigText $key $json
+        $dir = Get-ScratchFolder 's3raw'
+        $manifestFile = Join-Path $dir 'stable.json'
+        $sigFile = Join-Path $dir 'stable.json.sig'
+        [System.IO.File]::WriteAllBytes($manifestFile, $json)
+        [System.IO.File]::WriteAllBytes($sigFile, $utf8.GetBytes($sigText))
+        $dl = Get-ScratchFolder 's3rawdl'
+        $base = 'https://dl.example/clink/'
+        $script:rawLive = @{
+            ($base + 'stable.json') = @{ Bytes = $json; Headers = @{ 'Cache-Control' = @('public', 'max-age=60'); 'Content-Type' = @('application/json'); 'X-Content-Type-Options' = @('nosniff') } }
+            ($base + 'stable.json.sig') = @{ Bytes = $utf8.GetBytes($sigText); Headers = @{ 'Cache-Control' = @('public', 'max-age=60'); 'Content-Type' = @('text/plain'); 'X-Content-Type-Options' = @('nosniff') } }
+        }
+        $http = {
+            param([string]$Url, [string]$OutFile)
+            $entry = $script:rawLive[$Url]
+            [System.IO.File]::WriteAllBytes($OutFile, [byte[]]$entry.Bytes)
+            @{ Status = 200; Headers = $entry.Headers }
+        }
+        $out = @(Assert-FeedPublishedManifest -Http $http -BaseUrl $base -Channel stable -ManifestPath $manifestFile -SigPath $sigFile -Keys @($key.Public) -Attempts 1 -DelaySeconds 0 -ScratchDir $dl -RequireNoSniff *>&1 | ForEach-Object { [string]$_ })
+        Assert-True (@($out | Where-Object { $_ -match 'live manifest ok' }).Count -eq 1) "raw PS7 header shapes did not pass: $($out -join ' | ')"
+        $key.Ec.Dispose()
+    }
+
+    Invoke-Test 'S3/N4/N5: upload-feed.ps1 reads the live manifest back after the .sig upload and the purge (before the dev prune), logs a skipped purge, and compares channel/version/tag/url/sha256 case-sensitively' {
+        $text = [System.IO.File]::ReadAllText((Join-Path $toolsDir 'upload-feed.ps1'))
+        Assert-True ($text -match "(?s)'s3', 'cp'.*purge_cache.*Assert-FeedPublishedManifest -Http \`$httpInvoker -BaseUrl \`$feed -Channel \`$Channel .*if \(\`$Channel -eq 'dev'\)") 'the live read-back is not after the manifest upload and purge, before the dev prune'
+        Assert-True ($text.Contains('-Keys $cfg.Keys -Attempts 8 -DelaySeconds 10')) 'the live read-back does not retry 8 times, 10 s apart (longer than max-age=60)'
+        Assert-True ($text.Contains("'cache purge skipped (no Cloudflare token configured)'")) 'no skipped-purge message'
+        Assert-True ($text.Contains('$manifest.channel -cne $Channel -or $manifest.version -cne $Version -or $manifest.tag -cne $tag')) 'channel/version/tag comparison is not -cne'
+        Assert-True ($text.Contains('$entry.url -cne $a.Url -or $entry.sha256 -cne $a.Sha256')) 'url/sha256 comparison is not -cne'
     }
 
     Invoke-Test 'N6: make-manifest anchors versions at both ends (case-sensitive) and ASCII digits only' {

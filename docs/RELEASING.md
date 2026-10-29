@@ -183,8 +183,10 @@ GitHub or R2), because a feed-less release would give every client an update pat
   2. On `main`: `.\tools\release.ps1 -Version X.Y.Z` bumps `<Version>` in `Clink/Clink.csproj`, commits, creates the annotated tag `vX.Y.Z` and
      pushes the branch and the tag. (Tagging by hand works too if `<Version>` already matches.)
   3. `release.yml` builds, checks the runtime is current, writes `notes.txt`, signs `stable.json`, uploads to `clink-stable`, checks the public URLs, drafts
-     and verifies the GitHub release, publishes it and verifies it again. Watch it in the Actions tab; a red run never leaves a half-published feed
-     (see "Recovering a stuck feed" and "Stale drafts").
+     and verifies the GitHub release, publishes it and verifies it again. Watch it in the Actions tab; a red run almost never leaves a half-published feed.
+     The one exception is a tiny window between the upload of `stable.json` and the upload of `stable.json.sig`: if the `.sig` upload fails, the next
+     run throws at `Get-FeedBucketFloor`; follow the manual recovery in "Recovering a stuck feed" (torn pair). See also "Stale drafts".
+     After the `.sig` upload the script reads both files back over the public host and fails (the release stays a draft) if the bytes, signature, headers or cache lifetime are wrong. By then the feed already serves the new manifest to clients, so do not retry the same version: publish a newer one (see the next bullet).
 - The build artifact is kept 1 day (`retention-days: 1`), and the separate `cleanup` job deletes it as soon as the run is over (see "Actions
   budget"), also after a failure. **After a failure that reached `Publish to the update feed`, publish a NEWER version** (dev: push again, a new N
   is picked; stable: bump `<Version>` and tag again). Neither re-run button helps there: "Re-run failed jobs" fails at `Download package artifact`
@@ -225,6 +227,7 @@ A PUBLIC fork would expose the private source, so there is no public staging for
    link opens, `notes.txt` is served as `text/plain; charset=utf-8` with `nosniff` (no `nosniff` warning in the log), and a second dev push moves the feed forward (the downgrade floor works). Then merge to `main` and tag. What the dev run cannot prove:
    the stable token and bucket, the stable Bucket Lock and the stable CORS rule. Check those by hand before tagging: `npx wrangler r2 bucket lock list clink-stable`
    shows the `clink/releases/` rule with indefinite retention (read-only; setup step 1.4 explains the optional live probe and what it leaves behind), and the CORS probe in setup step 1.5 passes.
+   **Until the first stable release publishes, `https://dl.euphoric.software/clink/stable.json` returns 404**, so a dev build's manual update check shows "Couldn't reach the update server... HTTP 404". That is expected; newer dev builds are still offered.
    **Cloudflare bot and WAF rules must not challenge the runners.** `upload-feed.ps1` GETs every object at its PUBLIC URL from a GitHub-hosted runner
    and fails closed on anything but status 200 with the right bytes, so a Bot Fight Mode or WAF challenge (a 403 or a challenge page for a datacenter IP)
    fails the publish after the write-once objects are already in the bucket. Keep Bot Fight Mode (and Super Bot Fight Mode) OFF for the zone, or add a
@@ -248,7 +251,8 @@ A PUBLIC fork would expose the private source, so there is no public staging for
 2. **Optional, heavier: a PRIVATE fork under the owner's personal account** (Free plan; repo secrets work there) with throwaway keys, two
    throwaway buckets and `CLINK_FEED_KEY_PREFIX=clink-staging` (a `feedUrl` whose path is exactly `/clink-staging/`; the publish job refuses a mismatch
    before anything is signed or drafted). Use it only to rehearse the STABLE path (a fork tag) before the real tag. Never copy a real key, token or
-   bucket into it, keep it private, and delete it afterwards with its buckets, tokens and keys.
+   bucket into it, keep it private, and delete it afterwards with its buckets, tokens and keys. `Check bucket secrets` requires the bucket secret to be
+   exactly `clink-stable` (`clink-dev` for dev) and has no override, so a fork needs that one comparison edited in its own copy of the workflow.
 
 ### Going private
 
@@ -652,6 +656,8 @@ Because clients only trust the keys embedded in their own build, rotate in two r
 4. The publish step verifies the bucket's current manifest against the keys in `feed.json` before it uses it as the downgrade floor, so a key that
    is removed from `feed.json` can no longer vouch for the manifest already in the bucket. Therefore switch the secret to the next key and publish one
    release with BOTH keys still listed first; remove the old public key in a later release (otherwise the publish fails closed on the old manifest).
+5. `make-manifest.ps1` logs which key signed (`signed with stableKeys[<i>] (spki sha256 <16 hex>)`). Index 0 is the normal CI key. If the log shows
+   index 1 and a `::warning::`, the CI signing secret holds the spare ("next") key: that is expected only after step 2, otherwise investigate.
 
 ### Recovering a stuck feed
 
