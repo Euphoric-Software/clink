@@ -28,6 +28,8 @@
     <DebugType>embedded</DebugType>
     <!-- obj/bin are only excluded by default while they ARE the intermediate/output folders: a build with -p:BaseIntermediateOutputPath=obj_x must not compile the generated files of a normal build in obj\. -->
     <DefaultItemExcludes>$(DefaultItemExcludes);obj/**;bin/**;obj_*/**;bin_*/**</DefaultItemExcludes>
+    <!-- The .NET SDK adds its own <NetCoreRoot>\library-packs folder as an extra restore source when that folder exists (it does on the CI runner, not on every dev PC). We restore only from nuget.org, and Assert-NuGetRestoreTrusted (tools/lib/nuget-restore-lib.ps1) enforces that, so switch the implicit source off. -->
+    <DisableImplicitLibraryPacksFolder>true</DisableImplicitLibraryPacksFolder>
     <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
     <CompilerGeneratedFilesOutputPath>$(BaseIntermediateOutputPath)Generated</CompilerGeneratedFilesOutputPath>
   </PropertyGroup>
