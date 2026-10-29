@@ -55,6 +55,12 @@ internal sealed class FeedTrust
     public bool Misconfigured => State == FeedState.Misconfigured;
     /// <summary>The validated base URL (https, a host, no query or fragment, ends in '/') when <see cref="On"/>; null otherwise.</summary>
     public string? FeedUrl { get; }
+    /// <summary>
+    /// The dev channel's base URL when <see cref="On"/>: feed.json's optional <c>devFeedUrl</c> (validated exactly like <see cref="FeedUrl"/>),
+    /// or <see cref="FeedUrl"/> itself when devFeedUrl is absent or ""; null otherwise. dev.json, dev.json.sig and the dev binaries live
+    /// here, stable.json, stable.json.sig and the stable binaries under <see cref="FeedUrl"/>.
+    /// </summary>
+    public string? DevFeedUrl { get; }
     /// <summary>The stable channel's keys when <see cref="On"/>; empty otherwise.</summary>
     public IReadOnlyList<byte[]> StableKeys { get; }
     /// <summary>The dev channel's keys when <see cref="On"/>; empty otherwise.</summary>
@@ -62,14 +68,16 @@ internal sealed class FeedTrust
     /// <summary>What is wrong ("stableKeys[1] is invalid (not an EC public key)"); empty exactly when the state is not <see cref="FeedState.Misconfigured"/>.</summary>
     public IReadOnlyList<string> Problems { get; }
     private readonly int _stableListed, _devListed, _stableValid, _devValid;
-    private readonly bool _urlListed, _urlValid;
+    private readonly bool _urlListed, _urlValid, _devUrlListed, _devUrlValid;
 
-    private FeedTrust(FeedState state, string? feedUrl, List<byte[]> stable, List<byte[]> dev, List<string> problems,
-        int stableListed, int devListed, bool urlListed, bool urlValid)
+    private FeedTrust(FeedState state, string? feedUrl, string? devFeedUrl, List<byte[]> stable, List<byte[]> dev, List<string> problems,
+        int stableListed, int devListed, bool urlListed, bool urlValid, bool devUrlListed = false, bool devUrlValid = false)
     {
         State = state;
         bool on = state == FeedState.On;
         FeedUrl = on ? feedUrl : null;
+        DevFeedUrl = on ? devFeedUrl ?? feedUrl : null;
+        _devUrlListed = devUrlListed; _devUrlValid = devUrlValid;
         StableKeys = on ? stable : new List<byte[]>();
         DevKeys = on ? dev : new List<byte[]>();
         Problems = problems;
@@ -78,13 +86,16 @@ internal sealed class FeedTrust
     }
 
     /// <summary>No feed at all (GitHub only): what the empty feed.json gives.</summary>
-    public static FeedTrust None => new(FeedState.Off, null, new(), new(), new(), 0, 0, false, false);
+    public static FeedTrust None => new(FeedState.Off, null, null, new(), new(), new(), 0, 0, false, false);
 
     /// <summary>The keys that may sign a manifest of <paramref name="channel"/> ("stable" or "dev"); any one of them verifying is enough (rotation).</summary>
     public IReadOnlyList<byte[]> KeysFor(string channel) => channel == "dev" ? DevKeys : StableKeys;
 
+    /// <summary>The base URL (ends in '/') under which <paramref name="channel"/>'s manifest, signature and binaries live; null unless <see cref="On"/>.</summary>
+    public string? BaseFor(string channel) => channel == "dev" ? DevFeedUrl : FeedUrl;
+
     /// <summary>From the parts (the unit tests, and <see cref="Parse"/>): every entry is validated and the state decided (see the class remarks).</summary>
-    public static FeedTrust Create(string? feedUrl, IEnumerable<string?>? stableKeys, IEnumerable<string?>? devKeys, List<string>? problems = null)
+    public static FeedTrust Create(string? feedUrl, IEnumerable<string?>? stableKeys, IEnumerable<string?>? devKeys, List<string>? problems = null, string? devFeedUrl = null)
     {
         problems ??= new();
         string? url = null;
@@ -94,18 +105,32 @@ internal sealed class FeedTrust
             url = ValidFeedUrl(feedUrl, out string? why);
             if (url == null) problems.Add($"feedUrl is invalid ({why})");
         }
+        // devFeedUrl: absent or "" = the dev channel uses feedUrl; anything else (a blank string too) must pass the very same validator.
+        string? devUrl = null;
+        bool devUrlListed = !string.IsNullOrEmpty(devFeedUrl);
+        if (devUrlListed)
+        {
+            devUrl = ValidFeedUrl(devFeedUrl, out string? why);
+            if (devUrl == null) problems.Add($"devFeedUrl is invalid ({why})");
+            if (!urlListed) problems.Add("devFeedUrl is set but feedUrl is empty");
+        }
+        // Two different bases must be disjoint: with one inside the other, a binary under the inner base would pass the outer channel's
+        // "under my base" check too. Compared on the normalised absolute form (both end in '/'), ordinally.
+        if (url != null && devUrl != null && !string.Equals(url, devUrl, StringComparison.Ordinal)
+            && (devUrl.StartsWith(url, StringComparison.Ordinal) || url.StartsWith(devUrl, StringComparison.Ordinal)))
+            problems.Add("feedUrl and devFeedUrl are nested (one is inside the other)");
         var stable = Keys(stableKeys, "stableKeys", problems, out int stableListed);
         var dev = Keys(devKeys, "devKeys", problems, out int devListed);
-        if (urlListed || stableListed > 0 || devListed > 0)
+        if (urlListed || devUrlListed || stableListed > 0 || devListed > 0)
         {
             // Something is configured: then everything must be, for both channels together.
-            if (!urlListed) problems.Add("feedUrl is empty but keys are listed");
+            if (!urlListed && (stableListed > 0 || devListed > 0)) problems.Add("feedUrl is empty but keys are listed");
             if (stableListed == 0) problems.Add("stableKeys is empty (the feed needs keys for both channels)");
             if (devListed == 0) problems.Add("devKeys is empty (the feed needs keys for both channels)");
             if (stable.Any(s => dev.Any(d => s.AsSpan().SequenceEqual(d)))) problems.Add("the same key is listed in stableKeys and devKeys");
         }
         var state = problems.Count > 0 ? FeedState.Misconfigured : urlListed ? FeedState.On : FeedState.Off;
-        return new FeedTrust(state, url, stable, dev, problems, stableListed, devListed, urlListed, url != null);
+        return new FeedTrust(state, url, devUrlListed ? devUrl : null, stable, dev, problems, stableListed, devListed, urlListed, url != null, devUrlListed, devUrl != null);
 
         static List<byte[]> Keys(IEnumerable<string?>? list, string name, List<string> problems, out int listed)
         {
@@ -138,7 +163,13 @@ internal sealed class FeedTrust
                 if (u.ValueKind == JsonValueKind.String) url = u.GetString();
                 else if (u.ValueKind != JsonValueKind.Null) problems.Add("feedUrl is not a string");
             }
-            return Create(url, Strings(root, "stableKeys", problems), Strings(root, "devKeys", problems), problems);
+            string? devUrl = null;   // devFeedUrl is optional: absent, null and "" all mean "the dev channel uses feedUrl"
+            if (root.TryGetProperty("devFeedUrl", out var du))
+            {
+                if (du.ValueKind == JsonValueKind.String) devUrl = du.GetString();
+                else if (du.ValueKind != JsonValueKind.Null) problems.Add("devFeedUrl is not a string");
+            }
+            return Create(url, Strings(root, "stableKeys", problems), Strings(root, "devKeys", problems), problems, devUrl);
         }
         catch (JsonException) { return Broken($"{ResourceName} is not valid JSON"); }
 
@@ -166,13 +197,14 @@ internal sealed class FeedTrust
         catch (Exception ex) { return Broken($"{ResourceName} could not be read ({ex.GetType().Name})"); }
     }
 
-    private static FeedTrust Broken(string problem) => new(FeedState.Misconfigured, null, new(), new(), new() { problem }, 0, 0, false, false);
+    private static FeedTrust Broken(string problem) => new(FeedState.Misconfigured, null, null, new(), new(), new() { problem }, 0, 0, false, false);
 
     /// <summary>The startup log line: the state, URL validity, key counts and validity, and what is wrong. Never key bytes.</summary>
     public string Describe()
     {
         string url = _urlValid ? FeedUrl ?? "valid" : _urlListed ? "invalid" : "empty";
-        string counts = $"feedUrl {url}; stableKeys {_stableValid} valid of {_stableListed}; devKeys {_devValid} valid of {_devListed}";
+        string devUrl = _devUrlListed ? _devUrlValid ? $"; devFeedUrl {DevFeedUrl ?? "valid"}" : "; devFeedUrl invalid" : "";
+        string counts = $"feedUrl {url}{devUrl}; stableKeys {_stableValid} valid of {_stableListed}; devKeys {_devValid} valid of {_devListed}";
         return State switch
         {
             FeedState.Off => $"no signed update feed in this build ({ResourceName} is empty): GitHub only",
@@ -264,6 +296,11 @@ internal static class UpdateFeed
     internal const int MaxSignatureBytes = 4 * 1024;
     /// <summary>A verified manifest published longer ago than this is stale (a frozen or replayed feed).</summary>
     internal static readonly TimeSpan MaxAge = TimeSpan.FromDays(90);
+    /// <summary>
+    /// A verified manifest naming the running version ends a check as "up to date" only while it is younger than this; an older one
+    /// (a possibly frozen or replayed feed) is cross-checked against the signed GitHub path instead.
+    /// </summary>
+    internal static readonly TimeSpan MaxUpToDateAge = TimeSpan.FromDays(14);
     /// <summary>A verified manifest published further ahead than this is stale too (a wrong clock or a forged date: never trusted as "newest").</summary>
     internal static readonly TimeSpan MaxFuture = TimeSpan.FromDays(1);
     /// <summary>Per feed request, headers and body (a linked token: the caller's cancellation still wins). The default of the timeout parameters below.</summary>
@@ -271,6 +308,8 @@ internal static class UpdateFeed
     private static readonly Regex s_sha = new("^[0-9a-f]{64}$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Regex s_isoStart = new(@"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly byte[] s_bom = { 0xEF, 0xBB, 0xBF };
+    /// <summary>A percent-escape of an unreserved character (ALPHA, DIGIT, '-', '.', '_', '~'), which URI normalisation turns back into the plain character.</summary>
+    private static readonly Regex s_escapedUnreserved = new("%(?:3[0-9]|[46][1-9A-Fa-f]|[57][0-9Aa]|2[Dd]|2[Ee]|5[Ff]|7[Ee])", RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     /// <summary>A GET that returns the response with its headers read (the body still streaming). Injected so that tests need no network.</summary>
     internal delegate Task<HttpResponseMessage> Get(string url, CancellationToken ct);
@@ -335,12 +374,46 @@ internal static class UpdateFeed
     /// <see cref="FeedRejectedException"/> (see <see cref="FetchCappedAsync"/>); a missing signature is a rejection.
     /// </summary>
     internal static async Task<FeedManifest> FetchVerifiedAsync(Get get, string manifestUrl, string signatureUrl, string channel, IReadOnlyList<byte[]> keys,
-        CancellationToken ct, TimeSpan? requestTimeout = null)
+        CancellationToken ct, TimeSpan? requestTimeout = null, string? assetsBase = null)
     {
         byte[] manifest = await FetchCappedAsync(get, manifestUrl, MaxManifestBytes, missingIsRejection: false, ct, requestTimeout).ConfigureAwait(false);
         byte[] sig = await FetchCappedAsync(get, signatureUrl, MaxSignatureBytes, missingIsRejection: true, ct, requestTimeout).ConfigureAwait(false);
         if (!VerifyAny(manifest, Encoding.UTF8.GetString(sig), keys, out string? problem)) throw new FeedRejectedException(problem ?? "bad signature");
-        return ParseManifest(manifest, channel, out problem) ?? throw new FeedRejectedException(problem ?? "invalid manifest");
+        var m = ParseManifest(manifest, channel, out problem) ?? throw new FeedRejectedException(problem ?? "invalid manifest");
+        if (assetsBase != null && AssetsOutside(m, assetsBase) is { } outside) throw new FeedRejectedException(outside);
+        return m;
+    }
+
+    /// <summary>
+    /// Why a verified manifest's binaries do not all sit under <paramref name="assetsBase"/> (the base of the feed the manifest belongs
+    /// to: feedUrl for stable.json, the dev base for dev.json), or null. The URL must start with the base (scheme, host, port and path
+    /// prefix, compared on the normalised form), with no query or fragment, and its rest must not hold a backslash (a literal or an
+    /// encoded %5C), a "." / ".." segment (also when encoded, e.g. %2e%2e) or an empty segment ("//"). An encoded slash (%2F) in the rest is NOT rejected: it
+    /// stays inside the base's path as one segment name, and with ".." it is caught by the dot rule.
+    /// </summary>
+    internal static string? AssetsOutside(FeedManifest m, string assetsBase)
+    {
+        foreach (var (name, asset) in new (string, FeedAsset?)[] { ("exe", m.Exe), ("installer", m.Installer), ("exeFramework", m.ExeFramework) })
+            if (asset != null && !IsUnder(asset.Url, assetsBase)) return $"the {name} asset URL is not under {assetsBase}";
+        return null;
+    }
+
+    /// <summary>True when <paramref name="url"/> is an https URL strictly inside <paramref name="assetsBase"/> (ends in '/').</summary>
+    internal static bool IsUnder(string url, string assetsBase)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var u) || !Uri.TryCreate(assetsBase, UriKind.Absolute, out var b)) return false;
+        // .NET quietly decodes an escaped unreserved character ("%63link" is "clink"): a URL that relies on that is not one a publisher writes. Fail closed.
+        if (s_escapedUnreserved.IsMatch(url)) return false;
+        if (u.Scheme != Uri.UriSchemeHttps || u.UserInfo.Length > 0 || u.Query.Length > 0 || u.Fragment.Length > 0 || url.Contains('?') || url.Contains('#')) return false;
+        // Hosts compared as their IDN (punycode) form, lower-cased, ordinally: a trailing dot or a look-alike Unicode letter is a different host.
+        if (!string.Equals(u.Scheme, b.Scheme, StringComparison.Ordinal) || u.Port != b.Port
+            || !string.Equals(u.IdnHost.ToLowerInvariant(), b.IdnHost.ToLowerInvariant(), StringComparison.Ordinal)) return false;
+        string basePath = b.AbsolutePath;
+        if (!basePath.EndsWith('/')) basePath += "/";
+        if (!u.AbsolutePath.StartsWith(basePath, StringComparison.Ordinal) || u.AbsolutePath.Length == basePath.Length) return false;
+        string rest = Uri.UnescapeDataString(u.AbsolutePath[basePath.Length..]);
+        // Empty segments ("//") are refused too (fail closed): a published binary URL never has one.
+        return !rest.Contains('\\') && !rest.Split('/').Any(s => s is ".." or "." or "");
     }
 
     /// <summary>
@@ -393,8 +466,8 @@ internal static class UpdateFeed
             string ch = Str(root, "channel");
             if (ch != channel) { problem = $"manifest is for channel '{Clip(ch)}', expected '{channel}'"; return null; }
             string versionText = Str(root, "version");
-            var version = ReleaseVersion.Parse(versionText);
-            if (version == null || version.Value.ToString() != versionText) { problem = $"bad version '{Clip(versionText)}'"; return null; }
+            var version = ReleaseVersion.ParseCanonical(versionText);
+            if (version == null) { problem = $"bad version '{Clip(versionText)}' (expected X.Y.Z or X.Y.Z-dev.N)"; return null; }
             if (channel == "stable" && version.Value.IsPrerelease) { problem = $"version {versionText} is a pre-release but the channel is stable"; return null; }
             if (channel == "dev" && !version.Value.IsDevBuild) { problem = $"version {versionText} is not a dev build (X.Y.Z-dev.N) but the channel is dev"; return null; }
             string tag = Str(root, "tag");
@@ -469,7 +542,7 @@ internal static class UpdateFeed
     internal static UpdateInfo ToUpdateInfo(FeedManifest m, Packaging packaging = Packaging.SelfContained, IEnumerable<Version>? installedRuntimes = null)
     {
         var (a, flavour) = PickAsset(m, packaging, installedRuntimes);
-        return new(m.Version, m.Tag, a.Url, a.Size, "", m.NotesUrl, "", a.Sha256, flavour);
+        return new(m.Version, m.Tag, a.Url, a.Size, "", m.NotesUrl, "", a.Sha256, flavour, FromFeed: true);
     }
 
     private static string NameOf(string url) =>

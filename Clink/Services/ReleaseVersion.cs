@@ -45,6 +45,29 @@ internal readonly record struct ReleaseVersion(Version Number, string? Prereleas
         return new ReleaseVersion(new Version(Math.Max(0, v.Major), Math.Max(0, v.Minor), Math.Max(0, v.Build)), pre);
     }
 
+    // The only shapes the workflows produce: a release X.Y.Z or a dev build X.Y.Z-dev.N, plain ASCII digits, no leading zeros, nothing else.
+    private const string Num3 = @"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)";
+    private static readonly Regex s_canonical = new(@"^" + Num3 + @"(-dev\.(0|[1-9][0-9]*))?\z", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// A release tag exactly as the workflows publish it: <c>vX.Y.Z</c> (stable) or <c>vX.Y.Z-dev.N</c> (dev build). Case-sensitive "v"
+    /// (no "V", no missing "v"), three numeric parts (no "v9.9"), no leading zeros, no build metadata, no other pre-release
+    /// ("v9.9.9-beta"). Null for anything else. <see cref="Parse"/> stays lenient: it also reads the running exe's own version.
+    /// </summary>
+    public static ReleaseVersion? ParseTag(string? tag) => tag != null && tag.StartsWith('v') ? ParseCanonical(tag[1..]) : null;
+
+    /// <summary>
+    /// <paramref name="text"/> when it is exactly "X.Y.Z" or "X.Y.Z-dev.N" (no "v", nothing else), otherwise null. Used for the file
+    /// names in the updates folder and (after the "v") for release tags: nothing else becomes a path.
+    /// </summary>
+    public static ReleaseVersion? ParseCanonical(string? text)
+    {
+        if (text == null || !s_canonical.IsMatch(text)) return null;
+        var v = Parse(text);
+        if (v == null || (v.Value.IsPrerelease && !v.Value.IsDevBuild)) return null;   // a dev number that overflows int is no dev build
+        return v.Value.ToString() == text ? v : null;   // also refuses numbers that overflow
+    }
+
     public int CompareTo(ReleaseVersion other)
     {
         int c = Num.CompareTo(other.Num);

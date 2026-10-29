@@ -1,10 +1,12 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Security.Principal;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -17,7 +19,7 @@ namespace Clink.Services;
 /// <see cref="ShaUrl"/> is empty and the download fetches no hash file. <see cref="Flavour"/> is the flavour of the asset on offer (a framework
 /// client that falls back to the self-contained exe gets <see cref="Packaging.SelfContained"/> here).
 /// </summary>
-internal sealed record UpdateInfo(ReleaseVersion Version, string Tag, string ExeUrl, long ExeSize, string ShaUrl, string HtmlUrl, string Notes, string? Sha256 = null, Packaging Flavour = Packaging.SelfContained);
+internal sealed record UpdateInfo(ReleaseVersion Version, string Tag, string ExeUrl, long ExeSize, string ShaUrl, string HtmlUrl, string Notes, string? Sha256 = null, Packaging Flavour = Packaging.SelfContained, bool FromFeed = false);
 
 /// <summary>
 /// Self-update from GitHub Releases. Polls <c>/releases/latest</c> for a newer <c>Clink.exe</c> asset (or, with
@@ -84,6 +86,11 @@ internal sealed class Updater : IDisposable
     public string? LastError { get; private set; }
     /// <summary>True when <see cref="LastError"/> is about the check itself; false when the check worked and downloading or installing what it found did not.</summary>
     public bool CheckFailed { get; private set; }
+    /// <summary>
+    /// A soft result of the last check, a warning shown where a problem would be: "Could not confirm with GitHub; the signed feed says vX
+    /// (published D) is the latest". Not a failure (<see cref="LastError"/> is null, <see cref="CheckFailed"/> false). Null otherwise.
+    /// </summary>
+    public string? SoftNote { get; private set; }
     /// <summary>True while <see cref="DownloadAsync"/> is transferring the exe (a manual check waits for it).</summary>
     public bool IsDownloading { get; private set; }
     /// <summary>Set by <see cref="TryGetPendingUpdate"/> when a downloaded update could not be installed: a message for the user, or null.</summary>
@@ -201,15 +208,105 @@ internal sealed class Updater : IDisposable
     /// <summary>The signed feed's trust anchors: the embedded feed.json (read once), or <see cref="FeedOverride"/>.</summary>
     internal static FeedTrust Trust => FeedOverride ?? s_embeddedTrust.Value;
 
-    private static Task<HttpResponseMessage> SendAsync(HttpRequestMessage req, CancellationToken ct, HttpCompletionOption option = HttpCompletionOption.ResponseContentRead) =>
-        HttpOverride != null ? HttpOverride(req, ct) : s_http.SendAsync(req, option, ct);
+    /// <summary>
+    /// The client for the signed feed's own host (manifest, signature and feed binaries): it never follows a redirect, so a feed that
+    /// answers 3xx is unreachable (the feed is static files that do not redirect; a redirect would take a request, and the binaries'
+    /// "under the base" check, somewhere the keys never vouched for). GitHub's asset downloads redirect by design and use <c>s_http</c>.
+    /// </summary>
+    internal static readonly SocketsHttpHandler FeedHandler = new() { AllowAutoRedirect = false };
+    /// <summary>
+    /// 30 s like <c>s_http</c>: with <see cref="HttpCompletionOption.ResponseHeadersRead"/> (every request here) that bounds connecting and
+    /// the headers; the bodies have their own limits (the feed's 10 s total in <see cref="UpdateFeed.FetchCappedAsync"/>, the exe's
+    /// per-read deadline in <see cref="DownloadAsync"/>).
+    /// </summary>
+    private static readonly HttpClient s_feedHttp = new(FeedHandler) { Timeout = TimeSpan.FromSeconds(30) };
+    /// <summary>The timeout of <see cref="s_feedHttp"/> (asserted by the unit tests).</summary>
+    internal static TimeSpan FeedClientTimeout => s_feedHttp.Timeout;
+
+    /// <summary>Told (url, feed client?) for every request, before it is sent: the unit tests see which client a request would use (HttpOverride replaces both). Null otherwise.</summary>
+    internal static Action<string, bool>? SendObserver { get; set; }
+
+    private static Task<HttpResponseMessage> SendAsync(HttpRequestMessage req, CancellationToken ct, HttpCompletionOption option = HttpCompletionOption.ResponseContentRead, bool feed = false)
+    {
+        SendObserver?.Invoke(req.RequestUri?.AbsoluteUri ?? "", feed);
+        return HttpOverride != null ? HttpOverride(req, ct) : (feed ? s_feedHttp : s_http).SendAsync(req, option, ct);
+    }
+
+    /// <summary>
+    /// The most of GitHub's answer (the releases list: 30 releases with notes and assets, normally well under 400 KB) that is ever read.
+    /// Over this the check fails (see <see cref="ReadCappedTextAsync"/>), instead of buffering whatever a hostile or broken answer sends.
+    /// </summary>
+    internal const int MaxApiBytes = 4 * 1024 * 1024;
+    /// <summary>The most of a <c>Clink.exe.sha256</c> file that is read (the file is about 80 bytes).</summary>
+    internal const int MaxShaFileBytes = 64 * 1024;
+    /// <summary>Ceiling of an unsigned (feed off) exe download whose size GitHub did not list (the exe is about 30-150 MB).</summary>
+    internal const long MaxExeBytes = 512L * 1024 * 1024;
+
+    /// <summary>
+    /// Reads at most <paramref name="limit"/> bytes of <paramref name="resp"/>'s body as UTF-8 text. A Content-Length over the limit is
+    /// refused before reading, and at most limit+1 bytes are ever read. Throws <see cref="InvalidDataException"/> when the body is too
+    /// large (fail closed: nothing of it is used). The body grows a MemoryStream (no limit-sized buffer per call). The time allowed is the
+    /// caller's: pass a token from <see cref="TotalTimeout"/>, made before the request was sent, so headers and body share one limit.
+    /// The response must have been requested with <see cref="HttpCompletionOption.ResponseHeadersRead"/>, or it is buffered already.
+    /// </summary>
+    internal static async Task<string> ReadCappedTextAsync(HttpResponseMessage resp, int limit, string what, CancellationToken ct)
+    {
+        if (resp.Content.Headers.ContentLength is long declared && declared > limit)
+            throw new InvalidDataException($"{what} is too large ({declared} bytes, at most {limit})");
+        var body = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+        using var ms = new MemoryStream();
+        var chunk = new byte[16 * 1024];
+        long total = 0;
+        await using (body.ConfigureAwait(false))
+        {
+            int n;
+            while ((n = await body.ReadAsync(chunk, ct).ConfigureAwait(false)) > 0)
+            {
+                total += n;
+                if (total > limit) throw new InvalidDataException($"{what} is too large (more than {limit} bytes)");
+                ms.Write(chunk, 0, n);
+            }
+        }
+        return new UTF8Encoding(false).GetString(ms.GetBuffer(), 0, (int)ms.Length);
+    }
+
+    /// <summary>Replaces the 30 s total of a GitHub request (headers + body) in the unit tests; null otherwise.</summary>
+    internal static TimeSpan? GitHubTimeoutOverride { get; set; }
+    private static TimeSpan GitHubTimeout => GitHubTimeoutOverride ?? s_http.Timeout;
+
+    /// <summary>
+    /// Replaces, in the unit tests, the 30 s the exe download waits for the server's answer (connect + headers; the clients' own Timeout
+    /// does the same in a real run, but a test's HttpOverride bypasses the clients); null otherwise.
+    /// </summary>
+    internal static TimeSpan? DownloadAnswerTimeoutOverride { get; set; }
+    private static TimeSpan DownloadAnswerTimeout => DownloadAnswerTimeoutOverride ?? TimeSpan.FromSeconds(30);
+    /// <summary>Replaces the 60 s per-read inactivity deadline of the exe download (<see cref="ReadTimeout"/>) in the unit tests; null otherwise.</summary>
+    internal static TimeSpan? DownloadReadTimeoutOverride { get; set; }
+    private static TimeSpan DownloadReadTimeout => DownloadReadTimeoutOverride ?? ReadTimeout;
+
+    /// <summary>A token that fires after <see cref="GitHubTimeout"/> (30 s) in total, request and body together, or when <paramref name="ct"/> does.</summary>
+    private static CancellationTokenSource TotalTimeout(CancellationToken ct)
+    {
+        var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(GitHubTimeout);
+        return cts;
+    }
+
+    /// <summary>The clock of the update logic (UTC); the unit tests replace it.</summary>
+    internal static Func<DateTimeOffset>? ClockOverride { get; set; }
+    private static DateTimeOffset Now => ClockOverride?.Invoke() ?? DateTimeOffset.UtcNow;
 
     /// <summary>A GET for the feed and the signed manifest assets: the response with its headers read, the body still to be read (capped by <see cref="UpdateFeed.FetchCappedAsync"/>).</summary>
-    private async Task<HttpResponseMessage> GetStreamingAsync(string url, CancellationToken ct)
+    private Task<HttpResponseMessage> GetStreamingAsync(string url, CancellationToken ct) => GetAsync(url, ct, feed: false);
+
+    /// <summary>The same for the signed feed's own host: no redirects (see <see cref="s_feedHttp"/>).</summary>
+    private Task<HttpResponseMessage> GetFeedAsync(string url, CancellationToken ct) => GetAsync(url, ct, feed: true);
+
+    private async Task<HttpResponseMessage> GetAsync(string url, CancellationToken ct, bool feed)
     {
         using var req = new HttpRequestMessage(HttpMethod.Get, url);   // a GET has no content: disposing it leaves the response's body readable
         AddHeaders(req);
-        return await SendAsync(req, ct, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
+        return await SendAsync(req, ct, HttpCompletionOption.ResponseHeadersRead, feed).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -234,7 +331,8 @@ internal sealed class Updater : IDisposable
         if (repo == null) { Log.Info("updater: no UpdateRepo configured, updates disabled"); return; }
         if (trust.On)
         {
-            Log.Info($"updater: updates come from the signed feed {trust.FeedUrl}; github.com/{repo} is the fallback, only with a signed manifest");
+            string devNote = trust.DevFeedUrl == trust.FeedUrl ? "" : $" (dev builds from {trust.DevFeedUrl})";
+            Log.Info($"updater: updates come from the signed feed {trust.FeedUrl}{devNote}; github.com/{repo} is the fallback, only with a signed manifest");
             return;
         }
         string builtIn = BuiltInRepo ?? "none";
@@ -262,6 +360,7 @@ internal sealed class Updater : IDisposable
     internal static bool ShouldInstall(ReleaseVersion target, ReleaseVersion current, bool devChannel, bool allowLeaveDev)
     {
         if (!devChannel && target.IsDevBuild) return false;
+        if (target.IsPrerelease && !target.IsDevBuild) return false;   // only releases and X.Y.Z-dev.N are ever installed ("9.9.9-beta" never is)
         if (target > current) return true;
         return !devChannel && current.IsDevBuild && !target.IsPrerelease && allowLeaveDev;
     }
@@ -286,7 +385,18 @@ internal sealed class Updater : IDisposable
     private string? RecFrom { get => OwnIsFx ? _settings.PendingUpdateFxFrom : _settings.PendingUpdateFrom; set { if (OwnIsFx) _settings.PendingUpdateFxFrom = value; else _settings.PendingUpdateFrom = value; } }
     private bool? RecSigned { get => OwnIsFx ? _settings.PendingUpdateFxSigned : _settings.PendingUpdateSigned; set { if (OwnIsFx) _settings.PendingUpdateFxSigned = value; else _settings.PendingUpdateSigned = value; } }
 
-    internal static string FileFor(ReleaseVersion v) => Path.Combine(UpdatesDir, $"Clink-{v}.exe");
+    internal static string FileFor(ReleaseVersion v)
+    {
+        // Only X.Y.Z and X.Y.Z-dev.N become a file name, and the result must be a direct child of the updates folder.
+        string text = v.ToString();
+        if (ReleaseVersion.ParseCanonical(text) == null) throw new ArgumentException($"version '{text}' is not X.Y.Z or X.Y.Z-dev.N", nameof(v));
+        string dir = UpdatesDir;
+        string path = Path.Combine(dir, $"Clink-{text}.exe");
+        string? parent = Path.GetDirectoryName(Path.GetFullPath(path));
+        if (parent == null || !string.Equals(parent.TrimEnd('\\', '/'), Path.GetFullPath(dir).TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException($"version '{text}' does not name a file inside the updates folder", nameof(v));
+        return path;
+    }
 
     /// <summary>
     /// Written by <see cref="LaunchApply"/> before the hand-over (so an apply process that never finishes counts as failed) and by
@@ -335,7 +445,7 @@ internal sealed class Updater : IDisposable
     internal static ReleaseVersion? VersionFromFile(string path)
     {
         string name = Path.GetFileNameWithoutExtension(path);
-        return name.StartsWith("Clink-", StringComparison.OrdinalIgnoreCase) ? ReleaseVersion.Parse(name[6..]) : null;
+        return name.StartsWith("Clink-", StringComparison.OrdinalIgnoreCase) ? ReleaseVersion.ParseCanonical(name[6..]) : null;   // only the names FileFor makes
     }
 
     /// <summary>Version in an exe's version resource (ProductVersion = InformationalVersion, else FileVersion); null if unreadable.</summary>
@@ -380,10 +490,15 @@ internal sealed class Updater : IDisposable
     {
         bool dev = _settings.UseDevBuilds;   // one channel for the whole check, even if the box is ticked meanwhile
         var trust = Trust;
+        SoftNote = null;   // every way out (the two below included) starts without the last check's soft result
         if (trust.Misconfigured) { LastError = MisconfiguredNote; CheckFailed = true; Log.Warn("updater: not checking: " + MisconfiguredNote); return null; }
         string? repo = Repo;
         if (repo == null) { LastError = "updates are not configured in this build"; CheckFailed = true; return null; }
         bool signed = trust.On;
+        string channelName = UpdateFeed.ChannelName(dev);
+        FeedManifest? staleEqual = null;   // set when the feed's verified manifest names the running version but is too old to say "up to date" alone
+        bool couldNotAsk = false;          // GitHub could not be asked (network error, timeout, HTTP 5xx/429/403): the only failure that may be soft
+        bool namedNewer = false;           // GitHub named a release newer than the running one: whatever then fails is a real failure, never soft
         try
         {
             if (signed)
@@ -400,6 +515,7 @@ internal sealed class Updater : IDisposable
                         Log.Info($"updater: up to date ({outcome.Why}, running v{VersionDisplay})");
                         return null;
                     default:
+                        staleEqual = outcome.StaleEqual;
                         Log.Info($"updater: {outcome.Why}; asking github.com/{repo} (signed manifests only)");
                         break;
                 }
@@ -408,12 +524,15 @@ internal sealed class Updater : IDisposable
             using var req = new HttpRequestMessage(HttpMethod.Get, url);
             AddHeaders(req);
             req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
-            // The whole (small) answer is buffered inside SendAsync, so HttpClient.Timeout also covers a body that stalls.
-            using var resp = await SendAsync(req, ct).ConfigureAwait(false);
-            string body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            // Headers first, then the body read up to MaxApiBytes, all within one 30 s total: a larger or slower answer fails the check.
+            using var total = TotalTimeout(ct);
+            using var resp = await SendAsync(req, total.Token, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
+            string body = await ReadCappedTextAsync(resp, MaxApiBytes, "GitHub's answer", total.Token).ConfigureAwait(false);
             if (!resp.IsSuccessStatusCode)
             {
-                LastError = (int)resp.StatusCode == 404 ? $"no releases found for {repo}" : $"GitHub answered HTTP {(int)resp.StatusCode}";
+                int code = (int)resp.StatusCode;
+                LastError = code == 404 ? $"no releases found for {repo}" : $"GitHub answered HTTP {code}";
+                couldNotAsk = code >= 500 || code is 429 or 403;   // GitHub down, or rate-limited; a 404 or any other answer is an answer
                 Log.Warn($"updater: {LastError}: {Truncate(body)}");
                 return null;
             }
@@ -424,12 +543,17 @@ internal sealed class Updater : IDisposable
             LastError = null;
             if (!ShouldInstall(info.Version, Current, dev, allowLeaveDev: manual))
             {
+                // GitHub says nothing newer than the running version exists: the only GitHub answer that confirms it.
+                if (signed) Confirmed(channelName, byGitHub: true);
                 if (!dev && Current.IsDevBuild && info.Version < Current)
                     Log.Info($"updater: running dev build v{Current}; latest release v{info.Version} is older — Check for updates switches back");
                 else
                     Log.Info($"updater: up to date (latest {info.Tag}, running v{VersionDisplay})");
                 return null;
             }
+            // GitHub names a newer release: from here on nothing confirms the running version, and nothing that goes wrong is soft
+            // (an attacker who lets api.github.com through but blocks the asset host must not get "up to date").
+            namedNewer = true;
             if (signed)
             {
                 info = await VerifyGitHubReleaseAsync(info, assets, trust, ct).ConfigureAwait(false);
@@ -442,22 +566,139 @@ internal sealed class Updater : IDisposable
         {
             // HttpClient.Timeout surfaces as a cancellation too; only a cancelled token means Clink is shutting down.
             LastError = ex is OperationCanceledException
-                ? ct.IsCancellationRequested ? "cancelled" : $"GitHub did not answer within {s_http.Timeout.TotalSeconds:0} s"
+                ? ct.IsCancellationRequested ? "cancelled" : $"GitHub did not answer within {GitHubTimeout.TotalSeconds:0.##} s"
                 : Describe(ex);
+            couldNotAsk = IsTransportFailure(ex, ct);
             Log.Warn("updater: check failed: " + ex.Message);
             return null;
         }
         finally
         {
+            // The feed said "the running version, but too old to be trusted alone" and GitHub could not be asked: soft, not (yet) a failure.
+            // Never when GitHub named something newer, refused a release, answered 404 or with something unusable: those are real failures.
+            if (staleEqual != null && LastError != null && couldNotAsk && !namedNewer && !ct.IsCancellationRequested) SoftenUnconfirmed(staleEqual, channelName);
             CheckFailed = LastError != null;   // every way out of the try sets LastError: null on success, the reason otherwise
-            _settings.LastUpdateCheck = DateTime.UtcNow;
+            _settings.LastUpdateCheck = Now.UtcDateTime;
             _settings.Save();
         }
     }
 
+    /// <summary>
+    /// True when <paramref name="ex"/> (thrown while asking GitHub) means GitHub could not be reached or did not answer in time: a network
+    /// error or a timeout, not Clink shutting down (<paramref name="ct"/>), and not an answer that was read but is unusable (too large,
+    /// not JSON).
+    /// </summary>
+    private static bool IsTransportFailure(Exception ex, CancellationToken ct) => ex switch
+    {
+        OperationCanceledException => !ct.IsCancellationRequested,
+        HttpRequestException or TimeoutException => true,
+        InvalidDataException => false,   // over MaxApiBytes: an answer, and a wrong one
+        IOException => true,
+        _ => false,
+    };
+
+    /// <summary>
+    /// The longest streak of checks that could not confirm the running version (stale feed manifest, GitHub unreachable) that is still
+    /// a soft result; past it the check fails. Counted from <c>SoftSince</c>, the first such check since the last real confirmation, so
+    /// an old <c>UpToDate</c> (a channel switched back, months without Clink) does not make the first unconfirmed check a failure.
+    /// </summary>
+    internal static readonly TimeSpan MaxUnconfirmedStreak = TimeSpan.FromDays(14);
+    /// <summary>How long a GitHub answer lets a stale-but-matching feed manifest keep ending checks as "up to date" without asking GitHub again.</summary>
+    internal static readonly TimeSpan GitHubConfirmValidity = TimeSpan.FromDays(7);
+    /// <summary>A stamp further ahead than this (a wrong clock, an edited settings.json) counts as absent: it never confirms anything.</summary>
+    internal static readonly TimeSpan MaxStampFuture = TimeSpan.FromDays(1);
+
+    /// <summary>The per-channel stamps of the stale-feed soft state (see <see cref="Settings.FeedFloorStableGitHubConfirm"/>).</summary>
+    internal enum StampKind { GitHubConfirm, UpToDate, SoftSince }
+
+    private string? StampText(string channel, StampKind kind) => (channel == "dev", kind) switch
+    {
+        (true, StampKind.GitHubConfirm) => _settings.FeedFloorDevGitHubConfirm,
+        (true, StampKind.UpToDate) => _settings.FeedFloorDevUpToDate,
+        (true, _) => _settings.FeedFloorDevSoftSince,
+        (false, StampKind.GitHubConfirm) => _settings.FeedFloorStableGitHubConfirm,
+        (false, StampKind.UpToDate) => _settings.FeedFloorStableUpToDate,
+        (false, _) => _settings.FeedFloorStableSoftSince,
+    };
+
+    private void SetStampText(string channel, StampKind kind, string? value)
+    {
+        bool dev = channel == "dev";
+        switch (kind)
+        {
+            case StampKind.GitHubConfirm: if (dev) _settings.FeedFloorDevGitHubConfirm = value; else _settings.FeedFloorStableGitHubConfirm = value; break;
+            case StampKind.UpToDate: if (dev) _settings.FeedFloorDevUpToDate = value; else _settings.FeedFloorStableUpToDate = value; break;
+            default: if (dev) _settings.FeedFloorDevSoftSince = value; else _settings.FeedFloorStableSoftSince = value; break;
+        }
+    }
+
+    /// <summary>A stamp as stored: <c>"&lt;version&gt;@&lt;UTC ISO-8601, round-trip&gt;"</c>, e.g. "0.4.2@2026-10-28T09:00:00.0000000Z".</summary>
+    internal static string FormatStamp(ReleaseVersion version, DateTime utc) =>
+        version + "@" + (utc.Kind == DateTimeKind.Local ? utc.ToUniversalTime() : DateTime.SpecifyKind(utc, DateTimeKind.Utc)).ToString("O", CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// The time of a stored stamp that was recorded for <paramref name="version"/>, or null: absent, unreadable (no "@", not the round-trip
+    /// UTC form), recorded for another version, or more than <see cref="MaxStampFuture"/> after <paramref name="nowUtc"/>.
+    /// </summary>
+    internal static DateTime? ParseStamp(string? text, ReleaseVersion version, DateTime nowUtc)
+    {
+        if (string.IsNullOrEmpty(text) || text.Length > 100) return null;
+        int at = text.IndexOf('@');
+        if (at <= 0 || !string.Equals(text[..at], version.ToString(), StringComparison.Ordinal)) return null;
+        if (!DateTime.TryParseExact(text[(at + 1)..], "O", CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var t) || t.Kind != DateTimeKind.Utc) return null;
+        return t > nowUtc + MaxStampFuture ? null : t;
+    }
+
+    /// <summary><paramref name="kind"/> of <paramref name="channel"/> for the running version (see <see cref="ParseStamp"/>), or null.</summary>
+    private DateTime? Stamp(string channel, StampKind kind, DateTime nowUtc) => ParseStamp(StampText(channel, kind), Current, nowUtc);
+
+    private void SetStamp(string channel, StampKind kind, DateTime utc) => SetStampText(channel, kind, FormatStamp(Current, utc));
+
+    /// <summary>
+    /// A real confirmation of the running version on <paramref name="channel"/>: a feed manifest of it younger than 14 days, or (with
+    /// <paramref name="byGitHub"/>) GitHub saying nothing newer exists. Sets <c>UpToDate</c> (and <c>GitHubConfirm</c>) and ends any
+    /// unconfirmed streak (<c>SoftSince</c>).
+    /// </summary>
+    private void Confirmed(string channel, bool byGitHub)
+    {
+        var now = Now.UtcDateTime;
+        SetStamp(channel, StampKind.UpToDate, now);
+        if (byGitHub) SetStamp(channel, StampKind.GitHubConfirm, now);
+        SetStampText(channel, StampKind.SoftSince, null);
+    }
+
+    /// <summary>
+    /// A check that fell back to GitHub because the feed's v<c>Version</c> (equal to the running one) is over 14 days old could not ask
+    /// GitHub (LastError holds why). Soft: not a failed check, the status line warns "Could not confirm with GitHub; the signed feed
+    /// says vX (published D) is the latest". The first such check since the last real confirmation starts the streak (<c>SoftSince</c>);
+    /// once the streak is longer than <see cref="MaxUnconfirmedStreak"/> it is a failed check.
+    /// </summary>
+    private void SoftenUnconfirmed(FeedManifest feed, string channel)
+    {
+        var now = Now.UtcDateTime;
+        string why = LastError!;
+        if (Stamp(channel, StampKind.SoftSince, now) is not { } since)
+        {
+            since = now;   // none (or another version's, an unreadable one, one from the future): the streak starts now
+            SetStamp(channel, StampKind.SoftSince, now);
+        }
+        string published = feed.Published.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        string sinceDay = since.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        if (now - since > MaxUnconfirmedStreak)
+        {
+            LastError = $"could not confirm that v{feed.Version} is the latest: the signed feed's manifest (published {published}) is over {UpdateFeed.MaxUpToDateAge.TotalDays:0} days old, "
+                + $"and GitHub could not be asked since {sinceDay} ({why})";
+            Log.Warn("updater: " + LastError);
+            return;
+        }
+        Log.Warn($"updater: GitHub could not confirm the stale feed manifest ({why}); unconfirmed since {sinceDay}, reporting the signed feed's answer");
+        LastError = null;
+        SoftNote = $"Could not confirm with GitHub; the signed feed says v{feed.Version} (published {published}) is the latest";
+    }
+
     private enum FeedVerdict { Offer, UpToDate, FallBack }
 
-    private readonly record struct FeedOutcome(FeedVerdict Verdict, UpdateInfo? Info, string Why);
+    private readonly record struct FeedOutcome(FeedVerdict Verdict, UpdateInfo? Info, string Why, FeedManifest? StaleEqual = null);
 
     /// <summary>
     /// The feed part of <see cref="CheckAsync"/>: fetches and verifies stable.json (stable channel) or stable.json and dev.json (dev
@@ -466,15 +707,17 @@ internal sealed class Updater : IDisposable
     /// </summary>
     private async Task<FeedOutcome> CheckFeedAsync(FeedTrust trust, bool dev, bool manual, CancellationToken ct)
     {
-        var now = DateTimeOffset.UtcNow;
+        var now = Now;
         var fresh = new List<FeedManifest>();
         var unused = new List<string>();   // why a channel's manifest is not used this time
         foreach (string channel in dev ? new[] { "stable", "dev" } : new[] { "stable" })
         {
-            string manifestUrl = trust.FeedUrl + channel + ".json";
+            // stable.json under feedUrl, dev.json under the dev base (devFeedUrl, or feedUrl when that is empty); binaries must sit under the same base.
+            string feedBase = trust.BaseFor(channel)!;
+            string manifestUrl = feedBase + channel + ".json";
             try
             {
-                var m = await UpdateFeed.FetchVerifiedAsync(GetStreamingAsync, manifestUrl, manifestUrl + ".sig", channel, trust.KeysFor(channel), ct, FeedTimeoutOverride).ConfigureAwait(false);
+                var m = await UpdateFeed.FetchVerifiedAsync(GetFeedAsync, manifestUrl, manifestUrl + ".sig", channel, trust.KeysFor(channel), ct, FeedTimeoutOverride, feedBase).ConfigureAwait(false);
                 if (UpdateFeed.StaleReason(m, Floor(channel), now) is { } why) unused.Add($"{channel}.json is stale ({why})");
                 else fresh.Add(m);
             }
@@ -500,7 +743,27 @@ internal sealed class Updater : IDisposable
         if (!complete) return new(FeedVerdict.FallBack, null, $"{notUsed}; the verified v{best.Version} is not newer");
         if (best.Version == Current)
         {
+            // A signed manifest is not signed "as of now": an old one may be a frozen or replayed feed hiding a newer release. Only a recent one
+            // may end the check; an older one is cross-checked against the signed GitHub path (which offers anything newer, or confirms).
+            // Accepted limitation (dev channel): only best.Published is looked at, so a frozen stable.json whose version equals the running dev
+            // build's base can hide a newer stable release from a dev client until the next dev build is published or MaxAge (90 days) passes.
+            string chan = UpdateFeed.ChannelName(dev);
+            if (now - best.Published > UpdateFeed.MaxUpToDateAge)
+            {
+                // Soft state: GitHub is asked at most once per GitHubConfirmValidity; in between the signed feed's answer stands. Only on
+                // stamps of the running version (not from the future): GitHub said "nothing newer" under 7 days ago, and the running version
+                // was confirmed within MaxUnconfirmedStreak (implied by the first, unless settings.json was edited: defence in depth).
+                var nowUtc = now.UtcDateTime;
+                if (Stamp(chan, StampKind.GitHubConfirm, nowUtc) is { } confirmed && nowUtc - confirmed < GitHubConfirmValidity
+                    && Stamp(chan, StampKind.UpToDate, nowUtc) is { } upToDate && nowUtc - upToDate <= MaxUnconfirmedStreak)
+                {
+                    foreach (var m in fresh) RaiseFloor(m.Channel, m.Version);
+                    return new(FeedVerdict.UpToDate, null, $"the signed feed says v{best.Version} (published {best.Published:yyyy-MM-dd}); GitHub confirmed {confirmed:yyyy-MM-dd}");
+                }
+                return new(FeedVerdict.FallBack, null, $"the signed feed's v{best.Version} was published {best.Published:yyyy-MM-dd}, more than {UpdateFeed.MaxUpToDateAge.TotalDays:0} days ago, so it cannot alone say there is nothing newer", best);
+            }
             foreach (var m in fresh) RaiseFloor(m.Channel, m.Version);
+            Confirmed(chan, byGitHub: false);   // a manifest younger than 14 days confirms the running version
             return new(FeedVerdict.UpToDate, null, $"the signed feed says v{best.Version}");
         }
         // Not newer and not the running version: older (ShouldInstall takes every newer version a channel may have).
@@ -526,7 +789,9 @@ internal sealed class Updater : IDisposable
             why = $"release {info.Tag} has an asset URL that is not https";
         else
         {
-            try { m = await UpdateFeed.FetchVerifiedAsync(GetStreamingAsync, manifestUrl, sigUrl, channel, trust.KeysFor(channel), ct, FeedTimeoutOverride).ConfigureAwait(false); }
+            // assetsBase null on purpose: this path downloads GitHub's own ExeUrl and takes only the size and SHA-256 from the manifest, so the
+            // manifest's URLs are never fetched and a base check would add nothing (and would strand old clients if the feed host ever moved).
+            try { m = await UpdateFeed.FetchVerifiedAsync(GetStreamingAsync, manifestUrl, sigUrl, channel, trust.KeysFor(channel), ct, FeedTimeoutOverride, assetsBase: null).ConfigureAwait(false); }
             catch (FeedUnreachableException ex) { why = $"the signed manifest of {info.Tag} could not be downloaded ({ex.Message})"; }
             catch (FeedRejectedException ex) { why = $"the signed manifest of {info.Tag} was refused ({ex.Message})"; }
             if (m != null)
@@ -646,14 +911,12 @@ internal sealed class Updater : IDisposable
         bool prerelease = Flag(root, "prerelease");
         if (prerelease && !devChannel) return null;
         string tag = Str(root, "tag_name");
-        var parsed = ReleaseVersion.Parse(tag);
-        if (parsed == null) { problem = $"cannot parse release tag '{tag}'"; return null; }
+        // Only the shapes the workflows produce: vX.Y.Z (a release) and vX.Y.Z-dev.N (a dev build). Not 9.9.9, V9.9.9, v9.9, v9.9.9-beta, v1.2.3+x.
+        var parsed = ReleaseVersion.ParseTag(tag);
+        if (parsed == null) { problem = $"release tag '{Truncate(tag.ReplaceLineEndings(" "))}' is not vX.Y.Z or vX.Y.Z-dev.N"; return null; }
         var version = parsed.Value;
-        if (devChannel)
-        {
-            // A dev build must be flagged pre-release (so /releases/latest and the stable channel never see it); a release must be a plain X.Y.Z.
-            if (prerelease ? !version.IsDevBuild : version.IsPrerelease) return null;
-        }
+        // A dev build must be flagged pre-release (so /releases/latest and the stable channel never see it); a release must not be, on any channel.
+        if (prerelease != version.IsDevBuild) return null;
         string channel = UpdateFeed.ChannelName(prerelease);
         string manifestName = channel + ".json", sigName = manifestName + ".sig";
         string? exeUrl = null, shaUrl = null, manifestUrl = null, sigUrl = null, fxUrl = null, fxShaUrl = null; long exeSize = 0, fxSize = 0;
@@ -728,11 +991,29 @@ internal sealed class Updater : IDisposable
             using (var req = new HttpRequestMessage(HttpMethod.Get, info.ExeUrl))
             {
                 AddHeaders(req);
-                using var resp = await SendAsync(req, ct, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
+                // A feed binary comes from the feed's host, which never redirects (s_feedHttp); GitHub's downloads redirect by design.
+                // The answer (connect + headers) within DownloadAnswerTimeout: a host that accepts the connection and never answers must not
+                // hold the updater's gate, and with it every later check, for the rest of the session. The body has its per-read deadline below.
+                HttpResponseMessage answer;
+                using (var answerLimit = CancellationTokenSource.CreateLinkedTokenSource(ct))
+                {
+                    answerLimit.CancelAfter(DownloadAnswerTimeout);
+                    try { answer = await SendAsync(req, answerLimit.Token, HttpCompletionOption.ResponseHeadersRead, feed: info.FromFeed).ConfigureAwait(false); }
+                    catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                    {
+                        throw new IOException($"the download server did not answer within {DownloadAnswerTimeout.TotalSeconds.ToString("0.##", CultureInfo.InvariantCulture)} s");
+                    }
+                    answerLimit.CancelAfter(Timeout.InfiniteTimeSpan);   // answered: the timer must not fire into the body's reads
+                }
+                using var resp = answer;
                 resp.EnsureSuccessStatusCode();
                 // With a signed size, a body that says or turns out to be longer is cut off instead of being transferred in full.
                 if (signedHash && resp.Content.Headers.ContentLength is long declared && declared != info.ExeSize)
                     throw new InvalidDataException($"size mismatch: the server announces {declared} bytes, the signed manifest says {info.ExeSize}");
+                // Unsigned (feed off): the release's size from GitHub's asset list when known, else a hard ceiling; never more than that is transferred.
+                long cap = info.ExeSize > 0 ? info.ExeSize : MaxExeBytes;
+                if (!signedHash && resp.Content.Headers.ContentLength is long announced && announced > cap)
+                    throw new InvalidDataException($"size mismatch: the server announces {announced} bytes, at most {cap} are accepted");
                 long total = resp.Content.Headers.ContentLength ?? info.ExeSize;
                 var src = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
                 // Disposed with ConfigureAwait(false) too: no continuation of this method needs the caller's (UI) context.
@@ -748,19 +1029,20 @@ internal sealed class Updater : IDisposable
                         try
                         {
                             int n;
-                            idle.CancelAfter(ReadTimeout);
+                            idle.CancelAfter(DownloadReadTimeout);
                             while ((n = await src.ReadAsync(buf, idle.Token).ConfigureAwait(false)) > 0)
                             {
-                                idle.CancelAfter(ReadTimeout);
+                                idle.CancelAfter(DownloadReadTimeout);
                                 await dst.WriteAsync(buf.AsMemory(0, n), idle.Token).ConfigureAwait(false);
                                 done += n;
                                 if (signedHash && done > info.ExeSize) throw new InvalidDataException($"size mismatch: more than the {info.ExeSize} bytes the signed manifest says");
+                                if (!signedHash && done > cap) throw new InvalidDataException($"size mismatch: more than the {cap} bytes accepted");
                                 if (total > 0) progress?.Report(Math.Min(1.0, done / (double)total));
                             }
                         }
                         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
                         {
-                            throw new IOException($"download stalled (no data for {ReadTimeout.TotalSeconds:0} s after {done / 1024} KB)");
+                            throw new IOException($"download stalled (no data for {DownloadReadTimeout.TotalSeconds.ToString("0.##", CultureInfo.InvariantCulture)} s after {done / 1024} KB)");
                         }
                     }
                 }
@@ -804,9 +1086,10 @@ internal sealed class Updater : IDisposable
     {
         using var req = new HttpRequestMessage(HttpMethod.Get, url);
         AddHeaders(req);
-        using var resp = await SendAsync(req, ct).ConfigureAwait(false);
+        using var total = TotalTimeout(ct);
+        using var resp = await SendAsync(req, total.Token, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
         resp.EnsureSuccessStatusCode();
-        string text = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        string text = await ReadCappedTextAsync(resp, MaxShaFileBytes, "the sha256 file", total.Token).ConfigureAwait(false);
         var m = s_hex64.Match(text);
         if (!m.Success) throw new InvalidDataException("sha256 file contains no SHA-256 hash");
         return m.Value;
@@ -888,6 +1171,37 @@ internal sealed class Updater : IDisposable
     private static void TryDelete(string path)
     {
         try { if (File.Exists(path)) File.Delete(path); } catch (Exception ex) { Log.Warn($"updater: could not delete {path}: {ex.Message}"); }
+    }
+
+    /// <summary>
+    /// True when <paramref name="url"/> is a release page of <paramref name="repo"/> ("owner/repo") that is safe to hand to the shell:
+    /// https, the exact host github.com on the default port, no user info, and a path inside <c>/owner/repo/releases/</c> (the path
+    /// compared after .NET's normalisation of dot segments, case-insensitively like GitHub) that is exactly <c>releases/latest</c> or
+    /// <c>releases/tag/&lt;tag&gt;</c> with a tag that passes <see cref="ReleaseVersion.ParseTag"/>; no query, no fragment. Anything else is not opened.
+    /// </summary>
+    internal static bool IsOwnReleasePage(string? url, string? repo) => OwnReleasePage(url, repo) != null;
+
+    /// <summary>The page to open for <paramref name="info"/>: its HtmlUrl (GitHub's html_url, or the signed manifest's notesUrl on the feed path) when <see cref="OwnReleasePage"/> accepts it, else the repository's <c>releases/latest</c>.</summary>
+    public string ReleasePageFor(UpdateInfo? info) =>
+        (info != null ? OwnReleasePage(info.HtmlUrl, Repo) : null) ?? $"https://github.com/{Repo}/releases/latest";
+
+    /// <summary><see cref="IsOwnReleasePage"/>, returning the normalised address (<see cref="Uri.AbsoluteUri"/>, the one to open) or null.</summary>
+    internal static string? OwnReleasePage(string? url, string? repo)
+    {
+        if (string.IsNullOrWhiteSpace(url) || string.IsNullOrWhiteSpace(repo) || !s_repo.IsMatch(repo.Trim('/'))) return null;
+        if (url.Length > 2048 || url.Any(c => char.IsControl(c) || char.IsWhiteSpace(c) || c == '\\' || c == '?' || c == '#')) return null;
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var u)) return null;
+        if (u.Scheme != Uri.UriSchemeHttps || !string.Equals(u.Host, "github.com", StringComparison.Ordinal) || !u.IsDefaultPort || u.UserInfo.Length > 0) return null;
+        if (u.Query.Length > 0 || u.Fragment.Length > 0) return null;
+        string prefix = $"/{repo.Trim('/')}/releases/";
+        string path = u.AbsolutePath;
+        if (!path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return null;
+        // AbsolutePath is .NET's normalised form: escaped unreserved characters (%32 -> "2") are already decoded and dot segments resolved;
+        // whatever is still escaped (%2F, for one) never passes the exact shapes below. It is this same normalised address
+        // (AbsoluteUri) that is returned and opened, so what was checked is what the shell gets.
+        string rest = path[prefix.Length..];
+        bool ok = rest == "latest" || (rest.StartsWith("tag/", StringComparison.Ordinal) && ReleaseVersion.ParseTag(rest[4..]) != null);
+        return ok ? u.AbsoluteUri : null;
     }
 
     private static string Truncate(string s) => s.Length > 200 ? s[..200] + "…" : s;
