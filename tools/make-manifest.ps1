@@ -6,17 +6,20 @@
 # that is not listed there (wrong key, rotated key, empty list) fails the run.
 # BaseUrl is the folder URL holding the assets (ends with '/') and must be under the channel's base: feedUrl for stable,
 # devFeedUrl (or feedUrl when devFeedUrl is empty) for dev, e.g. https://cdn.example/clink/releases/v0.4.2/
+# notesUrl is BaseUrl + "notes.txt" (stable: <base>releases/<tag>/notes.txt, dev: <base>dev/<tag>/notes.txt): it is not a parameter,
+# it must pass Test-FeedAssetUrlUnder like the binaries, and <PackageDir>\notes.txt must exist and be a valid notes file
+# (tools/lib/notes-lib.ps1; upload-feed.ps1 publishes it write-once next to the binaries).
 param(
     [Parameter(Mandatory)] [ValidateSet('stable', 'dev')] [string]$Channel,
     [Parameter(Mandatory)] [string]$Version,
     [Parameter(Mandatory)] [string]$Tag,
     [Parameter(Mandatory)] [string]$BaseUrl,
-    [Parameter(Mandatory)] [string]$NotesUrl,
     [Parameter(Mandatory)] [string]$PackageDir,
     [Parameter(Mandatory)] [string]$FeedJson
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'feed-lib.ps1')
+. (Join-Path $PSScriptRoot 'lib\notes-lib.ps1')
 
 $pem = $env:CLINK_FEED_SIGNING_KEY
 Remove-Item Env:\CLINK_FEED_SIGNING_KEY -ErrorAction SilentlyContinue
@@ -25,8 +28,9 @@ if ($Version -match '^v') { throw 'Version must not start with "v".' }
 if ($Tag -ne "v$Version") { throw "Tag '$Tag' must be 'v$Version'." }
 if ($Channel -eq 'dev' -and $Version -cnotmatch '\A[0-9]+\.[0-9]+\.[0-9]+-dev\.[0-9]+\z') { throw 'A dev manifest needs a version like X.Y.Z-dev.N.' }
 if ($Channel -eq 'stable' -and $Version -cnotmatch '\A[0-9]+\.[0-9]+\.[0-9]+\z') { throw 'A stable manifest needs a version like X.Y.Z.' }
-foreach ($u in $BaseUrl, $NotesUrl) { if ($u -notmatch '^https://') { throw "URL must be https: $u" } }
+if ($BaseUrl -notmatch '^https://') { throw "URL must be https: $BaseUrl" }
 if (-not $BaseUrl.EndsWith('/')) { $BaseUrl += '/' }
+$NotesUrl = $BaseUrl + 'notes.txt'
 
 $PackageDir = (Resolve-Path -LiteralPath $PackageDir).Path
 $FeedJson = (Resolve-Path -LiteralPath $FeedJson).Path
@@ -34,7 +38,14 @@ $cfg = Get-FeedConfig -Path $FeedJson -Channel $Channel
 if (-not $cfg.Enabled) { throw "The feed is not enabled for the $Channel channel in feed.json ($($cfg.Reason)); refusing to sign." }
 # $cfg.FeedUrl is this channel's base (feedUrl for stable; devFeedUrl, or feedUrl when that is empty, for dev): the binaries of a
 # manifest must sit under the base that serves the manifest itself.
-if (-not $BaseUrl.StartsWith($cfg.FeedUrl, [System.StringComparison]::Ordinal)) { throw "BaseUrl $BaseUrl is not under the $Channel feed base $($cfg.FeedUrl) (feedUrl for stable; devFeedUrl, or feedUrl when it is empty, for dev)." }
+# Every binary URL must pass the client's own check (Test-FeedAssetUrlUnder is a port of UpdateFeed.IsUnder: strictly inside the base, no
+# "//", no %-escape of an unreserved character, no dot segment, no query or fragment), so that this script never signs a URL that every
+# client refuses. The file names are fixed (checked against package.json below).
+foreach ($assetName in 'Clink.exe', 'Clink-framework.exe', 'Clink-Setup.exe', 'notes.txt') {
+    if (-not (Test-FeedAssetUrlUnder -Url ($BaseUrl + $assetName) -Base $cfg.FeedUrl)) {
+        throw "BaseUrl $BaseUrl is not under the $Channel feed base $($cfg.FeedUrl) (feedUrl for stable; devFeedUrl, or feedUrl when it is empty, for dev), or has a form the client refuses (an empty segment '//', a %-escaped plain character, a dot segment, a query or fragment): $($BaseUrl + $assetName)"
+    }
+}
 
 if ([string]::IsNullOrWhiteSpace($pem)) { throw 'Env var CLINK_FEED_SIGNING_KEY is empty or not set.' }
 if ($pem -notmatch 'BEGIN PRIVATE KEY') {
@@ -44,6 +55,7 @@ if ($pem -notmatch 'BEGIN PRIVATE KEY') {
     if (-not $decoded -or $decoded -notmatch 'BEGIN PRIVATE KEY') { throw 'CLINK_FEED_SIGNING_KEY must be a PKCS#8 PEM ("BEGIN PRIVATE KEY") or that PEM file Base64-encoded on one line.' }
     $pem = $decoded
 }
+Assert-FeedNotesFile -Path (Join-Path $PackageDir 'notes.txt')
 $pkgFile = Join-Path $PackageDir 'package.json'
 if (-not (Test-Path -LiteralPath $pkgFile)) { throw "package.json not found in $PackageDir (run tools/package.ps1 first)." }
 $pkg = Get-Content -Raw -LiteralPath $pkgFile | ConvertFrom-Json
@@ -89,6 +101,10 @@ $manifest = [ordered]@{
         installer    = New-AssetEntry $pkg.files.installer 'installer'
     }
 }
+foreach ($assetKey in 'exe', 'exeFramework', 'installer') {
+    if (-not (Test-FeedAssetUrlUnder -Url $manifest.assets[$assetKey].url -Base $cfg.FeedUrl)) { throw "The $assetKey URL '$($manifest.assets[$assetKey].url)' is not under the $Channel feed base $($cfg.FeedUrl); nothing was written." }
+}
+if (-not (Test-FeedAssetUrlUnder -Url $manifest.notesUrl -Base $cfg.FeedUrl)) { throw "The notesUrl '$($manifest.notesUrl)' is not under the $Channel feed base $($cfg.FeedUrl); nothing was written." }
 $json = $manifest | ConvertTo-Json -Depth 6
 $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes($json)
 

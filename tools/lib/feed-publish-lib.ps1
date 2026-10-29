@@ -33,7 +33,12 @@ function New-FeedHttpInvoker {
         param([string]$Url, [string]$OutFile)
         $ProgressPreference = 'SilentlyContinue'
         $resp = Invoke-WebRequest -Method Get -Uri $Url -OutFile $OutFile -PassThru -MaximumRedirection 0 -UseBasicParsing -TimeoutSec 600
-        @{ Status = [int]$resp.StatusCode }
+        # Response headers as a table with LOWER-CASE names and one string per header (Windows PowerShell 5.1 and pwsh 7 shape them differently).
+        $headers = @{}
+        if ($resp.Headers) {
+            foreach ($k in @($resp.Headers.Keys)) { $headers[([string]$k).ToLowerInvariant()] = (@($resp.Headers[$k]) -join ', ') }
+        }
+        @{ Status = [int]$resp.StatusCode; Headers = $headers }
     }
 }
 
@@ -45,18 +50,29 @@ function Invoke-FeedAws {
     @{ Code = [int]$answer.Code; Text = [string]$answer.Text }
 }
 
+function Get-FeedKeyPrefix {
+    # The bucket key prefix of a run: CLINK_FEED_KEY_PREFIX (slashes trimmed), default "clink"; only "clink" and "clink-staging" are
+    # allowed. One function for the workflows' early check ("Read feed configuration") and upload-feed.ps1, so they cannot differ.
+    param([AllowNull()] [AllowEmptyString()] [string]$Value)
+    $prefix = if ($Value) { $Value.Trim('/') } else { 'clink' }
+    if ($prefix -cnotmatch '\Aclink(-staging)?\z') { throw "Key prefix '$prefix' is not allowed (must be 'clink' or 'clink-staging')." }
+    $prefix
+}
+
 function Assert-FeedBaseMatchesPrefix {
     # upload-feed writes the key <Prefix>/<folder>/<file> but checks the public URL <BaseUrl><folder>/<file> (and the manifests'
-    # URLs are built the same way), so the path of the channel's base URL must end in "/<Prefix>/" (the host is mapped to the bucket
-    # root). A mismatch would otherwise show up only at the public-URL check, after the write-once objects were already written.
-    # Called before the first bucket access. Case-sensitive. BaseUrl is the channel's base from Get-FeedConfig (validated, ends with '/').
+    # URLs are built the same way), so the path of the channel's base URL must be EXACTLY "/<Prefix>/" (the host is mapped to the
+    # bucket root; a longer path such as "/some/clink/" would need the keys "some/clink/..." and would not match). A mismatch would
+    # otherwise show up only at the public-URL check, after the write-once objects were already written.
+    # Called twice: by the workflows' "Read feed configuration" step (before anything is signed or drafted) and first thing in
+    # upload-feed.ps1 (before the first bucket access). Case-sensitive. BaseUrl is the channel's base from Get-FeedConfig (validated, ends with '/').
     param([Parameter(Mandatory)] [string]$BaseUrl, [Parameter(Mandatory)] [string]$Prefix)
     if ($Prefix -cnotmatch '\A[A-Za-z0-9-]+\z') { throw "Key prefix '$Prefix' is not a plain name." }
     $m = [regex]::Match($BaseUrl, '\Ahttps://[^/?#@\\\s]+(?<path>/[^?#@\\\s]*)?\z')
     if (-not $m.Success) { throw "Feed base URL '$BaseUrl' is not an https URL with a host." }
     $path = if ($m.Groups['path'].Success) { $m.Groups['path'].Value } else { '/' }
-    if (-not $path.EndsWith("/$Prefix/", [System.StringComparison]::Ordinal)) {
-        throw "The path of the feed base URL '$BaseUrl' is '$path', which does not end in '/$Prefix/'. Objects are written under the key prefix '$Prefix' but read back at the public URL, so the feedUrl/devFeedUrl path must end in '/$Prefix/' on a host mapped to the bucket root (docs/RELEASING.md). Nothing was written."
+    if ($path -cne "/$Prefix/") {
+        throw "The path of the feed base URL '$BaseUrl' is '$path', which is not '/$Prefix/'. Objects are written under the key prefix '$Prefix' but read back at the public URL, so the feedUrl/devFeedUrl path must be exactly '/$Prefix/' on a host mapped to the bucket root (docs/RELEASING.md). Nothing was signed or uploaded by this step."
     }
 }
 
@@ -128,9 +144,11 @@ function Get-FeedBucketFloor {
 function Get-FeedHistoryFloor {
     # Security M1. The highest earlier NON-DRAFT release of the channel that carried <Channel>.json, from the GitHub release listing,
     # or $null when there is none. Listing: one line per release, tab separated: tag name, draft flag (true|false), asset names
-    # joined with commas (gh api ... --jq '.[] | [.tag_name, (.draft | tostring), ([.assets[].name] | join(","))] | @tsv').
-    # Drafts are ignored (a failed run leaves one; it never reached users). A release that carried the manifest but whose tag is not
-    # a feed version is an error, never silently skipped.
+    # joined with commas, author login (gh api ... --jq '.[] | [.tag_name, (.draft | tostring), ([.assets[].name] | join(",")),
+    # (.author.login | tostring)] | @tsv').
+    # Drafts are ignored (a failed run leaves one; it never reached users). L-4: only releases whose author is exactly github-actions[bot]
+    # (the release workflows' token) count; a release a person created by hand is no evidence of what the feed shipped. A release that
+    # carried the manifest but whose tag is not a feed version is an error, never silently skipped.
     param(
         [Parameter(Mandatory)] [ValidateSet('stable', 'dev')] [string]$Channel,
         [AllowNull()] [AllowEmptyCollection()] [string[]]$Listing = @()
@@ -140,9 +158,10 @@ function Get-FeedHistoryFloor {
         $line = ([string]$raw).TrimEnd("`r", "`n")
         if ([string]::IsNullOrWhiteSpace($line)) { continue }
         $parts = $line.Split("`t")
-        if ($parts.Count -ne 3) { throw "Unexpected release listing line (expected tag, draft flag and asset names separated by tabs): '$line'" }
+        if ($parts.Count -ne 4) { throw "Unexpected release listing line (expected tag, draft flag, asset names and author login separated by tabs): '$line'" }
         if ($parts[1] -ceq 'true') { continue }
         if ($parts[1] -cne 'false') { throw "Unexpected draft flag '$($parts[1])' in the release listing." }
+        if ($parts[3] -cne 'github-actions[bot]') { continue }
         if (-not ($parts[2].Split(',') -ccontains "$Channel.json")) { continue }
         $tag = $parts[0]
         if ($tag -cnotmatch '\Av[0-9]+\.[0-9]+\.[0-9]+(-dev\.[0-9]+)?\z') { throw "Release '$tag' carried $Channel.json but its tag is not a feed version (vX.Y.Z or vX.Y.Z-dev.N); investigate before publishing." }
@@ -171,7 +190,7 @@ function Resolve-FeedEffectiveFloor {
     if ($reset) { [void](Get-VersionKey $reset) }
     if (-not $bucket -and $history) {
         if (-not $reset -or $reset -cne $history) {
-            throw "The bucket has no $Channel.json and no $Channel.json.sig, but the published GitHub release v$history carried $Channel.json, so the feed was on. Refusing to treat this as a first publish (an emptied or replaced bucket is a replay target); $script:FeedRecoveryHint. If the bucket was reset on purpose, the owner sets the environment variable CLINK_FEED_BUCKET_RESET_VERSION to $history for this one publish and removes it afterwards."
+            throw "The bucket has no $Channel.json and no $Channel.json.sig, but the published GitHub release v$history carried $Channel.json, so the feed was on. Refusing to treat this as a first publish (an emptied or replaced bucket is a replay target); $script:FeedRecoveryHint. If the bucket was reset on purpose, the owner sets the repository variable CLINK_FEED_BUCKET_RESET_VERSION (Settings > Secrets and variables > Actions > Variables) to $history for this one publish and removes it afterwards."
         }
         Write-Host "::warning::CLINK_FEED_BUCKET_RESET_VERSION=$reset accepted: the bucket has no $Channel.json, floor taken from the GitHub history. Remove the variable after this publish."
     } elseif ($reset) {
@@ -202,16 +221,53 @@ function Publish-FeedVersionedAsset {
         [Parameter(Mandatory)] [scriptblock]$Aws, [Parameter(Mandatory)] [string]$Bucket, [Parameter(Mandatory)] [string]$Endpoint,
         [Parameter(Mandatory)] $Asset, [Parameter(Mandatory)] [string]$CacheControl, [string]$ScratchDir = [System.IO.Path]::GetTempPath()
     )
+    $state = Get-FeedVersionedAssetState -Aws $Aws -Bucket $Bucket -Endpoint $Endpoint -Asset $Asset -ScratchDir $ScratchDir
+    if ($state -ceq 'same') { return 'skipped' }
+    Send-FeedVersionedAsset -Aws $Aws -Bucket $Bucket -Endpoint $Endpoint -Asset $Asset -CacheControl $CacheControl
+}
+
+function Get-FeedVersionedAssetState {
+    # The read-only half of Publish-FeedVersionedAsset: 'missing' (no such key), 'same' (the object's REAL downloaded bytes have the
+    # expected sha256 and size; logged as skipped) or THROWS "already exists with different content". Writes nothing.
+    param(
+        [Parameter(Mandatory)] [scriptblock]$Aws, [Parameter(Mandatory)] [string]$Bucket, [Parameter(Mandatory)] [string]$Endpoint,
+        [Parameter(Mandatory)] $Asset, [string]$ScratchDir = [System.IO.Path]::GetTempPath()
+    )
     $remote = Get-FeedRemoteObject -Aws $Aws -Bucket $Bucket -Key $Asset.Key -Endpoint $Endpoint -ScratchDir $ScratchDir
-    if ($remote.Found) {
-        if ($remote.Sha256 -eq $Asset.Sha256 -and $remote.Size -eq [int64]$Asset.Size) { Write-Host "exists, same bytes (sha256 $($remote.Sha256)), skipped: $($Asset.Key)"; return 'skipped' }
-        throw "$($Asset.Key) already exists with different content (actual sha256 $($remote.Sha256), $($remote.Size) bytes; expected $($Asset.Sha256), $($Asset.Size) bytes). Versioned objects are write-once; bump the version."
+    if (-not $remote.Found) { return 'missing' }
+    if ($remote.Sha256 -eq $Asset.Sha256 -and $remote.Size -eq [int64]$Asset.Size) { Write-Host "exists, same bytes (sha256 $($remote.Sha256)), skipped: $($Asset.Key)"; return 'same' }
+    throw "$($Asset.Key) already exists with different content (actual sha256 $($remote.Sha256), $($remote.Size) bytes; expected $($Asset.Sha256), $($Asset.Size) bytes). Versioned objects are write-once: publish a newer version."
+}
+
+function Publish-FeedVersionedAssets {
+    # L-5. All versioned objects of a release (binaries, .sha256 files, notes.txt) in two passes: FIRST every key is checked
+    # (Get-FeedVersionedAssetState: missing / same bytes / different = throw), and only when NONE conflicts are the missing ones written
+    # (conditional create, Send-FeedVersionedAsset). A conflict on any asset, the last one included, therefore leaves the bucket untouched.
+    # Returns one 'skipped' / 'uploaded' per asset, in order.
+    param(
+        [Parameter(Mandatory)] [scriptblock]$Aws, [Parameter(Mandatory)] [string]$Bucket, [Parameter(Mandatory)] [string]$Endpoint,
+        [Parameter(Mandatory)] [object[]]$Assets, [Parameter(Mandatory)] [string]$CacheControl, [string]$ScratchDir = [System.IO.Path]::GetTempPath()
+    )
+    $states = @(foreach ($a in $Assets) { Get-FeedVersionedAssetState -Aws $Aws -Bucket $Bucket -Endpoint $Endpoint -Asset $a -ScratchDir $ScratchDir })
+    if ($states.Count -ne $Assets.Count) { throw 'The versioned-asset preflight returned no state for every asset.' }
+    Write-Host "preflight ok: $(@($states | Where-Object { $_ -ceq 'missing' }).Count) to upload, $(@($states | Where-Object { $_ -ceq 'same' }).Count) already there with the same bytes"
+    for ($i = 0; $i -lt $Assets.Count; $i++) {
+        if ($states[$i] -ceq 'same') { 'skipped' }
+        else { Send-FeedVersionedAsset -Aws $Aws -Bucket $Bucket -Endpoint $Endpoint -Asset $Assets[$i] -CacheControl $CacheControl }
     }
+}
+
+function Send-FeedVersionedAsset {
+    # The write half: conditional create (If-None-Match: *) of one versioned object that the caller found missing. Returns 'uploaded'.
+    param(
+        [Parameter(Mandatory)] [scriptblock]$Aws, [Parameter(Mandatory)] [string]$Bucket, [Parameter(Mandatory)] [string]$Endpoint,
+        [Parameter(Mandatory)] $Asset, [Parameter(Mandatory)] [string]$CacheControl
+    )
     $r = Invoke-FeedAws -Aws $Aws -Arguments @('s3api', 'put-object', '--bucket', $Bucket, '--key', $Asset.Key, '--body', $Asset.Local, '--endpoint-url', $Endpoint,
         '--cache-control', $CacheControl, '--content-type', $Asset.Type, '--metadata', "sha256=$($Asset.Sha256)", '--if-none-match', '*')
     if ($r.Code -ne 0) {
         if ($r.Text -match 'PreconditionFailed|\(412\)') {
-            throw "$($Asset.Key) was created by someone else between the check and the upload (precondition failed). Versioned objects are write-once; re-run to compare the content."
+            throw "$($Asset.Key) was created by someone else between the check and the upload (precondition failed). Versioned objects are write-once; investigate the bucket (who else writes to it?) and publish a newer version."
         }
         if ($r.Text -match '(?i)(unknown options?|unrecognized arguments?|invalid choice|usage:)' -and $r.Text -match '(?i)if-none-match|\*') {
             $v = Invoke-FeedAws -Aws $Aws -Arguments @('--version')
@@ -226,12 +282,18 @@ function Publish-FeedVersionedAsset {
 
 function Assert-FeedPublicAsset {
     # The asset must be served at its PUBLIC url with status 200 and the expected bytes: the body is downloaded and hashed (no size
-    # header is believed). Retries for propagation. Asset: Url, Sha256, Size.
+    # header is believed). Retries for propagation. Asset: Url, Sha256, Size (and Name).
+    # notes.txt (Name 'notes.txt') is also checked for HOW it is served, from the headers the invoker returns (Headers, lower-case names):
+    #   Content-Type must be exactly text/plain; charset=utf-8 (R2 stores what the upload set, so this is reliable: a failure, retried);
+    #   X-Content-Type-Options must be nosniff. That one comes from a Cloudflare Transform Rule the owner adds (docs/RELEASING.md, setup
+    #   step 1.7), not from R2, so a missing header is a ::warning:: and not a failure (it cannot be relied on before the rule exists).
+    #   -RequireNoSniff turns that warning into a failure.
     param(
         [Parameter(Mandatory)] [scriptblock]$Http, [Parameter(Mandatory)] $Asset,
-        [int]$Attempts = 5, [int]$DelaySeconds = 4, [string]$ScratchDir = [System.IO.Path]::GetTempPath()
+        [int]$Attempts = 5, [int]$DelaySeconds = 4, [string]$ScratchDir = [System.IO.Path]::GetTempPath(), [switch]$RequireNoSniff
     )
     $last = ''
+    $isNotes = ([string]$Asset.Name -ceq 'notes.txt')
     for ($i = 1; $i -le $Attempts; $i++) {
         $tmp = Join-Path $ScratchDir ('clink-feed-' + [guid]::NewGuid().ToString('N') + '.tmp')
         try {
@@ -241,14 +303,77 @@ function Assert-FeedPublicAsset {
             elseif (-not (Test-Path -LiteralPath $tmp -PathType Leaf)) { $last = 'no body was received' }
             else {
                 $facts = Get-FeedFileFacts -Path $tmp
-                if ($facts.Sha256 -eq $Asset.Sha256 -and $facts.Size -eq [int64]$Asset.Size) { Write-Host "public URL ok: $($Asset.Url)"; return }
-                $last = "served bytes differ: sha256 $($facts.Sha256), $($facts.Size) bytes (expected $($Asset.Sha256), $($Asset.Size) bytes)"
+                if ($facts.Sha256 -eq $Asset.Sha256 -and $facts.Size -eq [int64]$Asset.Size) {
+                    $problem = ''
+                    if ($isNotes) {
+                        $headers = @{}
+                        if ($resp.Headers) { foreach ($k in @($resp.Headers.Keys)) { $headers[([string]$k).ToLowerInvariant()] = (@($resp.Headers[$k]) -join ', ') } }
+                        $type = ([string]$headers['content-type']).Trim()
+                        $sniff = ([string]$headers['x-content-type-options']).Trim()
+                        if (-not ($type -ieq 'text/plain; charset=utf-8')) { $problem = "served with Content-Type '$type', expected 'text/plain; charset=utf-8'" }
+                        elseif (-not ($sniff -ieq 'nosniff')) {
+                            if ($RequireNoSniff) { $problem = "served without 'X-Content-Type-Options: nosniff' (got '$sniff')" }
+                            else { Write-Host "::warning::$($Asset.Url) is served without 'X-Content-Type-Options: nosniff' (got '$sniff'). Add the Cloudflare Transform Rule (Modify Response Header) for both download hosts (docs/RELEASING.md, setup step 1.7)." }
+                        }
+                    }
+                    if (-not $problem) { Write-Host "public URL ok: $($Asset.Url)"; return }
+                    $last = $problem
+                } else {
+                    $last = "served bytes differ: sha256 $($facts.Sha256), $($facts.Size) bytes (expected $($Asset.Sha256), $($Asset.Size) bytes)"
+                }
             }
         } catch { $last = $_.Exception.Message }
         finally { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
         if ($i -lt $Attempts -and $DelaySeconds -gt 0) { Start-Sleep -Seconds $DelaySeconds }
     }
     throw "Public URL check failed for $($Asset.Url): $last"
+}
+
+function Assert-FeedFloorSeed {
+    # M1. A version that becomes an MSBuild property value (-p:ClinkMinStable=<v> / -p:ClinkMinDev=<v>): X.Y.Z or X.Y.Z-dev.N and NOTHING
+    # else (a ';' would add a second MSBuild property, a newline or a quote would break the command line). '' means "no seed" and passes.
+    # Stable seeds are X.Y.Z only. Returns the value. Anchored with \A..\z (not ^..$, which lets a trailing newline through).
+    param([AllowNull()] [AllowEmptyString()] [string]$Value, [Parameter(Mandatory)] [ValidateSet('stable', 'dev')] [string]$Channel)
+    $v = [string]$Value
+    if ($v.Length -eq 0) { return '' }
+    if ($v -cnotmatch '\A[0-9]+\.[0-9]+\.[0-9]+(-dev\.[0-9]+)?\z') { throw "The $Channel floor seed is not a version (X.Y.Z or X.Y.Z-dev.N); refusing to pass it to the build." }
+    if ($Channel -ceq 'stable' -and $v.Contains('-dev.')) { throw 'The stable floor seed is a dev version; refusing to pass it to the build.' }
+    $v
+}
+
+function Get-FeedFloorSeeds {
+    # M1. The embedded floor seeds of a build: the newest PUBLISHED stable and the newest PUBLISHED dev release of the repository, found with
+    # Get-FeedHistoryFloor on the release listing (same tab-separated format). Each is validated (Assert-FeedFloorSeed); '' when there is none
+    # (the first release, the build.yml dry run, a local build: no seed). Returns @{ Stable; Dev }.
+    param([AllowNull()] [AllowEmptyCollection()] [string[]]$Listing = @())
+    $stable = Get-FeedHistoryFloor -Channel stable -Listing $Listing
+    $dev = Get-FeedHistoryFloor -Channel dev -Listing $Listing
+    @{ Stable = (Assert-FeedFloorSeed -Value $stable -Channel stable); Dev = (Assert-FeedFloorSeed -Value $dev -Channel dev) }
+}
+
+function Assert-FeedFloorMatchesSeed {
+    # L-4. The publish job's history floor for the channel must equal the seed the build job embedded for that channel (both come from
+    # Get-FeedHistoryFloor over the release listing, minutes apart). A difference means a release of the channel was created, published or
+    # deleted between the two steps, so the binaries about to ship carry a stale or wrong floor seed: refuse, nothing has been signed or
+    # drafted yet. '' and $null are the same (no floor, no seed).
+    param(
+        [Parameter(Mandatory)] [ValidateSet('stable', 'dev')] [string]$Channel,
+        [AllowNull()] [AllowEmptyString()] [string]$Floor, [AllowNull()] [AllowEmptyString()] [string]$Seed
+    )
+    $f = [string]$Floor
+    $s = [string]$Seed
+    if ($f -cne $s) {
+        throw "The $Channel history floor is now '$f' but the build job embedded the $Channel floor seed '$s': a $Channel release was created, published or deleted while this run was building. Refusing to publish binaries with a stale seed. Nothing was signed, drafted or uploaded: use 'Re-run all jobs' (the build reads the listing again) once no other $Channel release is in progress."
+    }
+}
+
+function Assert-FeedR2Endpoint {
+    # L7. The R2 S3 endpoint secret must be exactly https://<32 hex>.r2.cloudflarestorage.com (or .eu. for the EU jurisdiction): no bucket name,
+    # path, port, query or user info. The value is never part of the message.
+    param([AllowNull()] [AllowEmptyString()] [string]$Value, [string]$Name = 'R2_ENDPOINT')
+    if (([string]$Value) -cnotmatch '\Ahttps://[0-9a-f]{32}\.(eu\.)?r2\.cloudflarestorage\.com\z') {
+        throw "$Name is not https://<32 hex account id>.r2.cloudflarestorage.com (or .eu.r2...; no bucket name, no path, no trailing slash). The value is not printed."
+    }
 }
 
 function Assert-FeedNeverWasOn {
