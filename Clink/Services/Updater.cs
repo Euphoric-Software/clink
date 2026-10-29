@@ -6,58 +6,63 @@ using System.Net.Http.Headers;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Security.Principal;
-using System.Text;
-using System.Text.Json;
-using System.Text.RegularExpressions;
 
 namespace Clink.Services;
 
 /// <summary>
-/// A newer release (or, on the dev channel, dev build) found on GitHub or in the signed feed. Without the feed (today's path)
-/// <see cref="ShaUrl"/> is the release's <c>Clink.exe.sha256</c> (a release without one is not offered) and <see cref="Sha256"/> is null.
-/// With the feed on for the channel, <see cref="Sha256"/> (lowercase hex) and <see cref="ExeSize"/> come from a verified signed manifest,
-/// <see cref="ShaUrl"/> is empty and the download fetches no hash file. <see cref="Flavour"/> is the flavour of the asset on offer (a framework
-/// client that falls back to the self-contained exe gets <see cref="Packaging.SelfContained"/> here).
+/// A newer release (or, on the dev channel, dev build) found in the signed feed. <see cref="Sha256"/> (lowercase hex), <see cref="ExeSize"/> and
+/// <see cref="ExeUrl"/> come from a verified signed manifest and the download fetches no hash file. <see cref="NotesUrl"/> is the manifest's
+/// <c>notesUrl</c> as signed, which is opened only after <see cref="Updater.ReleasePageFor"/> has checked it. <see cref="Flavour"/> is the
+/// flavour of the asset on offer (a framework client that falls back to the self-contained exe gets <see cref="Packaging.SelfContained"/> here).
 /// </summary>
-internal sealed record UpdateInfo(ReleaseVersion Version, string Tag, string ExeUrl, long ExeSize, string ShaUrl, string HtmlUrl, string Notes, string? Sha256 = null, Packaging Flavour = Packaging.SelfContained, bool FromFeed = false);
+internal sealed record UpdateInfo(ReleaseVersion Version, string Tag, string ExeUrl, long ExeSize, string Sha256, string NotesUrl, Packaging Flavour = Packaging.SelfContained);
 
 /// <summary>
-/// Self-update from GitHub Releases. Polls <c>/releases/latest</c> for a newer <c>Clink.exe</c> asset (or, with
-/// <see cref="Settings.UseDevBuilds"/>, the newest of the recent releases and the <c>X.Y.Z-dev.N</c> pre-releases published from the
-/// dev branch; <see cref="ShouldInstall(ReleaseVersion, ReleaseVersion, bool, bool)"/> says what counts as newer), downloads and
-/// verifies it into <c>%LOCALAPPDATA%\Clink\updates</c>, and swaps it over the running exe either on the next start
-/// (<see cref="TryGetPendingUpdate"/>) or right away (<see cref="LaunchApply"/>). The swap itself is done by the
-/// downloaded exe running with <c>--apply-update</c> (<see cref="RunApplyUpdate"/>), so the old file is never
-/// written while it is still executing.
+/// A problem of a check pass worth one notification outside the window (<see cref="Updater.CheckFinished"/>): the download attempt cap of a
+/// version was reached, or the checks have been failing for days. <see cref="Key"/> names the version or the channel, so the
+/// same problem is announced once per session however many passes report it (<see cref="UpdateNoticeGate"/>). Title and text fit a tray balloon.
+/// </summary>
+internal sealed record UpdateNotice(string Key, string Title, string Text);
+
+/// <summary>Session de-duplication of <see cref="UpdateNotice"/>s: each key is let through once per process (thread-safe).</summary>
+internal sealed class UpdateNoticeGate
+{
+    private readonly HashSet<string> _shown = new(StringComparer.Ordinal);
+    private readonly object _lock = new();
+
+    /// <summary>True the first time a notice with this key is offered, false for null and for every later one.</summary>
+    public bool ShouldShow(UpdateNotice? notice)
+    {
+        if (notice == null) return false;
+        lock (_lock) return _shown.Add(notice.Key);
+    }
+}
+
+/// <summary>
+/// Self-update from our own signed static feed (a Cloudflare R2 bucket) and from nothing else: the client never contacts any other
+/// host (the source repository is not public). Checks the signed <c>stable.json</c> (or, with <see cref="Settings.UseDevBuilds"/>, also
+/// <c>dev.json</c>) for a newer <c>Clink.exe</c> (<see cref="ShouldInstall(ReleaseVersion, ReleaseVersion, bool, bool)"/> says what counts
+/// as newer), downloads and verifies it into <c>%LOCALAPPDATA%\Clink\updates</c>, and swaps it over the running exe either on the next
+/// start (<see cref="TryGetPendingUpdate"/>) or right away (<see cref="LaunchApply"/>). The swap itself is done by the downloaded exe
+/// running with <c>--apply-update</c> (<see cref="RunApplyUpdate"/>), so the old file is never written while it is still executing.
 /// <para>
-/// What is verified: the download must match the release's <c>Clink.exe.sha256</c> (guards against a corrupted transfer),
-/// and must report the version its tag promises (guards against a mis-built release that would install forever). The verified
-/// hash is remembered in settings and checked again before the file is installed, so a file changed in the updates folder
-/// since the download is thrown away. None of this authenticates the publisher; that needs code signing (see ROADMAP).
-/// </para>
-/// <para>
-/// Signed feed (<see cref="UpdateFeed"/>, trust anchors in the embedded feed.json: <see cref="FeedTrust"/>): when it is on, the exe's
-/// size and SHA-256 come only from a manifest signed by one of the channel's built-in keys, either from the feed or (feed unreachable,
-/// refused or stale) from the <c>&lt;channel&gt;.json</c> / <c>.sig</c> assets of the GitHub release; settings.json's UpdateRepo is
-/// ignored, <c>Clink.exe.sha256</c> is never used and only a download made from a signed manifest is installed or reused. A broken
-/// feed.json (<see cref="FeedState.Misconfigured"/>) turns updates off entirely. See <see cref="CheckAsync"/> for the decision table.
+/// Trust (<see cref="UpdateFeed"/>, anchors in the embedded feed.json: <see cref="FeedTrust"/>): the exe's size and SHA-256 come only
+/// from a manifest signed by one of the channel's built-in keys; the newest valid signed manifest is trusted as it is (no timestamp or
+/// freshness service), and the version floors refuse a replayed lower version. Only a download made from a signed manifest is installed
+/// or reused. It must also report the version its manifest promises. The verified hash is remembered in settings and checked again
+/// before the file is installed. A build whose feed.json is empty has no updates at all (<see cref="UpdatesEnabled"/>), and a broken one
+/// (<see cref="FeedState.Misconfigured"/>) turns them off with a loud log line. settings.json's UpdateRepo is an ignored legacy key.
 /// </para>
 /// </summary>
 internal sealed class Updater : IDisposable
 {
-    private const string ExeAssetName = "Clink.exe";
-    private const string ShaAssetName = "Clink.exe.sha256";
-    private const string FrameworkExeAssetName = "Clink-framework.exe";
-    private const string FrameworkShaAssetName = "Clink-framework.exe.sha256";
-    private const string MetadataKey = "UpdateRepo";
     private const int MaxDownloadAttempts = 3;              // per version, per process; a broken release should not be re-fetched every cycle
     private static readonly TimeSpan FirstCheckDelay = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan CheckInterval = TimeSpan.FromHours(6);
     private static readonly TimeSpan LoopTick = TimeSpan.FromMinutes(1);       // how soon the background loop notices AutoUpdate being switched
     private static readonly TimeSpan ReadTimeout = TimeSpan.FromSeconds(60);   // no bytes for this long = the download is stalled
-    private static readonly HttpClient s_http = new() { Timeout = TimeSpan.FromSeconds(30) };
-    private static readonly Regex s_hex64 = new("(?<![0-9A-Fa-f])[0-9A-Fa-f]{64}(?![0-9A-Fa-f])", RegexOptions.Compiled);
-    private static readonly Regex s_repo = new("^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9._-]+$", RegexOptions.Compiled);   // "owner/repo", safe to put in a URL
+    /// <summary>How long a pooled connection of the update clients is reused: a session that lasts days picks up DNS changes.</summary>
+    private static readonly TimeSpan ConnectionLifetime = TimeSpan.FromMinutes(15);
 
     private readonly Settings _settings;
     private readonly CancellationTokenSource _cts = new();
@@ -67,8 +72,8 @@ internal sealed class Updater : IDisposable
     private readonly object _pendingLock = new();            // PendingPath/PendingVersion: set by the check, dropped by the UI too
     private string? _lastDownloadError;
     private Task? _loop;
-    private bool _loggedBadRepo;
-    private bool _loggedRepoIgnored;
+    /// <summary>Set by <see cref="TrackFailures"/> when this check is the one that finds the background checks failing for days (reset by every check): its notification.</summary>
+    private UpdateNotice? _failNotice;
 
     /// <summary>Version of the running exe, always three components (major.minor.build).</summary>
     public Version CurrentVersion => Current.Number;
@@ -86,11 +91,6 @@ internal sealed class Updater : IDisposable
     public string? LastError { get; private set; }
     /// <summary>True when <see cref="LastError"/> is about the check itself; false when the check worked and downloading or installing what it found did not.</summary>
     public bool CheckFailed { get; private set; }
-    /// <summary>
-    /// A soft result of the last check, a warning shown where a problem would be: "Could not confirm with GitHub; the signed feed says vX
-    /// (published D) is the latest". Not a failure (<see cref="LastError"/> is null, <see cref="CheckFailed"/> false). Null otherwise.
-    /// </summary>
-    public string? SoftNote { get; private set; }
     /// <summary>True while <see cref="DownloadAsync"/> is transferring the exe (a manual check waits for it).</summary>
     public bool IsDownloading { get; private set; }
     /// <summary>Set by <see cref="TryGetPendingUpdate"/> when a downloaded update could not be installed: a message for the user, or null.</summary>
@@ -102,6 +102,12 @@ internal sealed class Updater : IDisposable
     public event Action<ReleaseVersion>? UpdateReady;
     /// <summary><see cref="PendingPath"/> was dropped because the channel or the running exe no longer wants it (raised on any thread).</summary>
     public event Action? PendingCleared;
+    /// <summary>
+    /// A check pass ended (every one: the background loop's and a manual check's, whatever its result; not one cut short by shutdown).
+    /// Raised on a background thread after the updater's gate is released, with the pass's problem worth a notification (or null), so the
+    /// UI can show <see cref="LastError"/> of a background pass too.
+    /// </summary>
+    public event Action<UpdateNotice?>? CheckFinished;
 
     public Updater(Settings settings) : this(settings, GetCurrentSemVer()) { }
 
@@ -112,7 +118,7 @@ internal sealed class Updater : IDisposable
         Current = current;
         // The window shows this in the Updates card ("Last check failed: updates are off in dev mode"), as the status of a --dev instance.
         if (AppController.IsDev) { LastError = DevModeNote.ToLowerInvariant(); CheckFailed = true; }
-        else if (Trust.Misconfigured) { LastError = MisconfiguredNote; CheckFailed = true; }   // and Repo is null: nothing is checked or installed
+        else if (Trust.Misconfigured) { LastError = MisconfiguredNote; CheckFailed = true; }   // and UpdatesEnabled is false: nothing is checked or installed
     }
 
     /// <summary>What the updater says (<see cref="LastError"/>) when the embedded feed.json is broken (<see cref="FeedState.Misconfigured"/>): it checks nothing at all.</summary>
@@ -140,67 +146,20 @@ internal sealed class Updater : IDisposable
     public const string DevModeNote = "Updates are off in dev mode";
 
     /// <summary>
-    /// "owner/repo" to check; null = updates disabled. Without the signed feed: from settings or the UpdateRepo assembly metadata, as
-    /// always. With the feed on: the built-in repository only (settings.json's UpdateRepo is ignored and logged once). Always null with
-    /// a broken feed.json (<see cref="FeedState.Misconfigured"/>: no checks, no installs) and in a <c>--dev</c> instance: it would
-    /// download into the real Clink's updates folder, delete the other exes there (the real Clink's pending update among them), and
-    /// restart as a normal Clink.
+    /// True when this instance may check for, download and install updates: the embedded feed.json is a valid, complete one
+    /// (<see cref="FeedTrust.On"/>) and this is not a <c>--dev</c> instance (it would download into the real Clink's updates folder,
+    /// delete the other exes there, the real Clink's pending update among them, and restart as a normal Clink). False for a build
+    /// whose feed.json is empty (no updates at all, nothing is ever contacted) and for a broken one (<see cref="FeedState.Misconfigured"/>).
+    /// settings.json's <c>UpdateRepo</c> is an ignored legacy key and changes nothing.
     /// </summary>
-    public string? Repo
-    {
-        get
-        {
-            if (AppController.IsDev) return null;
-            var trust = Trust;
-            if (trust.Misconfigured) return null;
-            string? builtIn = BuiltInRepo;
-            if (!trust.On) return SettingsRepo ?? builtIn;
-            if (!_loggedRepoIgnored && !string.IsNullOrWhiteSpace(_settings.UpdateRepo))
-            {
-                _loggedRepoIgnored = true;
-                Log.Warn($"updater: ignoring UpdateRepo '{_settings.UpdateRepo}' in settings.json: this build only trusts its signed feed and github.com/{builtIn ?? "(none)"}");
-            }
-            return builtIn;
-        }
-    }
-
-    /// <summary>True when settings.json points the updater somewhere other than the repository baked into this exe (only while feed.json is empty).</summary>
-    public bool RepoOverridden => Trust.State == FeedState.Off && SettingsRepo != null;
-
-    /// <summary>The settings.json override, or null when absent or not a plain "owner/repo" (then it is ignored and logged).</summary>
-    private string? SettingsRepo
-    {
-        get
-        {
-            string? repo = _settings.UpdateRepo?.Trim().Trim('/');
-            if (string.IsNullOrEmpty(repo)) return null;
-            if (s_repo.IsMatch(repo)) return repo;
-            if (!_loggedBadRepo) { _loggedBadRepo = true; Log.Warn($"updater: ignoring UpdateRepo '{_settings.UpdateRepo}' in settings.json (expected owner/repo)"); }
-            return null;
-        }
-    }
+    public bool UpdatesEnabled => !AppController.IsDev && Trust.On;
 
     private static Assembly EntryAssembly => Assembly.GetEntryAssembly() ?? typeof(Updater).Assembly;
 
-    private static string? AssemblyRepo =>
-        EntryAssembly.GetCustomAttributes<AssemblyMetadataAttribute>().FirstOrDefault(a => a.Key == MetadataKey)?.Value;
-
-    /// <summary>The repository baked into this exe (or <see cref="BuiltInRepoOverride"/>), trimmed; null when there is none.</summary>
-    private static string? BuiltInRepo
-    {
-        get
-        {
-            string? repo = (BuiltInRepoOverride ?? AssemblyRepo)?.Trim().Trim('/');
-            return string.IsNullOrWhiteSpace(repo) ? null : repo;
-        }
-    }
-
-    /// <summary>Replaces the network for the update check, the feed, the hash file and the exe download: set by the unit tests, null otherwise.</summary>
+    /// <summary>Replaces the network for the feed and the exe download (every request the updater makes): set by the unit tests, null otherwise.</summary>
     internal static Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>>? HttpOverride { get; set; }
     /// <summary>Stands in for the embedded feed.json in the unit tests; null otherwise.</summary>
     internal static FeedTrust? FeedOverride { get; set; }
-    /// <summary>Stands in for the UpdateRepo assembly metadata in the unit tests (a local build has none); null otherwise.</summary>
-    internal static string? BuiltInRepoOverride { get; set; }
     /// <summary>Replaces the per-request timeout of the feed and signed-manifest requests (<see cref="UpdateFeed.RequestTimeout"/>) in the unit tests; null otherwise.</summary>
     internal static TimeSpan? FeedTimeoutOverride { get; set; }
 
@@ -209,13 +168,13 @@ internal sealed class Updater : IDisposable
     internal static FeedTrust Trust => FeedOverride ?? s_embeddedTrust.Value;
 
     /// <summary>
-    /// The client for the signed feed's own host (manifest, signature and feed binaries): it never follows a redirect, so a feed that
-    /// answers 3xx is unreachable (the feed is static files that do not redirect; a redirect would take a request, and the binaries'
-    /// "under the base" check, somewhere the keys never vouched for). GitHub's asset downloads redirect by design and use <c>s_http</c>.
+    /// The only HTTP client of the updater, for the signed feed's own host (manifest, signature and feed binaries): it never follows a
+    /// redirect, so a feed that answers 3xx is unreachable (the feed is static files that do not redirect; a redirect would take a
+    /// request, and the binaries' "under the base" check, somewhere the keys never vouched for).
     /// </summary>
-    internal static readonly SocketsHttpHandler FeedHandler = new() { AllowAutoRedirect = false };
+    internal static readonly SocketsHttpHandler FeedHandler = new() { AllowAutoRedirect = false, PooledConnectionLifetime = ConnectionLifetime };
     /// <summary>
-    /// 30 s like <c>s_http</c>: with <see cref="HttpCompletionOption.ResponseHeadersRead"/> (every request here) that bounds connecting and
+    /// 30 s: with <see cref="HttpCompletionOption.ResponseHeadersRead"/> (every request here) that bounds connecting and
     /// the headers; the bodies have their own limits (the feed's 10 s total in <see cref="UpdateFeed.FetchCappedAsync"/>, the exe's
     /// per-read deadline in <see cref="DownloadAsync"/>).
     /// </summary>
@@ -223,56 +182,17 @@ internal sealed class Updater : IDisposable
     /// <summary>The timeout of <see cref="s_feedHttp"/> (asserted by the unit tests).</summary>
     internal static TimeSpan FeedClientTimeout => s_feedHttp.Timeout;
 
-    /// <summary>Told (url, feed client?) for every request, before it is sent: the unit tests see which client a request would use (HttpOverride replaces both). Null otherwise.</summary>
-    internal static Action<string, bool>? SendObserver { get; set; }
+    /// <summary>Told the URL of every request, before it is sent (the unit tests see what would be asked, whether or not HttpOverride answers it). Null otherwise.</summary>
+    internal static Action<string>? SendObserver { get; set; }
 
-    private static Task<HttpResponseMessage> SendAsync(HttpRequestMessage req, CancellationToken ct, HttpCompletionOption option = HttpCompletionOption.ResponseContentRead, bool feed = false)
+    private static Task<HttpResponseMessage> SendAsync(HttpRequestMessage req, CancellationToken ct, HttpCompletionOption option = HttpCompletionOption.ResponseContentRead)
     {
-        SendObserver?.Invoke(req.RequestUri?.AbsoluteUri ?? "", feed);
-        return HttpOverride != null ? HttpOverride(req, ct) : (feed ? s_feedHttp : s_http).SendAsync(req, option, ct);
+        SendObserver?.Invoke(req.RequestUri?.AbsoluteUri ?? "");
+        return HttpOverride != null ? HttpOverride(req, ct) : s_feedHttp.SendAsync(req, option, ct);
     }
 
-    /// <summary>
-    /// The most of GitHub's answer (the releases list: 30 releases with notes and assets, normally well under 400 KB) that is ever read.
-    /// Over this the check fails (see <see cref="ReadCappedTextAsync"/>), instead of buffering whatever a hostile or broken answer sends.
-    /// </summary>
-    internal const int MaxApiBytes = 4 * 1024 * 1024;
-    /// <summary>The most of a <c>Clink.exe.sha256</c> file that is read (the file is about 80 bytes).</summary>
-    internal const int MaxShaFileBytes = 64 * 1024;
-    /// <summary>Ceiling of an unsigned (feed off) exe download whose size GitHub did not list (the exe is about 30-150 MB).</summary>
+    /// <summary>Clamp of the size an exe download's total deadline is computed from (the exe is about 30-150 MB).</summary>
     internal const long MaxExeBytes = 512L * 1024 * 1024;
-
-    /// <summary>
-    /// Reads at most <paramref name="limit"/> bytes of <paramref name="resp"/>'s body as UTF-8 text. A Content-Length over the limit is
-    /// refused before reading, and at most limit+1 bytes are ever read. Throws <see cref="InvalidDataException"/> when the body is too
-    /// large (fail closed: nothing of it is used). The body grows a MemoryStream (no limit-sized buffer per call). The time allowed is the
-    /// caller's: pass a token from <see cref="TotalTimeout"/>, made before the request was sent, so headers and body share one limit.
-    /// The response must have been requested with <see cref="HttpCompletionOption.ResponseHeadersRead"/>, or it is buffered already.
-    /// </summary>
-    internal static async Task<string> ReadCappedTextAsync(HttpResponseMessage resp, int limit, string what, CancellationToken ct)
-    {
-        if (resp.Content.Headers.ContentLength is long declared && declared > limit)
-            throw new InvalidDataException($"{what} is too large ({declared} bytes, at most {limit})");
-        var body = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
-        using var ms = new MemoryStream();
-        var chunk = new byte[16 * 1024];
-        long total = 0;
-        await using (body.ConfigureAwait(false))
-        {
-            int n;
-            while ((n = await body.ReadAsync(chunk, ct).ConfigureAwait(false)) > 0)
-            {
-                total += n;
-                if (total > limit) throw new InvalidDataException($"{what} is too large (more than {limit} bytes)");
-                ms.Write(chunk, 0, n);
-            }
-        }
-        return new UTF8Encoding(false).GetString(ms.GetBuffer(), 0, (int)ms.Length);
-    }
-
-    /// <summary>Replaces the 30 s total of a GitHub request (headers + body) in the unit tests; null otherwise.</summary>
-    internal static TimeSpan? GitHubTimeoutOverride { get; set; }
-    private static TimeSpan GitHubTimeout => GitHubTimeoutOverride ?? s_http.Timeout;
 
     /// <summary>
     /// Replaces, in the unit tests, the 30 s the exe download waits for the server's answer (connect + headers; the clients' own Timeout
@@ -284,34 +204,52 @@ internal sealed class Updater : IDisposable
     internal static TimeSpan? DownloadReadTimeoutOverride { get; set; }
     private static TimeSpan DownloadReadTimeout => DownloadReadTimeoutOverride ?? ReadTimeout;
 
-    /// <summary>A token that fires after <see cref="GitHubTimeout"/> (30 s) in total, request and body together, or when <paramref name="ct"/> does.</summary>
-    private static CancellationTokenSource TotalTimeout(CancellationToken ct)
-    {
-        var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        cts.CancelAfter(GitHubTimeout);
-        return cts;
-    }
+    /// <summary>The least a download must be allowed in total, whatever its size (see <see cref="DownloadDeadline"/>).</summary>
+    private static readonly TimeSpan MinTotalDeadline = TimeSpan.FromMinutes(10);
+    /// <summary>The slowest transfer the total deadline of a download assumes (64 KB/s): a 150 MB exe gets 40 minutes.</summary>
+    private const long DeadlineBytesPerSecond = 64 * 1024;
+    /// <summary>The slowest average a download may have over <see cref="RateWindow"/> once that much time has passed (16 KB/s).</summary>
+    private const long MinDownloadBytesPerSecond = 16 * 1024;
+    private static readonly TimeSpan RateWindow = TimeSpan.FromSeconds(60);
+    /// <summary>The least time between two samples of the rate window: it bounds the samples kept to about window / spacing + 1.</summary>
+    private static readonly TimeSpan RateSampleSpacing = TimeSpan.FromSeconds(1);
+    /// <summary>The most rate-window samples the last <see cref="DownloadAsync"/> of this updater held at once (asserted by the unit tests).</summary>
+    internal int RateSamplesPeak { get; private set; }
+    /// <summary>Replaces the whole total deadline of the exe download (<see cref="DownloadDeadline"/>) in the unit tests; null otherwise.</summary>
+    internal static TimeSpan? DownloadTotalTimeoutOverride { get; set; }
+    /// <summary>Replaces the 16 KB/s minimum average rate (bytes per second) in the unit tests; null otherwise.</summary>
+    internal static long? DownloadMinRateOverride { get; set; }
+    /// <summary>Replaces the 60 s window the minimum rate is averaged over in the unit tests; null otherwise.</summary>
+    internal static TimeSpan? DownloadRateWindowOverride { get; set; }
+
+    /// <summary>
+    /// How long the body of an exe download of <paramref name="size"/> bytes may take in total: the larger of 10 minutes and size at 64 KB/s.
+    /// The per-read inactivity limit alone lets a server that sends one byte every 59 s hold the updater's gate for ever. The size is
+    /// clamped to <see cref="MaxExeBytes"/> (a huge announced or listed size must not buy a deadline of days).
+    /// </summary>
+    /// <remarks>
+    /// Accepted for now: for a large file (over 10 minutes' worth at 64 KB/s, about 37.5 MB) this makes 64 KB/s the effective average floor
+    /// of the whole transfer (size / 64 KB/s), well above the 16 KB/s minimum over the rate window, and there is no resume: a connection that
+    /// slow fails the attempt and the next one starts from the first byte again.
+    /// </remarks>
+    internal static TimeSpan DownloadDeadline(long size) =>
+        DownloadTotalTimeoutOverride ?? TimeSpan.FromSeconds(Math.Max(MinTotalDeadline.TotalSeconds, Math.Min(size, MaxExeBytes) / (double)DeadlineBytesPerSecond));
 
     /// <summary>The clock of the update logic (UTC); the unit tests replace it.</summary>
     internal static Func<DateTimeOffset>? ClockOverride { get; set; }
     private static DateTimeOffset Now => ClockOverride?.Invoke() ?? DateTimeOffset.UtcNow;
 
-    /// <summary>A GET for the feed and the signed manifest assets: the response with its headers read, the body still to be read (capped by <see cref="UpdateFeed.FetchCappedAsync"/>).</summary>
-    private Task<HttpResponseMessage> GetStreamingAsync(string url, CancellationToken ct) => GetAsync(url, ct, feed: false);
-
-    /// <summary>The same for the signed feed's own host: no redirects (see <see cref="s_feedHttp"/>).</summary>
-    private Task<HttpResponseMessage> GetFeedAsync(string url, CancellationToken ct) => GetAsync(url, ct, feed: true);
-
-    private async Task<HttpResponseMessage> GetAsync(string url, CancellationToken ct, bool feed)
+    /// <summary>A GET on the signed feed's host: the response with its headers read, the body still to be read (capped by <see cref="UpdateFeed.FetchCappedAsync"/>). No redirects (see <see cref="s_feedHttp"/>).</summary>
+    private async Task<HttpResponseMessage> GetFeedAsync(string url, CancellationToken ct)
     {
         using var req = new HttpRequestMessage(HttpMethod.Get, url);   // a GET has no content: disposing it leaves the response's body readable
         AddHeaders(req);
-        return await SendAsync(req, ct, HttpCompletionOption.ResponseHeadersRead, feed).ConfigureAwait(false);
+        return await SendAsync(req, ct, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
     }
 
     /// <summary>
-    /// Logs once at startup where updates come from, so a redirected settings.json is visible in the log, and the signed feed's
-    /// trust anchors in one line (an error when feed.json is broken; key counts only, never key bytes).
+    /// Logs once at startup where updates come from and the signed feed's trust anchors in one line (an error when feed.json is
+    /// broken; key counts only, never key bytes).
     /// </summary>
     public void LogSource()
     {
@@ -327,18 +265,15 @@ internal sealed class Updater : IDisposable
         Log.Info($"updater: packaging {OwnPackaging} (runtime says {pk.RuntimeSays}, build label {pk.BuildLabel ?? "none"}); updates folder {UpdatesDir}");
         if (pk.Disagreement != null) Log.Warn("updater: packaging: " + pk.Disagreement);
         if (AppController.IsDev) { Log.Info("updater: off in a --dev instance"); return; }
-        string? repo = Repo;
-        if (repo == null) { Log.Info("updater: no UpdateRepo configured, updates disabled"); return; }
-        if (trust.On)
+        if (!trust.On) { Log.Info("updater: no signed update feed in this build, updates disabled"); return; }
+        string devNote = trust.DevFeedUrl == trust.FeedUrl ? "" : $" (dev builds from {trust.DevFeedUrl})";
+        Log.Info($"updater: updates come from the signed feed {trust.FeedUrl}{devNote} and nowhere else");
+        foreach (string channel in new[] { "stable", "dev" })
         {
-            string devNote = trust.DevFeedUrl == trust.FeedUrl ? "" : $" (dev builds from {trust.DevFeedUrl})";
-            Log.Info($"updater: updates come from the signed feed {trust.FeedUrl}{devNote}; github.com/{repo} is the fallback, only with a signed manifest");
-            return;
+            if (SeedProblem(channel) is { } bad) Log.Warn("updater: " + bad);
+            else if (FloorSeed(channel) is { } seed) Log.Info($"updater: built-in {channel} floor v{seed} (no older {channel} manifest is accepted)");
         }
-        string builtIn = BuiltInRepo ?? "none";
-        Log.Info(RepoOverridden
-            ? $"updater: updates come from github.com/{repo} (UpdateRepo in settings.json overrides the built-in {builtIn})"
-            : $"updater: updates come from github.com/{repo}");
+        if (!string.IsNullOrWhiteSpace(_settings.UpdateRepo)) Log.Info("updater: ignoring the legacy UpdateRepo key in settings.json");
     }
 
     // ------------------------------------------------------------------ versions
@@ -383,7 +318,26 @@ internal sealed class Updater : IDisposable
     private string? RecVersion { get => OwnIsFx ? _settings.PendingUpdateFxVersion : _settings.PendingUpdateVersion; set { if (OwnIsFx) _settings.PendingUpdateFxVersion = value; else _settings.PendingUpdateVersion = value; } }
     private string? RecSha256 { get => OwnIsFx ? _settings.PendingUpdateFxSha256 : _settings.PendingUpdateSha256; set { if (OwnIsFx) _settings.PendingUpdateFxSha256 = value; else _settings.PendingUpdateSha256 = value; } }
     private string? RecFrom { get => OwnIsFx ? _settings.PendingUpdateFxFrom : _settings.PendingUpdateFrom; set { if (OwnIsFx) _settings.PendingUpdateFxFrom = value; else _settings.PendingUpdateFrom = value; } }
-    private bool? RecSigned { get => OwnIsFx ? _settings.PendingUpdateFxSigned : _settings.PendingUpdateSigned; set { if (OwnIsFx) _settings.PendingUpdateFxSigned = value; else _settings.PendingUpdateSigned = value; } }
+    private string? RecSignedSha256 { get => OwnIsFx ? _settings.PendingUpdateFxSignedSha256 : _settings.PendingUpdateSignedSha256; set { if (OwnIsFx) _settings.PendingUpdateFxSignedSha256 = value; else _settings.PendingUpdateSignedSha256 = value; } }
+
+    /// <summary>
+    /// The cheap half of the record check (no hashing of the file): the record of <paramref name="folder"/>'s packaging is of
+    /// <paramref name="version"/> and its signed hash (PendingUpdate[Fx]SignedSha256, written only by a download that verified against a
+    /// signed manifest) is present and equals its recorded hash. Null if so, otherwise why not. A legacy <c>PendingUpdateSigned: true</c>
+    /// counts as absent (it is not even read), so a download made before it was replaced is fetched again once.
+    /// </summary>
+    private string? RecordProblem(ReleaseVersion version, Packaging folder)
+    {
+        bool fx = folder == Packaging.Framework;
+        string? recVersion = fx ? _settings.PendingUpdateFxVersion : _settings.PendingUpdateVersion;
+        string? recSha = fx ? _settings.PendingUpdateFxSha256 : _settings.PendingUpdateSha256;
+        string? signedSha = fx ? _settings.PendingUpdateFxSignedSha256 : _settings.PendingUpdateSignedSha256;
+        if (!string.Equals(recVersion, version.ToString(), StringComparison.Ordinal) || string.IsNullOrEmpty(recSha))
+            return "there is no record of a verified download of this version";
+        if (string.IsNullOrEmpty(signedSha) || !string.Equals(signedSha, recSha, StringComparison.OrdinalIgnoreCase))
+            return "it was not verified against a signed manifest, and this build installs signed updates only";
+        return null;
+    }
 
     internal static string FileFor(ReleaseVersion v)
     {
@@ -461,176 +415,17 @@ internal sealed class Updater : IDisposable
 
     // ------------------------------------------------------------------ check
 
-    /// <summary>What a check says when the GitHub release carries no valid signed manifest (the details are in the log).</summary>
-    internal const string GitHubRefusedNote = "the latest release could not be verified, so it is not offered";
+    /// <summary>What a check says, and the Updates card shows, when this build has no signed update feed (feed.json is empty): nothing is ever contacted.</summary>
+    public const string NoUpdatesNote = "Updates aren't available in this build";
 
     /// <summary>
-    /// Asks for the latest release (stable channel) or the newest release or dev build (<see cref="Settings.UseDevBuilds"/>). Returns
-    /// info only if <see cref="ShouldInstall(ReleaseVersion, ReleaseVersion, bool, bool)"/> accepts it; <paramref name="manual"/> allows
-    /// going from a dev build back to an older release. Never throws (a cancelled <paramref name="ct"/> ends it with LastError "cancelled").
-    /// <para>feed.json broken (<see cref="FeedState.Misconfigured"/>): nothing is asked at all; LastError is <see cref="MisconfiguredNote"/>.</para>
-    /// <para>Feed off (the empty feed.json): GitHub exactly as before, <c>/releases/latest</c> or the 30 newest releases, the exe
-    /// checked against <c>Clink.exe.sha256</c>.</para>
-    /// <para>Feed on (<see cref="CheckFeedAsync"/>): stable.json (and, on the dev channel, dev.json too) with its signature first.
-    /// <list type="bullet">
-    /// <item>Unreachable (network error, HTTP error, 10 s timeout), or fetched but refused (bad or missing signature, too large,
-    /// invalid; logged as a warning): that manifest is not used.</item>
-    /// <item>Verified but stale (below the floor of its channel, published over 90 days ago or over a day in the future): not used.</item>
-    /// <item>Every manifest read verified and fresh: newer = offered from the feed; the same version = up to date, no GitHub request;
-    /// older than the running exe (other than a manual leave-dev) = the signed GitHub path.</item>
-    /// <item>Dev channel with one manifest not used: the other one is still offered when it is newer; otherwise the signed GitHub path
-    /// (nothing can be called up to date from half the picture).</item>
-    /// <item>Nothing usable: the signed GitHub path. Never the unsigned one.</item>
-    /// </list>
-    /// The signed GitHub path (<see cref="VerifyGitHubReleaseAsync"/>) picks the release as before and offers it only with valid
-    /// <c>&lt;channel&gt;.json</c> + <c>.sig</c> assets for its own tag, not below the floor; the exe's size and SHA-256 then come from
-    /// that manifest. A floor is raised only by a manifest that is used: offered, or the basis of "up to date".</para>
+    /// Background checks that have failed without a single success for longer than this earn one tray notice per session
+    /// (<c>checkfailed:&lt;channel&gt;</c>, see <see cref="TrackFailures"/>).
     /// </summary>
-    public async Task<UpdateInfo?> CheckAsync(CancellationToken ct, bool manual = false)
-    {
-        bool dev = _settings.UseDevBuilds;   // one channel for the whole check, even if the box is ticked meanwhile
-        var trust = Trust;
-        SoftNote = null;   // every way out (the two below included) starts without the last check's soft result
-        if (trust.Misconfigured) { LastError = MisconfiguredNote; CheckFailed = true; Log.Warn("updater: not checking: " + MisconfiguredNote); return null; }
-        string? repo = Repo;
-        if (repo == null) { LastError = "updates are not configured in this build"; CheckFailed = true; return null; }
-        bool signed = trust.On;
-        string channelName = UpdateFeed.ChannelName(dev);
-        FeedManifest? staleEqual = null;   // set when the feed's verified manifest names the running version but is too old to say "up to date" alone
-        bool couldNotAsk = false;          // GitHub could not be asked (network error, timeout, HTTP 5xx/429/403): the only failure that may be soft
-        bool namedNewer = false;           // GitHub named a release newer than the running one: whatever then fails is a real failure, never soft
-        try
-        {
-            if (signed)
-            {
-                var outcome = await CheckFeedAsync(trust, dev, manual, ct).ConfigureAwait(false);
-                switch (outcome.Verdict)
-                {
-                    case FeedVerdict.Offer:
-                        LastError = null;
-                        Log.Info($"updater: v{outcome.Info!.Version} available ({outcome.Info.ExeSize / 1024} KB) from the signed feed");
-                        return outcome.Info;
-                    case FeedVerdict.UpToDate:
-                        LastError = null;
-                        Log.Info($"updater: up to date ({outcome.Why}, running v{VersionDisplay})");
-                        return null;
-                    default:
-                        staleEqual = outcome.StaleEqual;
-                        Log.Info($"updater: {outcome.Why}; asking github.com/{repo} (signed manifests only)");
-                        break;
-                }
-            }
-            string url = dev ? $"https://api.github.com/repos/{repo}/releases?per_page=30" : $"https://api.github.com/repos/{repo}/releases/latest";
-            using var req = new HttpRequestMessage(HttpMethod.Get, url);
-            AddHeaders(req);
-            req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
-            // Headers first, then the body read up to MaxApiBytes, all within one 30 s total: a larger or slower answer fails the check.
-            using var total = TotalTimeout(ct);
-            using var resp = await SendAsync(req, total.Token, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
-            string body = await ReadCappedTextAsync(resp, MaxApiBytes, "GitHub's answer", total.Token).ConfigureAwait(false);
-            if (!resp.IsSuccessStatusCode)
-            {
-                int code = (int)resp.StatusCode;
-                LastError = code == 404 ? $"no releases found for {repo}" : $"GitHub answered HTTP {code}";
-                couldNotAsk = code >= 500 || code is 429 or 403;   // GitHub down, or rate-limited; a 404 or any other answer is an answer
-                Log.Warn($"updater: {LastError}: {Truncate(body)}");
-                return null;
-            }
-            string? problem;
-            SignedAssets? assets;
-            var info = dev ? PickRelease(body, true, signed, OwnPackaging, out problem, out assets) : ParseRelease(body, false, signed, OwnPackaging, out problem, out assets);
-            if (info == null) { LastError = problem ?? "latest release is unusable"; Log.Warn("updater: " + LastError); return null; }
-            LastError = null;
-            if (!ShouldInstall(info.Version, Current, dev, allowLeaveDev: manual))
-            {
-                // GitHub says nothing newer than the running version exists: the only GitHub answer that confirms it.
-                if (signed) Confirmed(channelName, byGitHub: true);
-                if (!dev && Current.IsDevBuild && info.Version < Current)
-                    Log.Info($"updater: running dev build v{Current}; latest release v{info.Version} is older — Check for updates switches back");
-                else
-                    Log.Info($"updater: up to date (latest {info.Tag}, running v{VersionDisplay})");
-                return null;
-            }
-            // GitHub names a newer release: from here on nothing confirms the running version, and nothing that goes wrong is soft
-            // (an attacker who lets api.github.com through but blocks the asset host must not get "up to date").
-            namedNewer = true;
-            if (signed)
-            {
-                info = await VerifyGitHubReleaseAsync(info, assets, trust, ct).ConfigureAwait(false);
-                if (info == null) return null;   // LastError is set
-            }
-            Log.Info($"updater: v{info.Version} available ({info.ExeSize / 1024} KB) from github.com/{repo}{(signed ? " (signed manifest verified)" : "")}");
-            return info;
-        }
-        catch (Exception ex)
-        {
-            // HttpClient.Timeout surfaces as a cancellation too; only a cancelled token means Clink is shutting down.
-            LastError = ex is OperationCanceledException
-                ? ct.IsCancellationRequested ? "cancelled" : $"GitHub did not answer within {GitHubTimeout.TotalSeconds:0.##} s"
-                : Describe(ex);
-            couldNotAsk = IsTransportFailure(ex, ct);
-            Log.Warn("updater: check failed: " + ex.Message);
-            return null;
-        }
-        finally
-        {
-            // The feed said "the running version, but too old to be trusted alone" and GitHub could not be asked: soft, not (yet) a failure.
-            // Never when GitHub named something newer, refused a release, answered 404 or with something unusable: those are real failures.
-            if (staleEqual != null && LastError != null && couldNotAsk && !namedNewer && !ct.IsCancellationRequested) SoftenUnconfirmed(staleEqual, channelName);
-            CheckFailed = LastError != null;   // every way out of the try sets LastError: null on success, the reason otherwise
-            _settings.LastUpdateCheck = Now.UtcDateTime;
-            _settings.Save();
-        }
-    }
+    internal static readonly TimeSpan FailingNoticeAfter = TimeSpan.FromDays(3);
 
-    /// <summary>
-    /// True when <paramref name="ex"/> (thrown while asking GitHub) means GitHub could not be reached or did not answer in time: a network
-    /// error or a timeout, not Clink shutting down (<paramref name="ct"/>), and not an answer that was read but is unusable (too large,
-    /// not JSON).
-    /// </summary>
-    private static bool IsTransportFailure(Exception ex, CancellationToken ct) => ex switch
-    {
-        OperationCanceledException => !ct.IsCancellationRequested,
-        HttpRequestException or TimeoutException => true,
-        InvalidDataException => false,   // over MaxApiBytes: an answer, and a wrong one
-        IOException => true,
-        _ => false,
-    };
-
-    /// <summary>
-    /// The longest streak of checks that could not confirm the running version (stale feed manifest, GitHub unreachable) that is still
-    /// a soft result; past it the check fails. Counted from <c>SoftSince</c>, the first such check since the last real confirmation, so
-    /// an old <c>UpToDate</c> (a channel switched back, months without Clink) does not make the first unconfirmed check a failure.
-    /// </summary>
-    internal static readonly TimeSpan MaxUnconfirmedStreak = TimeSpan.FromDays(14);
-    /// <summary>How long a GitHub answer lets a stale-but-matching feed manifest keep ending checks as "up to date" without asking GitHub again.</summary>
-    internal static readonly TimeSpan GitHubConfirmValidity = TimeSpan.FromDays(7);
-    /// <summary>A stamp further ahead than this (a wrong clock, an edited settings.json) counts as absent: it never confirms anything.</summary>
+    /// <summary>A stamp further ahead than this (a wrong clock, an edited settings.json) counts as absent.</summary>
     internal static readonly TimeSpan MaxStampFuture = TimeSpan.FromDays(1);
-
-    /// <summary>The per-channel stamps of the stale-feed soft state (see <see cref="Settings.FeedFloorStableGitHubConfirm"/>).</summary>
-    internal enum StampKind { GitHubConfirm, UpToDate, SoftSince }
-
-    private string? StampText(string channel, StampKind kind) => (channel == "dev", kind) switch
-    {
-        (true, StampKind.GitHubConfirm) => _settings.FeedFloorDevGitHubConfirm,
-        (true, StampKind.UpToDate) => _settings.FeedFloorDevUpToDate,
-        (true, _) => _settings.FeedFloorDevSoftSince,
-        (false, StampKind.GitHubConfirm) => _settings.FeedFloorStableGitHubConfirm,
-        (false, StampKind.UpToDate) => _settings.FeedFloorStableUpToDate,
-        (false, _) => _settings.FeedFloorStableSoftSince,
-    };
-
-    private void SetStampText(string channel, StampKind kind, string? value)
-    {
-        bool dev = channel == "dev";
-        switch (kind)
-        {
-            case StampKind.GitHubConfirm: if (dev) _settings.FeedFloorDevGitHubConfirm = value; else _settings.FeedFloorStableGitHubConfirm = value; break;
-            case StampKind.UpToDate: if (dev) _settings.FeedFloorDevUpToDate = value; else _settings.FeedFloorStableUpToDate = value; break;
-            default: if (dev) _settings.FeedFloorDevSoftSince = value; else _settings.FeedFloorStableSoftSince = value; break;
-        }
-    }
 
     /// <summary>A stamp as stored: <c>"&lt;version&gt;@&lt;UTC ISO-8601, round-trip&gt;"</c>, e.g. "0.4.2@2026-10-28T09:00:00.0000000Z".</summary>
     internal static string FormatStamp(ReleaseVersion version, DateTime utc) =>
@@ -649,323 +444,239 @@ internal sealed class Updater : IDisposable
         return t > nowUtc + MaxStampFuture ? null : t;
     }
 
-    /// <summary><paramref name="kind"/> of <paramref name="channel"/> for the running version (see <see cref="ParseStamp"/>), or null.</summary>
-    private DateTime? Stamp(string channel, StampKind kind, DateTime nowUtc) => ParseStamp(StampText(channel, kind), Current, nowUtc);
-
-    private void SetStamp(string channel, StampKind kind, DateTime utc) => SetStampText(channel, kind, FormatStamp(Current, utc));
+    /// <summary>The host of a feed base URL, for the plain messages ("Couldn't reach the update server (dl.example)"). Never anything a server supplied.</summary>
+    private static string HostOf(string? url) => Uri.TryCreate(url, UriKind.Absolute, out var u) && u.Host.Length > 0 ? u.Host : "unknown host";
 
     /// <summary>
-    /// A real confirmation of the running version on <paramref name="channel"/>: a feed manifest of it younger than 14 days, or (with
-    /// <paramref name="byGitHub"/>) GitHub saying nothing newer exists. Sets <c>UpToDate</c> (and <c>GitHubConfirm</c>) and ends any
-    /// unconfirmed streak (<c>SoftSince</c>).
+    /// Asks the signed feed for the newest release (stable channel) or the newest release or dev build (<see cref="Settings.UseDevBuilds"/>).
+    /// Returns info only if <see cref="ShouldInstall(ReleaseVersion, ReleaseVersion, bool, bool)"/> accepts it; <paramref name="manual"/> allows
+    /// going from a dev build back to an older release. Never throws (a cancelled <paramref name="ct"/> ends it with LastError "cancelled").
+    /// <para>Updates not available (<see cref="UpdatesEnabled"/> false: the empty feed.json, a --dev instance): nothing is asked at all; LastError
+    /// says so. A broken feed.json (<see cref="FeedState.Misconfigured"/>) likewise, with <see cref="MisconfiguredNote"/>.</para>
+    /// <para>Otherwise stable.json (and, on the dev channel, dev.json too) is fetched from the channel's base with its signature, and the
+    /// newest signed manifest is trusted as it is: there is no timestamp or freshness check, a quiet period without a release is no
+    /// failure. Newer = offered; the same version or older = up to date. A fetch failure (unreachable, HTTP error, timeout, bad or
+    /// missing signature, invalid manifest, a manifest below the channel's floor) fails the check with a plain message that names only the
+    /// host that failed; there is no fallback to any other source. On the dev channel a verified newer build from the other manifest is
+    /// still offered, but "up to date" is never said while either manifest failed (<see cref="CheckFeedAsync"/>). The floor (the highest
+    /// version verified before, or the one built into the exe, whichever is higher) refuses a replayed lower version.</para>
     /// </summary>
-    private void Confirmed(string channel, bool byGitHub)
+    public async Task<UpdateInfo?> CheckAsync(CancellationToken ct, bool manual = false)
+    {
+        bool dev = _settings.UseDevBuilds;   // one channel for the whole check, even if the box is ticked meanwhile
+        var trust = Trust;
+        _failNotice = null;
+        if (trust.Misconfigured) { LastError = MisconfiguredNote; CheckFailed = true; Log.Warn("updater: not checking: " + MisconfiguredNote); return null; }
+        if (!UpdatesEnabled)
+        {
+            LastError = AppController.IsDev ? DevModeNote.ToLowerInvariant() : NoUpdatesNote;
+            CheckFailed = true;
+            return null;
+        }
+        string channelName = UpdateFeed.ChannelName(dev);
+        string host = HostOf(trust.BaseFor(channelName));   // the failed host for the notice (TrackFailures); the outcome names the one that really failed
+        try
+        {
+            var outcome = await CheckFeedAsync(trust, dev, manual, ct).ConfigureAwait(false);
+            LastError = outcome.Error;
+            if (outcome.FailedHost != null) host = outcome.FailedHost;
+            string published = outcome.Used is { } used ? $", published {used.Published.UtcDateTime.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture)} UTC" : "";
+            if (outcome.Info is { } info) Log.Info($"updater: v{info.Version} available ({info.ExeSize / 1024} KB{published}) from the signed feed");
+            else if (outcome.Error == null) Log.Info($"updater: up to date ({outcome.Why}{published}, running v{VersionDisplay})");
+            return outcome.Info;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            LastError = "cancelled";
+            return null;
+        }
+        catch (Exception ex)
+        {
+            LastError = $"Couldn't check for updates ({host})";
+            Log.Warn("updater: check failed: " + ex.Message);
+            return null;
+        }
+        finally
+        {
+            CheckFailed = LastError != null;   // every way out of the try sets LastError: null on success, the reason otherwise
+            if (!ct.IsCancellationRequested) TrackFailures(channelName, host, manual);
+            _settings.LastUpdateCheck = Now.UtcDateTime;
+            _settings.Save();
+        }
+    }
+
+    /// <summary>How many failed background passes in a row this session needs before the "could not check for updates" notice (with the streak over <see cref="FailingNoticeAfter"/>).</summary>
+    internal const int FailingNoticeMinPasses = 2;
+    /// <summary>Failed background passes of this session since the last successful check (<see cref="TrackFailures"/>).</summary>
+    private int _failedBackgroundPasses;
+
+    /// <summary>
+    /// Keeps <see cref="Settings.FeedFloorFailingSince"/>: set at the first failed check (manual or background), cleared by any successful
+    /// one. A failed background pass leaves <see cref="_failNotice"/> (a notification keyed <c>checkfailed:&lt;channel&gt;</c>, so once per
+    /// session) only when the streak is older than <see cref="FailingNoticeAfter"/> AND this session has seen at least
+    /// <see cref="FailingNoticeMinPasses"/> failed background passes since its last success: a laptop that wakes up offline after a week does
+    /// not raise the alarm at its first pass. A manual check never does, its result is in the footer. The text names only the host that
+    /// failed (<paramref name="host"/>) and the duration.
+    /// </summary>
+    private void TrackFailures(string channelName, string host, bool manual)
     {
         var now = Now.UtcDateTime;
-        SetStamp(channel, StampKind.UpToDate, now);
-        if (byGitHub) SetStamp(channel, StampKind.GitHubConfirm, now);
-        SetStampText(channel, StampKind.SoftSince, null);
+        if (!CheckFailed) { _settings.FeedFloorFailingSince = null; _failedBackgroundPasses = 0; return; }
+        if (!manual) _failedBackgroundPasses++;
+        if (ParseStamp(_settings.FeedFloorFailingSince, Current, now) is not { } since)
+        {
+            since = now;   // none, another version's, unreadable or from the future: the streak starts now
+            _settings.FeedFloorFailingSince = FormatStamp(Current, now);
+        }
+        if (manual || _failedBackgroundPasses < FailingNoticeMinPasses || now - since <= FailingNoticeAfter) return;
+        int days = (int)(now - since).TotalDays;
+        _failNotice = new UpdateNotice($"checkfailed:{channelName}", "Clink could not check for updates",
+            $"Clink has not been able to check for updates from {host} for {days} days. Details under Alerts → Updates.");
     }
 
     /// <summary>
-    /// A check that fell back to GitHub because the feed's v<c>Version</c> (equal to the running one) is over 14 days old could not ask
-    /// GitHub (LastError holds why). Soft: not a failed check, the status line warns "Could not confirm with GitHub; the signed feed
-    /// says vX (published D) is the latest". The first such check since the last real confirmation starts the streak (<c>SoftSince</c>);
-    /// once the streak is longer than <see cref="MaxUnconfirmedStreak"/> it is a failed check.
+    /// What <see cref="CheckFeedAsync"/> found: the offer (or null), the plain error of a failed check (or null), why for the log,
+    /// the host of the manifest that failed (or null), and the manifest the result rests on (for the log's <c>published</c>).
     /// </summary>
-    private void SoftenUnconfirmed(FeedManifest feed, string channel)
-    {
-        var now = Now.UtcDateTime;
-        string why = LastError!;
-        if (Stamp(channel, StampKind.SoftSince, now) is not { } since)
-        {
-            since = now;   // none (or another version's, an unreadable one, one from the future): the streak starts now
-            SetStamp(channel, StampKind.SoftSince, now);
-        }
-        string published = feed.Published.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-        string sinceDay = since.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-        if (now - since > MaxUnconfirmedStreak)
-        {
-            LastError = $"could not confirm that v{feed.Version} is the latest: the signed feed's manifest (published {published}) is over {UpdateFeed.MaxUpToDateAge.TotalDays:0} days old, "
-                + $"and GitHub could not be asked since {sinceDay} ({why})";
-            Log.Warn("updater: " + LastError);
-            return;
-        }
-        Log.Warn($"updater: GitHub could not confirm the stale feed manifest ({why}); unconfirmed since {sinceDay}, reporting the signed feed's answer");
-        LastError = null;
-        SoftNote = $"Could not confirm with GitHub; the signed feed says v{feed.Version} (published {published}) is the latest";
-    }
-
-    private enum FeedVerdict { Offer, UpToDate, FallBack }
-
-    private readonly record struct FeedOutcome(FeedVerdict Verdict, UpdateInfo? Info, string Why, FeedManifest? StaleEqual = null);
+    private readonly record struct FeedOutcome(UpdateInfo? Info, string? Error, string Why, string? FailedHost = null, FeedManifest? Used = null);
 
     /// <summary>
     /// The feed part of <see cref="CheckAsync"/>: fetches and verifies stable.json (stable channel) or stable.json and dev.json (dev
-    /// channel: a dev user must also get a newer release), decides (see <see cref="CheckAsync"/>) and raises the floors of the
-    /// manifests the decision uses. Throws only for a cancelled <paramref name="ct"/>.
+    /// channel: a dev user must also get a newer release) and decides. Only manifests that verified (and passed their floor) raise their
+    /// floor and count. On the dev channel a manifest that failed (unreachable, refused, or below its floor: all alike) does not hide what
+    /// the other one offers: a verified install-worthy offer is taken (with a warning naming the failed host), but "up to date" is never
+    /// said from half the picture: with nothing offered and any manifest failed, the check fails with that manifest's host-only message.
+    /// Throws only for a cancelled <paramref name="ct"/>.
     /// </summary>
     private async Task<FeedOutcome> CheckFeedAsync(FeedTrust trust, bool dev, bool manual, CancellationToken ct)
     {
-        var now = Now;
-        var fresh = new List<FeedManifest>();
-        var unused = new List<string>();   // why a channel's manifest is not used this time
+        var fetched = new List<FeedManifest>();
+        (string Channel, string Host, string Error, string Why)? failure = null;   // the first manifest that failed
         foreach (string channel in dev ? new[] { "stable", "dev" } : new[] { "stable" })
         {
             // stable.json under feedUrl, dev.json under the dev base (devFeedUrl, or feedUrl when that is empty); binaries must sit under the same base.
             string feedBase = trust.BaseFor(channel)!;
+            string host = HostOf(feedBase);
             string manifestUrl = feedBase + channel + ".json";
             try
             {
                 var m = await UpdateFeed.FetchVerifiedAsync(GetFeedAsync, manifestUrl, manifestUrl + ".sig", channel, trust.KeysFor(channel), ct, FeedTimeoutOverride, feedBase).ConfigureAwait(false);
-                if (UpdateFeed.StaleReason(m, Floor(channel), now) is { } why) unused.Add($"{channel}.json is stale ({why})");
-                else fresh.Add(m);
+                if (UpdateFeed.FloorReason(m, Floor(channel)) is { } below)
+                {
+                    // A replayed older manifest (or a rolled-back feed): never used, and not an "up to date" either.
+                    Log.Warn($"updater: {channel}.json from the signed feed was refused: {below}");
+                    failure ??= (channel, host, $"The update server ({host}) offered an older version than before, so it was not used", below);
+                    continue;
+                }
+                fetched.Add(m);
             }
-            catch (FeedUnreachableException ex) { unused.Add($"{channel}.json could not be reached ({ex.Message})"); }
+            catch (FeedUnreachableException ex)
+            {
+                Log.Warn($"updater: {channel}.json could not be reached: {ex.Message}");
+                failure ??= (channel, host, $"Couldn't reach the update server ({host})" + (ex.UserDetail != null ? ": " + ex.UserDetail : ""), ex.Message);
+            }
             catch (FeedRejectedException ex)
             {
                 // Fetched but not trustworthy: worth a warning (a broken publish, or someone serving a forged feed), never used.
                 Log.Warn($"updater: {channel}.json from the signed feed was refused: {ex.Message}");
-                unused.Add($"{channel}.json was refused ({ex.Message})");
+                failure ??= (channel, host, $"Couldn't verify the update server's answer ({host})", ex.Message);
             }
         }
-        string notUsed = string.Join("; ", unused);
-        if (fresh.Count == 0) return new(FeedVerdict.FallBack, null, notUsed);
-        var best = fresh.MaxBy(m => m.Version)!;
-        bool complete = unused.Count == 0;
-        if (ShouldInstall(best.Version, Current, dev, allowLeaveDev: manual))
+        foreach (var m in fetched) RaiseFloor(m.Channel, m.Version);   // only what verified (and passed its floor) raises a floor
+        var best = fetched.MaxBy(m => m.Version);
+        if (best != null && ShouldInstall(best.Version, Current, dev, allowLeaveDev: manual))
         {
-            // Offered: the manifests it was chosen from are used. With half the picture, only the offered one is.
-            foreach (var m in complete ? fresh : new List<FeedManifest> { best }) RaiseFloor(m.Channel, m.Version);
-            if (!complete) Log.Info($"updater: offering {best.Channel}.json's v{best.Version} although {notUsed}");
-            return new(FeedVerdict.Offer, UpdateFeed.ToUpdateInfo(best, OwnPackaging), "");
+            if (failure is { } f)
+                Log.Warn($"updater: offering v{best.Version} from {best.Channel}.json although {f.Channel}.json from {f.Host} failed ({f.Why})");
+            return new(UpdateFeed.ToUpdateInfo(best, OwnPackaging), null, "", null, best);
         }
-        if (!complete) return new(FeedVerdict.FallBack, null, $"{notUsed}; the verified v{best.Version} is not newer");
-        if (best.Version == Current)
-        {
-            // A signed manifest is not signed "as of now": an old one may be a frozen or replayed feed hiding a newer release. Only a recent one
-            // may end the check; an older one is cross-checked against the signed GitHub path (which offers anything newer, or confirms).
-            // Accepted limitation (dev channel): only best.Published is looked at, so a frozen stable.json whose version equals the running dev
-            // build's base can hide a newer stable release from a dev client until the next dev build is published or MaxAge (90 days) passes.
-            string chan = UpdateFeed.ChannelName(dev);
-            if (now - best.Published > UpdateFeed.MaxUpToDateAge)
-            {
-                // Soft state: GitHub is asked at most once per GitHubConfirmValidity; in between the signed feed's answer stands. Only on
-                // stamps of the running version (not from the future): GitHub said "nothing newer" under 7 days ago, and the running version
-                // was confirmed within MaxUnconfirmedStreak (implied by the first, unless settings.json was edited: defence in depth).
-                var nowUtc = now.UtcDateTime;
-                if (Stamp(chan, StampKind.GitHubConfirm, nowUtc) is { } confirmed && nowUtc - confirmed < GitHubConfirmValidity
-                    && Stamp(chan, StampKind.UpToDate, nowUtc) is { } upToDate && nowUtc - upToDate <= MaxUnconfirmedStreak)
-                {
-                    foreach (var m in fresh) RaiseFloor(m.Channel, m.Version);
-                    return new(FeedVerdict.UpToDate, null, $"the signed feed says v{best.Version} (published {best.Published:yyyy-MM-dd}); GitHub confirmed {confirmed:yyyy-MM-dd}");
-                }
-                return new(FeedVerdict.FallBack, null, $"the signed feed's v{best.Version} was published {best.Published:yyyy-MM-dd}, more than {UpdateFeed.MaxUpToDateAge.TotalDays:0} days ago, so it cannot alone say there is nothing newer", best);
-            }
-            foreach (var m in fresh) RaiseFloor(m.Channel, m.Version);
-            Confirmed(chan, byGitHub: false);   // a manifest younger than 14 days confirms the running version
-            return new(FeedVerdict.UpToDate, null, $"the signed feed says v{best.Version}");
-        }
-        // Not newer and not the running version: older (ShouldInstall takes every newer version a channel may have).
-        return new(FeedVerdict.FallBack, null, $"the signed feed's v{best.Version} is older than the running v{Current}");
+        if (failure is { } failed) return new(null, failed.Error, failed.Why, failed.Host);   // never "up to date" from half the picture
+        if (best!.Version == Current) return new(null, null, $"the signed feed says v{best.Version}", null, best);
+        // Older than the running exe (a dev build ahead of the releases, or a hand-installed newer build): nothing newer exists.
+        return new(null, null, $"the signed feed's newest is v{best.Version}, older than the running v{Current}", null, best);
     }
 
     /// <summary>
-    /// The signed GitHub path: <paramref name="info"/> (the release chosen as before) is offered only when its
-    /// <c>&lt;channel&gt;.json</c> and <c>.sig</c> assets verify with that channel's keys, the manifest is for the same tag, is not
-    /// below the channel's floor (a replayed old release) and agrees with GitHub on the exe's size. Only then is the floor raised. The
-    /// result downloads GitHub's Clink.exe but takes size and SHA-256 from the manifest. Null (with LastError set and the reason
-    /// logged) otherwise. Throws only for a cancelled <paramref name="ct"/>.
+    /// The floor of <paramref name="channel"/>: the higher of the highest version verified before (settings FeedFloorStable / FeedFloorDev)
+    /// and the version this exe was built with as the newest published one (<see cref="FloorSeed"/>), or null when there is neither.
     /// </summary>
-    private async Task<UpdateInfo?> VerifyGitHubReleaseAsync(UpdateInfo info, SignedAssets? assets, FeedTrust trust, CancellationToken ct)
+    private ReleaseVersion? Floor(string channel)
     {
-        string channel = assets?.Channel ?? UpdateFeed.ChannelName(info.Version.IsDevBuild);
-        string? why = null;
-        FeedManifest? m = null;
-        FeedAsset? asset = null;
-        if (assets?.ManifestUrl is not { } manifestUrl || assets.SigUrl is not { } sigUrl)
-            why = $"release {info.Tag} has no {channel}.json and {channel}.json.sig assets";
-        else if (!UpdateFeed.IsHttps(manifestUrl) || !UpdateFeed.IsHttps(sigUrl) || !UpdateFeed.IsHttps(info.ExeUrl))
-            why = $"release {info.Tag} has an asset URL that is not https";
-        else
-        {
-            // assetsBase null on purpose: this path downloads GitHub's own ExeUrl and takes only the size and SHA-256 from the manifest, so the
-            // manifest's URLs are never fetched and a base check would add nothing (and would strand old clients if the feed host ever moved).
-            try { m = await UpdateFeed.FetchVerifiedAsync(GetStreamingAsync, manifestUrl, sigUrl, channel, trust.KeysFor(channel), ct, FeedTimeoutOverride, assetsBase: null).ConfigureAwait(false); }
-            catch (FeedUnreachableException ex) { why = $"the signed manifest of {info.Tag} could not be downloaded ({ex.Message})"; }
-            catch (FeedRejectedException ex) { why = $"the signed manifest of {info.Tag} was refused ({ex.Message})"; }
-            if (m != null)
-            {
-                if (m.Tag != info.Tag) why = $"the signed manifest is for {m.Tag}, not for release {info.Tag}";
-                else if (UpdateFeed.FloorReason(m, Floor(channel)) is { } below) why = $"the signed manifest of {info.Tag} is stale ({below})";
-                else
-                {
-                    if (info.Flavour == Packaging.Framework && (m.ExeFramework == null || !DotNetRuntimes.MeetsMinimum(m.MinRuntime, DotNetRuntimes.InstalledDesktop())))
-                    {
-                        // The signed manifest has no framework exe for this release, or its minRuntime is not installed: the self-contained Clink.exe.
-                        if (assets?.FallbackExeUrl is { } fallback) { info = info with { ExeUrl = fallback, ExeSize = assets.FallbackExeSize, Flavour = Packaging.SelfContained }; }
-                        else why = $"the signed manifest of {info.Tag} cannot be used for the framework exe and the release has no {ExeAssetName} to fall back on";
-                    }
-                    if (why == null && !UpdateFeed.IsHttps(info.ExeUrl))   // the fallback's URL was not checked above
-                        why = $"release {info.Tag} has an asset URL that is not https";
-                    if (why == null)
-                    {
-                        asset = info.Flavour == Packaging.Framework ? m.ExeFramework! : m.Exe;
-                        string assetName = info.Flavour == Packaging.Framework ? FrameworkExeAssetName : ExeAssetName;
-                        if (info.ExeSize > 0 && info.ExeSize != asset.Size) why = $"GitHub's {assetName} of {info.Tag} is {info.ExeSize} bytes, the signed manifest says {asset.Size}";
-                    }
-                }
-            }
-        }
-        if (why != null || m == null || asset == null)
-        {
-            LastError = GitHubRefusedNote;
-            Log.Warn($"updater: not offering {info.Tag}: {why ?? "no signed manifest"}");
-            return null;
-        }
-        RaiseFloor(m.Channel, m.Version);   // used: offered
-        return info with { ExeSize = asset.Size, ShaUrl = "", Sha256 = asset.Sha256 };
+        var saved = SavedFloor(channel);
+        var seed = FloorSeed(channel);
+        return saved is { } a && seed is { } b ? (a > b ? a : b) : saved ?? seed;
     }
 
-    /// <summary>The highest version verified before on <paramref name="channel"/> (settings FeedFloorStable / FeedFloorDev), or null.</summary>
-    private ReleaseVersion? Floor(string channel) => ReleaseVersion.Parse(channel == "dev" ? _settings.FeedFloorDev : _settings.FeedFloorStable);
+    /// <summary>The floor settings.json holds for <paramref name="channel"/> (FeedFloorStable / FeedFloorDev), or null.</summary>
+    private ReleaseVersion? SavedFloor(string channel) => ReleaseVersion.Parse(channel == "dev" ? _settings.FeedFloorDev : _settings.FeedFloorStable);
 
-    /// <summary>Raises the floor of <paramref name="channel"/> to <paramref name="version"/> (saved with the check's settings save).</summary>
+    /// <summary>Raises the saved floor of <paramref name="channel"/> to <paramref name="version"/> (saved with the check's settings save). The seed is not written: it is read from the exe every time.</summary>
     private void RaiseFloor(string channel, ReleaseVersion version)
     {
-        if (Floor(channel) is { } f && f >= version) return;
+        if (SavedFloor(channel) is { } f && f >= version) return;
         if (channel == "dev") _settings.FeedFloorDev = version.ToString();
         else _settings.FeedFloorStable = version.ToString();
+    }
+
+    // ---- embedded floor seeds: AssemblyMetadata ClinkMinStable / ClinkMinDev (Clink.csproj; CI passes -p:ClinkMinStable=<X.Y.Z>
+    // -p:ClinkMinDev=<X.Y.Z-dev.N>, the newest published versions when the exe was built). A fresh install (no saved floor) then still
+    // refuses a replayed manifest older than what was out when it was built. A local build has none.
+
+    /// <summary>The AssemblyMetadata keys of the floor seeds.</summary>
+    internal const string MinStableKey = "ClinkMinStable", MinDevKey = "ClinkMinDev";
+
+    /// <summary>Stands in for the exe's embedded floor seeds in the unit tests (the runner sets "none" for every test, so a CI build's seeds never change a test); null otherwise.</summary>
+    internal static (string? Stable, string? Dev)? FloorSeedOverride { get; set; }
+
+    private static readonly Lazy<(string? Stable, string? Dev)> s_embeddedSeeds = new(() =>
+    {
+        string? stable = null, dev = null;
+        try
+        {
+            foreach (var a in typeof(Updater).Assembly.GetCustomAttributes<AssemblyMetadataAttribute>())
+            {
+                if (a.Key == MinStableKey) stable = a.Value;
+                else if (a.Key == MinDevKey) dev = a.Value;
+            }
+        }
+        catch (Exception) { }
+        return (stable, dev);
+    });
+
+    private static string? SeedText(string channel)
+    {
+        var seeds = FloorSeedOverride ?? s_embeddedSeeds.Value;
+        return channel == "dev" ? seeds.Dev : seeds.Stable;
+    }
+
+    /// <summary>The embedded floor seed of <paramref name="channel"/>, or null (none, or not a canonical version of that channel: ignored, see <see cref="SeedProblem"/>).</summary>
+    internal static ReleaseVersion? FloorSeed(string channel) => ParseSeed(SeedText(channel), channel, out _);
+
+    /// <summary>Why the embedded seed of <paramref name="channel"/> is ignored, or null (none, or a good one): for the startup log.</summary>
+    internal static string? SeedProblem(string channel)
+    {
+        ParseSeed(SeedText(channel), channel, out string? problem);
+        return problem;
+    }
+
+    /// <summary>
+    /// A floor seed: empty = none; otherwise exactly X.Y.Z for stable and X.Y.Z-dev.N for dev (<see cref="ReleaseVersion.ParseCanonical"/>,
+    /// no "v"). Anything else is ignored with <paramref name="problem"/> set (the client then has the saved floor only).
+    /// </summary>
+    internal static ReleaseVersion? ParseSeed(string? text, string channel, out string? problem)
+    {
+        problem = null;
+        if (string.IsNullOrWhiteSpace(text)) return null;
+        var v = ReleaseVersion.ParseCanonical(text);
+        bool fits = v is { } x && (channel == "dev" ? x.IsDevBuild : !x.IsPrerelease);
+        if (!fits) { problem = $"the built-in {channel} floor '{(text.Length > 40 ? text[..40] + "…" : text)}' is not {(channel == "dev" ? "X.Y.Z-dev.N" : "X.Y.Z")}; ignored"; return null; }
+        return v;
     }
 
     private void AddHeaders(HttpRequestMessage req)
     {
         req.Headers.UserAgent.Clear();
         req.Headers.UserAgent.Add(new ProductInfoHeaderValue("Clink", CurrentVersion.ToString(3)));
-    }
-
-    /// <summary>The signed manifest assets of a GitHub release (signed GitHub path): <c>&lt;Channel&gt;.json</c> and its <c>.sig</c>; null URLs when missing.</summary>
-    internal sealed record SignedAssets(string Channel, string? ManifestUrl, string? SigUrl, string? FallbackExeUrl = null, long FallbackExeSize = 0);
-
-    /// <summary>Answer of <c>/releases/latest</c> as an <see cref="UpdateInfo"/>, or null with <paramref name="problem"/> set (pre-release/draft: problem stays null).</summary>
-    internal static UpdateInfo? ParseRelease(string json, bool devChannel, out string? problem) => ParseRelease(json, devChannel, false, Packaging.SelfContained, out problem, out _);
-
-    /// <summary><see cref="ParseRelease(string, bool, out string?)"/> for a copy of <paramref name="packaging"/>: a Framework copy takes <c>Clink-framework.exe</c> (+ its .sha256), falling back to <c>Clink.exe</c> when the release lacks it.</summary>
-    internal static UpdateInfo? ParseRelease(string json, bool devChannel, Packaging packaging, out string? problem) => ParseRelease(json, devChannel, false, packaging, out problem, out _);
-
-    private static UpdateInfo? ParseRelease(string json, bool devChannel, bool signed, Packaging packaging, out string? problem, out SignedAssets? assets)
-    {
-        using var doc = JsonDocument.Parse(json);
-        return ParseRelease(doc.RootElement, devChannel, signed, packaging, out problem, out assets);
-    }
-
-    /// <summary>
-    /// The newest usable entry of a <c>/releases</c> list. GitHub lists by creation date, not by version, so the maximum is
-    /// computed. Drafts, beta pre-releases, dev-looking tags not flagged as pre-release and entries without both assets are skipped.
-    /// Null with <paramref name="problem"/> set when nothing is usable.
-    /// </summary>
-    internal static UpdateInfo? PickRelease(string listJson, bool devChannel, out string? problem) => PickRelease(listJson, devChannel, false, Packaging.SelfContained, out problem, out _);
-
-    /// <summary><see cref="PickRelease(string, bool, out string?)"/> for a copy of <paramref name="packaging"/> (see <see cref="ParseRelease(string, bool, Packaging, out string?)"/>).</summary>
-    internal static UpdateInfo? PickRelease(string listJson, bool devChannel, Packaging packaging, out string? problem) => PickRelease(listJson, devChannel, false, packaging, out problem, out _);
-
-    private static UpdateInfo? PickRelease(string listJson, bool devChannel, bool signed, Packaging packaging, out string? problem, out SignedAssets? bestAssets)
-    {
-        problem = null;
-        bestAssets = null;
-        using var doc = JsonDocument.Parse(listJson);
-        if (doc.RootElement.ValueKind != JsonValueKind.Array) { problem = "unexpected answer from GitHub"; return null; }
-        UpdateInfo? best = null;
-        string? lastProblem = null;   // e.g. a missing sha256 asset: says why nothing was usable
-        foreach (var entry in doc.RootElement.EnumerateArray())
-        {
-            if (entry.ValueKind != JsonValueKind.Object) continue;
-            var info = ParseRelease(entry, devChannel, signed, packaging, out string? entryProblem, out var assets);
-            if (entryProblem != null) lastProblem = entryProblem;
-            if (info != null && (best == null || info.Version > best.Version)) { best = info; bestAssets = assets; }
-        }
-        if (best == null) problem = "no usable release or dev build found" + (lastProblem != null ? $" ({lastProblem})" : "");
-        return best;
-    }
-
-    /// <summary>
-    /// One release object as an <see cref="UpdateInfo"/>, or null (with <paramref name="problem"/> when that is worth telling the user).
-    /// Stable channel: pre-releases are refused. Dev channel: a plain X.Y.Z release or a pre-release tagged X.Y.Z-dev.N is accepted.
-    /// </summary>
-    internal static UpdateInfo? ParseRelease(JsonElement root, bool devChannel, out string? problem) => ParseRelease(root, devChannel, false, Packaging.SelfContained, out problem, out _);
-
-    /// <summary><see cref="ParseRelease(JsonElement, bool, out string?)"/> for a copy of <paramref name="packaging"/> (see <see cref="ParseRelease(string, bool, Packaging, out string?)"/>).</summary>
-    internal static UpdateInfo? ParseRelease(JsonElement root, bool devChannel, Packaging packaging, out string? problem) => ParseRelease(root, devChannel, false, packaging, out problem, out _);
-
-    /// <summary>
-    /// <see cref="ParseRelease(JsonElement, bool, out string?)"/>; with <paramref name="signed"/> (the feed is on) <c>Clink.exe.sha256</c>
-    /// is neither required nor used, and the release's <c>stable.json</c> / <c>dev.json</c> (by its pre-release flag) and <c>.sig</c>
-    /// asset URLs come back in <paramref name="assets"/> for <see cref="VerifyGitHubReleaseAsync"/>.
-    /// </summary>
-    private static UpdateInfo? ParseRelease(JsonElement root, bool devChannel, bool signed, Packaging packaging, out string? problem, out SignedAssets? assets)
-    {
-        problem = null;
-        assets = null;
-        if (root.ValueKind != JsonValueKind.Object) { problem = "unexpected answer from GitHub"; return null; }
-        if (Flag(root, "draft")) return null;
-        bool prerelease = Flag(root, "prerelease");
-        if (prerelease && !devChannel) return null;
-        string tag = Str(root, "tag_name");
-        // Only the shapes the workflows produce: vX.Y.Z (a release) and vX.Y.Z-dev.N (a dev build). Not 9.9.9, V9.9.9, v9.9, v9.9.9-beta, v1.2.3+x.
-        var parsed = ReleaseVersion.ParseTag(tag);
-        if (parsed == null) { problem = $"release tag '{Truncate(tag.ReplaceLineEndings(" "))}' is not vX.Y.Z or vX.Y.Z-dev.N"; return null; }
-        var version = parsed.Value;
-        // A dev build must be flagged pre-release (so /releases/latest and the stable channel never see it); a release must not be, on any channel.
-        if (prerelease != version.IsDevBuild) return null;
-        string channel = UpdateFeed.ChannelName(prerelease);
-        string manifestName = channel + ".json", sigName = manifestName + ".sig";
-        string? exeUrl = null, shaUrl = null, manifestUrl = null, sigUrl = null, fxUrl = null, fxShaUrl = null; long exeSize = 0, fxSize = 0;
-        if (root.TryGetProperty("assets", out var list) && list.ValueKind == JsonValueKind.Array)
-        {
-            foreach (var a in list.EnumerateArray())
-            {
-                string name = Str(a, "name");
-                if (name.Equals(ExeAssetName, StringComparison.Ordinal))
-                {
-                    exeUrl = Str(a, "browser_download_url");
-                    exeSize = a.TryGetProperty("size", out var sz) && sz.ValueKind == JsonValueKind.Number ? sz.GetInt64() : 0;
-                }
-                else if (name.Equals(FrameworkExeAssetName, StringComparison.Ordinal))
-                {
-                    fxUrl = Str(a, "browser_download_url");
-                    fxSize = a.TryGetProperty("size", out var fsz) && fsz.ValueKind == JsonValueKind.Number ? fsz.GetInt64() : 0;
-                }
-                else if (name.Equals(FrameworkShaAssetName, StringComparison.Ordinal)) fxShaUrl = Str(a, "browser_download_url");
-                else if (name.Equals(ShaAssetName, StringComparison.Ordinal)) shaUrl = Str(a, "browser_download_url");
-                else if (name.Equals(manifestName, StringComparison.Ordinal)) manifestUrl = Str(a, "browser_download_url");
-                else if (name.Equals(sigName, StringComparison.Ordinal)) sigUrl = Str(a, "browser_download_url");
-            }
-        }
-        // A framework copy prefers Clink-framework.exe (with its .sha256 on the unsigned path) and falls back to the self-contained Clink.exe.
-        bool useFx = packaging == Packaging.Framework && !string.IsNullOrEmpty(fxUrl) && (signed || !string.IsNullOrEmpty(fxShaUrl));
-        if (string.IsNullOrEmpty(exeUrl) && !useFx) { problem = $"release {tag} has no {ExeAssetName} asset"; return null; }
-        if (signed)
-        {
-            // The hash comes from the signed manifest (VerifyGitHubReleaseAsync); Clink.exe.sha256 is not trusted.
-            assets = new SignedAssets(channel, string.IsNullOrEmpty(manifestUrl) ? null : manifestUrl, string.IsNullOrEmpty(sigUrl) ? null : sigUrl,
-                useFx && !string.IsNullOrEmpty(exeUrl) ? exeUrl : null, exeSize);
-            return useFx
-                ? new UpdateInfo(version, tag, fxUrl!, fxSize, "", Str(root, "html_url"), Str(root, "body"), null, Packaging.Framework)
-                : new UpdateInfo(version, tag, exeUrl!, exeSize, "", Str(root, "html_url"), Str(root, "body"));
-        }
-        // Unsigned path: the exe and its hash file are fetched over https only (the hash is the only check, so it must not travel in the clear either).
-        if (useFx)
-        {
-            if (!UpdateFeed.IsHttps(fxUrl!) || !UpdateFeed.IsHttps(fxShaUrl!)) { problem = $"release {tag} has an asset URL that is not https, refusing it"; return null; }
-            return new UpdateInfo(version, tag, fxUrl!, fxSize, fxShaUrl!, Str(root, "html_url"), Str(root, "body"), null, Packaging.Framework);
-        }
-        // Fail closed: without the published hash nothing could tell a corrupted download from a good one.
-        if (string.IsNullOrEmpty(shaUrl)) { problem = $"release {tag} has no {ShaAssetName} asset, refusing it"; return null; }
-        if (!UpdateFeed.IsHttps(exeUrl!) || !UpdateFeed.IsHttps(shaUrl)) { problem = $"release {tag} has an asset URL that is not https, refusing it"; return null; }
-        return new UpdateInfo(version, tag, exeUrl!, exeSize, shaUrl, Str(root, "html_url"), Str(root, "body"));
-
-        static bool Flag(JsonElement e, string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.True;
-        static string Str(JsonElement e, string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : "";
     }
 
     // ------------------------------------------------------------------ download
@@ -977,43 +688,41 @@ internal sealed class Updater : IDisposable
     public async Task<string> DownloadAsync(UpdateInfo info, IProgress<double>? progress, CancellationToken ct)
     {
         if (AppController.IsDev) throw new InvalidOperationException(DevModeNote);
+        if (!UpdatesEnabled) throw new InvalidOperationException(NoUpdatesNote);   // no signed feed, no download: not even a request is made
         Directory.CreateDirectory(UpdatesDir);
         string final = FileFor(info.Version);
         string partial = final + ".partial";
         IsDownloading = true;
         try
         {
-            // The hash first: if it cannot be fetched there is no point transferring the exe (tens of MB, more for the self-contained exe). A signed manifest (feed on) carries it,
-            // and then no Clink.exe.sha256 is ever requested.
-            bool signedHash = info.Sha256 != null;
-            string expected = info.Sha256 ?? await FetchShaAsync(info.ShaUrl, ct).ConfigureAwait(false);
+            // The hash and size come from the signed manifest (UpdateInfo): nothing unsigned is ever downloaded, and no hash file is requested.
+            if (string.IsNullOrEmpty(info.Sha256)) throw Shown(new InvalidOperationException("the offer carries no signed SHA-256"), "the offer carries no signed SHA-256");
+            string expected = info.Sha256;
             long done = 0;
             using (var req = new HttpRequestMessage(HttpMethod.Get, info.ExeUrl))
             {
                 AddHeaders(req);
-                // A feed binary comes from the feed's host, which never redirects (s_feedHttp); GitHub's downloads redirect by design.
+                // A feed binary comes from the feed's host, which never redirects (s_feedHttp).
                 // The answer (connect + headers) within DownloadAnswerTimeout: a host that accepts the connection and never answers must not
                 // hold the updater's gate, and with it every later check, for the rest of the session. The body has its per-read deadline below.
                 HttpResponseMessage answer;
                 using (var answerLimit = CancellationTokenSource.CreateLinkedTokenSource(ct))
                 {
                     answerLimit.CancelAfter(DownloadAnswerTimeout);
-                    try { answer = await SendAsync(req, answerLimit.Token, HttpCompletionOption.ResponseHeadersRead, feed: info.FromFeed).ConfigureAwait(false); }
+                    try { answer = await SendAsync(req, answerLimit.Token, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false); }
                     catch (OperationCanceledException) when (!ct.IsCancellationRequested)
                     {
-                        throw new IOException($"the download server did not answer within {DownloadAnswerTimeout.TotalSeconds.ToString("0.##", CultureInfo.InvariantCulture)} s");
+                        string text = $"the download server did not answer within {DownloadAnswerTimeout.TotalSeconds.ToString("0.##", CultureInfo.InvariantCulture)} s";
+                        throw Shown(new IOException(text), text);
                     }
                     answerLimit.CancelAfter(Timeout.InfiniteTimeSpan);   // answered: the timer must not fire into the body's reads
                 }
                 using var resp = answer;
-                resp.EnsureSuccessStatusCode();
+                // An explicit status check: EnsureSuccessStatusCode's message carries the server's reason phrase, and this text reaches the user.
+                if (!resp.IsSuccessStatusCode) throw Shown(new HttpRequestException($"HTTP {(int)resp.StatusCode}", null, resp.StatusCode), $"HTTP {(int)resp.StatusCode}");
                 // With a signed size, a body that says or turns out to be longer is cut off instead of being transferred in full.
-                if (signedHash && resp.Content.Headers.ContentLength is long declared && declared != info.ExeSize)
-                    throw new InvalidDataException($"size mismatch: the server announces {declared} bytes, the signed manifest says {info.ExeSize}");
-                // Unsigned (feed off): the release's size from GitHub's asset list when known, else a hard ceiling; never more than that is transferred.
-                long cap = info.ExeSize > 0 ? info.ExeSize : MaxExeBytes;
-                if (!signedHash && resp.Content.Headers.ContentLength is long announced && announced > cap)
-                    throw new InvalidDataException($"size mismatch: the server announces {announced} bytes, at most {cap} are accepted");
+                if (resp.Content.Headers.ContentLength is long declared && declared != info.ExeSize)
+                    throw Shown(new InvalidDataException($"size mismatch: the server announces {declared} bytes, the signed manifest says {info.ExeSize}"), SizeMismatch);
                 long total = resp.Content.Headers.ContentLength ?? info.ExeSize;
                 var src = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
                 // Disposed with ConfigureAwait(false) too: no continuation of this method needs the caller's (UI) context.
@@ -1025,7 +734,22 @@ internal sealed class Updater : IDisposable
                         var buf = new byte[1 << 16];
                         // HttpClient.Timeout only covers the headers once the body is streamed; a transfer that goes quiet must not hold
                         // the updater (and its gate) for the rest of the session, so every read gets its own inactivity deadline.
-                        using var idle = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                        // Inactivity alone is not enough (one byte every 59 s never goes quiet), so the body also has a total deadline
+                        // (DownloadDeadline) and a minimum average rate over a sliding window; both end in an IOException like a stall,
+                        // which the callers report as "downloading vN failed" and count against the attempt cap.
+                        TimeSpan deadlineLimit = DownloadDeadline(Math.Max(info.ExeSize, resp.Content.Headers.ContentLength ?? 0));   // clamped to MaxExeBytes inside
+                        using var deadline = new CancellationTokenSource(deadlineLimit);
+                        using var idle = CancellationTokenSource.CreateLinkedTokenSource(ct, deadline.Token);
+                        var clock = Stopwatch.StartNew();
+                        var window = DownloadRateWindowOverride ?? RateWindow;
+                        long minRate = DownloadMinRateOverride ?? MinDownloadBytesPerSecond;
+                        // The rate is averaged from the anchor: the newest sample at or before the window's start. Samples are taken at most
+                        // once per RateSampleSpacing, so the queue holds about window / spacing + 1 entries (61 for the real 60 s window)
+                        // whatever the read size: a server that sends one byte per read must not grow it without bound.
+                        var samples = new Queue<(TimeSpan At, long Done)>();
+                        (TimeSpan At, long Done) anchor = (TimeSpan.Zero, 0);
+                        TimeSpan lastSample = TimeSpan.Zero;
+                        RateSamplesPeak = 0;
                         try
                         {
                             int n;
@@ -1035,32 +759,50 @@ internal sealed class Updater : IDisposable
                                 idle.CancelAfter(DownloadReadTimeout);
                                 await dst.WriteAsync(buf.AsMemory(0, n), idle.Token).ConfigureAwait(false);
                                 done += n;
-                                if (signedHash && done > info.ExeSize) throw new InvalidDataException($"size mismatch: more than the {info.ExeSize} bytes the signed manifest says");
-                                if (!signedHash && done > cap) throw new InvalidDataException($"size mismatch: more than the {cap} bytes accepted");
+                                var at = clock.Elapsed;
+                                if (at - lastSample >= RateSampleSpacing) { samples.Enqueue((at, done)); lastSample = at; }
+                                while (samples.Count > 0 && samples.Peek().At <= at - window) anchor = samples.Dequeue();
+                                if (samples.Count > RateSamplesPeak) RateSamplesPeak = samples.Count;
+                                if (at - anchor.At >= window)
+                                {
+                                    double rate = (done - anchor.Done) / (at - anchor.At).TotalSeconds;
+                                    if (rate < minRate)
+                                        throw Shown(new IOException($"download too slow ({rate / 1024:0.#} KB/s over the last {(at - anchor.At).TotalSeconds.ToString("0.##", CultureInfo.InvariantCulture)} s, at least {minRate / 1024.0:0.#} KB/s needed; {done / 1024} KB so far)"),
+                                            $"download too slow (under {(minRate / 1024.0).ToString("0.#", CultureInfo.InvariantCulture)} KB/s)");
+                                }
+                                if (done > info.ExeSize) throw Shown(new InvalidDataException($"size mismatch: more than the {info.ExeSize} bytes the signed manifest says"), SizeMismatch);
                                 if (total > 0) progress?.Report(Math.Min(1.0, done / (double)total));
                             }
                         }
+                        catch (OperationCanceledException) when (!ct.IsCancellationRequested && deadline.IsCancellationRequested)
+                        {
+                            string over = deadlineLimit.TotalSeconds.ToString("0.##", CultureInfo.InvariantCulture);
+                            throw Shown(new IOException($"download took too long (over {over} s in total, {done / 1024} KB received)"), $"download took too long (over {over} s)");
+                        }
                         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
                         {
-                            throw new IOException($"download stalled (no data for {DownloadReadTimeout.TotalSeconds.ToString("0.##", CultureInfo.InvariantCulture)} s after {done / 1024} KB)");
+                            string quiet = DownloadReadTimeout.TotalSeconds.ToString("0.##", CultureInfo.InvariantCulture);
+                            throw Shown(new IOException($"download stalled (no data for {quiet} s after {done / 1024} KB)"), $"download stalled (no data for {quiet} s)");
                         }
                     }
                 }
             }
 
             long length = new FileInfo(partial).Length;
-            if (info.ExeSize > 0 && length != info.ExeSize) throw new InvalidDataException($"size mismatch: got {length} bytes, release says {info.ExeSize}");
-            if (!LooksLikeExe(partial)) throw new InvalidDataException("downloaded file is not a Windows executable");
+            if (info.ExeSize > 0 && length != info.ExeSize) throw Shown(new InvalidDataException($"size mismatch: got {length} bytes, the signed manifest says {info.ExeSize}"), SizeMismatch);
+            if (!LooksLikeExe(partial)) throw Shown(new InvalidDataException("downloaded file is not a Windows executable"), "the downloaded file is not a Windows executable");
             string actual = Sha256Hex(partial);
-            if (!string.Equals(expected, actual, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("SHA-256 mismatch");
+            if (!string.Equals(expected, actual, StringComparison.OrdinalIgnoreCase)) throw Shown(new InvalidDataException("SHA-256 mismatch"), "SHA-256 mismatch");
             string? wrongVersion = CheckEmbeddedVersion(partial, info.Version);
-            if (wrongVersion != null) throw new InvalidDataException($"release {info.Tag} is unusable: {wrongVersion}");
+            if (wrongVersion != null) throw Shown(new InvalidDataException($"release {info.Tag} is unusable: {wrongVersion}"), $"the downloaded exe does not report v{info.Version}");
             progress?.Report(1.0);
 
             File.Move(partial, final, overwrite: true);
             RecVersion = info.Version.ToString();
             RecSha256 = actual;
-            RecSigned = signedHash ? true : null;   // see VerifyDownload(): with the feed on, only a signed download is installed
+            // See RecordProblem(): only a download whose recorded hash is this signed one is ever installed or reused. A new key that
+            // v0.4.1 and older do not know: a download of theirs rewrites PendingUpdateSha256 but leaves this as it was, and they no longer match.
+            RecSignedSha256 = actual;
             RecFrom = Current.ToString();   // see LeaveDevAllowedAtStart()
             _settings.Save();
             DeleteMarkers(final);
@@ -1082,17 +824,33 @@ internal sealed class Updater : IDisposable
         finally { IsDownloading = false; }
     }
 
-    private async Task<string> FetchShaAsync(string url, CancellationToken ct)
+    // ---- what the user is told about a failed download: fixed texts only (like UpdateFeed.FetchCappedAsync's UserDetail), never an
+    // exception's own message, which may carry what a server sent (a header line, a reason phrase). The log has the full message.
+
+    private const string UserTextKey = "Clink.Updater.UserText";
+    private const string SizeMismatch = "size mismatch";
+
+    /// <summary><paramref name="ex"/>, carrying <paramref name="userText"/> (built here from constants and numbers, never from a server) for <see cref="DownloadErrorText"/>.</summary>
+    private static T Shown<T>(T ex, string userText) where T : Exception
     {
-        using var req = new HttpRequestMessage(HttpMethod.Get, url);
-        AddHeaders(req);
-        using var total = TotalTimeout(ct);
-        using var resp = await SendAsync(req, total.Token, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
-        resp.EnsureSuccessStatusCode();
-        string text = await ReadCappedTextAsync(resp, MaxShaFileBytes, "the sha256 file", total.Token).ConfigureAwait(false);
-        var m = s_hex64.Match(text);
-        if (!m.Success) throw new InvalidDataException("sha256 file contains no SHA-256 hash");
-        return m.Value;
+        ex.Data[UserTextKey] = userText;
+        return ex;
+    }
+
+    /// <summary>
+    /// The short text the user is shown for a failed exe download from <paramref name="url"/>: the fixed text <see cref="DownloadAsync"/>
+    /// attached ("HTTP 503", "download stalled (no data for 60 s)", "SHA-256 mismatch", ...), else one chosen by the kind of failure
+    /// ("network error (&lt;host&gt;)"). Never <see cref="Exception.Message"/>.
+    /// </summary>
+    internal static string DownloadErrorText(Exception ex, string url)
+    {
+        if (ex.Data[UserTextKey] is string text) return text;
+        if (ex is OperationCanceledException) return $"no answer within {FeedClientTimeout.TotalSeconds:0} s";
+        if (ex is HttpRequestException { StatusCode: { } code }) return $"HTTP {(int)code}";
+        for (Exception? e = ex; e != null; e = e.InnerException)
+            if (e is HttpRequestException or HttpIOException or System.Net.Sockets.SocketException) return $"network error ({HostOf(url)})";
+        if (ex is IOException or UnauthorizedAccessException) return "the download could not be saved in the updates folder";
+        return "unexpected error (details in the log)";
     }
 
     private static string Sha256Hex(string path)
@@ -1142,31 +900,26 @@ internal sealed class Updater : IDisposable
     private string? VerifyDownload(string file, ReleaseVersion version, Packaging folder)
     {
         bool fx = folder == Packaging.Framework;
-        string? recVersion = fx ? _settings.PendingUpdateFxVersion : _settings.PendingUpdateVersion;
         string? recSha = fx ? _settings.PendingUpdateFxSha256 : _settings.PendingUpdateSha256;
-        bool? recSigned = fx ? _settings.PendingUpdateFxSigned : _settings.PendingUpdateSigned;
         if (!LooksLikeExe(file)) return "it is not a Windows executable";
-        if (!string.Equals(recVersion, version.ToString(), StringComparison.Ordinal) || string.IsNullOrEmpty(recSha))
-            return "there is no record of a verified download of this version";
-        if (Trust.On && recSigned != true)
-            return "it was not verified against a signed manifest, and this build installs signed updates only";
+        if (RecordProblem(version, folder) is { } record) return record;   // the version, and signed hash == recorded hash
         string actual;
         try { actual = Sha256Hex(file); }
         catch (Exception ex) { return "it cannot be read: " + ex.Message; }
+        // ... == the file's own hash
         if (!string.Equals(actual, recSha, StringComparison.OrdinalIgnoreCase)) return "its SHA-256 no longer matches the verified download";
         return CheckEmbeddedVersion(file, version);
     }
 
     /// <summary>
-    /// True when the download recorded in settings is of <paramref name="info"/>'s version and its recorded SHA-256 is the one
-    /// <paramref name="info"/> expects (the signed manifest's), and it was made from a signed manifest. Only then may an existing
-    /// download be reused for a signed offer.
+    /// True when the download recorded in settings is of <paramref name="info"/>'s version, its recorded SHA-256 is the one
+    /// <paramref name="info"/> expects (the signed manifest's), and the signed hash written by that download is the same one. Only then
+    /// may an existing download be reused for a signed offer (the file's own hash is checked by <see cref="VerifyDownload(string, ReleaseVersion)"/>).
     /// </summary>
     private bool RecordedDownloadIs(UpdateInfo info) =>
-        info.Sha256 != null
-        && RecSigned == true
-        && string.Equals(RecVersion, info.Version.ToString(), StringComparison.Ordinal)
-        && string.Equals(RecSha256, info.Sha256, StringComparison.OrdinalIgnoreCase);
+        RecordProblem(info.Version, OwnPackaging) == null
+        && string.Equals(RecSha256, info.Sha256, StringComparison.OrdinalIgnoreCase)
+        && string.Equals(RecSignedSha256, info.Sha256, StringComparison.OrdinalIgnoreCase);
 
     private static void TryDelete(string path)
     {
@@ -1174,37 +927,34 @@ internal sealed class Updater : IDisposable
     }
 
     /// <summary>
-    /// True when <paramref name="url"/> is a release page of <paramref name="repo"/> ("owner/repo") that is safe to hand to the shell:
-    /// https, the exact host github.com on the default port, no user info, and a path inside <c>/owner/repo/releases/</c> (the path
-    /// compared after .NET's normalisation of dot segments, case-insensitively like GitHub) that is exactly <c>releases/latest</c> or
-    /// <c>releases/tag/&lt;tag&gt;</c> with a tag that passes <see cref="ReleaseVersion.ParseTag"/>; no query, no fragment. Anything else is not opened.
+    /// The page to open for <paramref name="info"/>: the signed manifest's <c>notesUrl</c> when it is https and strictly under the base of
+    /// the feed the manifest came from (<see cref="UpdateFeed.NotesPage"/>, the normalised <see cref="Uri.AbsoluteUri"/>), else the
+    /// constant <see cref="UpdateFeed.FallbackNotesPage"/>. Nothing else a manifest says is ever handed to the shell. The notes live at
+    /// <c>&lt;stable base&gt;releases/&lt;tag&gt;/notes.txt</c> and <c>&lt;dev base&gt;dev/&lt;tag&gt;/notes.txt</c>, next to the binaries.
     /// </summary>
-    internal static bool IsOwnReleasePage(string? url, string? repo) => OwnReleasePage(url, repo) != null;
-
-    /// <summary>The page to open for <paramref name="info"/>: its HtmlUrl (GitHub's html_url, or the signed manifest's notesUrl on the feed path) when <see cref="OwnReleasePage"/> accepts it, else the repository's <c>releases/latest</c>.</summary>
-    public string ReleasePageFor(UpdateInfo? info) =>
-        (info != null ? OwnReleasePage(info.HtmlUrl, Repo) : null) ?? $"https://github.com/{Repo}/releases/latest";
-
-    /// <summary><see cref="IsOwnReleasePage"/>, returning the normalised address (<see cref="Uri.AbsoluteUri"/>, the one to open) or null.</summary>
-    internal static string? OwnReleasePage(string? url, string? repo)
+    public string ReleasePageFor(UpdateInfo? info)
     {
-        if (string.IsNullOrWhiteSpace(url) || string.IsNullOrWhiteSpace(repo) || !s_repo.IsMatch(repo.Trim('/'))) return null;
-        if (url.Length > 2048 || url.Any(c => char.IsControl(c) || char.IsWhiteSpace(c) || c == '\\' || c == '?' || c == '#')) return null;
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var u)) return null;
-        if (u.Scheme != Uri.UriSchemeHttps || !string.Equals(u.Host, "github.com", StringComparison.Ordinal) || !u.IsDefaultPort || u.UserInfo.Length > 0) return null;
-        if (u.Query.Length > 0 || u.Fragment.Length > 0) return null;
-        string prefix = $"/{repo.Trim('/')}/releases/";
-        string path = u.AbsolutePath;
-        if (!path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return null;
-        // AbsolutePath is .NET's normalised form: escaped unreserved characters (%32 -> "2") are already decoded and dot segments resolved;
-        // whatever is still escaped (%2F, for one) never passes the exact shapes below. It is this same normalised address
-        // (AbsoluteUri) that is returned and opened, so what was checked is what the shell gets.
-        string rest = path[prefix.Length..];
-        bool ok = rest == "latest" || (rest.StartsWith("tag/", StringComparison.Ordinal) && ReleaseVersion.ParseTag(rest[4..]) != null);
-        return ok ? u.AbsoluteUri : null;
+        if (info == null) return UpdateFeed.FallbackNotesPage;
+        var trust = Trust;
+        string? feedBase = trust.On ? trust.BaseFor(UpdateFeed.ChannelName(info.Version.IsDevBuild)) : null;   // dev.json only ever carries dev builds, stable.json releases
+        return UpdateFeed.NotesPage(info.NotesUrl, feedBase) ?? UpdateFeed.FallbackNotesPage;
     }
 
-    private static string Truncate(string s) => s.Length > 200 ? s[..200] + "…" : s;
+    /// <summary>Replaces the browser in the unit tests (told the one address that would be opened); null otherwise.</summary>
+    internal static Action<string>? BrowserOverride { get; set; }
+
+    /// <summary>Opens <see cref="ReleasePageFor"/> in the browser. Null when it was opened, otherwise a message for the footer.</summary>
+    public string? OpenReleasePage(UpdateInfo? info)
+    {
+        string page = ReleasePageFor(info);
+        try
+        {
+            if (BrowserOverride != null) BrowserOverride(page);
+            else Process.Start(new ProcessStartInfo(page) { UseShellExecute = true })?.Dispose();
+            return null;
+        }
+        catch (Exception ex) { return "Could not open the browser: " + Describe(ex); }
+    }
 
     private static string Describe(Exception? ex)
     {
@@ -1255,7 +1005,7 @@ internal sealed class Updater : IDisposable
 
     /// <summary>
     /// Newest downloaded <c>Clink-&lt;ver&gt;.exe</c> that is newer than the running exe and still matches what was verified at
-    /// download time. False (and nothing is run) when this build has no update repository, the file was already installed from,
+    /// download time. False (and nothing is run) when this build has no signed update feed, the file was already installed from,
     /// failed to install earlier, or cannot be installed by this process; <see cref="InstallProblem"/> then carries the message
     /// for the user where there is something they can do about it.
     /// </summary>
@@ -1264,8 +1014,8 @@ internal sealed class Updater : IDisposable
         path = ""; version = Current; InstallProblem = null;
         try
         {
-            // A build without UpdateRepo never downloaded anything; the updates folder is shared by every Clink exe on the machine.
-            if (Repo == null || !Directory.Exists(UpdatesDir)) return false;
+            // A build without a signed feed never downloaded anything; the updates folder is shared by every Clink exe on the machine.
+            if (!UpdatesEnabled || !Directory.Exists(UpdatesDir)) return false;
             string? best = null; ReleaseVersion? bestNullable = null;
             foreach (string file in Directory.EnumerateFiles(UpdatesDir, "Clink-*.exe"))
             {
@@ -1281,7 +1031,17 @@ internal sealed class Updater : IDisposable
                 Log.Warn($"updater: v{bestVer} was already installed from {best} but this exe is v{VersionDisplay}; not installing it again");
                 return false;
             }
-            string? reason = FailedReason(best);
+            // The cheap record checks (version, signed hash) before the failed marker: a download that is not ours to install at all (an
+            // older build's unsigned one, which may have left a .failed marker) is thrown away quietly, not reported at every start.
+            string? reason = RecordProblem(bestVer, OwnPackaging);
+            if (reason != null)
+            {
+                Log.Warn($"updater: discarding {best}: {reason}");
+                TryDelete(best);
+                DeleteMarkers(best);
+                return false;
+            }
+            reason = FailedReason(best);
             if (reason != null)
             {
                 // Advice from the current state: retrying only helps where this process could install at all. The reason is
@@ -1472,6 +1232,13 @@ internal sealed class Updater : IDisposable
     private ApplyToken PrepareApplyLocked(string newExePath, TimeSpan? timeout, bool countTimeouts)
     {
         if (AppController.IsDev) throw new InvalidOperationException(DevModeNote);
+        if (!UpdatesEnabled)
+        {
+            // No signed feed in this build (or a broken feed.json): nothing is installed, whatever the updates folder holds. Nothing is touched either.
+            string why = Trust.Misconfigured ? "this build's update configuration (feed.json) is broken" : "this build has no updates";
+            Log.Warn($"updater: not applying {newExePath}: {why}");
+            throw new ApplyRefusedException("the downloaded exe was not applied: " + why, why);
+        }
         if (IsElevated()) throw new ApplyRefusedException(ElevatedNote, ElevatedNote);
         if (FlavourOfFolder(newExePath) is not { } flavour || VersionFromFile(newExePath) is not { } version)
         {
@@ -1688,15 +1455,15 @@ internal sealed class Updater : IDisposable
     // ------------------------------------------------------------------ background loop
 
     /// <summary>
-    /// Cleans up after a finished install 30 s after start, then, while <see cref="Settings.AutoUpdate"/> is on, checks GitHub
+    /// Cleans up after a finished install 30 s after start, then, while <see cref="Settings.AutoUpdate"/> is on, checks the feed
     /// right away and every 6 hours, downloading a newer release automatically. The setting is read before every pass (once a
     /// minute), so switching it off stops the checks without a restart, and <see cref="Wake"/> runs a check at once when it is
-    /// turned on. While it is off Clink never contacts GitHub on its own (the version label in the footer and Check now still
+    /// turned on. While it is off Clink never contacts the feed on its own (the version label in the footer and Check now still
     /// check on demand).
     /// </summary>
     public void StartBackgroundChecks()
     {
-        if (_loop != null || Repo == null) return;
+        if (_loop != null || !UpdatesEnabled) return;
         var ct = _cts.Token;
         _loop = Task.Run(async () =>
         {
@@ -1708,7 +1475,7 @@ internal sealed class Updater : IDisposable
                 await _gate.WaitAsync(ct).ConfigureAwait(false);
                 try { CleanupInstalled(); }
                 finally { _gate.Release(); }
-                if (!_settings.AutoUpdate) Log.Info("updater: AutoUpdate is off, not checking GitHub (click the version in the footer to check by hand)");
+                if (!_settings.AutoUpdate) Log.Info("updater: AutoUpdate is off, not checking (click the version in the footer to check by hand)");
                 DateTime lastCheck = DateTime.MinValue;
                 while (!ct.IsCancellationRequested)
                 {
@@ -1740,23 +1507,41 @@ internal sealed class Updater : IDisposable
     {
         if (AppController.IsDev) { LastError = DevModeNote.ToLowerInvariant(); CheckFailed = true; return null; }   // nothing is looked for, downloaded or deleted
         try { return await CheckAndMaybeDownloadAsync(_cts.Token, manual: true).ConfigureAwait(false); }
-        catch (Exception ex) { Log.Warn("updater: manual check failed: " + ex.Message); LastError = ex.Message; return null; }
+        catch (Exception ex) { Log.Warn("updater: manual check failed: " + ex.Message); LastError = "the update check failed (details in the log)"; return null; }
+    }
+
+    /// <summary>One pass of the background loop (not manual: the download attempt cap applies), for the unit tests.</summary>
+    internal Task<UpdateInfo?> RunBackgroundPassAsync(CancellationToken ct) => CheckAndMaybeDownloadAsync(ct, manual: false);
+
+    /// <summary>
+    /// The notification for a version whose download failed <see cref="MaxDownloadAttempts"/> times (<paramref name="tries"/>): fits a tray
+    /// balloon (250 characters), the reason shortened to make room for the retry hint.
+    /// </summary>
+    private UpdateNotice DownloadCapNotice(ReleaseVersion version, int tries)
+    {
+        string why = (_lastDownloadError ?? "unknown error").ReplaceLineEndings(" ").Trim().TrimEnd('.');
+        if (why.Length > 110) why = why[..110] + "…";
+        return new UpdateNotice($"download:{version}", "Clink update not downloaded", $"Downloading v{version} failed {tries} times ({why}). {RetryHint}");
     }
 
     private async Task<UpdateInfo?> CheckAndMaybeDownloadAsync(CancellationToken ct, bool manual)
     {
         await _gate.WaitAsync(ct).ConfigureAwait(false);
+        UpdateNotice? notice = null;
         try
         {
             // A download from before the channel was switched (or before the running exe changed) may no longer be wanted.
             DropStalePending();
             var info = await CheckAsync(ct, manual).ConfigureAwait(false);
-            if (info == null) return null;
-            // Already downloaded in this run. With a signed offer of the same version only the very download the manifest describes
-            // counts; a pending download newer than the offer still wins (with the feed on it was itself made from a signed manifest:
-            // every offer is signed then, and an adopted file must pass VerifyDownload's signed check).
+            if (info == null)
+            {
+                if (CheckFailed) notice = _failNotice;   // set only when this very (background) check found the checks failing for over 3 days
+                return null;
+            }
+            // Already downloaded in this run. Of the same version only the very download the signed manifest describes counts; a pending
+            // download newer than the offer still wins (it was itself made from a signed manifest, and an adopted file must pass VerifyDownload's signed check).
             if (PendingVersion is { } pending && pending >= info.Version && ShouldInstall(pending, allowLeaveDev: true) && PendingPath is { } pendingFile && File.Exists(pendingFile)
-                && (info.Sha256 == null || pending > info.Version || RecordedDownloadIs(info))) return info;
+                && (pending > info.Version || RecordedDownloadIs(info))) return info;
             UpdateAvailable?.Invoke(info);
             if (!_settings.AutoUpdate) return info;
 
@@ -1764,8 +1549,11 @@ internal sealed class Updater : IDisposable
             string existing = FileFor(info.Version);
             if (File.Exists(existing))
             {
+                // The cheap record check first (no hashing): a file that is not the signed download this offer describes is discarded below
+                // whatever markers it has; a .failed marker an older build left beside its unsigned download must not hold the signed one up.
+                string? bad = RecordedDownloadIs(info) ? null : "it is not the download the signed manifest describes";
                 string? failed = FailedReason(existing);
-                if (failed != null && !manual)
+                if (failed != null && !manual && bad == null)
                 {
                     LastError = $"installing v{info.Version} failed earlier ({failed.TrimEnd('.')}). {RetryHint}";
                     Log.Warn($"updater: v{info.Version} is downloaded but installing it failed earlier ({failed}); click the version in the footer to retry");
@@ -1777,9 +1565,8 @@ internal sealed class Updater : IDisposable
                     Log.Warn($"updater: v{info.Version} was already installed from {existing} but this exe is v{VersionDisplay}; not offering it again");
                     return info;
                 }
-                string? bad = VerifyDownload(existing, info.Version);
-                if (bad == null && info.ExeSize > 0 && new FileInfo(existing).Length != info.ExeSize) bad = "its size differs from the release asset";
-                if (bad == null && info.Sha256 != null && !RecordedDownloadIs(info)) bad = "it is not the download the signed manifest describes";
+                bad ??= VerifyDownload(existing, info.Version);
+                if (bad == null && info.ExeSize > 0 && new FileInfo(existing).Length != info.ExeSize) bad = "its size differs from the signed manifest's";
                 if (bad == null)
                 {
                     if (failed != null) { Log.Info($"updater: retrying v{info.Version} after an earlier failure ({failed})"); TryDelete(FailedMarker(existing)); TryDelete(TimeoutMarker(existing)); }
@@ -1796,6 +1583,7 @@ internal sealed class Updater : IDisposable
             if (tries >= MaxDownloadAttempts && !manual)
             {
                 LastError = $"downloading v{info.Version} failed {tries} times ({_lastDownloadError ?? "unknown error"}). {RetryHint}";
+                notice = DownloadCapNotice(info.Version, tries);
                 return info;
             }
             _attempts[info.Version] = tries + 1;
@@ -1807,13 +1595,23 @@ internal sealed class Updater : IDisposable
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }   // shutting down; an HttpClient timeout is a failure like any other
             catch (Exception ex)
             {
-                _lastDownloadError = ex is OperationCanceledException ? $"no answer within {s_http.Timeout.TotalSeconds:0} s" : Describe(ex);
+                _lastDownloadError = DownloadErrorText(ex, info.ExeUrl);   // a fixed text: the exception's message (the log below) may hold what a server sent
                 LastError = $"downloading v{info.Version} failed: {_lastDownloadError}";
                 Log.Warn($"updater: download of v{info.Version} failed ({tries + 1}/{MaxDownloadAttempts}): {ex.Message}");
+                // The attempt that reaches the cap is announced (once per version: the key), not only the passes the cap then refuses.
+                if (tries + 1 >= MaxDownloadAttempts) notice = DownloadCapNotice(info.Version, tries + 1);
             }
             return info;
         }
-        finally { _gate.Release(); }
+        finally
+        {
+            _gate.Release();
+            // Every pass reports, so a background pass's result reaches the window (and a notice the tray); not one cut short by shutdown.
+            if (!ct.IsCancellationRequested)
+            {
+                try { CheckFinished?.Invoke(notice); } catch (Exception ex) { Log.Warn("updater: CheckFinished handler: " + ex.Message); }
+            }
+        }
     }
 
     /// <summary>

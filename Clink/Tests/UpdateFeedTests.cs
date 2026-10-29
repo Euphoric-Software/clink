@@ -9,26 +9,26 @@ using Clink.Services;
 
 namespace Clink.Tests;
 
-// The signed static update feed (UpdateFeed, FeedTrust) and the Updater's decision table around it: feed, signed GitHub path,
-// today's unsigned GitHub path when the feed is off. No network: the HTTP layer is a fake (Updater.HttpOverride).
+// The signed static update feed (UpdateFeed, FeedTrust) and the Updater's decisions around it. The client talks to its own feed and to
+// nothing else (the source repository is not public), and these tests prove it: the HTTP layer is a fake (Updater.HttpOverride) that
+// FAILS the test on any request to a host other than the configured feed hosts. No network.
 internal static class UpdateFeedTests
 {
     private const string Base = "https://cdn.example/clink/";
-    private const string Gh = "https://gh.example/";
-    private const string BuiltIn = "o/r";
-    private const string GitHubLatest = "https://api.github.com/repos/o/r/releases/latest";
-    private const string GitHubList = "https://api.github.com/repos/o/r/releases?per_page=30";
     private static readonly string Sha = new('a', 64);
 
     private static ReleaseVersion V(string text) => ReleaseVersion.Parse(text) ?? throw new TestFailure($"'{text}' is not a version");
 
-    private static string Ago(int days) => DateTimeOffset.UtcNow.AddDays(-days).ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture);
+    /// <summary>"days ago" on the updater's clock (the fake one when a test set it), so a manifest's `published` and a test's expected date never straddle midnight.</summary>
+    private static string Ago(int days) => (Updater.ClockOverride?.Invoke() ?? DateTimeOffset.UtcNow).AddDays(-days).ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture);
 
+    /// <summary>A manifest. The default notesUrl is where the publisher puts it: <c>&lt;base&gt;releases/&lt;tag&gt;/notes.txt</c> (stable) or <c>&lt;base&gt;dev/&lt;tag&gt;/notes.txt</c> (dev).</summary>
     private static string Manifest(string version = "0.4.2", string channel = "stable", int schema = 1, string? tag = null,
-        string? exeUrl = null, string? sha = null, long size = 1234, bool exe = true, string extra = "", string notes = "https://example.invalid/notes",
+        string? exeUrl = null, string? sha = null, long size = 1234, bool exe = true, string extra = "", string? notes = null,
         int publishedDaysAgo = 1, bool published = true)
     {
         exeUrl ??= $"https://cdn.example/clink/releases/v{version}/Clink.exe";
+        notes ??= $"{Base}{(channel == "dev" ? "dev" : "releases")}/v{version}/notes.txt";
         string assets = (exe ? $$"""
             "exe":{"url":"{{exeUrl}}","size":{{size}},"sha256":"{{sha ?? Sha}}"},
             """ : "") + """
@@ -86,80 +86,81 @@ internal static class UpdateFeedTests
 
     // ------------------------------------------------------------------ a fake network
 
-    /// <summary>URL to response; anything not listed is a 404. Records every URL asked for.</summary>
+    /// <summary>
+    /// URL to response; anything not listed is a 404. Records every URL asked for. A request to a host that is not one of
+    /// <see cref="Hosts"/> (the configured feed hosts: <see cref="Run"/> sets them from the trust under test) throws a
+    /// <see cref="TestFailure"/> and is recorded in <see cref="Stray"/>: the client must never contact anything else, GitHub least of all.
+    /// </summary>
     private sealed class FakeNet
     {
         public readonly Dictionary<string, Func<CancellationToken, HttpResponseMessage>> Routes = new();
         /// <summary>Answers that take their time (a stalled server); looked up before <see cref="Routes"/>.</summary>
         public readonly Dictionary<string, Func<CancellationToken, Task<HttpResponseMessage>>> RoutesAsync = new();
         public readonly List<string> Asked = new();
+        /// <summary>The only hosts a request may go to (the hosts of <see cref="Base"/> and <see cref="DevBase"/> unless <see cref="Run"/> narrows them).</summary>
+        public readonly HashSet<string> Hosts = new(StringComparer.OrdinalIgnoreCase) { "cdn.example", "dl-dev.example" };
+        /// <summary>Every request to another host (each also threw).</summary>
+        public readonly List<string> Stray = new();
 
         public void Ok(string url, byte[] body) => Routes[url] = _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(body) };
         public void Ok(string url, Func<HttpContent> content) => Routes[url] = _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = content() };
         public void Status(string url, int code) => Routes[url] = _ => new HttpResponseMessage((HttpStatusCode)code) { Content = new StringContent("error") };
+        /// <summary>An error answer with a reason phrase of the server's choosing (which must never reach the user).</summary>
+        public void Status(string url, int code, string reason) => Routes[url] = _ => new HttpResponseMessage((HttpStatusCode)code) { ReasonPhrase = reason, Content = new StringContent("error") };
         public void Throw(string url, Func<Exception> ex) => Routes[url] = _ => throw ex();
 
-        public void Feed(string channel, byte[] manifest, string sig)
+        public void Feed(string channel, byte[] manifest, string sig) => FeedAt(Base, channel, manifest, sig);
+
+        public void FeedAt(string feedBase, string channel, byte[] manifest, string sig)
         {
-            Ok(Base + channel + ".json", manifest);
-            Ok(Base + channel + ".json.sig", Bytes(sig));
+            Ok(feedBase + channel + ".json", manifest);
+            Ok(feedBase + channel + ".json.sig", Bytes(sig));
         }
 
         public Task<HttpResponseMessage> Send(HttpRequestMessage req, CancellationToken ct)
         {
             string url = req.RequestUri!.AbsoluteUri;
             lock (Asked) Asked.Add(url);
+            if (!Hosts.Contains(req.RequestUri.Host))
+            {
+                lock (Stray) Stray.Add(url);
+                TestRunner.RecordStray("a request to a host that is not a feed host: " + url);   // fails the test even where the updater swallows the throw
+                throw new TestFailure($"the client contacted {req.RequestUri.Host}, which is not a configured feed host ({string.Join(", ", Hosts)}): {url}");
+            }
             ct.ThrowIfCancellationRequested();
             if (RoutesAsync.TryGetValue(url, out var slow)) return slow(ct);
             if (Routes.TryGetValue(url, out var r)) return Task.FromResult(r(ct));
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound) { Content = new StringContent("not found") });
         }
 
-        public bool AskedGitHub => Asked.Any(u => u.StartsWith("https://api.github.com/", StringComparison.Ordinal));
+        public bool AskedGitHub => Asked.Any(u => u.Contains("github", StringComparison.OrdinalIgnoreCase));
         public bool AskedFeed => Asked.Any(u => u.StartsWith(Base, StringComparison.Ordinal));
         public bool AskedSha256File => Asked.Any(u => u.EndsWith(".sha256", StringComparison.Ordinal));
-    }
 
-    /// <summary>A GitHub release object: Clink.exe (and Clink.exe.sha256), plus the signed &lt;channel&gt;.json / .sig assets unless told otherwise.</summary>
-    private static string Release(string tag, bool prerelease = false, bool signedAssets = true, bool shaAsset = true, long exeSize = 1234)
-    {
-        string channel = prerelease ? "dev" : "stable";
-        var assets = new List<string> { $$"""{"name":"Clink.exe","size":{{exeSize}},"browser_download_url":"{{Gh}}{{tag}}/Clink.exe"}""" };
-        if (shaAsset) assets.Add($$"""{"name":"Clink.exe.sha256","size":64,"browser_download_url":"{{Gh}}{{tag}}/Clink.exe.sha256"}""");
-        if (signedAssets)
+        /// <summary>Narrows the allowed hosts to the feed hosts of <paramref name="trust"/> (none at all when it has no feed).</summary>
+        public void AllowOnly(FeedTrust trust)
         {
-            assets.Add($$"""{"name":"{{channel}}.json","size":500,"browser_download_url":"{{Gh}}{{tag}}/{{channel}}.json"}""");
-            assets.Add($$"""{"name":"{{channel}}.json.sig","size":88,"browser_download_url":"{{Gh}}{{tag}}/{{channel}}.json.sig"}""");
+            Hosts.Clear();
+            foreach (string? u in new[] { trust.FeedUrl, trust.DevFeedUrl })
+                if (u != null) Hosts.Add(new Uri(u).Host);
         }
-        return $$"""{"tag_name":"{{tag}}","draft":false,"prerelease":{{(prerelease ? "true" : "false")}},"html_url":"https://github.com/o/r/releases/tag/{{tag}}","body":"","assets":[{{string.Join(",", assets)}}]}""";
-    }
 
-    /// <summary>GitHub answers with <paramref name="release"/> on both the latest and the list endpoint.</summary>
-    private static void GitHub(FakeNet net, params string[] releases)
-    {
-        net.Ok(GitHubLatest, Bytes(releases[0]));
-        net.Ok(GitHubList, Bytes("[" + string.Join(",", releases) + "]"));
-    }
-
-    /// <summary>The signed manifest assets of the GitHub release <paramref name="tag"/>.</summary>
-    private static void GitHubManifest(FakeNet net, string tag, byte[] manifest, string sig, string channel = "stable")
-    {
-        net.Ok($"{Gh}{tag}/{channel}.json", manifest);
-        net.Ok($"{Gh}{tag}/{channel}.json.sig", Bytes(sig));
+        public void AssertNoStray() => Check.Equal(Array.Empty<string>(), Stray.ToArray(), "requests to a host that is not a feed host");
     }
 
     private sealed record Result(UpdateInfo? Info, Updater Up, Settings Settings);
 
-    /// <summary>One Updater.CheckAsync (0.4.1 on the stable channel unless told) against the fake network; the runner resets the hooks after the test.</summary>
+    /// <summary>One Updater.CheckAsync (0.4.1 on the stable channel unless told) against the fake network, which is limited to the trust's own hosts; the runner resets the hooks after the test.</summary>
     private static Result Run(FakeNet net, FeedTrust trust, bool dev = false, string running = "0.4.1", bool manual = false, Settings? settings = null, CancellationToken ct = default)
     {
         settings ??= new Settings();
         settings.UseDevBuilds = dev;
+        net.AllowOnly(trust);
         Updater.HttpOverride = net.Send;
         Updater.FeedOverride = trust;
-        Updater.BuiltInRepoOverride = BuiltIn;
         var up = new Updater(settings, V(running));
         var info = OffUi(() => up.CheckAsync(ct, manual));
+        net.AssertNoStray();
         return new Result(info, up, settings);
     }
 
@@ -180,9 +181,9 @@ internal static class UpdateFeedTests
         var info = UpdateFeed.ToUpdateInfo(m);
         Check.Equal("https://cdn.example/clink/releases/v0.4.2/Clink.exe", info.ExeUrl);
         Check.Equal(Sha, info.Sha256);
-        Check.Equal("", info.ShaUrl);
         Check.Equal(1234L, info.ExeSize);
         Check.Equal("v0.4.2", info.Tag);
+        Check.Equal(Base + "releases/v0.4.2/notes.txt", info.NotesUrl, "the manifest's notesUrl as signed (checked only when it is opened)");
     }
 
     [UnitTest]
@@ -211,12 +212,15 @@ internal static class UpdateFeedTests
         Check.Contains(ParseProblem(Manifest(size: -5)), "size");
         Check.Contains(ParseProblem(Manifest(tag: "v0.4.1")), "tag");
         Check.Contains(ParseProblem(Manifest("v0.4.2", tag: "vv0.4.2")), "version");
-        Check.Contains(ParseProblem(Manifest(notes: "http://example.invalid/n")), "notesUrl");
         Check.Contains(ParseProblem(Manifest(published: false)), "published");
         Check.Contains(ParseProblem(Manifest().Replace(Ago(1), "yesterday")), "published");
         Check.Contains(ParseProblem("not json"), "JSON");
         Check.Contains(ParseProblem("[1]"), "object");
         Check.Contains(ParseProblem("""{"channel":"stable"}"""), "schema");
+
+        // A notesUrl that is not https (or not even a URL) does not refuse the manifest: it only means the fallback page when opened.
+        foreach (string notes in new[] { "http://example.invalid/n", "not a url", "" })
+            Check.Null(ParseProblem(Manifest(notes: notes)), $"notesUrl '{notes}'");
     }
 
     [UnitTest]
@@ -227,24 +231,22 @@ internal static class UpdateFeedTests
     }
 
     [UnitTest]
-    public static void Feed_stale_reason_uses_the_floor_and_the_age()
+    public static void Feed_floor_reason_has_no_age_rule()
     {
         var m = UpdateFeed.ParseManifest(Bytes(Manifest("0.4.2")), "stable", out _)!;
-        var now = DateTimeOffset.UtcNow;
-        Check.Null(UpdateFeed.StaleReason(m, null, now));
-        Check.Null(UpdateFeed.StaleReason(m, V("0.4.2"), now), "equal to the floor is fine");
-        Check.NotNull(UpdateFeed.StaleReason(m, V("0.4.3"), now), "below the floor");
-        Check.NotNull(UpdateFeed.StaleReason(m, null, now.AddDays(90)), "91 days after publishing");
-        Check.Null(UpdateFeed.StaleReason(m, null, now.AddDays(88)));
+        Check.Null(UpdateFeed.FloorReason(m, null));
+        Check.Null(UpdateFeed.FloorReason(m, V("0.4.2")), "equal to the floor is fine");
+        Check.Null(UpdateFeed.FloorReason(m, V("0.4.1")));
+        Check.NotNull(UpdateFeed.FloorReason(m, V("0.4.3")), "below the floor: a replayed old manifest");
+        Check.Contains(UpdateFeed.FloorReason(m, V("0.4.3")), "older than v0.4.3");
 
-        // published in the future: up to a day is clock skew, more is stale
-        var future = UpdateFeed.ParseManifest(Bytes(Manifest("0.4.2", publishedDaysAgo: -3)), "stable", out _)!;
-        Check.Contains(UpdateFeed.StaleReason(future, null, now), "future");
-        Check.Null(UpdateFeed.StaleReason(future, null, now.AddDays(2.5)), "half a day ahead is fine");
-        Check.NotNull(UpdateFeed.StaleReason(future, null, now.AddDays(1.5)), "a day and a half ahead");
-        Check.Null(UpdateFeed.FloorReason(future, null));
-        Check.NotNull(UpdateFeed.FloorReason(m, V("0.4.3")));
-        Check.Null(UpdateFeed.FloorReason(m, V("0.4.2")));
+        // Neither a very old nor a future `published` makes a manifest unusable: it is parsed, and that is all.
+        foreach (int daysAgo in new[] { 200, 4000, -3, -400 })
+        {
+            var old = UpdateFeed.ParseManifest(Bytes(Manifest("0.4.2", publishedDaysAgo: daysAgo)), "stable", out string? problem);
+            Check.NotNull(old, $"published {daysAgo} days ago: {problem}");
+            Check.Null(UpdateFeed.FloorReason(old!, null), $"published {daysAgo} days ago");
+        }
     }
 
     // ------------------------------------------------------------------ signature
@@ -425,7 +427,7 @@ internal static class UpdateFeedTests
         var empty = FeedTrust.Parse(Bytes("""{"schema":1,"feedUrl":"","stableKeys":[],"devKeys":[]}"""));
         Check.Equal(FeedState.Off, empty.State);
         Check.Equal(0, empty.Problems.Count, "the shipped empty file is not a problem");
-        Check.Contains(empty.Describe(), "GitHub only");
+        Check.Contains(empty.Describe(), "updates are off");
         Check.Equal(FeedState.Off, FeedTrust.Parse(Bytes("""{"schema":1}""")).State, "absent fields are empty");
 
         var full = FeedTrust.Parse(new byte[] { 0xEF, 0xBB, 0xBF }.Concat(Bytes($$"""{"schema":1,"feedUrl":"{{Base}}","stableKeys":["{{pub}}"],"devKeys":["{{dev}}"]}""")).ToArray());
@@ -461,54 +463,156 @@ internal static class UpdateFeedTests
 
     /// <summary>
     /// CI runs this one test against the built exe with CLINK_EXPECT_FEED=off (a build without a feed) or =on (a release build whose
-    /// feed.json was filled in): the embedded trust must be exactly that. Unset: only that it has no problems.
+    /// feed.json was filled in): the embedded trust must be exactly that. With =on, CLINK_EXPECT_FEED_URL and CLINK_EXPECT_DEV_FEED_URL must
+    /// both be given and equal (ordinally) the resolved stable and dev bases; with =off neither may be given. Nothing set (a local run): only
+    /// that feed.json has no problems (a pass, not a skip, so CLINK_TESTS_NO_SKIP stays green locally).
     /// </summary>
     [UnitTest]
     public static void Embedded_feed_trust_matches_ci_expectation()
     {
         var embedded = FeedTrust.LoadEmbedded();
         Check.Equal(Array.Empty<string>(), embedded.Problems.ToArray(), "problems of the embedded feed.json");
-        string? expect = Environment.GetEnvironmentVariable("CLINK_EXPECT_FEED")?.Trim();
-        if (string.IsNullOrEmpty(expect)) return;
-        var want = expect.ToLowerInvariant() switch
-        {
-            "off" => FeedState.Off,
-            "on" => FeedState.On,
-            _ => throw new TestFailure($"CLINK_EXPECT_FEED must be \"off\" or \"on\", not \"{expect}\""),
-        };
-        Check.Equal(want, embedded.State, $"CLINK_EXPECT_FEED={expect}: {embedded.Describe()}");
+        CheckCiExpectation(embedded, Environment.GetEnvironmentVariable("CLINK_EXPECT_FEED"),
+            Environment.GetEnvironmentVariable("CLINK_EXPECT_FEED_URL"), Environment.GetEnvironmentVariable("CLINK_EXPECT_DEV_FEED_URL"));
     }
 
-    // ------------------------------------------------------------------ feed off: today's behaviour
+    /// <summary>
+    /// The contract of <see cref="Embedded_feed_trust_matches_ci_expectation"/> for given variable values. Null and "" are alike "not
+    /// given" (on Windows, <c>$env:X = ''</c> deletes the variable, so an empty value cannot be told from an absent one anyway).
+    /// </summary>
+    private static void CheckCiExpectation(FeedTrust embedded, string? expect, string? stableUrl, string? devUrl)
+    {
+        expect = string.IsNullOrWhiteSpace(expect) ? null : expect.Trim();
+        stableUrl = string.IsNullOrEmpty(stableUrl) ? null : stableUrl;
+        devUrl = string.IsNullOrEmpty(devUrl) ? null : devUrl;
+        if (expect == null)
+        {
+            // No switch: a URL that is given is still compared (as before), nothing is required.
+            if (stableUrl != null) ExpectBase("CLINK_EXPECT_FEED_URL", stableUrl, embedded.BaseFor("stable"));
+            if (devUrl != null) ExpectBase("CLINK_EXPECT_DEV_FEED_URL", devUrl, embedded.BaseFor("dev"));
+            return;
+        }
+        switch (expect.ToLowerInvariant())
+        {
+            case "off":
+                if (stableUrl != null || devUrl != null)
+                    throw new TestFailure($"CLINK_EXPECT_FEED=off, but a feed URL is expected (CLINK_EXPECT_FEED_URL \"{stableUrl}\", CLINK_EXPECT_DEV_FEED_URL \"{devUrl}\")");
+                Check.Equal(FeedState.Off, embedded.State, $"CLINK_EXPECT_FEED=off: {embedded.Describe()}");
+                break;
+            case "on":
+                if (stableUrl == null) throw new TestFailure("CLINK_EXPECT_FEED=on needs CLINK_EXPECT_FEED_URL");
+                if (devUrl == null) throw new TestFailure("CLINK_EXPECT_FEED=on needs CLINK_EXPECT_DEV_FEED_URL");
+                Check.Equal(FeedState.On, embedded.State, $"CLINK_EXPECT_FEED=on: {embedded.Describe()}");
+                ExpectBase("CLINK_EXPECT_FEED_URL", stableUrl, embedded.BaseFor("stable"));
+                ExpectBase("CLINK_EXPECT_DEV_FEED_URL", devUrl, embedded.BaseFor("dev"));
+                break;
+            default:
+                throw new TestFailure($"CLINK_EXPECT_FEED must be \"off\" or \"on\", not \"{expect}\"");
+        }
+    }
+
+    private static void ExpectBase(string variable, string expected, string? resolved)
+    {
+        if (!string.Equals(expected, resolved, StringComparison.Ordinal))
+            throw new TestFailure($"{variable} is \"{expected}\" but the embedded feed.json resolves to \"{resolved ?? "(none)"}\"");
+    }
 
     [UnitTest]
-    public static void Feed_off_with_the_empty_feed_json_is_todays_github_path()
+    public static void The_ci_feed_expectation_contract()
+    {
+        var off = FeedTrust.None;
+        var on = Trust(url: Base);
+        string stable = on.BaseFor("stable")!, dev = on.BaseFor("dev")!;
+        bool Fails(FeedTrust t, string? e, string? s, string? d)
+        {
+            try { CheckCiExpectation(t, e, s, d); return false; }
+            catch (TestFailure) { return true; }
+        }
+        // nothing given (a local run): a silent pass whatever the build; "" is the same as unset
+        Check.False(Fails(off, null, null, null)); Check.False(Fails(on, null, null, null));
+        Check.False(Fails(on, "", "", ""), "empty = not given");
+        // on: both URLs, exactly
+        Check.False(Fails(on, "on", stable, dev));
+        Check.False(Fails(on, " ON ", stable, dev), "the switch is trimmed and case-insensitive");
+        Check.True(Fails(on, "on", stable, null), "the dev URL is missing");
+        Check.True(Fails(on, "on", null, dev), "the stable URL is missing");
+        Check.True(Fails(on, "on", stable, ""), "an empty dev URL is a missing one");
+        Check.True(Fails(on, "on", stable.ToUpperInvariant(), dev), "compared ordinally");
+        Check.True(Fails(on, "on", stable, dev + "x/"));
+        Check.True(Fails(off, "on", stable, dev), "the build has no feed");
+        // off: no URL may be given
+        Check.False(Fails(off, "off", null, null));
+        Check.False(Fails(off, "off", "", ""));
+        Check.True(Fails(off, "off", stable, null), "off with a URL");
+        Check.True(Fails(off, "off", null, dev), "off with a dev URL");
+        Check.True(Fails(on, "off", null, null), "the build has a feed");
+        // anything else is a mistake in CI
+        Check.True(Fails(on, "yes", stable, dev));
+        // a URL without the switch is compared, nothing more
+        Check.False(Fails(on, null, stable, null));
+        Check.True(Fails(off, null, stable, null), "the build has no feed to match it");
+    }
+
+    // ------------------------------------------------------------------ feed off: no updates at all
+
+    [UnitTest]
+    public static void Feed_off_build_makes_no_http_requests_and_says_updates_arent_available()
     {
         var empty = FeedTrust.Parse(Bytes("""{"schema":1,"feedUrl":"","stableKeys":[],"devKeys":[]}"""));
-        var net = new FakeNet();
-        GitHub(net, Release("v0.4.9", signedAssets: false));
-        var r = Run(net, empty);
-        Check.NotNull(r.Info);
-        Check.Equal(V("0.4.9"), r.Info!.Version);
-        Check.Null(r.Info.Sha256, "the hash comes from Clink.exe.sha256, as before");
-        Check.Equal(Gh + "v0.4.9/Clink.exe.sha256", r.Info.ShaUrl);
-        Check.Equal(new[] { GitHubLatest }, net.Asked.ToArray(), "one GitHub request, no feed");
-        Check.Null(r.Settings.FeedFloorStable);
+        Check.Equal(FeedState.Off, empty.State);
+        Check.Equal("Updates aren't available in this build", Updater.NoUpdatesNote, "the text the Updates card shows");
+        var seen = new List<string>();
+        Updater.SendObserver = url => { lock (seen) seen.Add(url); };
 
-        // Still refused without Clink.exe.sha256 (fail closed, unchanged).
+        foreach (bool dev in new[] { false, true })
+        foreach (bool manual in new[] { false, true })
+        {
+            string what = $"dev {dev}, manual {manual}";
+            var net = new FakeNet();   // no host is allowed at all
+            // settings.json's legacy UpdateRepo key is ignored: it does not turn anything on
+            var r = Run(net, empty, dev: dev, manual: manual, settings: new Settings { UpdateRepo = "me/fork", AutoUpdate = true });
+            Check.Null(r.Info, what);
+            Check.Equal(Updater.NoUpdatesNote, r.Up.LastError, what);
+            Check.True(r.Up.CheckFailed, what);
+            Check.False(r.Up.UpdatesEnabled, what);
+            Check.Equal(0, net.Asked.Count, what + ": no request at all");
+            Check.Null(r.Settings.FeedFloorStable, what);
+            Check.Null(r.Settings.FeedFloorDev, what);
+            Check.Null(r.Settings.FeedFloorFailingSince, what + ": nothing is tracked for a build that never checks");
+            Check.Null(r.Settings.LastUpdateCheck, what + ": no check happened");
+        }
+
+        // The paths the app uses: a manual check and a background pass.
         var net2 = new FakeNet();
-        GitHub(net2, Release("v0.4.9", shaAsset: false));
-        var r2 = Run(net2, empty);
-        Check.Null(r2.Info);
-        Check.Contains(r2.Up.LastError, "sha256");
+        net2.AllowOnly(empty);
+        Updater.HttpOverride = net2.Send;
+        Updater.FeedOverride = empty;
+        using var up = new Updater(new Settings { AutoUpdate = true, UpdateRepo = "me/fork" }, V("0.4.1"));
+        Check.False(up.UpdatesEnabled);
+        Check.Null(up.LastError, "a build without a feed is not an error to report at start-up: the card has its own text");
+        Check.Null(OffUi(() => up.CheckNowAsync()));
+        Check.Equal(Updater.NoUpdatesNote, up.LastError);
+        Check.Null(OffUi(() => up.RunBackgroundPassAsync(CancellationToken.None)));
+        Check.False(up.TryGetPendingUpdate(out _, out _), "nothing is installed either");
+        Check.Throws<InvalidOperationException>(() => OffUi(() => up.DownloadAsync(
+            new UpdateInfo(V("0.4.2"), "v0.4.2", Base + "releases/v0.4.2/Clink.exe", 300, Sha, ""), null, CancellationToken.None)), "not even a download");
+        net2.AssertNoStray();
+        Check.Equal(0, net2.Asked.Count, "no request by any path");
+        Check.Equal(0, seen.Count, "nothing reached the send hook either");
+    }
 
-        // settings.json's UpdateRepo works as before.
-        var net3 = new FakeNet();
-        net3.Ok("https://api.github.com/repos/me/fork/releases/latest", Bytes(Release("v0.4.9", signedAssets: false)));
-        var r3 = Run(net3, empty, settings: new Settings { UpdateRepo = "me/fork" });
-        Check.Equal(V("0.4.9"), r3.Info!.Version);
-        Check.Equal("me/fork", r3.Up.Repo);
-        Check.True(r3.Up.RepoOverridden);
+    [UnitTest]
+    public static void Updates_are_enabled_only_with_a_valid_feed_and_outside_a_dev_instance()
+    {
+        Updater.FeedOverride = Trust();
+        Check.True(new Updater(new Settings(), V("0.4.1")).UpdatesEnabled);
+        Updater.FeedOverride = FeedTrust.None;
+        Check.False(new Updater(new Settings(), V("0.4.1")).UpdatesEnabled, "feed off");
+        Updater.FeedOverride = FeedTrust.Create(Base, new[] { SparePub() }, null);
+        Check.False(new Updater(new Settings(), V("0.4.1")).UpdatesEnabled, "feed misconfigured");
+        // the legacy key never enables or redirects anything
+        Updater.FeedOverride = FeedTrust.None;
+        Check.False(new Updater(new Settings { UpdateRepo = "owner/repo" }, V("0.4.1")).UpdatesEnabled);
     }
 
     // ------------------------------------------------------------------ feed.json broken: fail closed
@@ -536,22 +640,19 @@ internal static class UpdateFeedTests
             File.WriteAllBytes(Updater.FileFor(V("0.4.9")), exe);   // a download recorded as verified and signed: still not installed
             var settings = new Settings
             {
-                UpdateRepo = "me/fork", PendingUpdateVersion = "0.4.9", PendingUpdateSha256 = Hex(exe), PendingUpdateSigned = true, PendingUpdateFrom = "0.4.1",
+                UpdateRepo = "me/fork", PendingUpdateVersion = "0.4.9", PendingUpdateSha256 = Hex(exe), PendingUpdateSignedSha256 = Hex(exe), PendingUpdateFrom = "0.4.1",
             };
             var net = new FakeNet();
-            GitHub(net, Release("v0.4.9", signedAssets: false));
-            net.Ok("https://api.github.com/repos/me/fork/releases/latest", Bytes(Release("v0.4.9", signedAssets: false)));
             byte[] m = Bytes(Manifest("0.4.9"));
             net.Feed("stable", m, Sign(key, m));
             var r = Run(net, trust, settings: settings);
             Check.Equal(FeedState.Misconfigured, trust.State, name);
             Check.Null(r.Info, name);
-            Check.Equal(Array.Empty<string>(), net.Asked.ToArray(), name + ": neither the feed nor GitHub is asked");
+            Check.Equal(Array.Empty<string>(), net.Asked.ToArray(), name + ": nothing is asked");
             Check.Equal(Updater.MisconfiguredNote, r.Up.LastError, name);
             Check.True(r.Up.CheckFailed, name);
             Check.True(r.Up.LastError!.StartsWith("update configuration invalid", StringComparison.Ordinal), name);
-            Check.Null(r.Up.Repo, name + ": updates are off (the UI shows it, the loop does not start)");
-            Check.False(r.Up.RepoOverridden, name);
+            Check.False(r.Up.UpdatesEnabled, name + ": updates are off (the UI shows it, the loop does not start)");
             Check.False(r.Up.TryGetPendingUpdate(out _, out _), name + ": nothing is installed at startup");
             Check.Null(r.Settings.FeedFloorStable, name);
 
@@ -564,7 +665,7 @@ internal static class UpdateFeedTests
         }
     }
 
-    // ------------------------------------------------------------------ feed on: verified and fresh
+    // ------------------------------------------------------------------ feed on: verified manifests
 
     [UnitTest]
     public static void Feed_verified_and_newer_is_offered_from_the_feed()
@@ -574,30 +675,32 @@ internal static class UpdateFeedTests
         var net = new FakeNet();
         byte[] manifest = Bytes(Manifest());
         net.Feed("stable", manifest, Sign(key, manifest) + "\n");
-        GitHub(net, Release("v0.4.9"));
         var r = Run(net, Trust(stable: new[] { pub }));
         Check.NotNull(r.Info);
-        Check.Equal(V("0.4.2"), r.Info!.Version, "the feed's version, not GitHub's 0.4.9");
+        Check.Equal(V("0.4.2"), r.Info!.Version);
         Check.Equal(Sha, r.Info.Sha256);
-        Check.Equal("", r.Info.ShaUrl);
+        Check.Equal(Base + "releases/v0.4.2/notes.txt", r.Info.NotesUrl);
         Check.Equal(new[] { Base + "stable.json", Base + "stable.json.sig" }, net.Asked.ToArray(), "manifest, then signature; nothing else");
         Check.Null(r.Up.LastError);
+        Check.False(r.Up.CheckFailed);
         Check.Equal("0.4.2", r.Settings.FeedFloorStable, "the floor is raised after verification");
+        Check.Null(r.Settings.FeedFloorFailingSince);
+        Check.NotNull(r.Settings.LastUpdateCheck);
     }
 
     [UnitTest]
-    public static void Feed_same_version_is_up_to_date_without_asking_github()
+    public static void Feed_same_version_is_up_to_date()
     {
         var (pub, key) = NewKey();
         using var k = key;
         var net = new FakeNet();
         byte[] manifest = Bytes(Manifest("0.4.2"));
         net.Feed("stable", manifest, Sign(key, manifest));
-        GitHub(net, Release("v0.4.9"));
         var r = Run(net, Trust(stable: new[] { pub }), running: "0.4.2");
         Check.Null(r.Info);
         Check.Null(r.Up.LastError);
         Check.False(r.Up.CheckFailed);
+        Check.Equal("0.4.2", r.Settings.FeedFloorStable);
         Check.False(net.AskedGitHub);
     }
 
@@ -617,7 +720,6 @@ internal static class UpdateFeedTests
         net.Feed("dev", d, Sign(devKey, d));
         var r = Run(net, trust, dev: true, running: "0.4.3-dev.1");
         Check.Equal(V("0.4.3"), r.Info!.Version);
-        Check.False(net.AskedGitHub);
         Check.Equal("0.4.3", r.Settings.FeedFloorStable);
         Check.Equal("0.4.3-dev.2", r.Settings.FeedFloorDev);
 
@@ -628,17 +730,6 @@ internal static class UpdateFeedTests
         net2.Feed("dev", d2, Sign(devKey, d2));
         Check.Equal(V("0.4.4-dev.1"), Run(net2, trust, dev: true, running: "0.4.3-dev.1").Info!.Version);
 
-        // The keys are per channel: a stable.json signed with the dev key is refused; the valid dev.json is still used.
-        var net3 = new FakeNet();
-        net3.Feed("stable", s, Sign(devKey, s));
-        net3.Feed("dev", d2, Sign(devKey, d2));
-        GitHub(net3, Release("v0.4.9"));
-        var r3 = Run(net3, trust, dev: true, running: "0.4.3-dev.1");
-        Check.Equal(V("0.4.4-dev.1"), r3.Info?.Version, r3.Up.LastError);
-        Check.False(net3.AskedGitHub);
-        Check.Null(r3.Settings.FeedFloorStable, "the refused stable.json raises nothing");
-        Check.Equal("0.4.4-dev.1", r3.Settings.FeedFloorDev);
-
         // The stable channel never reads dev.json.
         var net4 = new FakeNet();
         net4.Feed("stable", s, Sign(stableKey, s));
@@ -648,7 +739,7 @@ internal static class UpdateFeedTests
     }
 
     [UnitTest]
-    public static void Feed_dev_channel_partial_outcomes()
+    public static void Feed_dev_channel_a_failed_manifest_is_never_up_to_date()
     {
         var (stablePub, stableKey) = NewKey();
         var (devPub, devKey) = NewKey();
@@ -658,81 +749,126 @@ internal static class UpdateFeedTests
         using var c = wrongKey;
         var trust = Trust(stable: new[] { stablePub }, dev: new[] { devPub });
         byte[] s = Bytes(Manifest("0.4.3")), d = Bytes(Manifest("0.4.4-dev.1", "dev"));
-        byte[] gh = Bytes(Manifest("0.4.9"));
-        void WithGitHub(FakeNet n) { GitHub(n, Release("v0.4.9")); GitHubManifest(n, "v0.4.9", gh, Sign(stableKey, gh)); }
 
-        // stable verified + dev refused: the newer stable is offered; only its floor goes up.
-        var net = new FakeNet();
-        net.Feed("stable", s, Sign(stableKey, s));
-        net.Feed("dev", d, Sign(wrongKey, d));
-        WithGitHub(net);
-        var r = Run(net, trust, dev: true, running: "0.4.3-dev.1");
-        Check.Equal(V("0.4.3"), r.Info?.Version, r.Up.LastError);
-        Check.Equal(Sha, r.Info!.Sha256);
-        Check.False(net.AskedGitHub, "a refused dev.json does not block the valid stable.json");
-        Check.Equal("0.4.3", r.Settings.FeedFloorStable);
-        Check.Null(r.Settings.FeedFloorDev, "nothing from the refused dev.json");
+        // Nothing newer than the running dev build in what verified, and one manifest failed: the check fails (half the picture is no
+        // "up to date"), with the failed manifest's host-only message. A manifest that did verify still raises its own floor.
+        void Failed(string name, FakeNet net, string expectStart, string? stableFloor, string? devFloor, string running = "0.4.4-dev.1")
+        {
+            var r = Run(net, trust, dev: true, running: running);
+            Check.Null(r.Info, name);
+            Check.True(r.Up.CheckFailed, name + ": not 'up to date'");
+            Check.True(r.Up.LastError!.StartsWith(expectStart, StringComparison.Ordinal), $"{name}: {r.Up.LastError}");
+            Check.Contains(r.Up.LastError, "(cdn.example)", name);
+            Check.Equal(stableFloor, r.Settings.FeedFloorStable, name + ": only a manifest that verified raises its floor");
+            Check.Equal(devFloor, r.Settings.FeedFloorDev, name);
+            Check.NotNull(r.Settings.FeedFloorFailingSince, name + ": a failed check");
+            Check.False(net.AskedGitHub, name);
+        }
 
-        // stable verified + dev unreachable: the same.
+        // stable verified + dev refused (signed with the wrong key)
+        var net1 = new FakeNet();
+        net1.Feed("stable", s, Sign(stableKey, s));
+        net1.Feed("dev", d, Sign(wrongKey, d));
+        Failed("dev refused", net1, "Couldn't verify the update server's answer", "0.4.3", null);
+
+        // The keys are per channel: a stable.json signed with the dev key is refused.
         var net2 = new FakeNet();
-        net2.Feed("stable", s, Sign(stableKey, s));
-        net2.Status(Base + "dev.json", 503);
-        var r2 = Run(net2, trust, dev: true, running: "0.4.3-dev.1");
-        Check.Equal(V("0.4.3"), r2.Info?.Version, r2.Up.LastError);
-        Check.Equal("0.4.3", r2.Settings.FeedFloorStable);
-        Check.Null(r2.Settings.FeedFloorDev);
+        net2.Feed("stable", s, Sign(devKey, s));
+        net2.Feed("dev", d, Sign(devKey, d));
+        Failed("stable signed with the dev key", net2, "Couldn't verify the update server's answer", null, "0.4.4-dev.1");
 
-        // stable verified but not newer + dev unreachable: half the picture cannot say "up to date": the signed GitHub path decides.
+        // stable verified + dev unreachable
         var net3 = new FakeNet();
         net3.Feed("stable", s, Sign(stableKey, s));
-        WithGitHub(net3);
-        var r3 = Run(net3, trust, dev: true, running: "0.4.3");
-        Check.True(net3.AskedGitHub);
-        Check.Equal(V("0.4.9"), r3.Info?.Version, r3.Up.LastError);
-        Check.Equal(Sha, r3.Info!.Sha256);
-        Check.Equal("0.4.9", r3.Settings.FeedFloorStable, "raised by the GitHub manifest that was offered, not by the unused 0.4.3");
-        Check.Null(r3.Settings.FeedFloorDev);
+        net3.Status(Base + "dev.json", 503);
+        Failed("dev unreachable", net3, "Couldn't reach the update server", "0.4.3", null);
 
-        // The same, but GitHub has nothing newer: up to date from GitHub, and the unused 0.4.3 raises no floor.
+        // dev verified + stable unreachable
         var net4 = new FakeNet();
-        net4.Feed("stable", s, Sign(stableKey, s));
-        net4.Feed("dev", d, Sign(wrongKey, d));
-        GitHub(net4, Release("v0.4.3"));
-        var r4 = Run(net4, trust, dev: true, running: "0.4.3");
-        Check.Null(r4.Info);
-        Check.Null(r4.Up.LastError);
-        Check.True(net4.AskedGitHub);
-        Check.Null(r4.Settings.FeedFloorStable, "a verified manifest that was not used raises nothing");
+        net4.Feed("dev", d, Sign(devKey, d));
+        Failed("stable unreachable", net4, "Couldn't reach the update server", null, "0.4.4-dev.1");
 
-        // dev verified + stable refused (bad version in it): the newer dev build is offered.
+        // A plain release in dev.json is refused (releases are published in stable.json only).
         var net5 = new FakeNet();
-        byte[] badStable = Bytes(Manifest("0.4.3-dev.9"));
-        net5.Feed("stable", badStable, Sign(stableKey, badStable));
-        net5.Feed("dev", d, Sign(devKey, d));
-        var r5 = Run(net5, trust, dev: true, running: "0.4.3-dev.1");
-        Check.Equal(V("0.4.4-dev.1"), r5.Info?.Version, r5.Up.LastError);
-        Check.Equal("0.4.4-dev.1", r5.Settings.FeedFloorDev);
-        Check.Null(r5.Settings.FeedFloorStable);
+        byte[] plainDev = Bytes(Manifest("0.4.5", "dev"));
+        net5.Feed("stable", s, Sign(stableKey, s));
+        net5.Feed("dev", plainDev, Sign(devKey, plainDev));
+        Failed("a plain release in dev.json", net5, "Couldn't verify the update server's answer", "0.4.3", null);
 
-        // Both verified and fresh, the running dev build is the newest: up to date, both floors raised, no GitHub.
+        // Both failed: the first one's message.
+        var net6f = new FakeNet();
+        net6f.Status(Base + "stable.json", 503);
+        net6f.Feed("dev", d, Sign(wrongKey, d));
+        Failed("both failed", net6f, "Couldn't reach the update server (cdn.example): HTTP 503", null, null);
+
+        // The running version is what stable.json says (up to date there) but dev.json fails: still a failed check.
+        var net7 = new FakeNet();
+        net7.Feed("stable", s, Sign(stableKey, s));
+        net7.Ok(Base + "dev.json", d);   // dev.json.sig is a 404
+        Failed("stable up to date, dev signature missing", net7, "Couldn't verify the update server's answer", "0.4.3", null, running: "0.4.3");
+
+        // Both verified, the running dev build is the newest: up to date, both floors raised.
         var net6 = new FakeNet();
         net6.Feed("stable", s, Sign(stableKey, s));
         net6.Feed("dev", d, Sign(devKey, d));
         var r6 = Run(net6, trust, dev: true, running: "0.4.4-dev.1");
         Check.Null(r6.Info);
         Check.Null(r6.Up.LastError);
-        Check.False(net6.AskedGitHub);
         Check.Equal("0.4.3", r6.Settings.FeedFloorStable);
         Check.Equal("0.4.4-dev.1", r6.Settings.FeedFloorDev);
+    }
 
-        // A plain release in dev.json is refused (N10); stable.json's release is still offered.
-        var net7 = new FakeNet();
-        byte[] plainDev = Bytes(Manifest("0.4.5", "dev"));
-        net7.Feed("stable", s, Sign(stableKey, s));
-        net7.Feed("dev", plainDev, Sign(devKey, plainDev));
-        var r7 = Run(net7, trust, dev: true, running: "0.4.3-dev.1");
-        Check.Equal(V("0.4.3"), r7.Info?.Version, r7.Up.LastError);
-        Check.Null(r7.Settings.FeedFloorDev);
+    [UnitTest]
+    public static void Feed_dev_channel_a_failed_manifest_does_not_hide_a_verified_offer()
+    {
+        var (stablePub, stableKey) = NewKey();
+        var (devPub, devKey) = NewKey();
+        using var a = stableKey;
+        using var b = devKey;
+        var trust = TwoBases(new[] { stablePub }, new[] { devPub });
+        string devBase = trust.BaseFor("dev")!;
+        byte[] s = Bytes(Manifest("0.4.9")), d = Bytes(DevManifest("0.4.4-dev.1"));
+
+        // stable.json verifies 0.4.9, dev.json.sig is a 404: 0.4.9 is offered (it is newer than the running dev build whatever dev.json says).
+        var net1 = new FakeNet();
+        net1.Feed("stable", s, Sign(stableKey, s));
+        net1.Ok(devBase + "dev.json", d);
+        var r1 = Run(net1, trust, dev: true, running: "0.4.3-dev.5");
+        Check.Equal(V("0.4.9"), r1.Info?.Version, r1.Up.LastError);
+        Check.Null(r1.Up.LastError);
+        Check.False(r1.Up.CheckFailed, "an offer is a working check");
+        Check.Equal("0.4.9", r1.Settings.FeedFloorStable, "the verified manifest raises its floor");
+        Check.Null(r1.Settings.FeedFloorDev, "the failed one does not");
+        Check.True(net1.Asked.Contains(devBase + "dev.json.sig"), "dev.json was asked for, and failed");
+
+        // dev.json verifies a newer dev build, stable.json is unreachable: the dev build is offered.
+        var net2 = new FakeNet();
+        net2.Status(Base + "stable.json", 503);
+        net2.FeedAt(devBase, "dev", d, Sign(devKey, d));
+        var r2 = Run(net2, trust, dev: true, running: "0.4.3-dev.5");
+        Check.Equal(V("0.4.4-dev.1"), r2.Info?.Version, r2.Up.LastError);
+        Check.Null(r2.Settings.FeedFloorStable);
+        Check.Equal("0.4.4-dev.1", r2.Settings.FeedFloorDev);
+
+        // A floor refusal on dev counts like a failed fetch: with a newer stable, stable is offered; the dev floor stays where it was.
+        var net3 = new FakeNet();
+        net3.Feed("stable", s, Sign(stableKey, s));
+        net3.FeedAt(devBase, "dev", d, Sign(devKey, d));
+        var r3 = Run(net3, trust, dev: true, running: "0.4.3-dev.5", settings: new Settings { FeedFloorDev = "0.4.4-dev.7" });
+        Check.Equal(V("0.4.9"), r3.Info?.Version, r3.Up.LastError);
+        Check.Equal("0.4.4-dev.7", r3.Settings.FeedFloorDev, "a floor never goes down");
+        Check.Equal("0.4.9", r3.Settings.FeedFloorStable);
+
+        // ...and with nothing newer it fails the check with the refusal, naming the dev host.
+        var net4 = new FakeNet();
+        byte[] old = Bytes(Manifest("0.4.2"));
+        net4.Feed("stable", old, Sign(stableKey, old));
+        net4.FeedAt(devBase, "dev", d, Sign(devKey, d));
+        var r4 = Run(net4, trust, dev: true, running: "0.4.3-dev.5", settings: new Settings { FeedFloorDev = "0.4.4-dev.7" });
+        Check.Null(r4.Info);
+        Check.True(r4.Up.CheckFailed);
+        Check.Equal($"The update server ({new Uri(devBase).Host}) offered an older version than before, so it was not used", r4.Up.LastError);
+        Check.Equal("0.4.2", r4.Settings.FeedFloorStable, "the stable manifest verified");
     }
 
     [UnitTest]
@@ -744,19 +880,16 @@ internal static class UpdateFeedTests
 
         var net = new FakeNet();
         net.Feed("stable", manifest, Sign(key, manifest));
-        GitHub(net, Release("v0.4.2"));
         var manual = Run(net, Trust(stable: new[] { pub }), running: "0.4.3-dev.5", manual: true);
         Check.Equal(V("0.4.2"), manual.Info!.Version, "a manual check on the stable channel goes back to the release");
         Check.Equal(Sha, manual.Info.Sha256);
-        Check.False(net.AskedGitHub);
 
         var net2 = new FakeNet();
         net2.Feed("stable", manifest, Sign(key, manifest));
-        GitHub(net2, Release("v0.4.2"));
         var background = Run(net2, Trust(stable: new[] { pub }), running: "0.4.3-dev.5", manual: false);
         Check.Null(background.Info, "the background check does not");
-        Check.Null(background.Up.LastError, "nothing failed");
-        Check.True(net2.AskedGitHub, "older than the running exe counts as stale: GitHub decides, as before");
+        Check.Null(background.Up.LastError, "nothing failed: the release is older than the running dev build, so nothing newer exists");
+        Check.False(background.Up.CheckFailed);
     }
 
     [UnitTest]
@@ -776,14 +909,114 @@ internal static class UpdateFeedTests
         net2.Feed("stable", manifest, Sign(key, Bytes(Manifest())));
         var r2 = Run(net2, Trust(stable: new[] { pub }));
         Check.Null(r2.Info);
-        Check.True(net2.AskedGitHub, "refused: the signed GitHub path is asked");
-        Check.Equal("no releases found for o/r", r2.Up.LastError);
+        Check.True(r2.Up.CheckFailed);
+        Check.Equal("Couldn't verify the update server's answer (cdn.example)", r2.Up.LastError);
     }
 
-    // ------------------------------------------------------------------ feed on: fetched but not trustworthy -> signed GitHub path
+    // ------------------------------------------------------------------ no freshness rule, floors refuse a replay
 
     [UnitTest]
-    public static void Feed_refused_manifest_falls_back_to_the_signed_github_path()
+    public static void An_old_manifest_of_the_running_version_is_up_to_date_not_a_failure()
+    {
+        // MaxAge is gone: a quiet period without a release must not break updates. A manifest published 200 days ago (or 10 years ago)
+        // that names the running version says "up to date", on both channels, for a manual and a background check.
+        var (stablePub, stableKey) = NewKey();
+        var (devPub, devKey) = NewKey();
+        using var a = stableKey;
+        using var b = devKey;
+        var trust = Trust(stable: new[] { stablePub }, dev: new[] { devPub });
+        foreach (int days in new[] { 200, 3650 })
+        foreach (bool dev in new[] { false, true })
+        foreach (bool manual in new[] { false, true })
+        {
+            string what = $"published {days} days ago, dev {dev}, manual {manual}";
+            var net = new FakeNet();
+            byte[] s = Bytes(Manifest(dev ? "0.4.1" : "0.4.2", publishedDaysAgo: days));
+            net.Feed("stable", s, Sign(stableKey, s));
+            string running = "0.4.2";
+            if (dev)
+            {
+                running = "0.4.3-dev.2";
+                byte[] d = Bytes(Manifest(running, "dev", publishedDaysAgo: days));
+                net.Feed("dev", d, Sign(devKey, d));
+            }
+            var r = Run(net, trust, dev: dev, running: running, manual: manual);
+            Check.Null(r.Info, what);
+            Check.Null(r.Up.LastError, what);
+            Check.False(r.Up.CheckFailed, what);
+            Check.Null(r.Settings.FeedFloorFailingSince, what);
+            Check.Equal(dev ? "0.4.3-dev.2" : "0.4.2", dev ? r.Settings.FeedFloorDev : r.Settings.FeedFloorStable, what + ": the floor still goes up");
+            Check.False(net.AskedGitHub, what + ": and nobody else is asked");
+        }
+
+        // An old manifest that is newer than the running version is simply offered, and one dated in the future is no reason to refuse it either.
+        foreach (int daysAgo in new[] { 200, -30 })
+        {
+            var net = new FakeNet();
+            byte[] m = Bytes(Manifest("0.4.2", publishedDaysAgo: daysAgo));
+            net.Feed("stable", m, Sign(stableKey, m));
+            var r = Run(net, trust);
+            Check.Equal(V("0.4.2"), r.Info?.Version, $"published {daysAgo} days ago: {r.Up.LastError}");
+        }
+    }
+
+    [UnitTest]
+    public static void A_replayed_lower_version_is_refused_by_the_floor()
+    {
+        var (stablePub, stableKey) = NewKey();
+        var (devPub, devKey) = NewKey();
+        using var a = stableKey;
+        using var b = devKey;
+        var trust = Trust(stable: new[] { stablePub }, dev: new[] { devPub });
+
+        // stable: the floor is 0.4.3 (seen before), the feed now serves a validly signed 0.4.2
+        foreach (string running in new[] { "0.4.1", "0.4.2" })
+        {
+            var net = new FakeNet();
+            byte[] old = Bytes(Manifest("0.4.2"));
+            net.Feed("stable", old, Sign(stableKey, old));
+            var r = Run(net, trust, running: running, settings: new Settings { FeedFloorStable = "0.4.3" });
+            Check.Null(r.Info, running + ": the replay is not offered");
+            Check.True(r.Up.CheckFailed, running + ": and it is no 'up to date' either");
+            Check.Equal("The update server (cdn.example) offered an older version than before, so it was not used", r.Up.LastError, running);
+            Check.Equal("0.4.3", r.Settings.FeedFloorStable, running + ": a floor never goes down");
+        }
+
+        // equal to the floor is fine
+        var netEq = new FakeNet();
+        byte[] eq = Bytes(Manifest("0.4.3"));
+        netEq.Feed("stable", eq, Sign(stableKey, eq));
+        Check.Equal(V("0.4.3"), Run(netEq, trust, settings: new Settings { FeedFloorStable = "0.4.3" }).Info?.Version);
+
+        // dev channel: each channel has its own floor (the running dev build is ahead of the release, so only dev.json could offer anything)
+        byte[] s = Bytes(Manifest("0.4.3")), dOld = Bytes(Manifest("0.4.4-dev.1", "dev"));
+        var netDev = new FakeNet();
+        netDev.Feed("stable", s, Sign(stableKey, s));
+        netDev.Feed("dev", dOld, Sign(devKey, dOld));
+        var rDev = Run(netDev, trust, dev: true, running: "0.4.4-dev.1", settings: new Settings { FeedFloorDev = "0.4.4-dev.5" });
+        Check.Null(rDev.Info);
+        Check.True(rDev.Up.CheckFailed);
+        Check.Contains(rDev.Up.LastError, "older version than before");
+        Check.Equal("0.4.4-dev.5", rDev.Settings.FeedFloorDev);
+        Check.Equal("0.4.3", rDev.Settings.FeedFloorStable, "the stable manifest verified, so its floor goes up; the refused one raises nothing");
+
+        // after a good check the floor is up: a later replay of the previous release fails
+        var netA = new FakeNet();
+        byte[] v3 = Bytes(Manifest("0.4.3")), v2 = Bytes(Manifest("0.4.2"));
+        netA.Feed("stable", v3, Sign(stableKey, v3));
+        var settings = new Settings();
+        Check.Equal(V("0.4.3"), Run(netA, trust, settings: settings).Info?.Version);
+        var netB = new FakeNet();
+        netB.Feed("stable", v2, Sign(stableKey, v2));
+        var rB = Run(netB, trust, settings: settings);
+        Check.Null(rB.Info);
+        Check.True(rB.Up.CheckFailed);
+    }
+
+    // ------------------------------------------------------------------ feed on: fetched but not trustworthy, or not reachable: the check fails
+
+    [UnitTest]
+    public static void Feed_every_fetch_failure_fails_the_check_with_a_plain_message()
     {
         var (pub, key) = NewKey();
         using var k1 = key;
@@ -792,54 +1025,221 @@ internal static class UpdateFeedTests
         byte[] good = Bytes(Manifest());
         void Signed(FakeNet n, string json) { var b = Bytes(json); n.Feed("stable", b, Sign(key, b)); }
 
-        var cases = new List<(string Name, Action<FakeNet> Setup)>
+        const string Reach = "Couldn't reach the update server (cdn.example)";
+        const string Verify = "Couldn't verify the update server's answer (cdn.example)";
+        var cases = new List<(string Name, Action<FakeNet> Setup, string Expect)>
         {
-            ("bad signature", n => n.Feed("stable", good, Sign(wrongKey, good))),
-            ("flipped byte", n => { var b = (byte[])good.Clone(); b[12] ^= 1; n.Feed("stable", b, Sign(key, good)); }),
-            ("missing signature", n => n.Ok(Base + "stable.json", good)),
-            ("signature gone (410)", n => { n.Ok(Base + "stable.json", good); n.Status(Base + "stable.json.sig", 410); }),
-            ("garbage signature", n => n.Feed("stable", good, "%%%")),
-            ("short signature", n => n.Feed("stable", good, Convert.ToBase64String(new byte[32]))),
-            ("oversize signature", n => n.Feed("stable", good, new string('A', UpdateFeed.MaxSignatureBytes + 1))),
-            ("unparseable", n => Signed(n, "{ nope")),
-            ("schema 2", n => Signed(n, Manifest(schema: 2))),
-            ("wrong channel", n => Signed(n, Manifest(channel: "dev"))),
-            ("dev version on stable", n => Signed(n, Manifest("0.4.3-dev.7"))),
-            ("non-https exe", n => Signed(n, Manifest(exeUrl: "http://cdn.example/Clink.exe"))),
-            ("malformed exe url", n => Signed(n, Manifest(exeUrl: "https//cdn.example/Clink.exe"))),
-            ("no exe asset", n => Signed(n, Manifest(exe: false))),
-            ("bad sha", n => Signed(n, Manifest(sha: "XYZ"))),
-            ("size 0", n => Signed(n, Manifest(size: 0))),
-            ("no published", n => Signed(n, Manifest(published: false))),
-            ("tag mismatch", n => Signed(n, Manifest(tag: "v9.9.9"))),
-            ("UTF-16 BOM", n => { var b = new byte[] { 0xFF, 0xFE }.Concat(good).ToArray(); n.Feed("stable", b, Sign(key, b)); }),
+            ("404", n => { }, Reach + ": HTTP 404"),
+            ("HTTP 500", n => n.Status(Base + "stable.json", 500), Reach + ": HTTP 500"),
+            ("connection error", n => n.Throw(Base + "stable.json", () => new HttpRequestException("SERVER-TEXT connection refused")), Reach),
+            ("timeout", n => n.Throw(Base + "stable.json", () => new TaskCanceledException("SERVER-TEXT timed out")), Reach + ": no answer within 10 s"),
+            ("signature HTTP 503", n => { n.Ok(Base + "stable.json", good); n.Status(Base + "stable.json.sig", 503); }, Reach + ": HTTP 503"),
+            ("signature connection error", n => { n.Ok(Base + "stable.json", good); n.Throw(Base + "stable.json.sig", () => new IOException("SERVER-TEXT reset")); }, Reach),
+            ("bad signature", n => n.Feed("stable", good, Sign(wrongKey, good)), Verify),
+            ("flipped byte", n => { var b = (byte[])good.Clone(); b[12] ^= 1; n.Feed("stable", b, Sign(key, good)); }, Verify),
+            ("missing signature", n => n.Ok(Base + "stable.json", good), Verify),
+            ("signature gone (410)", n => { n.Ok(Base + "stable.json", good); n.Status(Base + "stable.json.sig", 410); }, Verify),
+            ("garbage signature", n => n.Feed("stable", good, "%%%"), Verify),
+            ("short signature", n => n.Feed("stable", good, Convert.ToBase64String(new byte[32])), Verify),
+            ("oversize signature", n => n.Feed("stable", good, new string('A', UpdateFeed.MaxSignatureBytes + 1)), Verify),
+            ("unparseable", n => Signed(n, "{ nope"), Verify),
+            ("schema 2", n => Signed(n, Manifest(schema: 2)), Verify),
+            ("wrong channel", n => Signed(n, Manifest(channel: "dev")), Verify),
+            ("dev version on stable", n => Signed(n, Manifest("0.4.3-dev.7")), Verify),
+            ("non-https exe", n => Signed(n, Manifest(exeUrl: "http://cdn.example/Clink.exe")), Verify),
+            ("malformed exe url", n => Signed(n, Manifest(exeUrl: "https//cdn.example/Clink.exe")), Verify),
+            ("exe outside the feed's base", n => Signed(n, Manifest(exeUrl: "https://evil.example/Clink.exe")), Verify),
+            ("no exe asset", n => Signed(n, Manifest(exe: false)), Verify),
+            ("bad sha", n => Signed(n, Manifest(sha: "XYZ")), Verify),
+            ("size 0", n => Signed(n, Manifest(size: 0)), Verify),
+            ("no published", n => Signed(n, Manifest(published: false)), Verify),
+            ("tag mismatch", n => Signed(n, Manifest(tag: "v9.9.9")), Verify),
+            ("UTF-16 BOM", n => { var b = new byte[] { 0xFF, 0xFE }.Concat(good).ToArray(); n.Feed("stable", b, Sign(key, b)); }, Verify),
         };
-        foreach (var (name, setup) in cases)
+        foreach (var (name, setup, expect) in cases)
         {
             var net = new FakeNet();
             setup(net);
-            GitHub(net, Release("v0.4.9"));
-            GitHubManifest(net, "v0.4.9", Bytes(Manifest("0.4.9")), Sign(key, Bytes(Manifest("0.4.9"))));
             var r = Run(net, Trust(stable: new[] { pub }));
-            Check.True(net.AskedGitHub, name + ": GitHub is asked");
-            Check.Equal(V("0.4.9"), r.Info?.Version, name + ": GitHub's release, with its signed manifest; " + r.Up.LastError);
-            Check.Equal(Sha, r.Info!.Sha256, name + ": the hash comes from the signed GitHub manifest");
-            Check.Equal("", r.Info.ShaUrl, name);
-            Check.False(net.AskedSha256File, name + ": never the unsigned path");
-            Check.Null(r.Up.LastError, name);
-            Check.Equal("0.4.9", r.Settings.FeedFloorStable, name + ": only the used GitHub manifest raises the floor");
-
-            // GitHub without a signed manifest: nothing at all (never Clink.exe.sha256).
-            var net2 = new FakeNet();
-            setup(net2);
-            GitHub(net2, Release("v0.4.9", signedAssets: false));
-            var r2 = Run(net2, Trust(stable: new[] { pub }));
-            Check.Null(r2.Info, name);
-            Check.Equal(Updater.GitHubRefusedNote, r2.Up.LastError, name);
-            Check.True(r2.Up.CheckFailed, name);
-            Check.False(net2.AskedSha256File, name);
-            Check.Null(r2.Settings.FeedFloorStable, name + ": no floor from a refused manifest");
+            Check.Null(r.Info, name);
+            Check.True(r.Up.CheckFailed, name);
+            Check.True(r.Up.LastError!.StartsWith(expect, StringComparison.Ordinal), $"{name}: '{r.Up.LastError}' should start with '{expect}'");
+            Check.DoesNotContain(r.Up.LastError, "SERVER-TEXT", name + ": nothing the server or the stack said");
+            Check.False(net.AskedGitHub, name + ": there is no fallback");
+            Check.Null(r.Settings.FeedFloorStable, name + ": no floor from a manifest that was not used");
+            Check.NotNull(r.Settings.FeedFloorFailingSince, name + ": the failure streak starts");
         }
+    }
+
+    [UnitTest]
+    public static void A_server_reason_phrase_never_reaches_the_user()
+    {
+        // F3: only "HTTP <code>" is ever recorded or shown, never the reason phrase the server chose.
+        var (pub, key) = NewKey();
+        using var k = key;
+        using var dir = new TempDir();
+        Updater.UpdatesDirOverride = dir.File("updates");
+        byte[] exe = FakeExe();
+        byte[] m = Bytes(Manifest("0.4.2", size: exe.Length, sha: Hex(exe)));
+        const string exeUrl = Base + "releases/v0.4.2/Clink.exe";
+        const string evil = "VISIT-EVIL";
+
+        // the manifest and the signature
+        foreach (string asset in new[] { "stable.json", "stable.json.sig" })
+        {
+            var net = new FakeNet();
+            net.Feed("stable", m, Sign(key, m));
+            net.Status(Base + asset, 503, evil);
+            var r = Run(net, Trust(stable: new[] { pub }));
+            Check.True(r.Up.CheckFailed, asset);
+            Check.DoesNotContain(r.Up.LastError, evil, asset);
+            Check.Contains(r.Up.LastError, "HTTP 503", asset);
+            Check.Contains(r.Up.LastError, "cdn.example", asset);
+        }
+
+        // the exe download, through the same pass the app uses, up to the notice at the attempt cap
+        var net2 = new FakeNet();
+        net2.Feed("stable", m, Sign(key, m));
+        net2.Status(exeUrl, 503, evil);
+        net2.AllowOnly(Trust());
+        Updater.HttpOverride = net2.Send;
+        Updater.FeedOverride = Trust(stable: new[] { pub });
+        using var up = new Updater(new Settings { AutoUpdate = true }, V("0.4.1"));
+        var notices = new List<UpdateNotice?>();
+        up.CheckFinished += n => { lock (notices) notices.Add(n); };
+        for (int pass = 1; pass <= 4; pass++)
+        {
+            Check.Equal(V("0.4.2"), OffUi(() => up.RunBackgroundPassAsync(CancellationToken.None))?.Version, $"pass {pass}");
+            Check.DoesNotContain(up.LastError, evil, $"pass {pass}");
+            Check.Contains(up.LastError, "HTTP 503", $"pass {pass}");
+            if (notices[^1] is { } notice)
+            {
+                Check.DoesNotContain(notice.Text, evil, $"pass {pass}: the tray text");
+                Check.DoesNotContain(notice.Title, evil, $"pass {pass}");
+                Check.Contains(notice.Text, "HTTP 503", $"pass {pass}");
+            }
+        }
+        Check.NotNull(notices.FirstOrDefault(n => n != null), "the cap was reached and announced");
+        Check.False(up.CheckFailed, "the check itself worked: it is the download that failed");
+        net2.AssertNoStray();
+
+        // the check result of a manual pass shows the same
+        OffUi(() => up.CheckNowAsync());
+        Check.DoesNotContain(up.LastError, evil);
+        Check.Contains(up.LastError, "HTTP 503");
+    }
+
+    // ------------------------------------------------------------------ full cycles never leave the feed hosts
+
+    [UnitTest]
+    public static void Full_check_cycles_only_ever_talk_to_the_feed_hosts()
+    {
+        // Every cycle (offer + download, up to date, unreachable, bad signature, download failure) on both channels, with one feed base and
+        // with two, manual and background. The fake network fails the test on a request to any other host; and every URL the updater
+        // reports to its send hook is under one of the configured bases.
+        var observed = new List<string>();
+        Updater.SendObserver = url => { lock (observed) observed.Add(url); };
+        foreach (bool twoBases in new[] { false, true })
+        foreach (bool dev in new[] { false, true })
+        foreach (bool manual in new[] { false, true })
+        foreach (string scenario in new[] { "offer", "up to date", "unreachable", "bad signature", "download failure" })
+        {
+            string what = $"{(twoBases ? "two bases" : "one base")}, {(dev ? "dev" : "stable")} channel, {(manual ? "manual" : "background")}, {scenario}";
+            using var dir = new TempDir();
+            Updater.UpdatesDirOverride = dir.File("updates");
+            var (stablePub, stableKey) = NewKey();
+            var (devPub, devKey) = NewKey();
+            var (_, wrongKey) = NewKey();
+            using var a = stableKey;
+            using var b = devKey;
+            using var c = wrongKey;
+            var trust = twoBases ? TwoBases(new[] { stablePub }, new[] { devPub }) : Trust(new[] { stablePub }, new[] { devPub });
+            string stableBase = trust.BaseFor("stable")!, devBase = trust.BaseFor("dev")!;
+            string feedBase = dev ? devBase : stableBase;
+            byte[] exe = FakeExe();
+            string version = dev ? "0.4.3-dev.2" : "0.4.2";
+            string running = scenario == "up to date" ? version : dev ? "0.4.3-dev.1" : "0.4.1";
+            string exeUrl = $"{feedBase}releases/v{version}/Clink.exe";
+            string text = Manifest(version, dev ? "dev" : "stable", exeUrl: exeUrl, size: exe.Length, sha: Hex(exe)).Replace("https://cdn.example/clink/releases/Clink-Setup.exe", feedBase + "releases/Clink-Setup.exe");
+            byte[] m = Bytes(text);
+            var net = new FakeNet();
+            if (scenario != "unreachable")
+            {
+                net.FeedAt(feedBase, dev ? "dev" : "stable", m, Sign(scenario == "bad signature" ? wrongKey : dev ? devKey : stableKey, m));
+                if (dev)   // a dev client reads stable.json too (an old release: the dev build is the newest)
+                {
+                    byte[] s = Bytes(Manifest("0.4.1", exeUrl: $"{stableBase}releases/v0.4.1/Clink.exe").Replace("https://cdn.example/clink/releases/Clink-Setup.exe", stableBase + "releases/Clink-Setup.exe"));
+                    net.FeedAt(stableBase, "stable", s, Sign(stableKey, s));
+                }
+            }
+            if (scenario == "download failure") net.Status(exeUrl, 503); else net.Ok(exeUrl, exe);
+            net.AllowOnly(trust);
+            Updater.HttpOverride = net.Send;
+            Updater.FeedOverride = trust;
+            int before = observed.Count;
+            using var up = new Updater(new Settings { AutoUpdate = true, UseDevBuilds = dev }, V(running));
+            var info = OffUi(() => manual ? up.CheckNowAsync() : up.RunBackgroundPassAsync(CancellationToken.None));
+            net.AssertNoStray();
+            Check.False(net.AskedGitHub, what);
+            Check.False(net.AskedSha256File, what);
+            string[] sent;
+            lock (observed) sent = observed.Skip(before).ToArray();
+            Check.Equal(net.Asked.ToArray(), sent, what + ": the send hook saw exactly what the network was asked");
+            foreach (string url in sent)
+                Check.True(url.StartsWith(stableBase, StringComparison.Ordinal) || url.StartsWith(devBase, StringComparison.Ordinal), $"{what}: {url} is not under a configured feed base");
+
+            switch (scenario)
+            {
+                case "offer":
+                    Check.Equal(V(version), info?.Version, what + ": " + up.LastError);
+                    Check.Null(up.LastError, what);
+                    Check.Equal(Updater.FileFor(V(version)), up.PendingPath, what + ": downloaded and verified");
+                    break;
+                case "up to date":
+                    Check.Null(info, what);
+                    Check.Null(up.LastError, what);
+                    Check.False(up.CheckFailed, what);
+                    Check.Null(up.PendingPath, what);
+                    break;
+                case "unreachable":
+                    Check.Null(info, what);
+                    Check.True(up.CheckFailed, what);
+                    Check.True(up.LastError!.StartsWith("Couldn't reach the update server (", StringComparison.Ordinal), what + ": " + up.LastError);
+                    break;
+                case "bad signature":
+                    Check.Null(info, what);
+                    Check.True(up.CheckFailed, what);
+                    Check.True(up.LastError!.StartsWith("Couldn't verify the update server's answer (", StringComparison.Ordinal), what + ": " + up.LastError);
+                    break;
+                default:   // download failure
+                    Check.Equal(V(version), info?.Version, what);
+                    Check.False(up.CheckFailed, what + ": the check worked, the download did not");
+                    Check.Equal($"downloading v{version} failed: HTTP 503", up.LastError, what);
+                    Check.Null(up.PendingPath, what);
+                    break;
+            }
+        }
+    }
+
+    [UnitTest]
+    public static void A_manual_check_runs_the_same_feed_check_right_away()
+    {
+        var (pub, key) = NewKey();
+        using var k = key;
+        byte[] m = Bytes(Manifest("0.4.1"));
+        var net = new FakeNet();
+        net.Feed("stable", m, Sign(key, m));
+        net.AllowOnly(Trust());
+        Updater.HttpOverride = net.Send;
+        Updater.FeedOverride = Trust(stable: new[] { pub });
+        using var up = new Updater(new Settings(), V("0.4.1"));
+        // a background pass just ran; the manual check does not wait for the 6 h interval and asks the very same two files
+        OffUi(() => up.RunBackgroundPassAsync(CancellationToken.None));
+        var afterBackground = net.Asked.ToArray();
+        Check.Equal(new[] { Base + "stable.json", Base + "stable.json.sig" }, afterBackground);
+        Check.Null(OffUi(() => up.CheckNowAsync()));
+        Check.Equal(afterBackground.Concat(afterBackground).ToArray(), net.Asked.ToArray(), "a manual check = the same requests, at once");
+        Check.Null(up.LastError, "and its result is the status the footer reports");
     }
 
     // ------------------------------------------------------------------ capped reads
@@ -875,23 +1275,24 @@ internal static class UpdateFeedTests
     {
         var (pub, key) = NewKey();
         using var k = key;
+        const string refused = "Couldn't verify the update server's answer (cdn.example)";
 
         var endless = new EndlessStream();
         var net = new FakeNet();
         net.Ok(Base + "stable.json", () => new StreamContent(endless));
-        var r = Run(net, Trust(stable: new[] { pub }));   // GitHub has no releases: the fall back ends there
+        var r = Run(net, Trust(stable: new[] { pub }));
         Check.Null(r.Info);
-        Check.Equal("no releases found for o/r", r.Up.LastError);
+        Check.True(r.Up.CheckFailed);
+        Check.Equal(refused, r.Up.LastError);
         Check.True(endless.Served <= UpdateFeed.MaxManifestBytes + 1, $"read {endless.Served} bytes");
         Check.False(net.Asked.Contains(Base + "stable.json.sig"), "the size is checked before the signature is fetched");
-        Check.True(net.AskedGitHub, "refused: the signed GitHub path");
 
         var announced = new AnnouncedContent(10L * 1024 * 1024);
         var net2 = new FakeNet();
         net2.Ok(Base + "stable.json", () => announced);
         var r2 = Run(net2, Trust(stable: new[] { pub }));
         Check.Null(r2.Info);
-        Check.Equal("no releases found for o/r", r2.Up.LastError);
+        Check.Equal(refused, r2.Up.LastError);
         Check.False(announced.Read, "a Content-Length over the cap is refused before the body is read");
 
         // The signature is capped too.
@@ -902,7 +1303,7 @@ internal static class UpdateFeedTests
         net3.Ok(Base + "stable.json.sig", () => new StreamContent(endlessSig));
         var r3 = Run(net3, Trust(stable: new[] { pub }));
         Check.Null(r3.Info);
-        Check.Equal("no releases found for o/r", r3.Up.LastError);
+        Check.Equal(refused, r3.Up.LastError);
         Check.True(endlessSig.Served <= UpdateFeed.MaxSignatureBytes + 1, $"read {endlessSig.Served} bytes of the signature");
 
         // At the cap is fine.
@@ -912,116 +1313,6 @@ internal static class UpdateFeedTests
         var net4 = new FakeNet();
         net4.Feed("stable", full, Sign(key, full));
         Check.Equal(V("0.4.2"), Run(net4, Trust(stable: new[] { pub })).Info?.Version);
-    }
-
-    // ------------------------------------------------------------------ feed on: unreachable or stale -> signed GitHub path
-
-    [UnitTest]
-    public static void Feed_unreachable_falls_back_to_the_signed_github_path()
-    {
-        var (pub, key) = NewKey();
-        using var k = key;
-        byte[] good = Bytes(Manifest());
-        var cases = new List<(string Name, Action<FakeNet> Setup)>
-        {
-            ("404", n => { }),
-            ("HTTP 500", n => n.Status(Base + "stable.json", 500)),
-            ("connection error", n => n.Throw(Base + "stable.json", () => new HttpRequestException("connection refused"))),
-            ("timeout", n => n.Throw(Base + "stable.json", () => new TaskCanceledException("timed out"))),
-            ("signature HTTP 503", n => { n.Ok(Base + "stable.json", good); n.Status(Base + "stable.json.sig", 503); }),
-            ("signature connection error", n => { n.Ok(Base + "stable.json", good); n.Throw(Base + "stable.json.sig", () => new IOException("reset")); }),
-        };
-        foreach (var (name, setup) in cases)
-        {
-            var net = new FakeNet();
-            setup(net);
-            GitHub(net, Release("v0.4.9"));
-            byte[] ghManifest = Bytes(Manifest("0.4.9"));
-            GitHubManifest(net, "v0.4.9", ghManifest, Sign(key, ghManifest));
-            var r = Run(net, Trust(stable: new[] { pub }));
-            Check.NotNull(r.Info, name + ": GitHub's release is offered");
-            Check.Equal(V("0.4.9"), r.Info!.Version, name);
-            Check.Equal(Gh + "v0.4.9/Clink.exe", r.Info.ExeUrl, name + ": the exe comes from the GitHub release");
-            Check.Equal(Sha, r.Info.Sha256, name + ": the hash comes from the signed manifest");
-            Check.Equal(1234L, r.Info.ExeSize, name);
-            Check.Equal("", r.Info.ShaUrl, name);
-            Check.False(net.AskedSha256File, name + ": Clink.exe.sha256 is not used");
-            Check.Null(r.Up.LastError, name);
-            Check.Equal("0.4.9", r.Settings.FeedFloorStable, name + ": a verified GitHub manifest raises the floor");
-        }
-    }
-
-    [UnitTest]
-    public static void Feed_stale_manifest_falls_back_to_github()
-    {
-        var (pub, key) = NewKey();
-        using var k = key;
-        var cases = new List<(string Name, string Manifest, string Running, string? Floor)>
-        {
-            ("below the floor", Manifest("0.4.2"), "0.4.1", "0.4.3"),
-            ("published over 90 days ago", Manifest("0.4.2", publishedDaysAgo: 91), "0.4.1", null),
-            ("published 3 days in the future", Manifest("0.4.2", publishedDaysAgo: -3), "0.4.1", null),
-            ("older than the running exe", Manifest("0.4.2"), "0.4.3", null),
-        };
-        foreach (var (name, json, running, floor) in cases)
-        {
-            var net = new FakeNet();
-            byte[] m = Bytes(json);
-            net.Feed("stable", m, Sign(key, m));   // GitHub has no releases: the check ends there
-            var settings = new Settings { FeedFloorStable = floor };
-            var r = Run(net, Trust(stable: new[] { pub }), running: running, settings: settings);
-            Check.Null(r.Info, name);
-            Check.True(net.AskedGitHub, name + ": GitHub is asked");
-            Check.Equal("no releases found for o/r", r.Up.LastError, name);
-            Check.Equal(floor, r.Settings.FeedFloorStable, name + ": a stale manifest raises no floor");
-        }
-
-        // A stale manifest still raises nothing above what it is, and a floor never goes down.
-        var net2 = new FakeNet();
-        byte[] m2 = Bytes(Manifest("0.4.2"));
-        net2.Feed("stable", m2, Sign(key, m2));
-        var r2 = Run(net2, Trust(stable: new[] { pub }), settings: new Settings { FeedFloorStable = "0.4.3" });
-        Check.Equal("0.4.3", r2.Settings.FeedFloorStable);
-    }
-
-    [UnitTest]
-    public static void Feed_github_release_without_valid_signed_manifest_is_refused()
-    {
-        var (pub, key) = NewKey();
-        using var k1 = key;
-        var (_, wrongKey) = NewKey();
-        using var k2 = wrongKey;
-        byte[] m9 = Bytes(Manifest("0.4.9"));
-        var cases = new List<(string Name, Action<FakeNet> Setup)>
-        {
-            ("no signed assets", n => GitHub(n, Release("v0.4.9", signedAssets: false))),
-            ("signature asset missing", n => { GitHub(n, Release("v0.4.9")); n.Ok(Gh + "v0.4.9/stable.json", m9); }),
-            ("wrong key", n => { GitHub(n, Release("v0.4.9")); GitHubManifest(n, "v0.4.9", m9, Sign(wrongKey, m9)); }),
-            ("manifest of another tag", n => { GitHub(n, Release("v0.4.9")); var m8 = Bytes(Manifest("0.4.8")); GitHubManifest(n, "v0.4.9", m8, Sign(key, m8)); }),
-            ("exe size differs", n => { GitHub(n, Release("v0.4.9", exeSize: 999)); GitHubManifest(n, "v0.4.9", m9, Sign(key, m9)); }),
-            ("manifest unreachable", n => { GitHub(n, Release("v0.4.9")); n.Status(Gh + "v0.4.9/stable.json", 500); }),
-            ("below the floor (a replayed release)", n => { GitHub(n, Release("v0.4.9")); GitHubManifest(n, "v0.4.9", m9, Sign(key, m9)); }),
-        };
-        foreach (var (name, setup) in cases)
-        {
-            var net = new FakeNet();
-            setup(net);   // and the feed is unreachable (404)
-            string? floor = name.StartsWith("below", StringComparison.Ordinal) ? "0.5.0" : null;
-            var r = Run(net, Trust(stable: new[] { pub }), settings: new Settings { FeedFloorStable = floor });
-            Check.Null(r.Info, name + ": refused");
-            Check.Equal(Updater.GitHubRefusedNote, r.Up.LastError, name);
-            Check.True(r.Up.CheckFailed, name);
-            Check.False(net.AskedSha256File, name + ": no fall back to Clink.exe.sha256");
-            Check.False(net.Asked.Any(u => u.EndsWith("Clink.exe", StringComparison.Ordinal)), name + ": nothing downloaded");
-            Check.Equal(floor, r.Settings.FeedFloorStable, name + ": a manifest that is not offered raises no floor (the size mismatch included)");
-        }
-
-        // The floor holds on the GitHub path: equal to it is fine.
-        var ok = new FakeNet();
-        GitHub(ok, Release("v0.4.9"));
-        GitHubManifest(ok, "v0.4.9", m9, Sign(key, m9));
-        var r2 = Run(ok, Trust(stable: new[] { pub }), settings: new Settings { FeedFloorStable = "0.4.9" });
-        Check.Equal(V("0.4.9"), r2.Info?.Version, r2.Up.LastError);
     }
 
     // ------------------------------------------------------------------ timeouts
@@ -1058,6 +1349,7 @@ internal static class UpdateFeedTests
         var ex = Check.Throws<FeedUnreachableException>(() => UpdateFeed.FetchCappedAsync((_, ct) => StalledHeaders(ct), Base + "stable.json", 1000, false,
             CancellationToken.None, shortTime).GetAwaiter().GetResult(), "stalled header");
         Check.Contains(ex.Message, "no answer for stable.json within 0.3 s");
+        Check.Equal("no answer within 0.3 s", ex.UserDetail, "the part that may be shown to the user");
         Check.True(sw.Elapsed < TimeSpan.FromSeconds(5), $"took {sw.Elapsed}");
 
         sw.Restart();
@@ -1067,16 +1359,22 @@ internal static class UpdateFeedTests
         Check.Contains(ex.Message, "no answer");
         Check.True(sw.Elapsed < TimeSpan.FromSeconds(5), $"took {sw.Elapsed}");
 
+        // An HTTP error: the user detail is the code alone (the reason phrase is the server's text).
+        ex = Check.Throws<FeedUnreachableException>(() => UpdateFeed.FetchCappedAsync(
+            (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable) { ReasonPhrase = "VISIT-EVIL" }),
+            Base + "stable.json", 1000, false, CancellationToken.None).GetAwaiter().GetResult(), "HTTP 503");
+        Check.Equal("HTTP 503", ex.UserDetail);
+        Check.DoesNotContain(ex.Message, "VISIT-EVIL");
+
         // The caller's cancellation still wins over the timeout: thrown as such, not as unreachable.
         using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
         Check.Throws<OperationCanceledException>(() => UpdateFeed.FetchCappedAsync((_, ct) => StalledHeaders(ct), Base + "stable.json", 1000, false,
             cts.Token, TimeSpan.FromSeconds(30)).GetAwaiter().GetResult());
 
-        // In the updater: a stalled feed (header or body, manifest or signature) is unreachable, so the signed GitHub path is asked.
+        // In the updater: a stalled feed (header or body, manifest or signature) is unreachable: the check fails, in time.
         var (pub, key) = NewKey();
         using var k = key;
         byte[] good = Bytes(Manifest());
-        byte[] m9 = Bytes(Manifest("0.4.9"));
         var cases = new List<(string Name, Action<FakeNet> Setup)>
         {
             ("manifest header", n => n.RoutesAsync[Base + "stable.json"] = StalledHeaders),
@@ -1087,66 +1385,35 @@ internal static class UpdateFeedTests
         {
             var net = new FakeNet();
             setup(net);
-            GitHub(net, Release("v0.4.9"));
-            GitHubManifest(net, "v0.4.9", m9, Sign(key, m9));
             Updater.FeedTimeoutOverride = shortTime;
             sw.Restart();
             var r = Run(net, Trust(stable: new[] { pub }));
-            Check.Equal(V("0.4.9"), r.Info?.Version, name + ": " + r.Up.LastError);
-            Check.Equal(Sha, r.Info!.Sha256, name);
+            Check.Null(r.Info, name);
+            Check.True(r.Up.CheckFailed, name);
+            Check.Equal("Couldn't reach the update server (cdn.example): no answer within 0.3 s", r.Up.LastError, name);
             Check.True(sw.Elapsed < TimeSpan.FromSeconds(10), $"{name}: took {sw.Elapsed}");
         }
     }
 
     [UnitTest]
-    public static void Feed_signed_github_path_on_the_dev_channel_uses_dev_json_and_the_dev_keys()
-    {
-        var (stablePub, stableKey) = NewKey();
-        var (devPub, devKey) = NewKey();
-        using var a = stableKey;
-        using var b = devKey;
-        var trust = Trust(stable: new[] { stablePub }, dev: new[] { devPub });
-        byte[] dm = Bytes(Manifest("0.4.5-dev.3", "dev"));
-
-        var net = new FakeNet();   // feed unreachable
-        GitHub(net, Release("v0.4.4"), Release("v0.4.5-dev.3", prerelease: true));
-        GitHubManifest(net, "v0.4.5-dev.3", dm, Sign(devKey, dm), "dev");
-        var r = Run(net, trust, dev: true, running: "0.4.4");
-        Check.Equal(V("0.4.5-dev.3"), r.Info?.Version, r.Up.LastError);
-        Check.Equal(Gh + "v0.4.5-dev.3/Clink.exe", r.Info!.ExeUrl);
-        Check.Equal("0.4.5-dev.3", r.Settings.FeedFloorDev);
-
-        var net2 = new FakeNet();
-        GitHub(net2, Release("v0.4.4"), Release("v0.4.5-dev.3", prerelease: true));
-        GitHubManifest(net2, "v0.4.5-dev.3", dm, Sign(stableKey, dm), "dev");
-        var r2 = Run(net2, trust, dev: true, running: "0.4.4");
-        Check.Null(r2.Info, "a dev manifest signed with the stable key is refused");
-        Check.Equal(Updater.GitHubRefusedNote, r2.Up.LastError);
-    }
-
-    [UnitTest]
-    public static void Feed_on_ignores_update_repo_from_settings()
+    public static void The_legacy_UpdateRepo_setting_is_ignored()
     {
         var (pub, key) = NewKey();
         using var k = key;
-        var net = new FakeNet();   // feed unreachable: GitHub is asked
-        GitHub(net, Release("v0.4.9"));
-        byte[] m9 = Bytes(Manifest("0.4.9"));
-        GitHubManifest(net, "v0.4.9", m9, Sign(key, m9));
-        net.Ok("https://api.github.com/repos/evil/x/releases/latest", Bytes(Release("v9.9.9", signedAssets: false)));
-        var settings = new Settings { UpdateRepo = "evil/x" };
-        var r = Run(net, Trust(stable: new[] { pub }), settings: settings);
-        Check.Equal(V("0.4.9"), r.Info?.Version, r.Up.LastError);
-        Check.False(net.Asked.Any(u => u.Contains("evil", StringComparison.Ordinal)), "only the built-in repository is asked");
-        Check.True(net.Asked.Contains(GitHubLatest));
-        Check.Equal(BuiltIn, r.Up.Repo);
-        Check.False(r.Up.RepoOverridden);
+        byte[] m = Bytes(Manifest("0.4.2"));
+        var net = new FakeNet();
+        net.Feed("stable", m, Sign(key, m));
+        net.Ok("https://api.github.com/repos/evil/x/releases/latest", Bytes("""{"tag_name":"v9.9.9"}"""));
+        var r = Run(net, Trust(stable: new[] { pub }), settings: new Settings { UpdateRepo = "evil/x" });
+        Check.Equal(V("0.4.2"), r.Info?.Version, r.Up.LastError);
+        Check.Equal(new[] { Base + "stable.json", Base + "stable.json.sig" }, net.Asked.ToArray(), "the feed, and nothing else");
+        Check.True(r.Up.UpdatesEnabled);
 
-        // With the feed off, the setting works as it always did.
-        Updater.FeedOverride = FeedTrust.None;
-        var plain = new Updater(settings, V("0.4.1"));
-        Check.Equal("evil/x", plain.Repo);
-        Check.True(plain.RepoOverridden);
+        // The key stays in settings.json (it round-trips, and an older Clink reads it) but means nothing here; a settings import keeps ours.
+        var s = Settings.FromJson("""{"UpdateRepo":"owner/repo"}""");
+        Check.Equal("owner/repo", s.UpdateRepo);
+        Check.Contains(s.ToJson(), "\"UpdateRepo\": \"owner/repo\"");
+        Check.True(SettingsImport.IsOwnKey(nameof(Settings.UpdateRepo)));
     }
 
     // ------------------------------------------------------------------ cancellation
@@ -1160,20 +1427,18 @@ internal static class UpdateFeedTests
         using var cts = new CancellationTokenSource();
         cts.Cancel();
         var net = new FakeNet();
-        GitHub(net, Release("v0.4.9"));
         var r = Run(net, Trust(stable: new[] { pub }), ct: cts.Token);
         Check.Null(r.Info);
         Check.Equal("cancelled", r.Up.LastError);
-        Check.False(net.AskedGitHub, "a cancelled check is not a reason to ask GitHub");
+        Check.Null(r.Settings.FeedFloorFailingSince, "shutting down is not a failed check");
 
-        // Cancelled while the feed answers: the same, not a fall back.
+        // Cancelled while the feed answers: the same.
         using var cts2 = new CancellationTokenSource();
         var net2 = new FakeNet();
         net2.Routes[Base + "stable.json"] = ct => { cts2.Cancel(); ct.ThrowIfCancellationRequested(); throw new InvalidOperationException("not reached"); };
-        GitHub(net2, Release("v0.4.9"));
         var r2 = Run(net2, Trust(stable: new[] { pub }), ct: cts2.Token);
         Check.Equal("cancelled", r2.Up.LastError);
-        Check.False(net2.AskedGitHub);
+        Check.Null(r2.Settings.FeedFloorFailingSince);
 
         // FetchCappedAsync itself throws the caller's cancellation as such.
         using var cts3 = new CancellationTokenSource();
@@ -1202,8 +1467,8 @@ internal static class UpdateFeedTests
         byte[] exe = FakeExe();
         const string url = "https://cdn.example/clink/releases/v0.4.2/Clink.exe";
         var settings = new Settings();
-        var up = new Updater(settings, V("0.4.1"));
-        UpdateInfo Info(string sha, long size) => new(V("0.4.2"), "v0.4.2", url, size, "", "", "", sha);
+        using var up = new Updater(settings, V("0.4.1"));
+        UpdateInfo Info(string sha, long size) => new(V("0.4.2"), "v0.4.2", url, size, sha, "");
         string[] Left() => Directory.Exists(Updater.UpdatesDir) ? Directory.GetFiles(Updater.UpdatesDir) : Array.Empty<string>();
 
         var cases = new List<(string Name, byte[] Body, string Sha, long Size)>
@@ -1232,6 +1497,14 @@ internal static class UpdateFeedTests
         Check.True(endless.Served < 1 << 20, $"read {endless.Served} bytes");
         Check.Equal(Array.Empty<string>(), Left());
 
+        // An error status fails the download with "HTTP <code>" and nothing of the server's reason phrase.
+        var netE = new FakeNet();
+        netE.Status(url, 404, "VISIT-EVIL");
+        Updater.HttpOverride = netE.Send;
+        var httpEx = Check.Throws<HttpRequestException>(() => OffUi(() => up.DownloadAsync(Info(Hex(exe), exe.Length), null, CancellationToken.None)));
+        Check.Equal("HTTP 404", httpEx.Message);
+        Check.Equal(Array.Empty<string>(), Left());
+
         // The good one.
         var net3 = new FakeNet();
         net3.Ok(url, exe);
@@ -1241,47 +1514,24 @@ internal static class UpdateFeedTests
         Check.Equal(exe, File.ReadAllBytes(path));
         Check.Equal(new[] { url }, net3.Asked.ToArray(), "only the exe: no hash file");
         Check.Equal(Hex(exe), settings.PendingUpdateSha256!.ToLowerInvariant());
-        Check.Equal(true, settings.PendingUpdateSigned, "recorded as a signed download");
-        Check.Contains(settings.ToJson(), "\"PendingUpdateSigned\": true");
+        Check.Equal(Hex(exe), settings.PendingUpdateSignedSha256!.ToLowerInvariant(), "recorded as a signed download, tied to its hash");
+        Check.Contains(settings.ToJson(), "\"PendingUpdateSignedSha256\": \"" + settings.PendingUpdateSha256 + "\"");
+        Check.DoesNotContain(settings.ToJson(), "\"PendingUpdateSigned\":", "the retired bool is never written");
 
-        // An unsigned download (feed off: Clink.exe.sha256) clears the mark.
+        // There is no unsigned download any more: an offer without the signed hash is refused before any request is made.
         File.Delete(path);
         var net4 = new FakeNet();
         net4.Ok(url, exe);
         net4.Ok(url + ".sha256", Bytes(Hex(exe) + "  Clink.exe\n"));
         Updater.HttpOverride = net4.Send;
-        OffUi(() => up.DownloadAsync(new UpdateInfo(V("0.4.2"), "v0.4.2", url, exe.Length, url + ".sha256", "", ""), null, CancellationToken.None));
-        Check.Null(settings.PendingUpdateSigned);
-        Check.DoesNotContain(settings.ToJson(), "PendingUpdateSigned", "left out of the file while null");
-        path = Updater.FileFor(V("0.4.2"));
+        Check.Throws<InvalidOperationException>(() => OffUi(() => up.DownloadAsync(new UpdateInfo(V("0.4.2"), "v0.4.2", url, exe.Length, "", ""), null, CancellationToken.None)));
+        Check.Equal(0, net4.Asked.Count, "nothing was requested, no hash file either");
 
         // Caller cancellation propagates from the download too, and leaves nothing behind.
-        File.Delete(path);
         using var cts = new CancellationTokenSource();
         cts.Cancel();
         Check.Throws<OperationCanceledException>(() => OffUi(() => up.DownloadAsync(Info(Hex(exe), exe.Length), null, cts.Token)));
         Check.Equal(Array.Empty<string>(), Left().Where(f => f.EndsWith(".partial", StringComparison.Ordinal) || f.EndsWith(".exe", StringComparison.Ordinal)).ToArray());
-    }
-
-    [UnitTest]
-    public static void Feed_github_manifest_hash_must_match_the_downloaded_exe()
-    {
-        var (pub, key) = NewKey();
-        using var k = key;
-        using var dir = new TempDir();
-        Updater.UpdatesDirOverride = dir.File("updates");
-        byte[] exe = FakeExe();
-        var net = new FakeNet();   // feed unreachable
-        GitHub(net, Release("v0.4.9", exeSize: exe.Length));
-        byte[] m9 = Bytes(Manifest("0.4.9", size: exe.Length, sha: new string('c', 64)));   // signed, but not this exe's hash
-        GitHubManifest(net, "v0.4.9", m9, Sign(key, m9));
-        net.Ok(Gh + "v0.4.9/Clink.exe", exe);
-        var r = Run(net, Trust(stable: new[] { pub }));
-        Check.NotNull(r.Info, r.Up.LastError);
-        var ex = Check.Throws<InvalidDataException>(() => OffUi(() => r.Up.DownloadAsync(r.Info!, null, CancellationToken.None)));
-        Check.Contains(ex.Message, "SHA-256");
-        Check.False(net.AskedSha256File, "Clink.exe.sha256 is never asked for");
-        Check.Equal(Array.Empty<string>(), Directory.GetFiles(Updater.UpdatesDir));
     }
 
     [UnitTest]
@@ -1306,8 +1556,7 @@ internal static class UpdateFeedTests
         settings.UseDevBuilds = false;
         Updater.HttpOverride = net.Send;
         Updater.FeedOverride = Trust(stable: new[] { pub });
-        Updater.BuiltInRepoOverride = BuiltIn;
-        var up = new Updater(settings, V("0.4.1"));
+        using var up = new Updater(settings, V("0.4.1"));
         OffUi(() => up.CheckNowAsync());
         Check.Null(up.PendingPath, "not adopted");
         Check.True(net.Asked.Contains(exeUrl), "downloaded again instead");
@@ -1319,11 +1568,11 @@ internal static class UpdateFeedTests
         File.WriteAllBytes(file, exe);
         settings.PendingUpdateVersion = "0.4.2";
         settings.PendingUpdateSha256 = Convert.ToHexString(SHA256.HashData(exe));
-        settings.PendingUpdateSigned = null;
+        settings.PendingUpdateSignedSha256 = null;
         var netU = new FakeNet();
         netU.Feed("stable", same, Sign(key, same));
         Updater.HttpOverride = netU.Send;
-        var upU = new Updater(settings, V("0.4.1"));
+        using var upU = new Updater(settings, V("0.4.1"));
         OffUi(() => upU.CheckNowAsync());
         Check.True(netU.Asked.Contains(exeUrl), "an unsigned download is not reused while the feed is on");
 
@@ -1331,11 +1580,11 @@ internal static class UpdateFeedTests
         File.WriteAllBytes(file, exe);
         settings.PendingUpdateVersion = "0.4.2";
         settings.PendingUpdateSha256 = Convert.ToHexString(SHA256.HashData(exe));
-        settings.PendingUpdateSigned = true;
+        settings.PendingUpdateSignedSha256 = Convert.ToHexString(SHA256.HashData(exe));
         var net2 = new FakeNet();
         net2.Feed("stable", same, Sign(key, same));
         Updater.HttpOverride = net2.Send;
-        var up2 = new Updater(settings, V("0.4.1"));
+        using var up2 = new Updater(settings, V("0.4.1"));
         OffUi(() => up2.CheckNowAsync());
         Check.Equal(file, up2.PendingPath);
         Check.False(net2.Asked.Contains(exeUrl), "reused");
@@ -1368,8 +1617,7 @@ internal static class UpdateFeedTests
         settings.UseDevBuilds = false;
         Updater.HttpOverride = net.Send;
         Updater.FeedOverride = Trust(stable: new[] { pub });
-        Updater.BuiltInRepoOverride = BuiltIn;
-        var up = new Updater(settings, V("0.4.1"));
+        using var up = new Updater(settings, V("0.4.1"));
         Check.True(up.TrySetPending(newer, V("0.4.3"), "downloaded and verified", manual: false));   // made earlier in this run
         var info = OffUi(() => up.CheckNowAsync());
         Check.Equal(V("0.4.2"), info?.Version, up.LastError);
@@ -1378,25 +1626,24 @@ internal static class UpdateFeedTests
     }
 
     [UnitTest]
-    public static void Feed_on_installs_only_a_signed_download_at_startup()
+    public static void Only_a_signed_download_is_installed_at_startup()
     {
         using var dir = new TempDir();
         Updater.UpdatesDirOverride = dir.File("updates");
         Directory.CreateDirectory(Updater.UpdatesDir);
         byte[] exe = FakeExe();
         string file = Updater.FileFor(V("0.4.9"));
-        Updater.BuiltInRepoOverride = BuiltIn;
-        Settings Recorded(bool? signed) => new() { PendingUpdateVersion = "0.4.9", PendingUpdateSha256 = Hex(exe), PendingUpdateSigned = signed, PendingUpdateFrom = "0.4.1" };
+        Settings Recorded(string? signedSha) => new() { PendingUpdateVersion = "0.4.9", PendingUpdateSha256 = Hex(exe), PendingUpdateSignedSha256 = signedSha, PendingUpdateFrom = "0.4.1" };
 
-        // Feed off: a download checked against Clink.exe.sha256 is installed as before.
+        // Feed off: this build has no updates at all, so nothing is installed (and nothing is thrown away either).
         File.WriteAllBytes(file, exe);
         Updater.FeedOverride = FeedTrust.None;
-        var off = new Updater(Recorded(null), V("0.4.1"));
-        bool found = off.TryGetPendingUpdate(out string path, out _);
-        Check.True(found ? path == file : off.InstallProblem != null, "found, or refused only because this runner cannot install");
+        var off = new Updater(Recorded(Hex(exe)), V("0.4.1"));
+        Check.False(off.TryGetPendingUpdate(out _, out _));
+        Check.Null(off.InstallProblem);
         Check.True(File.Exists(file));
 
-        // Feed on: the same unsigned download is discarded, never installed.
+        // Feed on: a download that was not made from a signed manifest is discarded, never installed.
         Updater.FeedOverride = Trust();
         var on = new Updater(Recorded(null), V("0.4.1"));
         Check.False(on.TryGetPendingUpdate(out _, out _));
@@ -1405,8 +1652,8 @@ internal static class UpdateFeedTests
 
         // Feed on, signed download: installed.
         File.WriteAllBytes(file, exe);
-        var signed = new Updater(Recorded(true), V("0.4.1"));
-        found = signed.TryGetPendingUpdate(out path, out _);
+        var signed = new Updater(Recorded(Hex(exe)), V("0.4.1"));
+        bool found = signed.TryGetPendingUpdate(out string path, out _);
         Check.True(found ? path == file : signed.InstallProblem != null, "found, or refused only because this runner cannot install");
         Check.True(File.Exists(file));
     }
@@ -1428,8 +1675,7 @@ internal static class UpdateFeedTests
         var settings = new Settings { UseDevBuilds = false };
         Updater.HttpOverride = net.Send;
         Updater.FeedOverride = Trust(stable: new[] { pub });
-        Updater.BuiltInRepoOverride = BuiltIn;
-        var up = new Updater(settings, V("0.4.1"));
+        using var up = new Updater(settings, V("0.4.1"));
         var check = up.CheckAsync(CancellationToken.None);
         Check.True(check.Wait(TimeSpan.FromSeconds(20)), "the check finishes while this thread is blocked");
         Check.NotNull(check.Result, up.LastError);
@@ -1445,9 +1691,9 @@ internal static class UpdateFeedTests
     {
         Check.True(SettingsImport.IsOwnKey(nameof(Settings.FeedFloorStable)));
         Check.True(SettingsImport.IsOwnKey(nameof(Settings.FeedFloorDev)));
-        Check.True(SettingsImport.IsOwnKey(nameof(Settings.PendingUpdateSigned)));
+        Check.True(SettingsImport.IsOwnKey(nameof(Settings.PendingUpdateSignedSha256)));
         Check.True(SettingsImport.HasLabelOrIsVolatile(nameof(Settings.FeedFloorDev)));
-        Check.True(SettingsImport.HasLabelOrIsVolatile(nameof(Settings.PendingUpdateSigned)));
+        Check.True(SettingsImport.HasLabelOrIsVolatile(nameof(Settings.PendingUpdateSignedSha256)));
 
         var s = new Settings { FeedFloorStable = "0.4.2", FeedFloorDev = "0.4.3-dev.1" };
         string json = s.ToJson();
@@ -1464,6 +1710,33 @@ internal static class UpdateFeedTests
         string merged = SettingsImport.KeepOurOwn(theirs, json, keepOurToken: true);
         Check.Equal("0.4.2", Settings.FromJson(merged).FeedFloorStable);
         Check.Null(Settings.FromJson(SettingsImport.KeepOurOwn(theirs, new Settings().ToJson(), keepOurToken: true)).FeedFloorStable, "left out when we have none");
+
+        // The failure streak stamp is this installation's own too (a FeedFloor* key), saved while set and left out while null.
+        Check.True(SettingsImport.IsOwnKey(nameof(Settings.FeedFloorFailingSince)));
+        Check.True(SettingsImport.HasLabelOrIsVolatile(nameof(Settings.FeedFloorFailingSince)));
+        Check.DoesNotContain(new Settings().ToJson(), "FeedFloorFailingSince");
+        string stamp = Updater.FormatStamp(V("0.4.2"), new DateTime(2026, 10, 28, 9, 0, 0, DateTimeKind.Utc));
+        Check.Equal("0.4.2@2026-10-28T09:00:00.0000000Z", stamp);
+        var failing = new Settings { FeedFloorFailingSince = stamp };
+        Check.Equal(stamp, Settings.FromJson(failing.ToJson()).FeedFloorFailingSince);
+        Check.Null(Settings.FromJson(SettingsImport.KeepOurOwn(failing.ToJson(), new Settings().ToJson(), keepOurToken: true)).FeedFloorFailingSince, "another copy's streak does not arrive");
+        // the stamps and marks that were never shipped are gone: an old file that still has them loses them on load (not even kept as unknown keys)
+        var legacy = Settings.FromJson("""
+            {"FeedFloorStableUpToDate":"0.4.2@2026-10-28T09:00:00.0000000Z","FeedFloorDevGitHubConfirm":"x","FeedFloorStableSoftSince":"x",
+             "FeedFloorDevSoftGrace":"x","PendingUpdateSigned":true,"PendingUpdateFxSigned":true,"SomethingNewer":1}
+            """);
+        Check.Null(legacy.FeedFloorFailingSince);
+        Check.Equal(new[] { "SomethingNewer" }, legacy.Unknown?.Keys.ToArray(), "only a key a newer Clink may know is kept");
+        foreach (string retired in new[] { "FeedFloorStableUpToDate", "FeedFloorDevGitHubConfirm", "FeedFloorStableSoftSince", "FeedFloorDevSoftGrace", "PendingUpdateSigned\"", "PendingUpdateFxSigned\"" })
+            Check.DoesNotContain(legacy.ToJson(), retired, "not written back");
+
+        // The stamp is only good for the version that wrote it, never from the future, and never unreadable.
+        var now = new DateTime(2026, 10, 28, 12, 0, 0, DateTimeKind.Utc);
+        Check.Equal(new DateTime(2026, 10, 28, 9, 0, 0, DateTimeKind.Utc), Updater.ParseStamp(stamp, V("0.4.2"), now));
+        Check.Null(Updater.ParseStamp(stamp, V("0.4.3"), now), "another version's");
+        Check.Null(Updater.ParseStamp(stamp, V("0.4.2"), now.AddDays(-2)), "more than a day ahead of now");
+        foreach (string? bad in new string?[] { null, "", "nonsense", "0.4.2@", "0.4.2@yesterday", "@2026-10-28T09:00:00.0000000Z", "0.4.2@2026-10-28T09:00:00", new string('x', 200) })
+            Check.Null(Updater.ParseStamp(bad, V("0.4.2"), now), $"'{bad}'");
     }
 
     // ------------------------------------------------------------------ two flavours (Packaging)
@@ -1509,100 +1782,6 @@ internal static class UpdateFeedTests
         Updater.PackagingOverride = Packaging.Framework;
         r = Run(net, trust);
         Check.Equal("https://cdn.example/clink/releases/v0.4.2/Clink.exe", r.Info!.ExeUrl, "falls back to exe");
-    }
-
-    [UnitTest]
-    public static void Feed_signed_github_path_picks_the_asset_by_packaging()
-    {
-        var (pub, key) = NewKey();
-        using var k = key;
-        string fxAsset = $$"""{"name":"Clink-framework.exe","size":777,"browser_download_url":"{{Gh}}v0.4.9/Clink-framework.exe"},""";
-        string release = Release("v0.4.9", exeSize: 1234).Replace("\"assets\":[", "\"assets\":[" + fxAsset);
-        byte[] withFx = Bytes(WithFramework(Manifest("0.4.9", size: 1234), "0.4.9"));
-        byte[] withoutFx = Bytes(Manifest("0.4.9", size: 1234));
-
-        FakeNet Net(byte[] manifest) { var n = new FakeNet(); GitHub(n, release); GitHubManifest(n, "v0.4.9", manifest, Sign(key, manifest)); return n; }   // the feed itself is unreachable
-        var trust = Trust(stable: new[] { pub });
-        DotNetRuntimes.Override = new[] { new Version(10, 0, 1) };
-
-        Updater.PackagingOverride = Packaging.Framework;
-        var r = Run(Net(withFx), trust);
-        Check.NotNull(r.Info, r.Up.LastError);
-        Check.Equal(Gh + "v0.4.9/Clink-framework.exe", r.Info!.ExeUrl);
-        Check.Equal(777L, r.Info.ExeSize);
-        Check.Equal(FxSha, r.Info.Sha256);
-        Check.Equal(Packaging.Framework, r.Info.Flavour);
-
-        r = Run(Net(withoutFx), trust);
-        Check.NotNull(r.Info, "the manifest has no exeFramework: " + r.Up.LastError);
-        Check.Equal(Gh + "v0.4.9/Clink.exe", r.Info!.ExeUrl, "falls back to Clink.exe");
-        Check.Equal(1234L, r.Info.ExeSize);
-        Check.Equal(Sha, r.Info.Sha256);
-        Check.Equal(Packaging.SelfContained, r.Info.Flavour);
-
-        DotNetRuntimes.Override = new[] { new Version(9, 0, 9) };
-        r = Run(Net(withFx), trust);
-        Check.Equal(Gh + "v0.4.9/Clink.exe", r.Info!.ExeUrl, "minRuntime unmet: Clink.exe");
-
-        DotNetRuntimes.Override = new[] { new Version(10, 0, 1) };
-        Updater.PackagingOverride = Packaging.SelfContained;
-        r = Run(Net(withFx), trust);
-        Check.Equal(Gh + "v0.4.9/Clink.exe", r.Info!.ExeUrl, "a SelfContained copy: unchanged");
-        Check.Equal(Sha, r.Info.Sha256);
-
-        // A framework asset whose size GitHub and the manifest disagree on is refused, like Clink.exe's.
-        byte[] wrongSize = Bytes(WithFramework(Manifest("0.4.9", size: 1234), "0.4.9").Replace("\"size\":777", "\"size\":778"));
-        Updater.PackagingOverride = Packaging.Framework;
-        r = Run(Net(wrongSize), trust);
-        Check.Null(r.Info);
-        Check.Equal(Updater.GitHubRefusedNote, r.Up.LastError);
-    }
-
-    [UnitTest]
-    public static void Feed_signed_github_fallback_exe_must_be_https_too()
-    {
-        var (pub, key) = NewKey();
-        using var k = key;
-        // https Clink-framework.exe, but Clink.exe (the fallback when the manifest has no exeFramework) is an http URL.
-        string fxAsset = $$"""{"name":"Clink-framework.exe","size":777,"browser_download_url":"{{Gh}}v0.4.9/Clink-framework.exe"},""";
-        string release = Release("v0.4.9", exeSize: 1234).Replace("\"assets\":[", "\"assets\":[" + fxAsset).Replace($"\"{Gh}v0.4.9/Clink.exe\"", "\"http://insecure.example/Clink.exe\"");
-        Check.Contains(release, "http://insecure.example/Clink.exe");
-        byte[] withoutFx = Bytes(Manifest("0.4.9", size: 1234));
-        var net = new FakeNet(); GitHub(net, release); GitHubManifest(net, "v0.4.9", withoutFx, Sign(key, withoutFx));
-        net.Ok("http://insecure.example/Clink.exe", new byte[] { (byte)'M', (byte)'Z' });
-        DotNetRuntimes.Override = new[] { new Version(10, 0, 1) };
-        Updater.PackagingOverride = Packaging.Framework;
-        var r = Run(net, Trust(stable: new[] { pub }), settings: new Settings { AutoUpdate = true });
-        Check.Null(r.Info, "no offer");
-        Check.Equal(Updater.GitHubRefusedNote, r.Up.LastError);
-        Check.False(net.Asked.Any(u => u.StartsWith("http://", StringComparison.OrdinalIgnoreCase)), "nothing was requested over http");
-    }
-
-    [UnitTest]
-    public static void Feed_unsigned_github_assets_must_be_https()
-    {
-        FakeNet Net(string release) { var n = new FakeNet(); GitHub(n, release); return n; }
-        string plain = Release("v0.4.9", signedAssets: false);
-        // Sanity: the untouched release is offered.
-        Check.NotNull(Run(Net(plain), FeedTrust.None).Info, "the https release is offered");
-
-        foreach (string asset in new[] { "Clink.exe.sha256", "Clink.exe" })
-        {
-            string bad = plain.Replace($"\"{Gh}v0.4.9/{asset}\"", $"\"http://insecure.example/{asset}\"");
-            Check.Contains(bad, "http://insecure.example/" + asset);
-            var net = Net(bad);
-            var r = Run(net, FeedTrust.None);
-            Check.Null(r.Info, $"http {asset}: no offer");
-            Check.False(net.Asked.Any(u => u.StartsWith("http://", StringComparison.OrdinalIgnoreCase)), $"http {asset}: nothing requested over http");
-        }
-
-        // A framework copy: the http .sha256 of Clink-framework.exe is refused as well.
-        string fxAssets = $$"""{"name":"Clink-framework.exe","size":777,"browser_download_url":"{{Gh}}v0.4.9/Clink-framework.exe"},{"name":"Clink-framework.exe.sha256","size":64,"browser_download_url":"http://insecure.example/Clink-framework.exe.sha256"},""";
-        string fxRelease = plain.Replace("\"assets\":[", "\"assets\":[" + fxAssets);
-        Updater.PackagingOverride = Packaging.Framework;
-        var fxNet = Net(fxRelease);
-        Check.Null(Run(fxNet, FeedTrust.None).Info, "http framework .sha256: no offer");
-        Check.False(fxNet.Asked.Any(u => u.StartsWith("http://", StringComparison.OrdinalIgnoreCase)));
     }
 
     // ------------------------------------------------------------------ devFeedUrl (two buckets)
@@ -1730,21 +1909,23 @@ internal static class UpdateFeedTests
         Check.Equal(V("0.4.3"), Run(net2, trust, running: "0.4.2").Info?.Version);
         Check.False(net2.Asked.Any(u => u.StartsWith(DevBase, StringComparison.Ordinal)));
 
-        // dev.json at the stable base only (the old single-base layout) is not found: the dev manifest is not used.
+        // dev.json at the stable base only (the old single-base layout) is not found: the dev channel's check fails, naming the dev host.
+        // Running 0.4.3 here and below, so the verified stable 0.4.3 is no offer and the failed dev manifest decides the check.
         var net3 = new FakeNet();
         net3.Feed("stable", s, Sign(stableKey, s));
         net3.Feed("dev", d, Sign(devKey, d));
-        GitHub(net3, Release("v0.4.3"));
-        var r3 = Run(net3, trust, dev: true, running: "0.4.3-dev.1");
-        Check.Equal(V("0.4.3"), r3.Info?.Version, "only stable.json is used: a dev.json under feedUrl is never read");
-        Check.False(net3.Asked.Contains(Base + "dev.json"));
+        var r3 = Run(net3, trust, dev: true, running: "0.4.3");
+        Check.Null(r3.Info);
+        Check.True(r3.Up.CheckFailed);
+        Check.Equal("Couldn't reach the update server (dl-dev.example): HTTP 404", r3.Up.LastError);
+        Check.False(net3.Asked.Contains(Base + "dev.json"), "a dev.json under feedUrl is never read");
 
         // The keys stay per channel across the two bases: dev.json from the dev base signed with the stable key is refused.
         var net4 = Net();
         net4.Ok(DevBase + "dev.json.sig", Bytes(Sign(stableKey, d)));
-        GitHub(net4, Release("v0.4.3"));
-        var r4 = Run(net4, trust, dev: true, running: "0.4.3-dev.1");
-        Check.Equal(V("0.4.3"), r4.Info?.Version, "only the stable.json is used, the forged dev.json is not");
+        var r4 = Run(net4, trust, dev: true, running: "0.4.3");
+        Check.Null(r4.Info);
+        Check.Equal("Couldn't verify the update server's answer (dl-dev.example)", r4.Up.LastError);
         Check.Null(r4.Settings.FeedFloorDev);
     }
 
@@ -1757,6 +1938,7 @@ internal static class UpdateFeedTests
         using var b = devKey;
         var two = TwoBases(new[] { stablePub }, new[] { devPub });
         var one = Trust(new[] { stablePub }, new[] { devPub });
+        const string refusedStable = "Couldn't verify the update server's answer (cdn.example)";
 
         // stable.json naming a binary under the dev base, a foreign host, or a dot-dot escape.
         foreach (string exe in new[] { DevBase + "releases/v0.4.9/Clink.exe", "https://evil.example/clink/Clink.exe", Base + "../other/Clink.exe", "https://cdn.example/clink-evil/Clink.exe" })
@@ -1766,17 +1948,20 @@ internal static class UpdateFeedTests
             net.Feed("stable", m, Sign(stableKey, m));
             var r = Run(net, two);
             Check.Null(r.Info, exe);
-            Check.True(net.AskedGitHub, exe + ": falls back to the signed GitHub path");
+            Check.Equal(refusedStable, r.Up.LastError, exe);
             Check.Null(r.Settings.FeedFloorStable, exe + ": raises no floor");
         }
 
         // dev.json under the dev base naming a binary under feedUrl (the stable base) is refused.
         var net2 = new FakeNet();
         byte[] dm = Bytes(DevManifest("0.4.9-dev.1", Base + "releases/v0.4.9-dev.1/Clink.exe"));
+        byte[] sm = Bytes(Manifest("0.4.1"));
+        net2.Feed("stable", sm, Sign(stableKey, sm));
         net2.Ok(DevBase + "dev.json", dm);
         net2.Ok(DevBase + "dev.json.sig", Bytes(Sign(devKey, dm)));
-        Check.Null(Run(net2, two, dev: true, running: "0.4.1").Info);
-        Check.True(net2.AskedGitHub);
+        var r2 = Run(net2, two, dev: true, running: "0.4.1");
+        Check.Null(r2.Info);
+        Check.Equal("Couldn't verify the update server's answer (dl-dev.example)", r2.Up.LastError);
         // ...whereas with a single base that same manifest is fine.
         var net3 = new FakeNet();
         byte[] dm1 = Bytes(Manifest("0.4.9-dev.1", "dev")), sm1 = Bytes(Manifest("0.4.1"));
@@ -1790,406 +1975,78 @@ internal static class UpdateFeedTests
         var net5 = new FakeNet();
         net5.Feed("stable", fxm, Sign(stableKey, fxm));
         Check.Null(Run(net5, one).Info, "the installer URL is outside the base");
-
-        // The signed GitHub path does NOT apply the rule: it downloads GitHub's own ExeUrl and takes only the size and SHA-256 from the manifest,
-        // so the manifest's URLs are never fetched (and a moved feed host must not strand old clients).
+        byte[] fx2 = Bytes(WithFramework(Manifest("0.4.9"), "0.4.9").Replace("https://cdn.example/clink/releases/v0.4.9/Clink-framework.exe", "https://evil.example/Clink-framework.exe"));
         var net6 = new FakeNet();
-        byte[] gm = Bytes(Manifest("0.4.9", exeUrl: "https://evil.example/clink/Clink.exe"));
-        GitHub(net6, Release("v0.4.9"));
-        GitHubManifest(net6, "v0.4.9", gm, Sign(stableKey, gm));
-        var r6 = Run(net6, one);
-        Check.Equal(V("0.4.9"), r6.Info?.Version, r6.Up.LastError);
-        Check.Equal(Gh + "v0.4.9/Clink.exe", r6.Info!.ExeUrl, "GitHub's ExeUrl, not the manifest's");
-        Check.Equal(Sha, r6.Info.Sha256, "the manifest's hash");
-        Check.False(r6.Info.FromFeed);
-        // ...a dev release's manifest as well.
-        var net7 = new FakeNet();
-        byte[] gdm = Bytes(DevManifest("0.4.9-dev.1", Base + "releases/v0.4.9-dev.1/Clink.exe"));
-        GitHub(net7, Release("v0.4.1"), Release("v0.4.9-dev.1", prerelease: true));
-        GitHubManifest(net7, "v0.4.9-dev.1", gdm, Sign(devKey, gdm), "dev");
-        var r7 = Run(net7, two, dev: true);
-        Check.Equal(V("0.4.9-dev.1"), r7.Info?.Version, r7.Up.LastError);
-        Check.Equal(Gh + "v0.4.9-dev.1/Clink.exe", r7.Info!.ExeUrl);
+        net6.Feed("stable", fx2, Sign(stableKey, fx2));
+        Check.Null(Run(net6, one).Info, "the framework exe URL is outside the base");
     }
 
-    [UnitTest]
-    public static void One_manifest_with_foreign_urls_is_accepted_on_the_github_path_and_refused_on_the_feed_path()
-    {
-        var (pub, key) = NewKey();
-        using var k = key;
-        var trust = Trust(stable: new[] { pub });
-        byte[] m = Bytes(Manifest("0.4.9", exeUrl: "https://moved.example/other/Clink.exe"));
-
-        var feed = new FakeNet();
-        feed.Feed("stable", m, Sign(key, m));
-        var viaFeed = Run(feed, trust);
-        Check.Null(viaFeed.Info, "feed path: the binary is not under the feed's base");
-        Check.True(feed.AskedGitHub);
-
-        var gh = new FakeNet();
-        GitHub(gh, Release("v0.4.9"));
-        GitHubManifest(gh, "v0.4.9", m, Sign(key, m));
-        var viaGitHub = Run(gh, trust);
-        Check.Equal(V("0.4.9"), viaGitHub.Info?.Version, viaGitHub.Up.LastError);
-        Check.Equal(Gh + "v0.4.9/Clink.exe", viaGitHub.Info!.ExeUrl);
-    }
-
-    // ------------------------------------------------------------------ NEW-2: a stale manifest cannot say "up to date"
+    // ------------------------------------------------------------------ release notes
 
     [UnitTest]
-    public static void Feed_old_manifest_of_the_running_version_is_cross_checked_with_github()
+    public static void Release_notes_open_only_when_https_and_under_the_base_of_the_manifest_they_came_from()
     {
-        var (pub, key) = NewKey();
-        using var k = key;
-        var trust = Trust(stable: new[] { pub });
-        byte[] old = Bytes(Manifest("0.4.2", publishedDaysAgo: 15));
-
-        // Nothing newer on GitHub: up to date, but only after GitHub was asked.
-        var net = new FakeNet();
-        net.Feed("stable", old, Sign(key, old));
-        GitHub(net, Release("v0.4.2"));
-        var r = Run(net, trust, running: "0.4.2");
-        Check.Null(r.Info);
-        Check.True(net.AskedGitHub, "a 15-day-old manifest does not end the check");
-        Check.Null(r.Up.LastError);
-        Check.False(r.Up.CheckFailed);
-        Check.Null(r.Settings.FeedFloorStable, "the stale manifest is not what the answer rests on");
-
-        // A newer signed release on GitHub (the feed was frozen): offered through the signed GitHub path.
-        var net2 = new FakeNet();
-        byte[] newer = Bytes(Manifest("0.4.9"));
-        net2.Feed("stable", old, Sign(key, old));
-        GitHub(net2, Release("v0.4.9"));
-        GitHubManifest(net2, "v0.4.9", newer, Sign(key, newer));
-        var r2 = Run(net2, trust, running: "0.4.2");
-        Check.Equal(V("0.4.9"), r2.Info?.Version, r2.Up.LastError);
-        Check.Equal(Gh + "v0.4.9/Clink.exe", r2.Info!.ExeUrl);
-        Check.Equal("0.4.9", r2.Settings.FeedFloorStable);
-
-        // A newer GitHub release with no valid signed manifest is not offered either, and GitHub naming something newer is never
-        // "up to date": a failed check, not a soft one (round 2: it used to be softened).
-        var net3 = new FakeNet();
-        net3.Feed("stable", old, Sign(key, old));
-        GitHub(net3, Release("v0.4.9", signedAssets: false));
-        var r3 = Run(net3, trust, running: "0.4.2");
-        Check.Null(r3.Info, "never offered");
-        Check.Equal(Updater.GitHubRefusedNote, r3.Up.LastError);
-        Check.True(r3.Up.CheckFailed);
-        Check.Null(r3.Up.SoftNote);
-
-        // GitHub cannot be reached: a soft result (see Stale_feed_manifest_soft_state for the clock), not a failed check.
-        var net4 = new FakeNet();
-        net4.Feed("stable", old, Sign(key, old));
-        net4.Status(GitHubLatest, 503);
-        var r4 = Run(net4, trust, running: "0.4.2");
-        Check.Null(r4.Info);
-        Check.Null(r4.Up.LastError);
-        Check.False(r4.Up.CheckFailed);
-        Check.Contains(r4.Up.SoftNote, "Could not confirm with GitHub");
-
-        // A manifest under the limit still ends the check without GitHub; so does a manual check.
-        foreach (int days in new[] { 0, 13 })
+        var two = TwoBases();
+        Updater.FeedOverride = two;
+        const string fallback = "https://euphoric.software/";
+        Check.Equal(fallback, UpdateFeed.FallbackNotesPage);
+        var opened = new List<string>();
+        Updater.BrowserOverride = url => opened.Add(url);
+        var up = new Updater(new Settings(), V("0.4.1"));
+        UpdateInfo Info(string version, string channel, string notes)
         {
-            var net5 = new FakeNet();
-            byte[] young = Bytes(Manifest("0.4.2", publishedDaysAgo: days));
-            net5.Feed("stable", young, Sign(key, young));
-            var r5 = Run(net5, trust, running: "0.4.2", manual: true);
-            Check.Null(r5.Up.LastError, $"{days} days");
-            Check.False(net5.AskedGitHub, $"{days} days old: up to date from the feed");
-            Check.Equal("0.4.2", r5.Settings.FeedFloorStable);
-        }
-        Check.Equal(TimeSpan.FromDays(14), UpdateFeed.MaxUpToDateAge);
-
-        // Dev channel: the dev manifest equal to the running dev build decides, not the (rarely re-signed) stable.json.
-        var (devPub, devKey) = NewKey();
-        using var dk = devKey;
-        var devTrust = Trust(stable: new[] { pub }, dev: new[] { devPub });
-        byte[] stableOld = Bytes(Manifest("0.4.1", publishedDaysAgo: 40)), devFresh = Bytes(Manifest("0.4.3-dev.2", "dev", publishedDaysAgo: 2));
-        var net6 = new FakeNet();
-        net6.Feed("stable", stableOld, Sign(key, stableOld));
-        net6.Feed("dev", devFresh, Sign(devKey, devFresh));
-        Check.False(Run(net6, devTrust, dev: true, running: "0.4.3-dev.2").Up.CheckFailed);
-        Check.False(net6.AskedGitHub, "fresh dev.json equal to the running build: up to date");
-        byte[] devOld = Bytes(Manifest("0.4.3-dev.2", "dev", publishedDaysAgo: 20));
-        var net7 = new FakeNet();
-        net7.Feed("stable", stableOld, Sign(key, stableOld));
-        net7.Feed("dev", devOld, Sign(devKey, devOld));
-        GitHub(net7, Release("v0.4.1"), Release("v0.4.3-dev.2", prerelease: true));
-        Check.Null(Run(net7, devTrust, dev: true, running: "0.4.3-dev.2").Info);
-        Check.True(net7.AskedGitHub, "a 20-day-old dev.json equal to the running build is cross-checked");
-    }
-
-    // ------------------------------------------------------------------ L2: GitHub's answer is capped
-
-    /// <summary>A body without a Content-Length (chunked), like a server that does not say how much it will send.</summary>
-    private sealed class UnsizedContent : HttpContent
-    {
-        private readonly byte[] _bytes;
-        public UnsizedContent(byte[] bytes) { _bytes = bytes; }
-        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) => stream.WriteAsync(_bytes, 0, _bytes.Length);
-        protected override bool TryComputeLength(out long length) { length = -1; return false; }
-    }
-
-    [UnitTest]
-    public static void GitHub_answer_over_the_cap_fails_the_check()
-    {
-        byte[] huge = new byte[Updater.MaxApiBytes + 1];
-        Array.Fill(huge, (byte)' ');
-        foreach (var trust in new[] { FeedTrust.None, Trust() })
-        foreach (bool dev in new[] { false, true })
-        foreach (bool sized in new[] { true, false })
-        {
-            var net = new FakeNet();
-            Func<HttpContent> make = () => sized ? new ByteArrayContent(huge) : new UnsizedContent(huge);
-            net.Ok(GitHubLatest, make);
-            net.Ok(GitHubList, make);
-            string what = $"{(trust.On ? "feed on" : "feed off")}, dev {dev}, {(sized ? "declared" : "undeclared")} length";
-            var r = Run(net, trust, dev: dev);
-            Check.Null(r.Info, what);
-            Check.True(r.Up.CheckFailed, what);
-            Check.Contains(r.Up.LastError, "too large", what);
+            string escaped = System.Text.Json.JsonSerializer.Serialize(notes)[1..^1];   // whatever the manifest says is a JSON string, however odd
+            var m = UpdateFeed.ParseManifest(Bytes(Manifest(version, channel, notes: escaped)), channel, out string? problem);
+            return UpdateFeed.ToUpdateInfo(m ?? throw new TestFailure(problem ?? "manifest refused"));
         }
 
-        // A normal answer is well under the cap, and an answer of exactly the cap is read.
-        Check.True(Updater.MaxApiBytes >= 1024 * 1024, "a wide margin over the real answers");
-        var ok = new FakeNet();
-        GitHub(ok, Release("v0.4.9", signedAssets: false));
-        Check.Equal(V("0.4.9"), Run(ok, FeedTrust.None).Info?.Version);
-    }
-
-    [UnitTest]
-    public static void Capped_reads_stop_at_the_limit()
-    {
-        string Read(byte[] body, int limit, bool sized)
+        void Expect(UpdateInfo info, string expected, string what)
         {
-            using var resp = new HttpResponseMessage(HttpStatusCode.OK) { Content = sized ? new ByteArrayContent(body) : new UnsizedContent(body) };
-            return OffUi(() => Updater.ReadCappedTextAsync(resp, limit, "the test answer", CancellationToken.None));
+            Check.Equal(expected, up.ReleasePageFor(info), what);
+            int before = opened.Count;
+            Check.Null(up.OpenReleasePage(info), what);
+            Check.Equal(before + 1, opened.Count, what + ": the browser is opened once");
+            Check.Equal(expected, opened[^1], what + ": with exactly that address and nothing else");
         }
-        foreach (bool sized in new[] { true, false })
-        {
-            Check.Equal("0123456789", Read(Encoding.ASCII.GetBytes("0123456789"), 10, sized), "exactly the limit");
-            Check.Equal("", Read(Array.Empty<byte>(), 10, sized));
-            bool threw = false;
-            try { Read(Encoding.ASCII.GetBytes("01234567890"), 10, sized); }
-            catch (Exception ex) when (ex is InvalidDataException || ex.InnerException is InvalidDataException) { threw = true; }
-            Check.True(threw, $"one byte over the limit ({(sized ? "declared" : "undeclared")}) fails closed");
-        }
-        Check.True(Updater.MaxShaFileBytes >= 4096 && Updater.MaxShaFileBytes <= Updater.MaxApiBytes);
-    }
 
-    // ------------------------------------------------------------------ repair round 1
+        // under the base (stable: <base>releases/<tag>/notes.txt): opened, as the normalised address
+        Expect(Info("0.4.9", "stable", Base + "releases/v0.4.9/notes.txt"), Base + "releases/v0.4.9/notes.txt", "stable notes next to the binaries");
+        Expect(Info("0.4.9", "stable", "https://CDN.example:443/clink/releases/v0.4.9/notes.txt"), Base + "releases/v0.4.9/notes.txt", "the normalised AbsoluteUri is what is opened");
+        Expect(Info("0.4.9-dev.1", "dev", DevBase + "dev/v0.4.9-dev.1/notes.txt"), DevBase + "dev/v0.4.9-dev.1/notes.txt", "dev notes under the dev base");
 
-    private static string Day(DateTimeOffset t) => t.UtcDateTime.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-
-    [UnitTest]
-    public static void Stale_feed_manifest_soft_state()
-    {
-        var (pub, key) = NewKey();
-        using var k = key;
-        var trust = Trust(stable: new[] { pub });
-        var t0 = DateTimeOffset.UtcNow;
-        var now = t0;
-        Updater.ClockOverride = () => now;
-        try
-        {
-            byte[] stale = Bytes(Manifest("0.4.2", publishedDaysAgo: 20));
-            string softText = SoftText("0.4.2", t0.AddDays(-20));
-            FakeNet Net(bool github)
-            {
-                var n = new FakeNet();
-                n.Feed("stable", stale, Sign(key, stale));
-                if (github) GitHub(n, Release("v0.4.2")); else n.Status(GitHubLatest, 503);
-                return n;
-            }
-
-            // stale + GitHub OK: confirms and sets both stamps for the running version (this channel's only)
-            var net1 = Net(true);
-            var r1 = Run(net1, trust, running: "0.4.2", settings: new Settings { FeedFloorStableSoftSince = Stamp("0.4.2", t0.AddDays(-2)) });
-            Check.True(net1.AskedGitHub);
-            Check.Null(r1.Up.LastError); Check.Null(r1.Up.SoftNote); Check.False(r1.Up.CheckFailed);
-            Check.Equal(Stamp("0.4.2", t0), r1.Settings.FeedFloorStableGitHubConfirm);
-            Check.Equal(Stamp("0.4.2", t0), r1.Settings.FeedFloorStableUpToDate);
-            Check.Null(r1.Settings.FeedFloorStableSoftSince, "a real confirmation ends the unconfirmed streak");
-            Check.Null(r1.Settings.FeedFloorDevGitHubConfirm); Check.Null(r1.Settings.FeedFloorDevUpToDate); Check.Null(r1.Settings.FeedFloorDevSoftSince);
-            Check.Equal(t0.UtcDateTime, r1.Settings.LastUpdateCheck!.Value, "the fake clock is used for the check time too");
-
-            // stale + GitHub confirmed 3 days ago: no GitHub call, still up to date
-            var s2 = new Settings { FeedFloorStableGitHubConfirm = Stamp("0.4.2", t0.AddDays(-3)), FeedFloorStableUpToDate = Stamp("0.4.2", t0.AddDays(-3)) };
-            var net2 = Net(false);
-            var r2 = Run(net2, trust, running: "0.4.2", settings: s2);
-            Check.False(net2.AskedGitHub, "within 7 days of the last GitHub answer GitHub is not asked");
-            Check.Null(r2.Up.LastError); Check.Null(r2.Up.SoftNote); Check.False(r2.Up.CheckFailed);
-            // ...but 8 days after it is
-            now = t0.AddDays(5);
-            var net2b = Net(true);
-            Run(net2b, trust, running: "0.4.2", settings: s2);
-            Check.True(net2b.AskedGitHub, "8 days after the last GitHub answer");
-            now = t0;
-            // the skip also needs the running version's UpToDate within MaxUnconfirmedStreak (round 2, defence in depth): a GitHubConfirm alone,
-            // or with an UpToDate older than 14 days (only an edited settings.json has that), is not enough
-            foreach (string? upToDate in new[] { null, Stamp("0.4.2", t0.AddDays(-15)) })
-            {
-                var net2c = Net(true);
-                Run(net2c, trust, running: "0.4.2", settings: new Settings { FeedFloorStableGitHubConfirm = Stamp("0.4.2", t0.AddDays(-3)), FeedFloorStableUpToDate = upToDate });
-                Check.True(net2c.AskedGitHub, $"UpToDate {upToDate ?? "absent"}");
-            }
-            Check.Equal(TimeSpan.FromDays(14), Updater.MaxUnconfirmedStreak);
-            Check.Equal(TimeSpan.FromDays(7), Updater.GitHubConfirmValidity);
-
-            // stale + GitHub 503 + last confirmation 10 days ago: soft result, not a failed check; the streak starts now
-            var s3 = new Settings { FeedFloorStableUpToDate = Stamp("0.4.2", t0.AddDays(-10)), FeedFloorStableGitHubConfirm = Stamp("0.4.2", t0.AddDays(-10)) };
-            var net3 = Net(false);
-            var r3 = Run(net3, trust, running: "0.4.2", settings: s3);
-            Check.True(net3.AskedGitHub);
-            Check.Null(r3.Info);
-            Check.Null(r3.Up.LastError);
-            Check.False(r3.Up.CheckFailed);
-            Check.Equal(softText, r3.Up.SoftNote);
-            Check.Equal(Stamp("0.4.2", t0.AddDays(-10)), s3.FeedFloorStableUpToDate, "a soft result confirms nothing");
-            Check.Equal(Stamp("0.4.2", t0), s3.FeedFloorStableSoftSince);
-
-            // an unconfirmed streak that began 15 days ago: a real failure with a clear message (round 2: counted from SoftSince, not UpToDate)
-            var s4 = new Settings { FeedFloorStableUpToDate = Stamp("0.4.2", t0.AddDays(-31)), FeedFloorStableGitHubConfirm = Stamp("0.4.2", t0.AddDays(-31)), FeedFloorStableSoftSince = Stamp("0.4.2", t0.AddDays(-15)) };
-            var r4 = Run(Net(false), trust, running: "0.4.2", settings: s4);
-            Check.True(r4.Up.CheckFailed);
-            Check.Null(r4.Up.SoftNote);
-            Check.Contains(r4.Up.LastError, "could not confirm that v0.4.2 is the latest");
-            Check.Contains(r4.Up.LastError, "GitHub answered HTTP 503");
-            Check.Contains(r4.Up.LastError, Day(t0.AddDays(-15)));
-            Check.Equal(Stamp("0.4.2", t0.AddDays(-15)), s4.FeedFloorStableSoftSince, "a failure does not restart the streak");
-
-            // a later GitHub success clears it
-            var r5 = Run(Net(true), trust, running: "0.4.2", settings: s4);
-            Check.False(r5.Up.CheckFailed); Check.Null(r5.Up.LastError); Check.Null(r5.Up.SoftNote);
-            Check.Equal(Stamp("0.4.2", t0), s4.FeedFloorStableUpToDate);
-            Check.Null(s4.FeedFloorStableSoftSince);
-            now = t0.AddDays(8);   // GitHub's answer is older than 7 days again
-            var r6 = Run(Net(false), trust, running: "0.4.2", settings: s4);
-            now = t0;
-            Check.False(r6.Up.CheckFailed, "and a new streak starts");
-            Check.Equal(softText, r6.Up.SoftNote);
-            Check.Equal(Stamp("0.4.2", t0.AddDays(8)), s4.FeedFloorStableSoftSince);
-
-            // a network error is soft like a 503
-            var net7 = Net(false);
-            net7.Throw(GitHubLatest, () => new HttpRequestException("no route"));
-            var r7 = Run(net7, trust, running: "0.4.2", settings: new Settings { FeedFloorStableUpToDate = Stamp("0.4.2", t0.AddDays(-1)) });
-            Check.Equal(softText, r7.Up.SoftNote);
-            Check.False(r7.Up.CheckFailed);
-
-            // never confirmed at all: the 14 days start with the first unconfirmed check, then run out (round 2: 14 days, was 30)
-            var s8 = new Settings();
-            var r8 = Run(Net(false), trust, running: "0.4.2", settings: s8);
-            Check.Equal(softText, r8.Up.SoftNote);
-            Check.Equal(Stamp("0.4.2", t0), s8.FeedFloorStableSoftSince, "the streak starts now");
-            Check.Null(s8.FeedFloorStableUpToDate, "and nothing is called confirmed");
-            now = t0.AddDays(13);
-            Check.False(Run(Net(false), trust, running: "0.4.2", settings: s8).Up.CheckFailed, "13 days later: still soft");
-            now = t0.AddDays(15);
-            var r9 = Run(Net(false), trust, running: "0.4.2", settings: s8);
-            Check.True(r9.Up.CheckFailed, "15 days after the first unconfirmed check");
-            now = t0;
-
-            // a manifest under 14 days confirms the running version by itself (and asks nobody), and ends a streak
-            byte[] young = Bytes(Manifest("0.4.2", publishedDaysAgo: 3));
-            var net10 = new FakeNet();
-            net10.Feed("stable", young, Sign(key, young));
-            var r10 = Run(net10, trust, running: "0.4.2", settings: new Settings { FeedFloorStableSoftSince = Stamp("0.4.2", t0.AddDays(-5)) });
-            Check.False(net10.AskedGitHub);
-            Check.Equal(Stamp("0.4.2", t0), r10.Settings.FeedFloorStableUpToDate);
-            Check.Null(r10.Settings.FeedFloorStableGitHubConfirm);
-            Check.Null(r10.Settings.FeedFloorStableSoftSince);
-
-            // a cancelled check is neither soft nor a confirmation
-            using var cts = new CancellationTokenSource();
-            cts.Cancel();
-            var r11 = Run(Net(true), trust, running: "0.4.2", settings: new Settings(), ct: cts.Token);
-            Check.Equal("cancelled", r11.Up.LastError);
-            Check.Null(r11.Up.SoftNote);
-
-            // dev channel: its own stamps
-            var (devPub, devKey) = NewKey();
-            using var dk = devKey;
-            var devTrust = Trust(stable: new[] { pub }, dev: new[] { devPub });
-            byte[] devOld = Bytes(Manifest("0.4.3-dev.2", "dev", publishedDaysAgo: 20)), stableOld = Bytes(Manifest("0.4.1", publishedDaysAgo: 40));
-            var net12 = new FakeNet();
-            net12.Feed("stable", stableOld, Sign(key, stableOld));
-            net12.Feed("dev", devOld, Sign(devKey, devOld));
-            GitHub(net12, Release("v0.4.1"), Release("v0.4.3-dev.2", prerelease: true));
-            var r12 = Run(net12, devTrust, dev: true, running: "0.4.3-dev.2");
-            Check.Null(r12.Up.LastError);
-            Check.Equal(Stamp("0.4.3-dev.2", t0), r12.Settings.FeedFloorDevGitHubConfirm);
-            Check.Equal(Stamp("0.4.3-dev.2", t0), r12.Settings.FeedFloorDevUpToDate);
-            Check.Null(r12.Settings.FeedFloorStableGitHubConfirm); Check.Null(r12.Settings.FeedFloorStableUpToDate);
-        }
-        finally { Updater.ClockOverride = null; }
-    }
-
-    [UnitTest]
-    public static void Stale_feed_state_is_saved_and_never_imported()
-    {
-        var at = new DateTime(2026, 10, 20, 8, 0, 0, DateTimeKind.Utc);
-        var s = new Settings { FeedFloorStableGitHubConfirm = Updater.FormatStamp(V("0.4.2"), at), FeedFloorDevUpToDate = Updater.FormatStamp(V("0.4.3-dev.1"), at.AddDays(1)), FeedFloorStableSoftSince = Updater.FormatStamp(V("0.4.2"), at) };
-        Check.Equal("0.4.2@2026-10-20T08:00:00.0000000Z", s.FeedFloorStableGitHubConfirm);
-        string json = s.ToJson();
-        Check.Contains(json, "FeedFloorStableGitHubConfirm");
-        Check.Contains(json, "FeedFloorStableSoftSince");
-        Check.DoesNotContain(json, "FeedFloorDevGitHubConfirm", "left out while null");
-        Check.DoesNotContain(json, "FeedFloorDevSoftSince", "left out while null");
-        var back = Settings.FromJson(json);
-        Check.Equal(s.FeedFloorStableGitHubConfirm, back.FeedFloorStableGitHubConfirm);
-        Check.Equal(s.FeedFloorDevUpToDate, back.FeedFloorDevUpToDate);
-        Check.Equal(s.FeedFloorStableSoftSince, back.FeedFloorStableSoftSince);
-        Check.Equal(at, Updater.ParseStamp(back.FeedFloorStableGitHubConfirm, V("0.4.2"), at));
-        Check.DoesNotContain(new Settings().ToJson(), "FeedFloor");
-        foreach (string name in new[]
+        // elsewhere, or not https: the constant page
+        foreach (string notes in new[]
                  {
-                     nameof(Settings.FeedFloorStableGitHubConfirm), nameof(Settings.FeedFloorDevGitHubConfirm), nameof(Settings.FeedFloorStableUpToDate),
-                     nameof(Settings.FeedFloorDevUpToDate), nameof(Settings.FeedFloorStableSoftSince), nameof(Settings.FeedFloorDevSoftSince),
+                     "http://cdn.example/clink/releases/v0.4.9/notes.txt", "https://example.invalid/notes", "https://cdn.example/other/notes.txt", Base,
+                     Base + "releases/v0.4.9/notes.txt?x=1", Base + "releases/v0.4.9/notes.txt#f", Base + "../x/notes.txt", "https://cdn.example/clink/%2e%2e/x/notes.txt",
+                     "https://u@cdn.example/clink/releases/v0.4.9/notes.txt", "https://cdn.example:8443/clink/releases/v0.4.9/notes.txt",
+                     DevBase + "dev/v0.4.9/notes.txt", "https://github.com/o/r/releases/latest", "https://cdn.example.evil.example/clink/releases/v0.4.9/notes.txt",
+                     "", "   ", "javascript:alert(1)", "file:///C:/Windows/System32/calc.exe", "calc.exe", @"C:\Windows\System32\calc.exe",
+                     Base + "releases/v0.4.9/notes.txt\r\nHost: x", Base + "releases/v0.4.9/notes.txt calc.exe", Base + new string('a', 3000),
                  })
-            Check.True(SettingsImport.IsOwnKey(name), name + " is this installation's own");
+            Expect(Info("0.4.9", "stable", notes), fallback, $"stable notesUrl '{notes.Replace("\r\n", "\\r\\n")}'");
+        // a dev manifest's notes are checked against the DEV base, a stable one's against feedUrl
+        Expect(Info("0.4.9-dev.1", "dev", Base + "dev/v0.4.9-dev.1/notes.txt"), fallback, "the stable base's address in a dev manifest");
+        Expect(Info("0.4.9-dev.1", "dev", "http://dl-dev.example/clink-dev/dev/v0.4.9-dev.1/notes.txt"), fallback, "http in a dev manifest");
+
+        // nothing to go by: the constant page; and a build without a feed has no base to vouch for any address
+        Check.Equal(fallback, up.ReleasePageFor(null));
+        Check.Null(up.OpenReleasePage(null));
+        Check.Equal(fallback, opened[^1]);
+        var good = Info("0.4.9", "stable", Base + "releases/v0.4.9/notes.txt");
+        Updater.FeedOverride = FeedTrust.None;
+        Check.Equal(fallback, up.ReleasePageFor(good));
+
+        // a browser that cannot be started is reported, not thrown
+        Updater.FeedOverride = two;
+        Updater.BrowserOverride = _ => throw new InvalidOperationException("no browser");
+        Check.Contains(up.OpenReleasePage(good), "Could not open the browser");
     }
 
-    // ------------------------------------------------------------------ repair round 2
-
-    /// <summary>A stamp as the updater stores it: "&lt;version&gt;@&lt;UTC round-trip&gt;".</summary>
-    private static string Stamp(string version, DateTimeOffset t) => Updater.FormatStamp(V(version), t.UtcDateTime);
-
-    /// <summary>The soft note for the stale feed manifest of <paramref name="version"/> published at <paramref name="published"/>.</summary>
-    private static string SoftText(string version, DateTimeOffset published) =>
-        $"Could not confirm with GitHub; the signed feed says v{version} (published {Day(published)}) is the latest";
+    // ------------------------------------------------------------------ a feed that keeps failing
 
     [UnitTest]
-    public static void Stamps_are_tied_to_the_running_version_and_never_from_the_future()
-    {
-        var now = new DateTime(2026, 10, 28, 12, 0, 0, DateTimeKind.Utc);
-        var v = V("0.4.2");
-        Check.Equal(now.AddDays(-3), Updater.ParseStamp(Updater.FormatStamp(v, now.AddDays(-3)), v, now));
-        Check.Equal(now.AddHours(20), Updater.ParseStamp(Updater.FormatStamp(v, now.AddHours(20)), v, now), "under a day ahead: clock skew, still read");
-        Check.Null(Updater.ParseStamp(Updater.FormatStamp(v, now.AddHours(25)), v, now), "more than a day ahead: absent");
-        Check.Null(Updater.ParseStamp(Updater.FormatStamp(V("0.4.1"), now), v, now), "another version's stamp");
-        Check.Null(Updater.ParseStamp(Updater.FormatStamp(V("0.4.2-dev.1"), now), v, now), "a dev build of the same number is another version");
-        Check.Equal("0.4.2@2026-10-28T12:00:00.0000000Z", Updater.FormatStamp(v, DateTime.SpecifyKind(now, DateTimeKind.Unspecified)), "an unspecified kind is taken as UTC");
-        foreach (string? bad in new string?[]
-                 {
-                     null, "", "@", "0.4.2", "0.4.2@", "@2026-10-28T12:00:00.0000000Z", "0.4.2@yesterday", "2026-10-28T12:00:00Z", "0.4.2@2026-10-28T12:00:00",
-                     "0.4.2@2026-10-28T12:00:00.0000000+00:00", "0.4.2@2026-10-28T12:00:00.0000000", " 0.4.2@2026-10-28T12:00:00.0000000Z", "v0.4.2@2026-10-28T12:00:00.0000000Z",
-                     "0.4.2@2026-10-28T12:00:00.0000000Z@x", "0.4.2@" + new string('9', 200),
-                 })
-            Check.Null(Updater.ParseStamp(bad, v, now), $"'{bad}' counts as absent");
-    }
-
-    /// <summary>The feed says v0.4.2 (the running version) in a 20-day-old manifest; GitHub is set up by the caller.</summary>
-    private static FakeNet StaleEqualFeed(ECDsa key)
-    {
-        byte[] stale = Bytes(Manifest("0.4.2", publishedDaysAgo: 20));
-        var n = new FakeNet();
-        n.Feed("stable", stale, Sign(key, stale));
-        return n;
-    }
-
-    [UnitTest]
-    public static void A_newer_github_release_that_cannot_be_verified_is_a_failed_check_and_github_is_asked_again()
+    public static void Background_checks_failing_for_over_three_days_earn_one_notice_per_session()
     {
         var (pub, key) = NewKey();
         using var k = key;
@@ -2197,267 +2054,81 @@ internal static class UpdateFeedTests
         var t0 = DateTimeOffset.UtcNow;
         var now = t0;
         Updater.ClockOverride = () => now;
-        try
+        var net = new FakeNet();   // the feed is unreachable: a 404 for everything
+        net.AllowOnly(trust);
+        Updater.HttpOverride = net.Send;
+        Updater.FeedOverride = trust;
+        var settings = new Settings();
+        using var up = new Updater(settings, V("0.4.1"));
+        var notices = new List<UpdateNotice?>();
+        up.CheckFinished += n => { lock (notices) notices.Add(n); };
+        var gate = new UpdateNoticeGate();
+        int shown = 0;
+        void Pass(string what, bool manual = false)
         {
-            // GitHub's latest is v0.4.3, but its stable.json asset cannot be downloaded (503) / it has no signed assets at all.
-            foreach (bool assets in new[] { true, false })
-            {
-                string what = assets ? "stable.json asset 503" : "no signed assets";
-                FakeNet Net()
-                {
-                    var n = StaleEqualFeed(key);
-                    GitHub(n, Release("v0.4.3", signedAssets: assets));
-                    if (assets) { n.Status(Gh + "v0.4.3/stable.json", 503); n.Status(Gh + "v0.4.3/stable.json.sig", 503); }
-                    return n;
-                }
-                var settings = new Settings();
-                var net = Net();
-                var r = Run(net, trust, running: "0.4.2", settings: settings);
-                Check.True(net.AskedGitHub, what);
-                Check.Null(r.Info, what);
-                Check.True(r.Up.CheckFailed, what);
-                Check.Equal(Updater.GitHubRefusedNote, r.Up.LastError, what);
-                Check.Null(r.Up.SoftNote, what + ": GitHub named a newer release, so nothing is soft");
-                Check.Null(settings.FeedFloorStableGitHubConfirm, what + ": GitHub said a newer release exists, which confirms nothing");
-                Check.Null(settings.FeedFloorStableUpToDate, what);
-                Check.Null(settings.FeedFloorStableSoftSince, what + ": a real failure is no soft streak");
-                // the next check (an hour later) asks GitHub again instead of calling the stale feed up to date
-                now = t0.AddHours(1);
-                var net2 = Net();
-                var r2 = Run(net2, trust, running: "0.4.2", settings: settings);
-                now = t0;
-                Check.True(net2.AskedGitHub, what + ": asked again");
-                Check.True(r2.Up.CheckFailed, what);
-                Check.Null(r2.Up.SoftNote, what);
-            }
-
-            // a newer release whose manifest is for another tag is refused the same way (not softened)
-            byte[] wrongTag = Bytes(Manifest("0.4.4"));
-            var net3 = StaleEqualFeed(key);
-            GitHub(net3, Release("v0.4.3"));
-            GitHubManifest(net3, "v0.4.3", wrongTag, Sign(key, wrongTag));
-            var r3 = Run(net3, trust, running: "0.4.2");
-            Check.Equal(Updater.GitHubRefusedNote, r3.Up.LastError);
-            Check.True(r3.Up.CheckFailed);
-            Check.Null(r3.Up.SoftNote);
+            int before = notices.Count;
+            OffUi(() => manual ? up.CheckNowAsync() : up.RunBackgroundPassAsync(CancellationToken.None));
+            Check.Equal(before + 1, notices.Count, what + ": the pass reports its end");
+            Check.True(up.CheckFailed, what);
+            if (gate.ShouldShow(notices[^1])) shown++;
         }
-        finally { Updater.ClockOverride = null; }
+
+        Pass("the first failure");
+        Check.Equal(Updater.FormatStamp(V("0.4.1"), t0.UtcDateTime), settings.FeedFloorFailingSince, "the streak starts at the first failure");
+        Check.Null(notices[^1], "a plain failed check is no notification (the window shows it)");
+        now = t0.AddDays(1); Pass("+1 d"); Check.Null(notices[^1]);
+        now = t0.AddDays(3); Pass("+3 d"); Check.Null(notices[^1], "it takes MORE than 3 days");
+        Check.Equal(0, shown);
+
+        now = t0.AddDays(3).AddHours(1);
+        Pass("+3 d 1 h");
+        var notice = notices[^1];
+        Check.NotNull(notice, "failing for 3 days and an hour");
+        Check.Equal("checkfailed:stable", notice!.Key);
+        Check.Contains(notice.Text, "cdn.example", "names the host");
+        Check.Contains(notice.Text, "for 3 days", "and the duration");
+        Check.DoesNotContain(notice.Text, "404", "and nothing else the check learnt");
+        Check.True(notice.Text.Length <= 250, "fits a tray balloon");
+        Check.Equal(1, shown);
+        for (int i = 1; i <= 4; i++) { now = t0.AddDays(3).AddHours(1 + 6 * i); Pass($"+{6 * i} h later"); }
+        Check.Equal(1, shown, "shown once per session, not at every pass");
+        Check.True(notices.Count(n => n != null) > 1, "the later failed passes report the same problem; the gate shows it once");
+        Check.Equal(Updater.FormatStamp(V("0.4.1"), t0.UtcDateTime), settings.FeedFloorFailingSince, "the streak is not restarted by a failure");
+
+        // a manual check never produces a notice (its result is in the footer) and does not end the streak
+        now = t0.AddDays(5);
+        Pass("manual", manual: true);
+        Check.Null(notices[^1]);
+        Check.Equal(Updater.FormatStamp(V("0.4.1"), t0.UtcDateTime), settings.FeedFloorFailingSince);
+
+        // any successful check clears it
+        byte[] m = Bytes(Manifest("0.4.1"));
+        net.Feed("stable", m, Sign(key, m));
+        now = t0.AddDays(6);
+        OffUi(() => up.RunBackgroundPassAsync(CancellationToken.None));
+        Check.False(up.CheckFailed, up.LastError);
+        Check.Null(settings.FeedFloorFailingSince, "cleared");
+        Check.Null(notices[^1]);
+        Check.DoesNotContain(settings.ToJson(), "FeedFloorFailingSince", "left out of the file while null");
+
+        // a later streak starts again from its own first failure; the session already told the user (same key)
+        net.Routes.Clear();
+        now = t0.AddDays(7);
+        Pass("new streak");
+        Check.Equal(Updater.FormatStamp(V("0.4.1"), t0.AddDays(7).UtcDateTime), settings.FeedFloorFailingSince);
+        Check.Null(notices[^1]);
+        now = t0.AddDays(10).AddHours(2);
+        Pass("new streak, over 3 days");
+        Check.Equal("checkfailed:stable", notices[^1]!.Key);
+        Check.Equal(1, shown, "once per session: the key is the same");
     }
 
     [UnitTest]
-    public static void A_verified_newer_github_release_is_offered_again_on_the_next_check()
+    public static void The_updater_has_one_http_client_which_never_follows_a_redirect()
     {
-        var (pub, key) = NewKey();
-        using var k = key;
-        var trust = Trust(stable: new[] { pub });
-        var t0 = DateTimeOffset.UtcNow;
-        var now = t0;
-        Updater.ClockOverride = () => now;
-        try
-        {
-            byte[] m3 = Bytes(Manifest("0.4.3"));
-            FakeNet Net()
-            {
-                var n = StaleEqualFeed(key);
-                GitHub(n, Release("v0.4.3"));
-                GitHubManifest(n, "v0.4.3", m3, Sign(key, m3));
-                return n;
-            }
-            var settings = new Settings();
-            var r = Run(Net(), trust, running: "0.4.2", settings: settings);
-            Check.Equal(V("0.4.3"), r.Info?.Version, r.Up.LastError);
-            Check.Null(settings.FeedFloorStableGitHubConfirm, "an offer is not 'nothing newer'");
-            Check.Null(settings.FeedFloorStableUpToDate);
-            // offered but not installed (AutoUpdate off, the download failed, the user said no): two days later GitHub is asked again
-            now = t0.AddDays(2);
-            var net2 = Net();
-            var r2 = Run(net2, trust, running: "0.4.2", settings: settings);
-            Check.True(net2.AskedGitHub, "within 7 days of the offer GitHub is still asked");
-            Check.Equal(V("0.4.3"), r2.Info?.Version, "and offers it again");
-        }
-        finally { Updater.ClockOverride = null; }
-    }
-
-    [UnitTest]
-    public static void Only_a_github_that_could_not_be_asked_is_soft()
-    {
-        var (pub, key) = NewKey();
-        using var k = key;
-        var trust = Trust(stable: new[] { pub });
-        var t0 = DateTimeOffset.UtcNow;
-        Updater.ClockOverride = () => t0;
-        try
-        {
-            string softText = SoftText("0.4.2", t0.AddDays(-20));
-            // soft: GitHub down, rate-limited, unreachable or too slow
-            var soft = new List<(string Name, Action<FakeNet> Setup)>
-            {
-                ("HTTP 500", n => n.Status(GitHubLatest, 500)), ("HTTP 503", n => n.Status(GitHubLatest, 503)),
-                ("HTTP 429", n => n.Status(GitHubLatest, 429)), ("HTTP 403", n => n.Status(GitHubLatest, 403)),
-                ("network error", n => n.Throw(GitHubLatest, () => new HttpRequestException("no route"))),
-                ("I/O error", n => n.Throw(GitHubLatest, () => new IOException("connection reset"))),
-                ("timeout", n => n.RoutesAsync[GitHubLatest] = StalledHeaders),
-            };
-            Updater.GitHubTimeoutOverride = TimeSpan.FromMilliseconds(300);
-            foreach (var (name, setup) in soft)
-            {
-                var net = StaleEqualFeed(key);
-                setup(net);
-                var r = Run(net, trust, running: "0.4.2");
-                Check.Null(r.Up.LastError, name);
-                Check.False(r.Up.CheckFailed, name);
-                Check.Equal(softText, r.Up.SoftNote, name);
-            }
-            // not soft: GitHub answered, and the answer is no confirmation
-            var hard = new List<(string Name, Action<FakeNet> Setup, string Error)>
-            {
-                ("HTTP 404", n => n.Status(GitHubLatest, 404), "no releases found"),
-                ("HTTP 401", n => n.Status(GitHubLatest, 401), "HTTP 401"),
-                ("unusable release", n => n.Ok(GitHubLatest, Bytes("""{"tag_name":"latest","draft":false,"prerelease":false}""")), "not vX.Y.Z"),
-                ("no exe", n => n.Ok(GitHubLatest, Bytes("""{"tag_name":"v0.4.3","draft":false,"prerelease":false,"assets":[]}""")), "no Clink.exe"),
-                ("not JSON", n => n.Ok(GitHubLatest, Bytes("<html>captive portal</html>")), ""),
-                ("too large", n => n.Ok(GitHubLatest, new byte[Updater.MaxApiBytes + 1]), "too large"),
-            };
-            foreach (var (name, setup, error) in hard)
-            {
-                var net = StaleEqualFeed(key);
-                setup(net);
-                var r = Run(net, trust, running: "0.4.2");
-                Check.True(r.Up.CheckFailed, name);
-                Check.Contains(r.Up.LastError, error, name);
-                Check.Null(r.Up.SoftNote, name);
-                Check.Null(r.Settings.FeedFloorStableSoftSince, name);
-            }
-            // a cancelled check is neither
-            using var cts = new CancellationTokenSource();
-            cts.Cancel();
-            var rc = Run(StaleEqualFeed(key), trust, running: "0.4.2", ct: cts.Token);
-            Check.Equal("cancelled", rc.Up.LastError);
-            Check.Null(rc.Up.SoftNote);
-        }
-        finally { Updater.ClockOverride = null; Updater.GitHubTimeoutOverride = null; }
-    }
-
-    [UnitTest]
-    public static void An_old_confirmation_does_not_make_the_first_unconfirmed_check_a_failure()
-    {
-        var (pub, key) = NewKey();
-        using var k = key;
-        var trust = Trust(stable: new[] { pub });
-        var t0 = DateTimeOffset.UtcNow;
-        var now = t0;
-        Updater.ClockOverride = () => now;
-        try
-        {
-            FakeNet Down() { var n = StaleEqualFeed(key); n.Status(GitHubLatest, 503); return n; }
-            // switched to the dev channel 60 days ago and back now (or Clink not used for two months): stable's stamps are old
-            var settings = new Settings { FeedFloorStableUpToDate = Stamp("0.4.2", t0.AddDays(-60)), FeedFloorStableGitHubConfirm = Stamp("0.4.2", t0.AddDays(-60)) };
-            var r1 = Run(Down(), trust, running: "0.4.2", settings: settings);
-            Check.False(r1.Up.CheckFailed, "the first unconfirmed check is soft");
-            Check.Equal(SoftText("0.4.2", t0.AddDays(-20)), r1.Up.SoftNote);
-            Check.Equal(Stamp("0.4.2", t0), settings.FeedFloorStableSoftSince);
-            // 14 days into the streak: still soft; a moment after: a failed check
-            now = t0.AddDays(14);
-            Check.False(Run(Down(), trust, running: "0.4.2", settings: settings).Up.CheckFailed, "14 days into the streak");
-            now = t0.AddDays(14).AddHours(1);
-            var r3 = Run(Down(), trust, running: "0.4.2", settings: settings);
-            Check.True(r3.Up.CheckFailed, "over 14 days into the streak");
-            Check.Contains(r3.Up.LastError, "since " + Day(t0));
-            Check.Null(r3.Up.SoftNote);
-        }
-        finally { Updater.ClockOverride = null; }
-    }
-
-    [UnitTest]
-    public static void Stamps_of_another_version_or_from_the_future_confirm_nothing()
-    {
-        var (pub, key) = NewKey();
-        using var k = key;
-        var trust = Trust(stable: new[] { pub });
-        var t0 = DateTimeOffset.UtcNow;
-        Updater.ClockOverride = () => t0;
-        try
-        {
-            FakeNet Up() { var n = StaleEqualFeed(key); GitHub(n, Release("v0.4.2")); return n; }
-            FakeNet Down() { var n = StaleEqualFeed(key); n.Status(GitHubLatest, 503); return n; }
-
-            // recorded for 0.4.1 (the version before the update), running 0.4.2: GitHub is asked
-            var old = new Settings { FeedFloorStableGitHubConfirm = Stamp("0.4.1", t0.AddDays(-1)), FeedFloorStableUpToDate = Stamp("0.4.1", t0.AddDays(-1)) };
-            var net1 = Up();
-            var r1 = Run(net1, trust, running: "0.4.2", settings: old);
-            Check.True(net1.AskedGitHub, "0.4.1's stamps do not count for 0.4.2");
-            Check.Equal(Stamp("0.4.2", t0), old.FeedFloorStableGitHubConfirm, "replaced by the running version's own");
-            // ...and 0.4.1's streak is not 0.4.2's: a fresh one starts, soft
-            var oldStreak = new Settings { FeedFloorStableSoftSince = Stamp("0.4.1", t0.AddDays(-20)) };
-            var r2 = Run(Down(), trust, running: "0.4.2", settings: oldStreak);
-            Check.False(r2.Up.CheckFailed);
-            Check.NotNull(r2.Up.SoftNote);
-            Check.Equal(Stamp("0.4.2", t0), oldStreak.FeedFloorStableSoftSince);
-
-            // stamps more than a day in the future: absent, GitHub is asked (they grant nothing)
-            var future = new Settings { FeedFloorStableGitHubConfirm = Stamp("0.4.2", t0.AddDays(3)), FeedFloorStableUpToDate = Stamp("0.4.2", t0.AddDays(3)) };
-            var net3 = Up();
-            Run(net3, trust, running: "0.4.2", settings: future);
-            Check.True(net3.AskedGitHub, "future stamps are not a confirmation");
-            // a future streak start is absent too: the streak starts now (it neither fails nor extends anything)
-            var futureStreak = new Settings { FeedFloorStableSoftSince = Stamp("0.4.2", t0.AddDays(30)) };
-            var r4 = Run(Down(), trust, running: "0.4.2", settings: futureStreak);
-            Check.False(r4.Up.CheckFailed);
-            Check.Equal(Stamp("0.4.2", t0), futureStreak.FeedFloorStableSoftSince);
-            // under a day ahead is clock skew: still counted
-            var skew = new Settings { FeedFloorStableGitHubConfirm = Stamp("0.4.2", t0.AddHours(12)), FeedFloorStableUpToDate = Stamp("0.4.2", t0.AddHours(12)) };
-            var net5 = Down();
-            var r5 = Run(net5, trust, running: "0.4.2", settings: skew);
-            Check.False(net5.AskedGitHub, "12 hours ahead counts");
-            Check.False(r5.Up.CheckFailed);
-            // unreadable stamps (round 1's bare dates among them) are absent
-            var bad = new Settings { FeedFloorStableGitHubConfirm = "2026-10-20T08:00:00Z", FeedFloorStableUpToDate = "garbage" };
-            var net6 = Up();
-            Run(net6, trust, running: "0.4.2", settings: bad);
-            Check.True(net6.AskedGitHub);
-        }
-        finally { Updater.ClockOverride = null; }
-    }
-
-    [UnitTest]
-    public static void Feed_offers_download_through_the_feed_client_and_github_offers_through_the_github_client()
-    {
-        using var dir = new TempDir();
-        Updater.UpdatesDirOverride = dir.File("updates");
-        var (pub, key) = NewKey();
-        using var k = key;
-        var trust = Trust(stable: new[] { pub });
-        byte[] exe = FakeExe();
-        var seen = new List<(string Url, bool Feed)>();
-        Updater.SendObserver = (url, feed) => { lock (seen) seen.Add((url, feed)); };
-
-        // the feed offers v0.4.2: the manifest, its signature and the exe all go through the feed's own (no-redirect) client
-        byte[] fm = Bytes(Manifest("0.4.2", size: exe.Length, sha: Hex(exe)));
-        var net = new FakeNet();
-        net.Feed("stable", fm, Sign(key, fm));
-        const string feedExe = "https://cdn.example/clink/releases/v0.4.2/Clink.exe";
-        net.Ok(feedExe, exe);
-        var r = Run(net, trust);
-        Check.True(r.Info!.FromFeed);
-        string path = OffUi(() => r.Up.DownloadAsync(r.Info, null, CancellationToken.None));
-        Check.Equal(exe, File.ReadAllBytes(path));
-        Check.Equal(new[] { (Base + "stable.json", true), (Base + "stable.json.sig", true), (feedExe, true) }, seen.ToArray());
-
-        // the feed is down, GitHub offers v0.4.2 with a signed manifest: the API, the manifest assets and the exe go through GitHub's client
-        lock (seen) seen.Clear();
-        File.Delete(path);
-        var net2 = new FakeNet();
-        GitHub(net2, Release("v0.4.2", exeSize: exe.Length));
-        GitHubManifest(net2, "v0.4.2", fm, Sign(key, fm));
-        net2.Ok(Gh + "v0.4.2/Clink.exe", exe);
-        var r2 = Run(net2, trust);
-        Check.False(r2.Info!.FromFeed);
-        string path2 = OffUi(() => r2.Up.DownloadAsync(r2.Info, null, CancellationToken.None));
-        Check.Equal(exe, File.ReadAllBytes(path2));
-        Check.True(seen.Where(s => s.Url.StartsWith(Base, StringComparison.Ordinal)).All(s => s.Feed), "the feed's own requests use the feed client");
-        var github = seen.Where(s => !s.Url.StartsWith(Base, StringComparison.Ordinal)).ToArray();
-        Check.Equal(new[] { (GitHubLatest, false), (Gh + "v0.4.2/stable.json", false), (Gh + "v0.4.2/stable.json.sig", false), (Gh + "v0.4.2/Clink.exe", false) }, github);
-        Check.Equal(TimeSpan.FromSeconds(30), Updater.FeedClientTimeout, "the feed client has a timeout (connect + headers)");
+        Check.False(Updater.FeedHandler.AllowAutoRedirect);
+        Check.Equal(TimeSpan.FromSeconds(30), Updater.FeedClientTimeout, "the client has a timeout (connect + headers)");
+        Check.Equal(TimeSpan.FromMinutes(15), Updater.FeedHandler.PooledConnectionLifetime);
     }
 
     [UnitTest]
@@ -2472,7 +2143,6 @@ internal static class UpdateFeedTests
         byte[] fm = Bytes(Manifest("0.4.2", size: exe.Length, sha: Hex(exe)));
         const string feedExe = "https://cdn.example/clink/releases/v0.4.2/Clink.exe";
         Updater.FeedOverride = trust;
-        Updater.BuiltInRepoOverride = BuiltIn;
         Updater.DownloadAnswerTimeoutOverride = TimeSpan.FromMilliseconds(300);
         Updater.DownloadReadTimeoutOverride = TimeSpan.FromMilliseconds(300);
         foreach (var (name, setup, error) in new (string, Action<FakeNet>, string)[]
@@ -2485,7 +2155,7 @@ internal static class UpdateFeedTests
             net.Feed("stable", fm, Sign(key, fm));
             setup(net);
             Updater.HttpOverride = net.Send;
-            var up = new Updater(new Settings { AutoUpdate = true }, V("0.4.1"));
+            using var up = new Updater(new Settings { AutoUpdate = true }, V("0.4.1"));
             for (int attempt = 1; attempt <= 2; attempt++)
             {
                 var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -2502,6 +2172,227 @@ internal static class UpdateFeedTests
             }
             Check.Equal(2, net.Asked.Count(u => u == feedExe), name + ": the second check was not blocked by the first");
         }
+    }
+
+    /// <summary>A body that keeps sending: <paramref name="chunk"/> bytes every <paramref name="delayMs"/> ms until all of <paramref name="data"/> is sent (a server that trickles).</summary>
+    private sealed class TrickleStream : Stream
+    {
+        private readonly int _delayMs, _chunk;
+        private readonly byte[] _data;
+        private int _pos;
+        public TrickleStream(int delayMs, byte[] data, int chunk = 1) { _delayMs = delayMs; _data = data; _chunk = chunk; }
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
+        {
+            if (_pos >= _data.Length) return 0;
+            await Task.Delay(_delayMs, ct).ConfigureAwait(false);
+            int n = Math.Min(Math.Min(_chunk, _data.Length - _pos), buffer.Length);
+            _data.AsSpan(_pos, n).CopyTo(buffer.Span);
+            _pos += n;
+            return n;
+        }
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken ct) => ReadAsync(buffer.AsMemory(offset, count), ct).AsTask();
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+    [UnitTest]
+    public static void A_trickling_download_fails_in_time_and_releases_the_gate()
+    {
+        using var dir = new TempDir();
+        Updater.UpdatesDirOverride = dir.File("updates");
+        var (pub, key) = NewKey();
+        using var k = key;
+        var trust = Trust(stable: new[] { pub });
+        byte[] exe = FakeExe();
+        byte[] fm = Bytes(Manifest("0.4.2", size: exe.Length, sha: Hex(exe)));
+        const string feedExe = "https://cdn.example/clink/releases/v0.4.2/Clink.exe";
+        Updater.FeedOverride = trust;
+        Updater.DownloadReadTimeoutOverride = TimeSpan.FromSeconds(5);   // never goes quiet: only the rate and the total limit can end it
+        foreach (var (name, total, rate, window, error) in new (string, TimeSpan, long, TimeSpan, string)[]
+                 {
+                     ("under the minimum rate", TimeSpan.FromSeconds(30), 10_000, TimeSpan.FromMilliseconds(250), "too slow"),
+                     ("over the total deadline", TimeSpan.FromMilliseconds(300), 0, TimeSpan.FromSeconds(30), "took too long"),
+                 })
+        {
+            Updater.DownloadTotalTimeoutOverride = total;
+            Updater.DownloadMinRateOverride = rate;
+            Updater.DownloadRateWindowOverride = window;
+            var net = new FakeNet();
+            net.Feed("stable", fm, Sign(key, fm));
+            net.Ok(feedExe, () => new StreamContent(new TrickleStream(20, exe)));   // 300 bytes at 50 B/s: 6 s if let be
+            Updater.HttpOverride = net.Send;
+            using var up = new Updater(new Settings { AutoUpdate = true }, V("0.4.1"));
+            for (int attempt = 1; attempt <= 2; attempt++)
+            {
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                var check = Task.Run(() => up.CheckNowAsync());
+                // 10 s: a bound for a hang only (each attempt ends in well under a second), with room for a slow CI runner
+                Check.True(check.Wait(TimeSpan.FromSeconds(10)), $"{name}, attempt {attempt}: still running after {sw.Elapsed}");
+                Check.Equal(V("0.4.2"), check.Result?.Version, $"{name}, attempt {attempt}");
+                Check.Contains(up.LastError, "downloading v0.4.2 failed", $"{name}, attempt {attempt}");
+                Check.Contains(up.LastError, error, $"{name}, attempt {attempt}");
+                Check.Equal(1, up._gate.CurrentCount, $"{name}, attempt {attempt}: the gate is free again");
+                Check.False(up.IsDownloading, name);
+                Check.Null(up.PendingPath, name);
+                Check.Equal(0, Directory.GetFiles(Updater.UpdatesDir, "*.partial").Length, name + ": no partial file is left");
+            }
+            Check.Equal(2, net.Asked.Count(u => u == feedExe), name + ": the next check ran");
+        }
+    }
+
+    [UnitTest]
+    public static void A_download_at_a_normal_pace_passes_the_rate_and_deadline_limits()
+    {
+        using var dir = new TempDir();
+        Updater.UpdatesDirOverride = dir.File("updates");
+        byte[] exe = FakeExe();
+        const string url = "https://cdn.example/clink/releases/v0.4.2/Clink.exe";
+        Updater.DownloadTotalTimeoutOverride = TimeSpan.FromSeconds(10);
+        // 10 B/s: the body below sends ~3.3 KB/s, so even a CI runner that stalls for a while does not fall under it (it was 300 B/s over 50 ms)
+        Updater.DownloadMinRateOverride = 10;                               // bytes per second
+        Updater.DownloadRateWindowOverride = TimeSpan.FromMilliseconds(50);
+        using var up = new Updater(new Settings(), V("0.4.1"));
+        var info = new UpdateInfo(V("0.4.2"), "v0.4.2", url, exe.Length, Hex(exe), "");
+        foreach (var (name, body) in new (string, Func<HttpContent>)[]
+                 {
+                     ("all at once", () => new ByteArrayContent(exe)),
+                     ("100 bytes every 30 ms (3.3 KB/s)", () => new StreamContent(new TrickleStream(30, exe, chunk: 100))),
+                 })
+        {
+            var net = new FakeNet();
+            net.Ok(url, body);
+            Updater.HttpOverride = net.Send;
+            string path = OffUi(() => up.DownloadAsync(info, null, CancellationToken.None));
+            Check.Equal(Hex(exe), Hex(File.ReadAllBytes(path)).ToLowerInvariant(), name);
+            File.Delete(path);
+        }
+
+        // the real limits: 10 minutes at least, else 64 KB/s; unchanged by the hooks' absence
+        Updater.DownloadTotalTimeoutOverride = null;
+        Check.Equal(TimeSpan.FromMinutes(10), Updater.DownloadDeadline(150L * 1024 * 1024 / 100));
+        Check.Equal(TimeSpan.FromSeconds(40 * 60), Updater.DownloadDeadline(150L * 1024 * 1024));
+        // a size over the hard ceiling (a lying Content-Length or listed size) buys no more than the ceiling's deadline (512 MB at 64 KB/s)
+        Check.Equal(TimeSpan.FromSeconds(Updater.MaxExeBytes / (64 * 1024)), Updater.DownloadDeadline(Updater.MaxExeBytes));
+        Check.Equal(Updater.DownloadDeadline(Updater.MaxExeBytes), Updater.DownloadDeadline(long.MaxValue));
+        Check.Equal(Updater.DownloadDeadline(Updater.MaxExeBytes), Updater.DownloadDeadline(Updater.MaxExeBytes + 1));
+    }
+
+    [UnitTest]
+    public static void The_rate_window_keeps_a_bounded_number_of_samples()
+    {
+        using var dir = new TempDir();
+        Updater.UpdatesDirOverride = dir.File("updates");
+        // 6000 reads of one byte each, as fast as they come: one sample per read (the old queue) would be thousands within the window
+        byte[] exe = FakeExe(6000);
+        const string url = "https://cdn.example/clink/releases/v0.4.2/Clink.exe";
+        Updater.DownloadTotalTimeoutOverride = TimeSpan.FromSeconds(30);
+        Updater.DownloadMinRateOverride = 0;
+        Updater.DownloadRateWindowOverride = TimeSpan.FromSeconds(2);   // short, yet longer than the transfer: nothing ever leaves the window
+        using var up = new Updater(new Settings(), V("0.4.1"));
+        var info = new UpdateInfo(V("0.4.2"), "v0.4.2", url, exe.Length, Hex(exe), "");
+        var net = new FakeNet();
+        net.Ok(url, () => new StreamContent(new TrickleStream(0, exe, chunk: 1)));
+        Updater.HttpOverride = net.Send;
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        string path = OffUi(() => up.DownloadAsync(info, null, CancellationToken.None));
+        Check.Equal(exe, File.ReadAllBytes(path));
+        // at most one sample per second of transfer (+1); the transfer takes well under the 30 s limit
+        int bound = (int)Math.Ceiling(sw.Elapsed.TotalSeconds) + 1;
+        Check.True(up.RateSamplesPeak <= bound, $"{up.RateSamplesPeak} samples held for a {sw.Elapsed.TotalSeconds:0.##} s transfer (at most {bound})");
+    }
+
+    [UnitTest]
+    public static void Every_check_pass_reports_its_end_and_a_failed_background_pass_reaches_the_ui()
+    {
+        var (pub, key) = NewKey();
+        using var k = key;
+        var trust = Trust(stable: new[] { pub });
+        var net = new FakeNet();
+        net.Status(Base + "stable.json", 503);
+        net.AllowOnly(trust);
+        Updater.HttpOverride = net.Send;
+        Updater.FeedOverride = trust;
+        using var up = new Updater(new Settings(), V("0.4.1"));
+        var seen = new List<UpdateNotice?>();
+        var gateFree = new List<int>();
+        up.CheckFinished += n => { lock (seen) { seen.Add(n); gateFree.Add(up._gate.CurrentCount); } };
+        Check.Null(OffUi(() => up.RunBackgroundPassAsync(CancellationToken.None)));
+        Check.True(up.CheckFailed);
+        Check.Contains(up.LastError, "HTTP 503");
+        Check.Equal(1, seen.Count, "a failed background pass reports its end");
+        Check.Null(seen[0], "a plain failed check is no notification (the window shows it)");
+        // a successful one, and a manual check, report too
+        byte[] m = Bytes(Manifest("0.4.1"));
+        net.Feed("stable", m, Sign(key, m));
+        OffUi(() => up.RunBackgroundPassAsync(CancellationToken.None));
+        OffUi(() => up.CheckNowAsync());
+        Check.Equal(3, seen.Count);
+        Check.Equal(new[] { 1, 1, 1 }, gateFree.ToArray(), "raised after the gate is released (a handler may start the next check)");
+        // a pass cut short by shutdown does not
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        try { OffUi(() => up.RunBackgroundPassAsync(cts.Token)); } catch (OperationCanceledException) { }
+        Check.Equal(3, seen.Count, "not raised for a cancelled pass");
+        net.AssertNoStray();
+    }
+
+    [UnitTest]
+    public static void A_download_that_reaches_the_attempt_cap_is_announced_once_per_version()
+    {
+        using var dir = new TempDir();
+        Updater.UpdatesDirOverride = dir.File("updates");
+        var (pub, key) = NewKey();
+        using var k = key;
+        Updater.FeedOverride = Trust(stable: new[] { pub });
+        byte[] exe = FakeExe();
+        var net = new FakeNet();
+        void Offer(string version)
+        {
+            byte[] fm = Bytes(Manifest(version, size: exe.Length, sha: Hex(exe)));
+            net.Feed("stable", fm, Sign(key, fm));
+            net.Status($"https://cdn.example/clink/releases/v{version}/Clink.exe", 503);
+        }
+        Offer("0.4.2");
+        Updater.HttpOverride = net.Send;
+        using var up = new Updater(new Settings { AutoUpdate = true }, V("0.4.1"));
+        var notices = new List<UpdateNotice?>();
+        up.CheckFinished += n => { lock (notices) notices.Add(n); };
+        var gate = new UpdateNoticeGate();
+        int shown = 0;
+        for (int pass = 1; pass <= 5; pass++)   // five background passes (6 h apart in the app)
+        {
+            Check.Equal(V("0.4.2"), OffUi(() => up.RunBackgroundPassAsync(CancellationToken.None))?.Version, $"pass {pass}");
+            Check.Contains(up.LastError, "downloading v0.4.2 failed", $"pass {pass}");
+            if (gate.ShouldShow(notices[^1])) shown++;
+        }
+        Check.Equal(5, notices.Count, "every pass reports");
+        Check.Null(notices[0], "the first failure is not announced");
+        Check.Null(notices[1]);
+        Check.NotNull(notices[2], "the attempt that reaches the cap is");
+        Check.Equal("download:0.4.2", notices[2]!.Key);
+        Check.Contains(notices[2]!.Text, "Downloading v0.4.2 failed 3 times");
+        Check.Contains(notices[2]!.Text, "503", "with why");
+        Check.True(notices[2]!.Text.Length <= 250, "fits a tray balloon");
+        Check.Equal("download:0.4.2", notices[4]!.Key, "the capped passes report the same problem...");
+        Check.Equal(1, shown, "...which is shown once");
+        Check.Equal(3, net.Asked.Count(u => u.EndsWith("/v0.4.2/Clink.exe", StringComparison.Ordinal)), "three attempts, then the cap");
+        // another version is another problem
+        Offer("0.4.3");
+        for (int pass = 1; pass <= 4; pass++)
+        {
+            OffUi(() => up.RunBackgroundPassAsync(CancellationToken.None));
+            if (gate.ShouldShow(notices[^1])) shown++;
+        }
+        Check.Equal("download:0.4.3", notices[^1]!.Key);
+        Check.Equal(2, shown, "once per version");
     }
 
     private static HttpResponseMessage Redirect(string to)
@@ -2521,21 +2412,23 @@ internal static class UpdateFeedTests
         byte[] m = Bytes(Manifest("0.4.9"));
         const string elsewhere = "https://evil.example/stable.json";
 
-        // the manifest redirects: unreachable, so the (signed) GitHub path is asked; the target is never requested
+        // the manifest redirects: unreachable, so the check fails; the target is never requested
         var net = new FakeNet();
         net.Feed("stable", m, Sign(key, m));
         net.Routes[Base + "stable.json"] = _ => Redirect(elsewhere);
         net.Ok(elsewhere, m);
         var r = Run(net, trust);
         Check.Null(r.Info);
-        Check.True(net.AskedGitHub);
+        Check.Equal("Couldn't reach the update server (cdn.example): HTTP 302", r.Up.LastError);
         Check.False(net.Asked.Contains(elsewhere));
         // ...so does the signature
         var net2 = new FakeNet();
         net2.Feed("stable", m, Sign(key, m));
         net2.Routes[Base + "stable.json.sig"] = _ => Redirect("https://evil.example/stable.json.sig");
-        Check.Null(Run(net2, trust).Info);
-        Check.True(net2.AskedGitHub);
+        var r2 = Run(net2, trust);
+        Check.Null(r2.Info);
+        Check.Equal("Couldn't reach the update server (cdn.example): HTTP 302", r2.Up.LastError);
+        Check.False(net2.Asked.Contains("https://evil.example/stable.json.sig"));
 
         // a feed binary that redirects fails the download
         using var dir = new TempDir();
@@ -2546,136 +2439,11 @@ internal static class UpdateFeedTests
         net3.Routes[url] = _ => Redirect("https://evil.example/Clink.exe");
         net3.Ok("https://evil.example/Clink.exe", exe);
         Updater.HttpOverride = net3.Send;
-        var up = new Updater(new Settings(), V("0.4.1"));
-        var info = new UpdateInfo(V("0.4.2"), "v0.4.2", url, exe.Length, "", "", "", Hex(exe), FromFeed: true);
-        Check.Throws<HttpRequestException>(() => OffUi(() => up.DownloadAsync(info, null, CancellationToken.None)));
+        using var up = new Updater(new Settings(), V("0.4.1"));
+        var info = new UpdateInfo(V("0.4.2"), "v0.4.2", url, exe.Length, Hex(exe), "");
+        var redirected = Check.Throws<HttpRequestException>(() => OffUi(() => up.DownloadAsync(info, null, CancellationToken.None)));
+        Check.Equal("HTTP 302", redirected.Message);
         Check.False(net3.Asked.Contains("https://evil.example/Clink.exe"));
-        Check.True(UpdateFeed.ToUpdateInfo(UpdateFeed.ParseManifest(m, "stable", out _)!).FromFeed, "feed offers carry the flag");
-    }
-
-    [UnitTest]
-    public static void Feed_notes_url_that_is_not_github_falls_back_to_the_latest_releases_page()
-    {
-        var (pub, key) = NewKey();
-        using var k = key;
-        var trust = Trust(stable: new[] { pub });
-        const string latest = "https://github.com/o/r/releases/latest";
-        foreach (var (notes, expected) in new[]
-                 {
-                     ("https://example.invalid/notes", latest), ("https://github.com/evil/repo/releases/latest", latest),
-                     ("https://github.com/o/r/releases/download/v0.4.9/Clink.exe", latest), ("https://github.com/o/r/releases/latest?x=1", latest),
-                     ("", latest), ("https://github.com/o/r/releases/tag/v0.4.9", "https://github.com/o/r/releases/tag/v0.4.9"),
-                 })
-        {
-            byte[] m = Bytes(Manifest("0.4.9", notes: notes));
-            var net = new FakeNet();
-            net.Feed("stable", m, Sign(key, m));
-            var r = Run(net, trust);
-            Check.Equal(V("0.4.9"), r.Info?.Version, r.Up.LastError);
-            Check.Equal(notes, r.Info!.HtmlUrl, "the feed path's HtmlUrl is the manifest's notesUrl");
-            Check.Equal(expected, r.Up.ReleasePageFor(r.Info), $"notesUrl '{notes}'");
-        }
-        Check.Equal(latest, new Updater(new Settings(), V("0.4.1")).ReleasePageFor(null));
-    }
-
-    private sealed class LyingLengthContent : HttpContent
-    {
-        private readonly long _length;
-        public LyingLengthContent(long length) { _length = length; }
-        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) => throw new InvalidOperationException("the body must not be read");
-        protected override bool TryComputeLength(out long length) { length = _length; return true; }
-    }
-
-    [UnitTest]
-    public static void Unsigned_download_is_capped_by_the_listed_size_or_a_hard_ceiling()
-    {
-        using var dir = new TempDir();
-        Updater.UpdatesDirOverride = dir.File("updates");
-        byte[] exe = FakeExe();
-        const string url = "https://gh.example/v0.4.2/Clink.exe";
-        var settings = new Settings();
-        var up = new Updater(settings, V("0.4.1"));
-        string[] Left() => Directory.Exists(Updater.UpdatesDir) ? Directory.GetFiles(Updater.UpdatesDir) : Array.Empty<string>();
-        UpdateInfo Info(long size) => new(V("0.4.2"), "v0.4.2", url, size, url + ".sha256", "", "");
-        FakeNet Net(Func<HttpContent> exeBody)
-        {
-            var n = new FakeNet();
-            n.Ok(url + ".sha256", Bytes(Hex(exe) + "  Clink.exe\n"));
-            n.Ok(url, exeBody);
-            return n;
-        }
-
-        // listed size known: a Content-Length above it is refused before the body is read
-        var net = Net(() => new LyingLengthContent(exe.Length + 1));
-        Updater.HttpOverride = net.Send;
-        Check.Contains(Check.Throws<InvalidDataException>(() => OffUi(() => up.DownloadAsync(Info(exe.Length), null, CancellationToken.None))).Message, "size mismatch");
-        Check.Equal(Array.Empty<string>(), Left());
-
-        // ...and an undeclared body that runs past it is cut off
-        var endless = new EndlessStream();
-        var net2 = Net(() => new StreamContent(endless));
-        Updater.HttpOverride = net2.Send;
-        Check.Throws<InvalidDataException>(() => OffUi(() => up.DownloadAsync(Info(exe.Length), null, CancellationToken.None)));
-        Check.True(endless.Served < 1 << 20, $"read {endless.Served} bytes");
-        Check.Equal(Array.Empty<string>(), Left());
-
-        // size unknown (0): the hard ceiling applies
-        var net3 = Net(() => new LyingLengthContent(Updater.MaxExeBytes + 1));
-        Updater.HttpOverride = net3.Send;
-        Check.Throws<InvalidDataException>(() => OffUi(() => up.DownloadAsync(Info(0), null, CancellationToken.None)));
-        Check.Equal(512L * 1024 * 1024, Updater.MaxExeBytes);
-        Check.Equal(Array.Empty<string>(), Left());
-
-        // the honest download still works, with and without a listed size
-        foreach (long size in new[] { (long)exe.Length, 0L })
-        {
-            var ok = Net(() => new ByteArrayContent(exe));
-            Updater.HttpOverride = ok.Send;
-            string path = OffUi(() => up.DownloadAsync(Info(size), null, CancellationToken.None));
-            Check.Equal(exe, File.ReadAllBytes(path), $"size {size}");
-            File.Delete(path);
-        }
-    }
-
-    [UnitTest]
-    public static void Unsigned_sha_file_over_64_KiB_fails_the_download_before_the_exe_is_asked_for()
-    {
-        using var dir = new TempDir();
-        Updater.UpdatesDirOverride = dir.File("updates");
-        const string url = "https://gh.example/v0.4.2/Clink.exe";
-        var up = new Updater(new Settings(), V("0.4.1"));
-        var info = new UpdateInfo(V("0.4.2"), "v0.4.2", url, 300, url + ".sha256", "", "");
-        // The cap is 64 KiB, pinned: a body one byte over 64 KiB (not over whatever the constant says) fails, so raising the cap (or
-        // reading the hash file with another limit) fails this test.
-        Check.Equal(64 * 1024, Updater.MaxShaFileBytes);
-        byte[] big = new byte[64 * 1024 + 1];
-        Array.Fill(big, (byte)' ');
-        foreach (bool sized in new[] { true, false })
-        {
-            var net = new FakeNet();
-            net.Ok(url + ".sha256", () => sized ? new ByteArrayContent(big) : new UnsizedContent(big));
-            net.Ok(url, FakeExe());
-            Updater.HttpOverride = net.Send;
-            var ex = Check.Throws<InvalidDataException>(() => OffUi(() => up.DownloadAsync(info, null, CancellationToken.None)), sized ? "declared" : "undeclared");
-            Check.Contains(ex.Message, "too large");
-            Check.False(net.Asked.Contains(url), "the exe is never requested");
-        }
-
-        // ...and a hash file of exactly MaxShaFileBytes is read (the hash first, padded with spaces): lowering the cap fails too
-        byte[] exe = FakeExe();
-        byte[] exact = new byte[Updater.MaxShaFileBytes];
-        Array.Fill(exact, (byte)' ');
-        Encoding.ASCII.GetBytes(Hex(exe)).CopyTo(exact, 0);
-        foreach (bool sized in new[] { true, false })
-        {
-            var net = new FakeNet();
-            net.Ok(url + ".sha256", () => sized ? new ByteArrayContent(exact) : new UnsizedContent(exact));
-            net.Ok(url, exe);
-            Updater.HttpOverride = net.Send;
-            string path = OffUi(() => up.DownloadAsync(info with { ExeSize = exe.Length }, null, CancellationToken.None));
-            Check.Equal(exe, File.ReadAllBytes(path), sized ? "declared" : "undeclared");
-            File.Delete(path);
-        }
     }
 
     [UnitTest]
@@ -2748,54 +2516,369 @@ internal static class UpdateFeedTests
         Check.Contains(string.Join("; ", Make("", DevBase).Problems), "keys are listed", "with keys it still says so");
     }
 
-    private sealed class SlowBody : Stream
+    // ------------------------------------------------------------------ repair round 1: the signed mark, error texts, strays, floors, install guard
+
+    [UnitTest]
+    public static void The_signed_mark_is_tied_to_the_hash_of_the_download()
     {
-        private readonly byte[] _bytes; private readonly TimeSpan _delay; private bool _done;
-        public SlowBody(byte[] bytes, TimeSpan delay) { _bytes = bytes; _delay = delay; }
-        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
-        {
-            await Task.Delay(_delay, ct).ConfigureAwait(false);
-            if (_done) return 0;
-            _done = true;
-            _bytes.CopyTo(buffer);
-            return _bytes.Length;
-        }
-        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
-        public override bool CanRead => true;
-        public override bool CanSeek => false;
-        public override bool CanWrite => false;
-        public override long Length => throw new NotSupportedException();
-        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
-        public override void Flush() { }
-        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
-        public override void SetLength(long value) => throw new NotSupportedException();
-        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        // v0.4.1 and older keep keys they do not know and rewrite only their own PendingUpdate* keys: after a signed download A by this
+        // version, an unsigned download B of theirs leaves PendingUpdateSha256 = hash(B) beside PendingUpdateSignedSha256 = hash(A).
+        using var dir = new TempDir();
+        Updater.UpdatesDirOverride = dir.File("updates");
+        Directory.CreateDirectory(Updater.UpdatesDir);
+        Updater.IsElevatedOverride = false;
+        byte[] fileA = FakeExe(300, 1), fileB = FakeExe(300, 2);
+        string file = Updater.FileFor(V("0.4.9"));
+        Settings Rec(string? signed) => new() { PendingUpdateVersion = "0.4.9", PendingUpdateSha256 = Hex(fileB), PendingUpdateSignedSha256 = signed, PendingUpdateFrom = "0.4.1" };
+
+        File.WriteAllBytes(file, fileB);
+        var up = new Updater(Rec(Hex(fileA)), V("0.4.1"));
+        Check.False(up.TryGetPendingUpdate(out _, out _), "the signed hash is another file's");
+        Check.Null(up.InstallProblem, "thrown away quietly");
+        Check.False(File.Exists(file), "the unsigned download is deleted");
+        File.WriteAllBytes(file, fileB);
+        var refused = Check.Throws<Updater.ApplyRefusedException>(() => up.PrepareApply(file));
+        Check.Contains(refused.Reason, "signed manifest");
+        Check.False(File.Exists(file), "PrepareApply discards it too");
+
+        // A record that holds only the retired PendingUpdateSigned: true (a pre-release build's) is refused the same way.
+        File.WriteAllBytes(file, fileB);
+        var legacy = Settings.FromJson($$"""{"PendingUpdateVersion":"0.4.9","PendingUpdateSha256":"{{Hex(fileB)}}","PendingUpdateFrom":"0.4.1","PendingUpdateSigned":true}""");
+        var upL = new Updater(legacy, V("0.4.1"));
+        Check.False(upL.TryGetPendingUpdate(out _, out _), "the legacy bool counts as absent");
+        Check.False(File.Exists(file));
+        File.WriteAllBytes(file, fileB);
+        Check.Throws<Updater.ApplyRefusedException>(() => upL.PrepareApply(file));
+        Check.False(File.Exists(file));
+
+        // Control: the signed hash is B's own.
+        File.WriteAllBytes(file, fileB);
+        var ok = new Updater(Rec(Hex(fileB)), V("0.4.1"));
+        bool found = ok.TryGetPendingUpdate(out string path, out _);
+        Check.True(found ? path == file : ok.InstallProblem != null, "found, or refused only because this runner cannot install");
+        Check.True(File.Exists(file));
+        Check.NotNull(ok.PrepareApply(file), "applied");
+        // ...but not when the file itself changed since (signed == recorded, the file is another one).
+        File.WriteAllBytes(file, fileA);
+        Check.Throws<Updater.ApplyRefusedException>(() => ok.PrepareApply(file));
+        Check.False(File.Exists(file));
     }
 
     [UnitTest]
-    public static void GitHub_headers_and_body_share_one_total_timeout()
+    public static void A_download_failure_shows_a_fixed_text_never_the_exceptions_message()
     {
-        Updater.GitHubTimeoutOverride = TimeSpan.FromMilliseconds(600);
-        try
+        using var dir = new TempDir();
+        Updater.UpdatesDirOverride = dir.File("updates");
+        var (pub, key) = NewKey();
+        using var k = key;
+        byte[] exe = FakeExe();
+        byte[] m = Bytes(Manifest("0.4.2", size: exe.Length, sha: Hex(exe)));
+        const string exeUrl = Base + "releases/v0.4.2/Clink.exe";
+        var net = new FakeNet();
+        net.Feed("stable", m, Sign(key, m));
+        net.Throw(exeUrl, () => new HttpRequestException("Received an invalid header line: 'EVIL'"));
+        net.AllowOnly(Trust());
+        Updater.HttpOverride = net.Send;
+        Updater.FeedOverride = Trust(stable: new[] { pub });
+        using var up = new Updater(new Settings { AutoUpdate = true }, V("0.4.1"));
+        var notices = new List<UpdateNotice?>();
+        up.CheckFinished += n => { lock (notices) notices.Add(n); };
+        for (int pass = 1; pass <= 3; pass++)
         {
-            byte[] body = Bytes(Release("v0.4.9", signedAssets: false));
-            // each phase alone is quicker than the limit (350 ms of 600), together they are not
-            var net = new FakeNet();
-            net.RoutesAsync[GitHubLatest] = async ct =>
-            {
-                await Task.Delay(350, ct).ConfigureAwait(false);
-                return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(new SlowBody(body, TimeSpan.FromMilliseconds(350))) };
-            };
-            var r = Run(net, FeedTrust.None);
-            Check.Null(r.Info);
-            Check.True(r.Up.CheckFailed);
-            Check.Contains(r.Up.LastError, "did not answer");
-
-            // and a quick answer is fine
-            var ok = new FakeNet();
-            GitHub(ok, Release("v0.4.9", signedAssets: false));
-            Check.Equal(V("0.4.9"), Run(ok, FeedTrust.None).Info?.Version);
+            Check.Equal(V("0.4.2"), OffUi(() => up.RunBackgroundPassAsync(CancellationToken.None))?.Version, $"pass {pass}");
+            Check.DoesNotContain(up.LastError, "EVIL", $"pass {pass}");
+            Check.Equal("downloading v0.4.2 failed: network error (cdn.example)", up.LastError, $"pass {pass}");
         }
-        finally { Updater.GitHubTimeoutOverride = null; }
+        var cap = notices[^1];
+        Check.NotNull(cap, "the attempt cap is announced");
+        Check.DoesNotContain(cap!.Text, "EVIL");
+        Check.DoesNotContain(cap.Title, "EVIL");
+        Check.Contains(cap.Text, "network error (cdn.example)");
+        OffUi(() => up.CheckNowAsync());
+        Check.DoesNotContain(up.LastError, "EVIL", "a manual retry too");
+
+        // Every kind of failure has its own fixed text.
+        Check.Equal("HTTP 503", Updater.DownloadErrorText(new HttpRequestException("EVIL", null, HttpStatusCode.ServiceUnavailable), exeUrl));
+        Check.Equal("network error (cdn.example)", Updater.DownloadErrorText(new IOException("EVIL", new System.Net.Sockets.SocketException()), exeUrl));
+        Check.Equal("network error (cdn.example)", Updater.DownloadErrorText(new HttpIOException(HttpRequestError.ResponseEnded, "EVIL"), exeUrl));
+        Check.Equal("the download could not be saved in the updates folder", Updater.DownloadErrorText(new UnauthorizedAccessException("EVIL"), exeUrl));
+        Check.Equal("unexpected error (details in the log)", Updater.DownloadErrorText(new FormatException("EVIL"), exeUrl));
+        Check.Equal("no answer within 30 s", Updater.DownloadErrorText(new TaskCanceledException("EVIL"), exeUrl));
+
+        // What DownloadAsync itself says: size, hash, not an executable.
+        var plain = new Updater(new Settings(), V("0.4.1"));
+        foreach (var (name, body, sha, expect) in new (string, byte[], string, string)[]
+                 {
+                     ("short body", exe[..200], Hex(exe), "size mismatch"),
+                     ("wrong hash", exe, new string('0', 64), "SHA-256 mismatch"),
+                     ("not an exe", Enumerable.Repeat((byte)7, exe.Length).ToArray(), Hex(Enumerable.Repeat((byte)7, exe.Length).ToArray()), "the downloaded file is not a Windows executable"),
+                 })
+        {
+            var bodyNet = new FakeNet();
+            bodyNet.Ok(exeUrl, body);
+            Updater.HttpOverride = bodyNet.Send;
+            var ex = Check.Throws<InvalidDataException>(() => OffUi(() => plain.DownloadAsync(new UpdateInfo(V("0.4.2"), "v0.4.2", exeUrl, exe.Length, sha, ""), null, CancellationToken.None)), name);
+            Check.Equal(expect, Updater.DownloadErrorText(ex, exeUrl), name);
+        }
+    }
+
+    /// <summary>Not a test: run by <see cref="The_runner_fails_a_test_whose_unfaked_request_or_browser_was_swallowed"/>. A check against the runner's default network, which the updater swallows.</summary>
+    private static void StrayProbeRequest()
+    {
+        using var up = new Updater(new Settings(), V("0.4.1"));
+        OffUi(() => up.CheckAsync(CancellationToken.None));
+        Check.True(up.CheckFailed, "the updater swallowed the default fake's throw");
+    }
+
+    /// <summary>Not a test: the release page through the runner's default browser fake, which OpenReleasePage turns into a message.</summary>
+    private static void StrayProbeBrowser()
+    {
+        using var up = new Updater(new Settings(), V("0.4.1"));
+        Check.Contains(up.OpenReleasePage(null), "Could not open the browser");
+    }
+
+    /// <summary>Not a test: does nothing unfaked.</summary>
+    private static void StrayProbeNothing() => Check.True(true);
+
+    [UnitTest]
+    public static void The_runner_fails_a_test_whose_unfaked_request_or_browser_was_swallowed()
+    {
+        System.Reflection.MethodInfo Probe(string name) => typeof(UpdateFeedTests).GetMethod(name, System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+        var request = TestRunner.ExecuteWatched(Probe(nameof(StrayProbeRequest)), noSkip: false);
+        Check.Equal(TestState.Failed, request.State, "a swallowed unfaked request fails the test");
+        Check.Contains(request.Text, "a request nobody faked: " + Base + "stable.json");
+        var browser = TestRunner.ExecuteWatched(Probe(nameof(StrayProbeBrowser)), noSkip: false);
+        Check.Equal(TestState.Failed, browser.State, "a swallowed unfaked browser fails the test");
+        Check.Contains(browser.Text, "a browser nobody faked: " + UpdateFeed.FallbackNotesPage);
+        Check.Equal(TestState.Passed, TestRunner.ExecuteWatched(Probe(nameof(StrayProbeNothing)), noSkip: false).State, "and nothing else does");
+        // The probes' strays do not count against this test (it would fail here otherwise): the list is per ExecuteWatched.
+    }
+
+    [UnitTest]
+    public static void A_built_in_floor_refuses_an_older_manifest_on_a_fresh_install()
+    {
+        var (stablePub, stableKey) = NewKey();
+        var (devPub, devKey) = NewKey();
+        using var a = stableKey;
+        using var b = devKey;
+        var trust = Trust(stable: new[] { stablePub }, dev: new[] { devPub });
+
+        // A dev build on the stable channel, no saved floor, built when 0.4.2 was out: a validly signed but replayed 0.3.0 is refused.
+        Updater.FloorSeedOverride = ("0.4.2", null);
+        var net = new FakeNet();
+        byte[] old = Bytes(Manifest("0.3.0"));
+        net.Feed("stable", old, Sign(stableKey, old));
+        var r = Run(net, trust, running: "0.4.3-dev.5", manual: true);
+        Check.Null(r.Info, "not offered");
+        Check.True(r.Up.CheckFailed);
+        Check.Equal("The update server (cdn.example) offered an older version than before, so it was not used", r.Up.LastError);
+        Check.Null(r.Settings.FeedFloorStable, "the seed is not written to settings");
+
+        // Control: the seed version itself is offered (a manual check may leave the dev build for it), and saved as the floor.
+        var net2 = new FakeNet();
+        byte[] same = Bytes(Manifest("0.4.2"));
+        net2.Feed("stable", same, Sign(stableKey, same));
+        var r2 = Run(net2, trust, running: "0.4.3-dev.5", manual: true);
+        Check.Equal(V("0.4.2"), r2.Info?.Version, r2.Up.LastError);
+        Check.Equal("0.4.2", r2.Settings.FeedFloorStable);
+
+        // The higher of the saved floor and the seed counts.
+        var net3 = new FakeNet();
+        net3.Feed("stable", same, Sign(stableKey, same));
+        Check.Null(Run(net3, trust, running: "0.4.1", settings: new Settings { FeedFloorStable = "0.4.5" }).Info, "the saved floor is higher");
+
+        // The dev seed guards dev.json.
+        Updater.FloorSeedOverride = (null, "0.4.4-dev.3");
+        var net4 = new FakeNet();
+        byte[] s = Bytes(Manifest("0.4.2")), d = Bytes(Manifest("0.4.4-dev.1", "dev"));
+        net4.Feed("stable", s, Sign(stableKey, s));
+        net4.Feed("dev", d, Sign(devKey, d));
+        var r4 = Run(net4, trust, dev: true, running: "0.4.3-dev.5");
+        Check.Null(r4.Info);
+        Check.Contains(r4.Up.LastError, "older version than before");
+
+        // Seeds are canonical versions of their channel; anything else is ignored (and logged at start).
+        Check.Equal(V("0.4.2"), Updater.ParseSeed("0.4.2", "stable", out string? p));
+        Check.Null(p);
+        Check.Equal(V("0.4.3-dev.1"), Updater.ParseSeed("0.4.3-dev.1", "dev", out p));
+        Check.Null(Updater.ParseSeed("", "stable", out p));
+        Check.Null(p, "empty = none, no problem");
+        foreach (var (text, channel) in new[] { ("v0.4.2", "stable"), ("0.4.3-dev.1", "stable"), ("0.4.3", "dev"), ("0.4", "stable"), ("latest", "dev") })
+        {
+            Check.Null(Updater.ParseSeed(text, channel, out p), $"{text} on {channel}");
+            Check.NotNull(p, $"{text} on {channel}: says why");
+        }
+        Updater.FloorSeedOverride = ("garbage", "0.4.3");
+        Check.Null(Updater.FloorSeed("stable"));
+        Check.Null(Updater.FloorSeed("dev"));
+        Check.NotNull(Updater.SeedProblem("stable"));
+
+        // The contract with CI: whatever this exe was built with must be a valid seed (a local build has none at all).
+        foreach (var attr in typeof(Updater).Assembly.GetCustomAttributes(typeof(System.Reflection.AssemblyMetadataAttribute), false).Cast<System.Reflection.AssemblyMetadataAttribute>())
+        {
+            if (attr.Key == Updater.MinStableKey) Check.NotNull(Updater.ParseSeed(attr.Value, "stable", out _), "the embedded ClinkMinStable " + attr.Value);
+            if (attr.Key == Updater.MinDevKey) Check.NotNull(Updater.ParseSeed(attr.Value, "dev", out _), "the embedded ClinkMinDev " + attr.Value);
+        }
+    }
+
+    [UnitTest]
+    public static void Nothing_is_applied_by_a_build_without_updates()
+    {
+        using var dir = new TempDir();
+        Updater.UpdatesDirOverride = dir.File("updates");
+        Directory.CreateDirectory(Updater.UpdatesDir);
+        Updater.IsElevatedOverride = false;
+        byte[] exe = FakeExe();
+        string file = Updater.FileFor(V("0.4.9"));
+        var settings = new Settings { PendingUpdateVersion = "0.4.9", PendingUpdateSha256 = Hex(exe), PendingUpdateSignedSha256 = Hex(exe), PendingUpdateFrom = "0.4.1" };
+        foreach (var (name, trust) in new[] { ("feed off", FeedTrust.None), ("feed misconfigured", FeedTrust.Create(Base, new[] { SparePub() }, null)) })
+        {
+            File.WriteAllBytes(file, exe);
+            Updater.FeedOverride = trust;
+            var up = new Updater(settings, V("0.4.1"));
+            var ex = Check.Throws<Updater.ApplyRefusedException>(() => up.PrepareApply(file), name);
+            Check.False(ex.Deferred, name);
+            Check.Throws<Updater.ApplyRefusedException>(() => up.LaunchApply(file, dir.File("Clink.exe"), Array.Empty<string>()), name + ": the start-up path");
+            Check.True(File.Exists(file), name + ": nothing is touched");
+            Check.False(File.Exists(file + ".failed") || File.Exists(file + ".timeout"), name + ": no marker");
+        }
+        // Control: with the feed on, the very same download passes.
+        Updater.FeedOverride = Trust();
+        Check.NotNull(new Updater(settings, V("0.4.1")).PrepareApply(file));
+    }
+
+    [UnitTest]
+    public static void The_failing_notice_needs_two_failed_background_passes_in_this_session()
+    {
+        var (pub, key) = NewKey();
+        using var k = key;
+        var trust = Trust(stable: new[] { pub });
+        var now = DateTimeOffset.UtcNow;
+        Updater.ClockOverride = () => now;
+        var net = new FakeNet();   // a 404 for everything
+        net.AllowOnly(trust);
+        Updater.HttpOverride = net.Send;
+        Updater.FeedOverride = trust;
+        // A new session (this Updater) of an installation whose checks have been failing for 10 days (asleep, offline, ...).
+        var settings = new Settings { FeedFloorFailingSince = Updater.FormatStamp(V("0.4.1"), now.AddDays(-10).UtcDateTime) };
+        using var up = new Updater(settings, V("0.4.1"));
+        var notices = new List<UpdateNotice?>();
+        up.CheckFinished += n => { lock (notices) notices.Add(n); };
+
+        OffUi(() => up.RunBackgroundPassAsync(CancellationToken.None));
+        Check.True(up.CheckFailed);
+        Check.Null(notices[^1], "the session's first failed background pass is no alarm, however old the streak");
+        OffUi(() => up.CheckNowAsync());
+        Check.Null(notices[^1], "a manual check neither notifies nor counts");
+        now = now.AddHours(6);
+        OffUi(() => up.RunBackgroundPassAsync(CancellationToken.None));
+        Check.NotNull(notices[^1], "the second one is");
+        Check.Contains(notices[^1]!.Text, "for 10 days");
+
+        // A success starts the count again.
+        byte[] m = Bytes(Manifest("0.4.1"));
+        net.Feed("stable", m, Sign(key, m));
+        OffUi(() => up.RunBackgroundPassAsync(CancellationToken.None));
+        Check.False(up.CheckFailed, up.LastError);
+        net.Routes.Clear();
+        settings.FeedFloorFailingSince = Updater.FormatStamp(V("0.4.1"), now.AddDays(-5).UtcDateTime);
+        OffUi(() => up.RunBackgroundPassAsync(CancellationToken.None));
+        Check.Null(notices[^1], "one failed pass after a success");
+        OffUi(() => up.RunBackgroundPassAsync(CancellationToken.None));
+        Check.NotNull(notices[^1], "two");
+    }
+
+    [UnitTest]
+    public static void The_failing_notice_names_the_host_that_failed()
+    {
+        var (stablePub, stableKey) = NewKey();
+        var (devPub, devKey) = NewKey();
+        using var a = stableKey;
+        using var b = devKey;
+        var trust = TwoBases(new[] { stablePub }, new[] { devPub });
+        string devBase = trust.BaseFor("dev")!, devHost = new Uri(devBase).Host;
+        var now = DateTimeOffset.UtcNow;
+        Updater.ClockOverride = () => now;
+        byte[] s = Bytes(Manifest("0.4.1")), d = Bytes(DevManifest("0.4.3-dev.1"));
+
+        UpdateNotice? NoticeAfterTwoPasses(FakeNet net)
+        {
+            net.AllowOnly(trust);
+            Updater.HttpOverride = net.Send;
+            Updater.FeedOverride = trust;
+            var settings = new Settings { UseDevBuilds = true, FeedFloorFailingSince = Updater.FormatStamp(V("0.4.3-dev.1"), now.AddDays(-5).UtcDateTime) };
+            using var up = new Updater(settings, V("0.4.3-dev.1"));
+            var notices = new List<UpdateNotice?>();
+            up.CheckFinished += n => { lock (notices) notices.Add(n); };
+            OffUi(() => up.RunBackgroundPassAsync(CancellationToken.None));
+            OffUi(() => up.RunBackgroundPassAsync(CancellationToken.None));
+            Check.True(up.CheckFailed, up.LastError);
+            net.AssertNoStray();
+            return notices[^1];
+        }
+
+        // stable.json (cdn.example) is fine, dev.json (the dev host) fails: the dev host is named.
+        var net1 = new FakeNet();
+        net1.Feed("stable", s, Sign(stableKey, s));
+        net1.Status(devBase + "dev.json", 503);
+        var n1 = NoticeAfterTwoPasses(net1);
+        Check.NotNull(n1);
+        Check.Equal("checkfailed:dev", n1!.Key);
+        Check.Contains(n1.Text, devHost);
+        Check.DoesNotContain(n1.Text, "cdn.example");
+
+        // The other way round: the stable host.
+        var net2 = new FakeNet();
+        net2.Status(Base + "stable.json", 503);
+        net2.FeedAt(devBase, "dev", d, Sign(devKey, d));
+        var n2 = NoticeAfterTwoPasses(net2);
+        Check.Contains(n2!.Text, "cdn.example");
+        Check.DoesNotContain(n2.Text, devHost);
+    }
+
+    [UnitTest]
+    public static void A_legacy_failed_marker_beside_an_unsigned_download_is_cleaned_up_quietly()
+    {
+        using var dir = new TempDir();
+        Updater.UpdatesDirOverride = dir.File("updates");
+        Directory.CreateDirectory(Updater.UpdatesDir);
+        byte[] exe = FakeExe();
+        string file = Updater.FileFor(V("0.4.9"));
+        void Lay() { File.WriteAllBytes(file, exe); File.WriteAllText(file + ".failed", "the update process did not finish\n2026-10-01 10:00:00 C:\\Clink.exe"); }
+
+        // An older build's unsigned download (no signed hash) with its .failed marker: deleted with the marker, no balloon at start.
+        Lay();
+        var unsigned = new Settings { PendingUpdateVersion = "0.4.9", PendingUpdateSha256 = Hex(exe), PendingUpdateFrom = "0.4.1" };
+        var up = new Updater(unsigned, V("0.4.1"));
+        Check.False(up.TryGetPendingUpdate(out _, out _));
+        Check.Null(up.InstallProblem, "nothing to tell the user");
+        Check.False(File.Exists(file), "the file is gone");
+        Check.False(File.Exists(file + ".failed"), "and its marker");
+
+        // A signed download with a .failed marker is still reported (and kept for a manual retry).
+        Lay();
+        var signed = new Settings { PendingUpdateVersion = "0.4.9", PendingUpdateSha256 = Hex(exe), PendingUpdateSignedSha256 = Hex(exe), PendingUpdateFrom = "0.4.1" };
+        var up2 = new Updater(signed, V("0.4.1"));
+        Check.False(up2.TryGetPendingUpdate(out _, out _));
+        Check.Contains(up2.InstallProblem, "could not be installed");
+        Check.True(File.Exists(file));
+
+        // The background check does not stop at an unsigned file's marker either: it is discarded and the signed one downloaded.
+        Lay();
+        var (pub, key) = NewKey();
+        using var k = key;
+        byte[] m = Bytes(Manifest("0.4.9", size: exe.Length, sha: Hex(exe)));
+        var net = new FakeNet();
+        net.Feed("stable", m, Sign(key, m));
+        net.Ok(Base + "releases/v0.4.9/Clink.exe", exe);
+        Updater.HttpOverride = net.Send;
+        Updater.FeedOverride = Trust(stable: new[] { pub });
+        var settings = new Settings { AutoUpdate = true, PendingUpdateVersion = "0.4.9", PendingUpdateSha256 = Hex(exe), PendingUpdateFrom = "0.4.1" };
+        using var up3 = new Updater(settings, V("0.4.1"));
+        OffUi(() => up3.RunBackgroundPassAsync(CancellationToken.None));
+        Check.Equal(file, up3.PendingPath, up3.LastError);
+        Check.Null(up3.LastError);
+        Check.False(File.Exists(file + ".failed"), "the stale marker went with the file");
+        Check.Equal(Hex(exe), settings.PendingUpdateSignedSha256!.ToLowerInvariant());
     }
 }

@@ -529,8 +529,8 @@ public partial class MainWindow : Window
         AutoUpdateCheck.IsChecked = s.AutoUpdate;
         VersionText.Text = FooterVersion;
         UpdateVersionText.Text = "Clink v" + _app.Updater.VersionDisplay;
-        VersionText.ToolTip = _app.Updater.Repo is string repo
-            ? $"Updates come from github.com/{repo}{(_app.Updater.RepoOverridden ? " (UpdateRepo in settings.json)" : "")} · click for update options"
+        VersionText.ToolTip = _app.Updater.UpdatesEnabled
+            ? "Updates come from the Euphoric Software update server · click for update options"
             : NoUpdatesText;
         RefreshUpdateState();
         SettingsDirText.Text = "Saved in " + QuietMode.Shown(AppController.DocShots, Settings.Dir, QuietMode.DocSettingsDir);
@@ -1119,16 +1119,28 @@ public partial class MainWindow : Window
         // mode" the updater leaves as its status (Updater.LastError) is not shown a second time as a problem.
         string? problem = _app.Updater.InstallProblem
             ?? (_app.Updater.LastError is string err && !(AppController.IsDev && string.Equals(err, Updater.DevModeNote, StringComparison.OrdinalIgnoreCase))
-                ? (_app.Updater.CheckFailed ? "Last check failed: " : "Update problem: ") + err : null)
-            ?? _app.Updater.SoftNote;   // a soft result (a warning: GitHub could not confirm what the signed feed says) shows where a problem would
+                ? (_app.Updater.CheckFailed ? "Last check failed: " : "Update problem: ") + err : null);
         UpdateProblemText.Text = problem ?? "";
         UpdateProblemText.Visibility = problem != null ? Visibility.Visible : Visibility.Collapsed;
-        CheckUpdateButton.IsEnabled = _app.Updater.Repo != null;
-        if (_app.Updater.Repo == null && !AppController.DocShots) UpdateVersionText.Text = $"Clink v{_app.Updater.VersionDisplay} · {NoUpdatesText.ToLowerInvariant()}";
+        bool canUpdate = _app.Updater.UpdatesEnabled;
+        // The doc screenshots come from a --dev instance, which never updates; they show the card as an updating build has it.
+        CheckUpdateButton.IsEnabled = canUpdate || AppController.DocShots;
+        // Without updates (no signed feed in this build, or a --dev instance) the card says so instead of offering a switch that does nothing:
+        // the box shows unticked (only on screen: under _loading the setting itself is not touched, so a later build with updates keeps it).
+        if (!canUpdate && !AppController.DocShots)
+        {
+            UpdateVersionText.Text = $"Clink v{_app.Updater.VersionDisplay} · {NoUpdatesText}";
+            bool wasLoading = _loading;
+            _loading = true;
+            try { AutoUpdateCheck.IsChecked = false; }
+            finally { _loading = wasLoading; }
+            AutoUpdateCheck.IsEnabled = false;
+            AutoUpdateCheck.ToolTip = NoUpdatesText;
+        }
     }
 
-    /// <summary>Why there is nothing to check: a --dev instance never looks for updates; any other build has no update repository.</summary>
-    private static string NoUpdatesText => AppController.IsDev ? Updater.DevModeNote : "Updates are not configured in this build";
+    /// <summary>Why there is nothing to check: a --dev instance never looks for updates; a build without a signed update feed has no updates at all.</summary>
+    private static string NoUpdatesText => AppController.IsDev ? Updater.DevModeNote : Updater.NoUpdatesNote;
 
     private void Update_Click(object sender, RoutedEventArgs e) => _app.UpdateNow();
 
@@ -1152,7 +1164,7 @@ public partial class MainWindow : Window
         _loading = true;
         try { DevBuildCheck.IsChecked = _app.Settings.UseDevBuilds; }
         finally { _loading = wasLoading; }
-        bool canCheck = up.Repo != null;
+        bool canCheck = up.UpdatesEnabled || AppController.DocShots;   // the doc screenshots show the popup as an updating build has it
         DevBuildCheck.IsEnabled = canCheck;
         VersionCheckButton.IsEnabled = canCheck;
         DevBuildCheck.ToolTip = canCheck
@@ -1178,8 +1190,8 @@ public partial class MainWindow : Window
         await CheckForUpdatesAsync();
     }
 
-    /// <summary>The footer version; " · dev builds" only where updates exist at all (a --dev instance or a build without UpdateRepo has no channel).</summary>
-    private string FooterVersion => "v" + _app.Updater.VersionDisplay + (_app.Updater.Repo != null && _app.Settings.UseDevBuilds ? " · dev builds" : "");
+    /// <summary>The footer version; " · dev builds" only where updates exist at all (a --dev instance or a build without a signed feed has no channel).</summary>
+    private string FooterVersion => "v" + _app.Updater.VersionDisplay + (_app.Updater.UpdatesEnabled && _app.Settings.UseDevBuilds ? " · dev builds" : "");
 
     private async void CheckUpdate_Click(object sender, RoutedEventArgs e)
     {
@@ -1191,7 +1203,7 @@ public partial class MainWindow : Window
     {
         if (_checkingUpdate) return;
         var up = _app.Updater;
-        if (up.Repo == null) { _app.Say(NoUpdatesText); return; }
+        if (!up.UpdatesEnabled) { _app.Say(NoUpdatesText); return; }
         _checkingUpdate = true;
         _app.Say("Checking…");
         try
@@ -1205,16 +1217,15 @@ public partial class MainWindow : Window
                 if (_app.LastNotice != text) _app.Say(text); else _noticeUntil = DateTime.UtcNow.AddSeconds(4);
             }
             var info = await check;
-            // HtmlUrl is GitHub's html_url on the GitHub path and the signed manifest's notesUrl on the feed path (either may be anything but
-            // is checked): it is opened only when it is exactly <this repo>'s releases/latest or releases/tag/<tag>, else the repo's own releases page.
-            string releasePage = up.ReleasePageFor(info);
-            if (info == null) _app.Say(up.LastError != null ? "Update check failed: " + up.LastError : up.SoftNote ?? $"You're up to date (v{up.VersionDisplay})");
+            // The release notes page is the signed manifest's notesUrl, opened only when it is https and under the base of the feed it came
+            // from (Updater.OpenReleasePage), else a fixed page: no other text of a manifest ever reaches the shell.
+            if (info == null) _app.Say(up.LastError != null ? "Update check failed: " + up.LastError : $"You're up to date (v{up.VersionDisplay})");
             else if (_app.PendingVersion is ReleaseVersion pending && pending >= info.Version) _app.Say($"Update v{info.Version} is ready - click 'Update to v{pending}' to restart");
             else if (!_app.Settings.AutoUpdate)
             {
                 // Nothing is downloaded with auto-update off, so make the answer actionable: show the release.
                 _app.Say($"Clink v{info.Version} is available (auto-update is off) - opening the release page");
-                OpenUrl(releasePage);
+                OpenReleasePage(info);
             }
             else
             {
@@ -1222,7 +1233,7 @@ public partial class MainWindow : Window
                 // "available" with nothing to click would be a dead end, so say why and show the release instead.
                 string why = up.LastError?.TrimEnd('.') ?? "it could not be downloaded";
                 _app.Say($"Update v{info.Version} found, but {why} - opening the release page");
-                OpenUrl(releasePage);
+                OpenReleasePage(info);
             }
         }
         finally
@@ -1234,12 +1245,10 @@ public partial class MainWindow : Window
         }
     }
 
-    private void OpenUrl(string url)
+    private void OpenReleasePage(UpdateInfo? info)
     {
-        // The release page is the only URL opened from here; the shell never gets anything that is not a github.com release page of the updater's repo.
-        if (Updater.OwnReleasePage(url, _app.Updater.Repo) is not { } page) { _app.Say("Not opening an unexpected release page address"); return; }
-        try { Process.Start(new ProcessStartInfo(page) { UseShellExecute = true }); }
-        catch (Exception ex) { _app.Say("Could not open the browser: " + ex.Message); }
+        // The release notes page is the only URL opened from here, and Updater decides which (see Updater.ReleasePageFor).
+        if (_app.Updater.OpenReleasePage(info) is { } problem) _app.Say(problem);
     }
 
     private void ThirdPartyNotices_Click(object sender, RoutedEventArgs e) => ThirdPartyNoticesWindow.ShowFor(this);

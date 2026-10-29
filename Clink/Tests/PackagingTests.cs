@@ -115,7 +115,6 @@ internal static class PackagingTests
         Check.Equal("https://cdn.example/v0.4.2/Clink-framework.exe", fx.ExeUrl);
         Check.Equal(777L, fx.ExeSize);
         Check.Equal(new string('e', 64), fx.Sha256);
-        Check.Equal("", fx.ShaUrl);
         Check.Equal(Packaging.Framework, fx.Flavour);
 
         // ...exe when exeFramework is missing,
@@ -250,62 +249,6 @@ internal static class PackagingTests
         finally { Environment.SetEnvironmentVariable("DOTNET_ROOT", saved); }
     }
 
-    // ------------------------------------------------------------------ GitHub assets (feed off)
-
-    private static string ReleaseJson(bool fx = true, bool fxSha = true, bool exe = true, bool exeSha = true)
-    {
-        var assets = new List<string>();
-        if (exe) assets.Add("""{"name":"Clink.exe","size":1000,"browser_download_url":"https://gh.example/Clink.exe"}""");
-        if (exeSha) assets.Add("""{"name":"Clink.exe.sha256","size":64,"browser_download_url":"https://gh.example/Clink.exe.sha256"}""");
-        if (fx) assets.Add("""{"name":"Clink-framework.exe","size":500,"browser_download_url":"https://gh.example/Clink-framework.exe"}""");
-        if (fxSha) assets.Add("""{"name":"Clink-framework.exe.sha256","size":64,"browser_download_url":"https://gh.example/Clink-framework.exe.sha256"}""");
-        return $$"""{"tag_name":"v0.4.2","draft":false,"prerelease":false,"html_url":"https://gh.example/r","body":"","assets":[{{string.Join(",", assets)}}]}""";
-    }
-
-    [UnitTest]
-    public static void Packaging_github_asset_choice_without_the_feed()
-    {
-        // SelfContained: Clink.exe + Clink.exe.sha256 whatever else the release holds (v0.4.1 names unchanged).
-        foreach (var sc in new[] { ReleaseJson(), ReleaseJson(fx: false, fxSha: false) })
-        {
-            var info = Updater.ParseRelease(sc, false, out string? problem);
-            Check.NotNull(info, problem);
-            Check.Equal("https://gh.example/Clink.exe", info!.ExeUrl);
-            Check.Equal("https://gh.example/Clink.exe.sha256", info.ShaUrl);
-            Check.Equal(1000L, info.ExeSize);
-            Check.Equal(Packaging.SelfContained, info.Flavour);
-            Check.Null(info.Sha256);
-            var viaPackaging = Updater.ParseRelease(sc, false, Packaging.SelfContained, out _);
-            Check.Equal(info.ExeUrl, viaPackaging!.ExeUrl);
-        }
-
-        // Framework: Clink-framework.exe + its .sha256.
-        var fx = Updater.ParseRelease(ReleaseJson(), false, Packaging.Framework, out string? p2);
-        Check.NotNull(fx, p2);
-        Check.Equal("https://gh.example/Clink-framework.exe", fx!.ExeUrl);
-        Check.Equal("https://gh.example/Clink-framework.exe.sha256", fx.ShaUrl);
-        Check.Equal(500L, fx.ExeSize);
-        Check.Equal(Packaging.Framework, fx.Flavour);
-
-        // ...falling back to Clink.exe when the release lacks the framework asset (or its hash, which the unsigned path needs).
-        foreach (var json in new[] { ReleaseJson(fx: false, fxSha: false), ReleaseJson(fxSha: false) })
-        {
-            var back = Updater.ParseRelease(json, false, Packaging.Framework, out string? p3);
-            Check.NotNull(back, p3);
-            Check.Equal("https://gh.example/Clink.exe", back!.ExeUrl);
-            Check.Equal("https://gh.example/Clink.exe.sha256", back.ShaUrl);
-            Check.Equal(Packaging.SelfContained, back.Flavour);
-        }
-        // A release with only the framework exe still serves a framework client, and nobody else.
-        var onlyFx = ReleaseJson(exe: false, exeSha: false);
-        Check.Equal("https://gh.example/Clink-framework.exe", Updater.ParseRelease(onlyFx, false, Packaging.Framework, out _)!.ExeUrl);
-        Check.Null(Updater.ParseRelease(onlyFx, false, Packaging.SelfContained, out string? p4));
-        Check.Contains(p4, "Clink.exe");
-        // The list endpoint (dev channel) chooses the same way.
-        Check.Equal("https://gh.example/Clink-framework.exe", Updater.PickRelease("[" + ReleaseJson() + "]", true, Packaging.Framework, out _)!.ExeUrl);
-        Check.Equal("https://gh.example/Clink.exe", Updater.PickRelease("[" + ReleaseJson() + "]", true, out _)!.ExeUrl);
-    }
-
     // ------------------------------------------------------------------ folders and pending isolation
 
     [UnitTest]
@@ -325,18 +268,18 @@ internal static class PackagingTests
     [UnitTest]
     public static void Packaging_settings_key_is_per_installation()
     {
-        foreach (string key in new[] { nameof(Settings.PendingUpdateFxVersion), nameof(Settings.PendingUpdateFxSha256), nameof(Settings.PendingUpdateFxSigned), nameof(Settings.PendingUpdateFxFrom) })
+        foreach (string key in new[] { nameof(Settings.PendingUpdateFxVersion), nameof(Settings.PendingUpdateFxSha256), nameof(Settings.PendingUpdateFxSignedSha256), nameof(Settings.PendingUpdateFxFrom) })
         {
             Check.True(SettingsImport.IsOwnKey(key), key + ": covered by the PendingUpdate* prefix, never imported");
             Check.True(SettingsImport.HasLabelOrIsVolatile(key), key);
             Check.DoesNotContain(new Settings().ToJson(), key, "left out while null");
         }
-        var s = new Settings { PendingUpdateFxVersion = "1.2.3", PendingUpdateFxSha256 = new string('f', 64), PendingUpdateFxSigned = true, PendingUpdateFxFrom = "1.0.0" };
+        var s = new Settings { PendingUpdateFxVersion = "1.2.3", PendingUpdateFxSha256 = new string('f', 64), PendingUpdateFxSignedSha256 = new string('f', 64), PendingUpdateFxFrom = "1.0.0" };
         Check.Contains(s.ToJson(), "\"PendingUpdateFxVersion\": \"1.2.3\"");
         var back = Settings.FromJson(s.ToJson());
         Check.Equal("1.2.3", back.PendingUpdateFxVersion);
         Check.Equal(new string('f', 64), back.PendingUpdateFxSha256);
-        Check.Equal(true, back.PendingUpdateFxSigned);
+        Check.Equal(new string('f', 64), back.PendingUpdateFxSignedSha256);
         Check.Equal("1.0.0", back.PendingUpdateFxFrom);
         string merged = SettingsImport.KeepOurOwn(new Settings { PendingUpdateFxVersion = "0.0.1", PendingUpdateFxSha256 = new string('0', 64) }.ToJson(), s.ToJson(), keepOurToken: true);
         var kept = Settings.FromJson(merged);
@@ -366,9 +309,10 @@ internal static class PackagingTests
         /// <summary>Settings recording a verified v9.9.9 download: <paramref name="scRecord"/> in the legacy PendingUpdate* keys (root folder), <paramref name="fxRecord"/> in the PendingUpdateFx* keys (fx\); null = no such record.</summary>
         public Settings Settings(byte[]? scRecord, byte[]? fxRecord)
         {
-            var s = Clink.Services.Settings.FromJson("""{"UpdateRepo":"owner/repo"}""");
-            if (scRecord != null) { s.PendingUpdateVersion = "9.9.9"; s.PendingUpdateSha256 = Hex(scRecord); s.PendingUpdateFrom = "1.0.0"; }
-            if (fxRecord != null) { s.PendingUpdateFxVersion = "9.9.9"; s.PendingUpdateFxSha256 = Hex(fxRecord); s.PendingUpdateFxFrom = "1.0.0"; }
+            // Both records are of signed downloads: only those are ever installed.
+            var s = new Clink.Services.Settings();
+            if (scRecord != null) { s.PendingUpdateVersion = "9.9.9"; s.PendingUpdateSha256 = Hex(scRecord); s.PendingUpdateFrom = "1.0.0"; s.PendingUpdateSignedSha256 = Hex(scRecord); }
+            if (fxRecord != null) { s.PendingUpdateFxVersion = "9.9.9"; s.PendingUpdateFxSha256 = Hex(fxRecord); s.PendingUpdateFxFrom = "1.0.0"; s.PendingUpdateFxSignedSha256 = Hex(fxRecord); }
             return s;
         }
 
@@ -434,16 +378,16 @@ internal static class PackagingTests
     [UnitTest]
     public static void Packaging_a_v0_4_1_settings_file_is_the_root_selfcontained_record()
     {
+        // The keys v0.4.1 writes (no signed hash: it downloaded with Clink.exe.sha256), plus the retired PendingUpdateSigned mark of a
+        // pre-release build: the root folder's record, for SelfContained copies only, and never enough to install from.
         using var two = new TwoFlavours();
-        string json = $$"""{"UpdateRepo":"owner/repo","PendingUpdateVersion":"9.9.9","PendingUpdateSha256":"{{Hex(two.ScExe)}}","PendingUpdateFrom":"1.0.0"}""";
+        string json = $$"""{"UpdateRepo":"owner/repo","PendingUpdateVersion":"9.9.9","PendingUpdateSha256":"{{Hex(two.ScExe)}}","PendingUpdateFrom":"1.0.0","PendingUpdateSigned":true}""";
         var settings = Settings.FromJson(json);
         Check.Null(settings.PendingUpdateFxVersion);
         Check.Null(settings.PendingUpdateFxSha256);
+        Check.Null(settings.PendingUpdateSignedSha256);
         Check.DoesNotContain(settings.ToJson(), "PendingUpdateFx", "nothing Fx is written for a file that had none");
-
-        Updater.PackagingOverride = Packaging.SelfContained;
-        Adopts(new Updater(settings, V("1.0.0")), two.ScFile);
-        Check.Equal(two.ScExe, File.ReadAllBytes(two.ScFile), "the root download is verified by the legacy keys");
+        Check.DoesNotContain(settings.ToJson(), "PendingUpdateSigned\"", "the retired mark is dropped, not carried along");
 
         // A Framework copy has no record in it: it never borrows the legacy one (its fx\ file is unverifiable and goes), the root file stays.
         Updater.PackagingOverride = Packaging.Framework;
@@ -452,6 +396,17 @@ internal static class PackagingTests
         Check.Equal(two.ScExe, File.ReadAllBytes(two.ScFile), "the root download is untouched");
         Check.Equal(Hex(two.ScExe), settings.PendingUpdateSha256, "the legacy record is untouched");
         Check.Null(settings.PendingUpdateFxSha256);
+
+        // The SelfContained copy reads the legacy keys, but without a signed hash the root download is not installed: it goes (fetched again once).
+        Updater.PackagingOverride = Packaging.SelfContained;
+        Check.False(new Updater(settings, V("1.0.0")).TryGetPendingUpdate(out _, out _));
+        Check.False(File.Exists(two.ScFile), "an unsigned v0.4.1 download is discarded");
+
+        // The same keys with the signed hash this version writes: the root download is verified by them and adopted.
+        File.WriteAllBytes(two.ScFile, two.ScExe);
+        settings.PendingUpdateSignedSha256 = Hex(two.ScExe);
+        Adopts(new Updater(settings, V("1.0.0")), two.ScFile);
+        Check.Equal(two.ScExe, File.ReadAllBytes(two.ScFile), "the root download is verified by the legacy keys and the signed hash");
     }
 
     [UnitTest]
@@ -526,7 +481,7 @@ internal static class PackagingTests
         {
             Content = new ByteArrayContent(req.RequestUri!.AbsoluteUri.EndsWith(".sha256", StringComparison.Ordinal) ? Encoding.ASCII.GetBytes(sha) : exe),
         });
-        var info = new UpdateInfo(V("9.9.10"), "v9.9.10", "https://gh.example/Clink-framework.exe", exe.Length, "https://gh.example/Clink-framework.exe.sha256", "", "", null, Packaging.Framework);
+        var info = new UpdateInfo(V("9.9.10"), "v9.9.10", "https://cdn.example/clink/Clink-framework.exe", exe.Length, sha, "", Packaging.Framework);
 
         var settings = two.Settings(two.ScExe, null);
         Updater.PackagingOverride = Packaging.Framework;
@@ -564,13 +519,13 @@ internal static class PackagingTests
         {
             Content = new ByteArrayContent(req.RequestUri!.AbsoluteUri.EndsWith(".sha256", StringComparison.Ordinal) ? Encoding.ASCII.GetBytes(Hex(body)) : body),
         });
-        var settings = Settings.FromJson("""{"UpdateRepo":"owner/repo"}""");
+        var settings = new Settings();
         string Download(Packaging p, string version, byte fill)
         {
             body = FakeExe(fill);
             Updater.PackagingOverride = p;
             var up = new Updater(settings, V("1.0.0"));
-            var info = new UpdateInfo(V(version), "v" + version, "https://gh.example/Clink.exe", body.Length, "https://gh.example/Clink.exe.sha256", "", "", null, p);
+            var info = new UpdateInfo(V(version), "v" + version, "https://cdn.example/clink/Clink.exe", body.Length, Hex(body), "", p);
             return OffUi(() => up.DownloadAsync(info, null, CancellationToken.None));
         }
 
@@ -591,7 +546,6 @@ internal static class PackagingTests
         Adopts(new Updater(settings, V("1.0.0")), Path.Combine(dir.File("updates"), "Clink-9.9.14.exe"));
         Check.True(File.Exists(Path.Combine(dir.File("updates"), "fx", "Clink-9.9.13.exe")) && File.Exists(Path.Combine(dir.File("updates"), "Clink-9.9.14.exe")));
     }
-
     [UnitTest]
     public static void Packaging_checknow_leaves_the_other_flavours_download_and_record_alone()
     {
@@ -599,18 +553,21 @@ internal static class PackagingTests
         using var two = new TwoFlavours();
         byte[] exe = FakeExe(9);
         string sha = Hex(exe);
+        using var stableKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        using var devKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        const string feed = "https://cdn.example/clink/";
+        string manifest = $$$$"""{"schema":1,"channel":"stable","version":"9.9.9","tag":"v9.9.9","published":"2026-10-01T00:00:00Z","notesUrl":"","minRuntime":"10.0","assets":{"exe":{"url":"{{{{feed}}}}releases/v9.9.9/Clink.exe","size":300,"sha256":"{{{{sha}}}}"},"exeFramework":{"url":"{{{{feed}}}}releases/v9.9.9/Clink-framework.exe","size":300,"sha256":"{{{{sha}}}}"}}}""";
+        byte[] manifestBytes = Encoding.UTF8.GetBytes(manifest);
+        byte[] signature = Encoding.ASCII.GetBytes(Convert.ToBase64String(stableKey.SignData(manifestBytes, HashAlgorithmName.SHA256)));
         var calls = new List<string>();
         Updater.HttpOverride = (req, _) =>
         {
             string url = req.RequestUri!.AbsoluteUri;
             calls.Add(url);
-            if (url.EndsWith("/latest", StringComparison.Ordinal))
-                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(
-                    """{"tag_name":"v9.9.9","draft":false,"prerelease":false,"html_url":"","body":"","assets":[{"name":"Clink.exe","size":300,"browser_download_url":"https://gh.example/Clink.exe"},{"name":"Clink.exe.sha256","size":64,"browser_download_url":"https://gh.example/Clink.exe.sha256"},{"name":"Clink-framework.exe","size":300,"browser_download_url":"https://gh.example/Clink-framework.exe"},{"name":"Clink-framework.exe.sha256","size":64,"browser_download_url":"https://gh.example/Clink-framework.exe.sha256"}]}""") });
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(url.EndsWith(".sha256", StringComparison.Ordinal) ? Encoding.ASCII.GetBytes(sha) : exe) });
+            byte[]? body = url == feed + "stable.json" ? manifestBytes : url == feed + "stable.json.sig" ? signature : url.EndsWith(".exe", StringComparison.Ordinal) ? exe : null;
+            return Task.FromResult(body == null ? new HttpResponseMessage(HttpStatusCode.NotFound) : new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(body) });
         };
-        Updater.FeedOverride = FeedTrust.None;
-        Updater.BuiltInRepoOverride = "o/r";
+        Updater.FeedOverride = FeedTrust.Create(feed, new[] { Convert.ToBase64String(stableKey.ExportSubjectPublicKeyInfo()) }, new[] { Convert.ToBase64String(devKey.ExportSubjectPublicKeyInfo()) });
         var settings = two.Settings(two.ScExe, null);
         settings.UseDevBuilds = false;
         settings.AutoUpdate = true;
@@ -618,11 +575,12 @@ internal static class PackagingTests
         var up = new Updater(settings, V("1.0.0"));
         var info = OffUi(() => up.CheckNowAsync());
         Check.NotNull(info, up.LastError);
-        Check.Equal("https://gh.example/Clink-framework.exe", info!.ExeUrl, "a Framework copy asks for the framework exe");
+        Check.Equal(feed + "releases/v9.9.9/Clink-framework.exe", info!.ExeUrl, "a Framework copy asks for the framework exe");
         Check.Equal(two.ScExe, File.ReadAllBytes(two.ScFile), "the SelfContained download is untouched");
         Check.Equal(exe, File.ReadAllBytes(two.FxFile), "its own folder holds the fresh framework download");
         Check.Equal(sha, settings.PendingUpdateFxSha256!.ToLowerInvariant());
         Check.Equal(Hex(two.ScExe), settings.PendingUpdateSha256, "the legacy record is not rewritten");
+        Check.True(calls.All(u => u.StartsWith(feed, StringComparison.Ordinal)), "only the feed was asked");
     }
 
     // ------------------------------------------------------------------ preflight
@@ -723,9 +681,9 @@ internal static class PackagingTests
         });
         int preflights = 0;
         Updater.PreflightOverride = (_, _) => { preflights++; return new(0, false, null); };
-        var settings = Settings.FromJson("""{"UpdateRepo":"owner/repo"}""");
+        var settings = new Settings();
         var up = new Updater(settings, V("1.0.0"));
-        var info = new UpdateInfo(V("9.9.10"), "v9.9.10", "https://gh.example/Clink.exe", exe.Length, "https://gh.example/Clink.exe.sha256", "", "");
+        var info = new UpdateInfo(V("9.9.10"), "v9.9.10", "https://cdn.example/clink/Clink.exe", exe.Length, Hex(exe), "");
         string path = OffUi(() => up.DownloadAsync(info, null, CancellationToken.None));
         Check.True(up.TrySetPending(path, V("9.9.10"), "downloaded and verified", manual: true));
         Check.Equal(path, up.PendingPath);
@@ -1016,12 +974,12 @@ internal static class PackagingTests
         {
             Content = new ByteArrayContent(req.RequestUri!.AbsoluteUri.EndsWith(".sha256", StringComparison.Ordinal) ? Encoding.ASCII.GetBytes(Hex(exe)) : exe),
         });
-        var up = new Updater(Settings.FromJson("""{"UpdateRepo":"owner/repo"}"""), V("1.0.0"));
+        var up = new Updater(new Settings(), V("1.0.0"));
         string file = Updater.FileFor(V("9.9.10"));
         Directory.CreateDirectory(Path.GetDirectoryName(file)!);
         File.WriteAllBytes(file, FakeExe(6));
         File.WriteAllText(file + ".timeout", "2\n");
-        var info = new UpdateInfo(V("9.9.10"), "v9.9.10", "https://gh.example/Clink.exe", exe.Length, "https://gh.example/Clink.exe.sha256", "", "");
+        var info = new UpdateInfo(V("9.9.10"), "v9.9.10", "https://cdn.example/clink/Clink.exe", exe.Length, Hex(exe), "");
         string path = OffUi(() => up.DownloadAsync(info, null, CancellationToken.None));
         Check.Equal(file, path);
         Check.False(File.Exists(file + ".timeout"), "the new download starts from zero");

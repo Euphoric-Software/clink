@@ -145,7 +145,10 @@ internal sealed partial class AppController : IDisposable
     public event Action? TrimLastRequested;
     /// <summary>A toast's Trim button: open the trim editor on this clip. When nobody listens the toast opens the editor itself.</summary>
     public event Action<ClipEntry>? TrimRequested;
-    /// <summary>An update became ready to install (or the pending state changed otherwise). Raised on the UI thread.</summary>
+    /// <summary>
+    /// An update became ready to install, the pending state changed otherwise, or a check pass ended (background passes included: its
+    /// result or problem is to be shown). Raised on the UI thread.
+    /// </summary>
     public event Action? UpdateStateChanged;
 
     private readonly Dispatcher _ui;
@@ -205,6 +208,7 @@ internal sealed partial class AppController : IDisposable
         Updater.UpdateAvailable += info => _ui.BeginInvoke(() => OnUpdateAvailable(info));
         Updater.UpdateReady += version => _ui.BeginInvoke(() => OnUpdateReady(version));
         Updater.PendingCleared += () => _ui.BeginInvoke(() => OnPendingCleared());
+        Updater.CheckFinished += notice => _ui.BeginInvoke(() => OnCheckFinished(notice));
     }
 
     // ------------------------------------------------------------------ single instance
@@ -218,6 +222,80 @@ internal sealed partial class AppController : IDisposable
         if (createdNew) return true;
         SendCommand(CommandFromArgs(args) ?? "show");
         return false;
+    }
+
+    /// <summary>This process's Windows session id (0 when it cannot be read).</summary>
+    internal static int CurrentSessionId => SessionId;
+
+    /// <summary>A Clink process found running (<see cref="RunningClinks"/>): its pid, session, exe path and version text (ProductVersion, else FileVersion); null where unreadable.</summary>
+    internal readonly record struct RunningClink(int Pid, int SessionId, string? ExePath, string? Version);
+
+    /// <summary>
+    /// The message for a plain start that found the single-instance mutex taken by an OLDER Clink running from another exe (v0.4.1 or
+    /// earlier cannot update itself any more: its users upgrade by hand, and the old copy in the tray would keep the new one from
+    /// starting), or null. Only for a plain start: <paramref name="forwardedCommand"/> null (no --clip, --show, ...) and not
+    /// <paramref name="dev"/>. Only a process in <paramref name="ownSession"/>, other than <paramref name="ownPid"/>, whose exe path is not
+    /// <paramref name="ownPath"/> and whose version sorts below <paramref name="ownVersion"/> counts. Pure: the process list is given.
+    /// </summary>
+    internal static string? OlderRunningCopy(IEnumerable<RunningClink> running, string? ownPath, ReleaseVersion? ownVersion, int ownPid, int ownSession,
+        string? forwardedCommand, bool dev)
+    {
+        if (dev || forwardedCommand != null || ownVersion is not { } own || string.IsNullOrEmpty(ownPath)) return null;
+        string self = FullPathOrSelf(ownPath);
+        foreach (var p in running)
+        {
+            if (p.Pid == ownPid || p.SessionId != ownSession || string.IsNullOrEmpty(p.ExePath)) continue;
+            if (string.Equals(FullPathOrSelf(p.ExePath), self, StringComparison.OrdinalIgnoreCase)) continue;   // this very exe started twice
+            if (ReleaseVersion.Parse(p.Version) is not { } v || v >= own) continue;
+            return $"An older Clink (v{v}) is still running from {p.ExePath}. Right-click its tray icon, choose Quit, then start Clink again.";
+        }
+        return null;
+    }
+
+    private static string FullPathOrSelf(string path)
+    {
+        try { return Path.GetFullPath(path); } catch (Exception) { return path; }
+    }
+
+    /// <summary>The version text of an exe (ProductVersion when it reads as a version, else FileVersion), or null.</summary>
+    internal static string? FileVersionText(string? path)
+    {
+        if (string.IsNullOrEmpty(path)) return null;
+        try
+        {
+            var fvi = FileVersionInfo.GetVersionInfo(path);
+            return ReleaseVersion.Parse(fvi.ProductVersion) != null ? fvi.ProductVersion : fvi.FileVersion;
+        }
+        catch (Exception) { return null; }
+    }
+
+    /// <summary>This exe's version as <see cref="OlderRunningCopy"/> compares it (from the same version resource it reads for the others).</summary>
+    internal static ReleaseVersion? OwnFileVersion() => ReleaseVersion.Parse(FileVersionText(Environment.ProcessPath));
+
+    /// <summary>The processes named Clink (or like this exe) that can be looked at; one that cannot is left out. Never throws.</summary>
+    internal static List<RunningClink> RunningClinks()
+    {
+        var found = new List<RunningClink>();
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Clink" };
+        try { if (Path.GetFileNameWithoutExtension(Environment.ProcessPath) is { Length: > 0 } own) names.Add(own); } catch (Exception) { }
+        foreach (string name in names)
+        {
+            Process[] processes;
+            try { processes = Process.GetProcessesByName(name); } catch (Exception) { continue; }
+            foreach (var p in processes)
+            {
+                using (p)
+                {
+                    try
+                    {
+                        string? exe = p.MainModule?.FileName;
+                        found.Add(new RunningClink(p.Id, p.SessionId, exe, FileVersionText(exe)));
+                    }
+                    catch (Exception) { }   // gone meanwhile, or not ours to look into (elevated)
+                }
+            }
+        }
+        return found;
     }
 
     /// <summary>The pipe command a command line asks for: "clip" (--clip), "trim" (--trim-last), "share" (--share-last), "record" (--record), "screenshot" (--screenshot), or null.</summary>
@@ -507,7 +585,7 @@ internal sealed partial class AppController : IDisposable
         else StartEngine();
         Archive.Start();
         ApplyStatusDot();
-        if (!IsDev) Updater.StartBackgroundChecks();   // a --dev instance never contacts GitHub
+        if (!IsDev) Updater.StartBackgroundChecks();   // a --dev instance never contacts the update feed (and a build without one never contacts anything)
         // A downloaded update was skipped at startup (install failed earlier, read-only folder, elevated): tell the user, once per start.
         if (Updater.InstallProblem is string problem) { Say(problem); ShowBalloon("Clink update not installed", problem); }
         // A hand edit of settings.json that does not parse, or has values that do not make sense (those keep their defaults).
@@ -676,6 +754,26 @@ internal sealed partial class AppController : IDisposable
             : $"v{version} downloaded, but {problem}. Install it by hand from {Updater.UpdatesDir}";
         Say(msg);
         if (!MainWindowVisible) ShowBalloon("Clink update ready", msg);
+        UpdateStateChanged?.Invoke();
+    }
+
+    /// <summary>Update problems already announced in this session (one notification per version or unconfirmed streak, not one every 6 h).</summary>
+    private readonly UpdateNoticeGate _updateNotices = new();
+
+    /// <summary>
+    /// A check pass ended (UI thread): its problem, when it is worth one (the download attempt cap of a version, background checks failing
+    /// for days), is announced once per session (<see cref="NotifyProblem"/>), and the window shows the pass's result (UpdateStateChanged).
+    /// </summary>
+    private void OnCheckFinished(UpdateNotice? notice)
+    {
+        if (_disposed) return;
+        if (_updateNotices.ShouldShow(notice))
+        {
+            Log.Info($"update: notifying '{notice!.Title}': {notice.Text}");
+            // The footer first: NotifyProblem stays silent while the window is in front, and the key is spent for the session either way.
+            Say(notice.Text);
+            NotifyProblem(notice.Title, notice.Text);
+        }
         UpdateStateChanged?.Invoke();
     }
 

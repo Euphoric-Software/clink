@@ -186,7 +186,18 @@ public partial class App : System.Windows.Application
 
         // Normal run: one instance; "--clip" / "--show" talk to it. A second instance only forwards its command and exits,
         // without touching the log (the running instance holds it).
-        if (!AppController.AcquireSingleInstance(args)) { Shutdown(0); return; }
+        if (!AppController.AcquireSingleInstance(args))
+        {
+            // A plain start (no command to forward, not --dev) that finds an OLDER Clink running from another exe: most likely v0.4.1 or
+            // earlier, which can no longer update itself (users of it upgrade by hand). It was asked to show itself; say how to get the new one.
+            if (dev == null && AppController.OlderRunningCopy(AppController.RunningClinks(), Environment.ProcessPath, AppController.OwnFileVersion(),
+                    Environment.ProcessId, AppController.CurrentSessionId, AppController.CommandFromArgs(args), dev: false) is { } older)
+            {
+                try { MessageBox.Show(older, "Clink", MessageBoxButton.OK, MessageBoxImage.Information); } catch { }
+            }
+            Shutdown(0);
+            return;
+        }
         Log.Init(Settings.Dir);
         // --dev-quiet: before any window exists, so none of them is ever activated or placed on a monitor (QuietMode).
         if (AppController.IsQuiet) { QuietMode.InstallWindowHook(); QuietMode.RegisterWindowHandlers(); }
@@ -221,11 +232,11 @@ public partial class App : System.Windows.Application
         updater.LogSource();
 
         // A newer exe was downloaded on an earlier run: hand over to it and let it replace us ("--no-update" skips this).
-        // Only an exe that knows its update repository does this: the updates folder is shared by every Clink exe on the
+        // Only an exe with a valid signed update feed (UpdatesEnabled) does this: the updates folder is shared by every Clink exe on the
         // machine, and a local/debug build must never be overwritten by a release download it did not make. A --dev instance
         // never installs anything.
         bool noUpdate = dev != null || args.Any(a => a.Equals("--no-update", StringComparison.OrdinalIgnoreCase));
-        if (updater.Repo != null && settings.AutoUpdate && !noUpdate && updater.TryGetPendingUpdate(out string pendingExe, out ReleaseVersion pendingVersion))
+        if (updater.UpdatesEnabled && settings.AutoUpdate && !noUpdate && updater.TryGetPendingUpdate(out string pendingExe, out ReleaseVersion pendingVersion))
         {
             Log.Info($"Installing downloaded update v{pendingVersion} from {pendingExe}");
             try

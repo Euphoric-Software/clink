@@ -202,7 +202,7 @@ internal static class TestRunner
             {
                 ResetShared(before, scratch);
                 var sw = Stopwatch.StartNew();
-                var outcome = Execute(method, noSkip);
+                var outcome = ExecuteWatched(method, noSkip);
                 ResetShared(before, scratch);
                 switch (outcome.State)
                 {
@@ -221,19 +221,64 @@ internal static class TestRunner
         return failed;
     }
 
-    /// <summary>The process-wide switches a test could change and forget: where the settings, the clip index, the updates, the real Clink's folder and the other apps' packages live, the --dev state, and the updater's fake network, feed trust anchors and built-in repository.</summary>
+    /// <summary>The process-wide switches a test could change and forget: where the settings, the clip index, the updates, the real Clink's folder and the other apps' packages live, the --dev state, and the updater's fake network and feed trust anchors.</summary>
     private sealed record Shared(string? SettingsDir, string? ClipIndex, string? UpdatesDir, string InstanceSuffix, bool DevHotkeys, bool DevAcceptImport, bool DevToken, bool DevRecord, bool DevQuiet, bool DevQuietRecord, bool DevNoMarker, string? DevDemoStatus,
         string? RealDir, string? PackagesRoot,
-        Func<System.Net.Http.HttpRequestMessage, CancellationToken, Task<System.Net.Http.HttpResponseMessage>>? UpdaterHttp, FeedTrust? FeedTrust, string? BuiltInRepo,
+        Func<System.Net.Http.HttpRequestMessage, CancellationToken, Task<System.Net.Http.HttpResponseMessage>>? UpdaterHttp, FeedTrust? FeedTrust,
         TimeSpan? FeedTimeout, Packaging? Packaging, Func<string, TimeSpan, Updater.PreflightResult>? Preflight, IReadOnlyList<Version>? Runtimes, bool? Elevated,
-        Func<DateTimeOffset>? UpdaterClock, TimeSpan? GitHubTimeout, TimeSpan? DownloadAnswerTimeout, TimeSpan? DownloadReadTimeout, Action<string, bool>? SendObserver)
+        Func<DateTimeOffset>? UpdaterClock, TimeSpan? DownloadAnswerTimeout, TimeSpan? DownloadReadTimeout, Action<string>? SendObserver, Action<string>? Browser,
+        TimeSpan? DownloadTotalTimeout, long? DownloadMinRate, TimeSpan? DownloadRateWindow, (string? Stable, string? Dev)? FloorSeeds)
     {
         public static Shared Capture() => new(Settings.DirOverride, ClipLibrary.IndexPathOverride, Updater.UpdatesDirOverride,
             AppController.InstanceSuffix, AppController.DevHotkeys, AppController.DevAcceptImport, AppController.DevToken, AppController.DevRecord, AppController.DevQuiet, AppController.DevQuietRecord, AppController.DevNoMarker, AppController.DevDemoStatus,
             Settings.RealDirOverride, SettingsImport.PackagesRoot,
-            Updater.HttpOverride, Updater.FeedOverride, Updater.BuiltInRepoOverride, Updater.FeedTimeoutOverride,
+            Updater.HttpOverride, Updater.FeedOverride, Updater.FeedTimeoutOverride,
             Updater.PackagingOverride, Updater.PreflightOverride, DotNetRuntimes.Override, Updater.IsElevatedOverride,
-            Updater.ClockOverride, Updater.GitHubTimeoutOverride, Updater.DownloadAnswerTimeoutOverride, Updater.DownloadReadTimeoutOverride, Updater.SendObserver);
+            Updater.ClockOverride, Updater.DownloadAnswerTimeoutOverride, Updater.DownloadReadTimeoutOverride, Updater.SendObserver, Updater.BrowserOverride,
+            Updater.DownloadTotalTimeoutOverride, Updater.DownloadMinRateOverride, Updater.DownloadRateWindowOverride, Updater.FloorSeedOverride);
+    }
+
+    /// <summary>The feed trust a test starts with: On, with a made-up base and two keys that never signed anything (tests that need a feed bring their own).</summary>
+    private static readonly Lazy<FeedTrust> TestFeed = new(() =>
+    {
+        string Key() { using var k = System.Security.Cryptography.ECDsa.Create(System.Security.Cryptography.ECCurve.NamedCurves.nistP256); return Convert.ToBase64String(k.ExportSubjectPublicKeyInfo()); }
+        return FeedTrust.Create("https://cdn.example/clink/", new[] { Key() }, new[] { Key() });
+    });
+
+    // ---- strays: a request nobody faked, a browser nobody faked. The default fakes below throw a TestFailure, but code under test often
+    // swallows exceptions (a check turns any failure into LastError, OpenReleasePage into a message), so they also record here, and the
+    // runner fails a test that left anything in this list, whatever the test itself concluded.
+
+    private static readonly List<string> s_strays = new();
+
+    /// <summary>Records something a test did that nothing faked (see above); the test fails once it has run.</summary>
+    internal static void RecordStray(string what)
+    {
+        lock (s_strays) s_strays.Add(what);
+    }
+
+    /// <summary>
+    /// <see cref="Execute"/>, failing the test when it left a stray (<see cref="RecordStray"/>) even though it passed or was skipped.
+    /// The list is per run of this method: it is empty when the test starts and put back as it was afterwards, so a test may run another
+    /// method through this (the runner's own tests do) without the inner strays counting against itself.
+    /// </summary>
+    internal static TestOutcome ExecuteWatched(MethodInfo method, bool noSkip)
+    {
+        List<string> outer;
+        lock (s_strays) { outer = new List<string>(s_strays); s_strays.Clear(); }
+        try
+        {
+            var outcome = Execute(method, noSkip);
+            string[] strays;
+            lock (s_strays) strays = s_strays.ToArray();
+            if (strays.Length == 0) return outcome;
+            string note = $"{strays.Length} unfaked call(s) (swallowed by the code under test or not), first: {strays[0]}";
+            return new(TestState.Failed, outcome.State == TestState.Failed ? outcome.Text + "; also " + note : note);
+        }
+        finally
+        {
+            lock (s_strays) { s_strays.Clear(); s_strays.AddRange(outer); }
+        }
     }
 
     /// <summary>
@@ -259,15 +304,29 @@ internal static class TestRunner
         Settings.RealDirOverride = scratch != null ? Path.Combine(scratch, "RealClink") : before.RealDir;
         ClipLibrary.IndexPathOverride = scratch != null ? Path.Combine(scratch, "clips.json") : before.ClipIndex;
         Updater.UpdatesDirOverride = scratch != null ? Path.Combine(scratch, "updates") : before.UpdatesDir;
-        Updater.HttpOverride = before.UpdaterHttp;          // no test leaves a fake network, feed or repository behind for the next
-        Updater.FeedOverride = before.FeedTrust;
-        Updater.BuiltInRepoOverride = before.BuiltInRepo;
+        // No test leaves a fake network or feed behind for the next, and during a test any request the test did not fake fails it: it
+        // throws (so it never reaches the network) and is recorded as a stray, which fails the test after it ran even when the code under
+        // test swallowed the exception (ExecuteWatched).
+        Updater.HttpOverride = scratch != null ? static (req, _) =>
+        {
+            RecordStray("a request nobody faked: " + req.RequestUri);
+            throw new TestFailure("a test must not reach the network: " + req.RequestUri);
+        } : before.UpdaterHttp;
+        Updater.FeedOverride = scratch != null ? TestFeed.Value : before.FeedTrust;   // a test runs as a build with a signed feed (keys that sign nothing), unless it says otherwise
         Updater.FeedTimeoutOverride = before.FeedTimeout;
         Updater.ClockOverride = before.UpdaterClock;        // the updater's fake clock, its test timeouts and the client probe
-        Updater.GitHubTimeoutOverride = before.GitHubTimeout;
         Updater.DownloadAnswerTimeoutOverride = before.DownloadAnswerTimeout;
         Updater.DownloadReadTimeoutOverride = before.DownloadReadTimeout;
         Updater.SendObserver = before.SendObserver;
+        Updater.BrowserOverride = scratch != null ? static url =>
+        {
+            RecordStray("a browser nobody faked: " + url);
+            throw new TestFailure("a test must not open a browser: " + url);
+        } : before.Browser;
+        Updater.FloorSeedOverride = scratch != null ? (null, null) : before.FloorSeeds;   // no built-in floors during a test (a CI build has them), unless it sets its own
+        Updater.DownloadTotalTimeoutOverride = before.DownloadTotalTimeout;
+        Updater.DownloadMinRateOverride = before.DownloadMinRate;
+        Updater.DownloadRateWindowOverride = before.DownloadRateWindow;
         Updater.PackagingOverride = scratch != null ? Packaging.SelfContained : before.Packaging;   // tests run as the portable flavour (updates\ folder, Clink.exe) unless they say otherwise
         Updater.PreflightOverride = scratch != null ? static (_, _) => new(0, false, null) : before.Preflight;   // never a real process; a test installs its own fake
         DotNetRuntimes.Override = scratch != null ? new[] { new Version(10, 0, 0) } : before.Runtimes;

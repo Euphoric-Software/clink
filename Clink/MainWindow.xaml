@@ -570,7 +570,8 @@
                                 <Border Style="{StaticResource Card}">
                                     <StackPanel>
                                         <CheckBox x:Name="AutoUpdateCheck" Content="Install updates automatically (checks every 6 hours)" Checked="AutoUpdateChanged" Unchecked="AutoUpdateChanged"
-                                                  ToolTip="Checks GitHub Releases on start and every 6 hours; a newer Clink.exe is downloaded, verified and installed on the next start" />
+                                                  ToolTipService.ShowOnDisabled="True"
+                                                  ToolTip="Checks the Euphoric Software update server on start and every 6 hours; a newer Clink.exe is downloaded, verified and installed on the next start" />
                                         <CheckBox x:Name="StartupCheck" Content="Run at startup" Margin="0,8,0,0" Checked="StartupChanged" Unchecked="StartupChanged"
                                                   ToolTip="Start Clink in the tray when you sign in to Windows (a downloaded update is installed then)" />
                                         <StackPanel Orientation="Horizontal" Margin="2,8,0,0">

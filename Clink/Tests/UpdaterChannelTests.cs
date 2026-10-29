@@ -5,18 +5,11 @@ using Clink.Services;
 
 namespace Clink.Tests;
 
-// The update channels: release versus dev builds (X.Y.Z-dev.N pre-releases published from the dev branch). No network: GitHub's
-// answers are fake JSON.
+// The update channels: release versus dev builds (X.Y.Z-dev.N builds published from the dev branch), version order and the names of the
+// files in the updates folder. No network.
 internal static class UpdaterChannelTests
 {
     private static ReleaseVersion V(string text) => ReleaseVersion.Parse(text) ?? throw new TestFailure($"'{text}' is not a version");
-
-    private static string Entry(string tag, bool prerelease = false, bool draft = false, bool sha = true)
-    {
-        var assets = new StringBuilder("""{"name":"Clink.exe","size":1000,"browser_download_url":"https://example.invalid/Clink.exe"}""");
-        if (sha) assets.Append(""",{"name":"Clink.exe.sha256","size":64,"browser_download_url":"https://example.invalid/Clink.exe.sha256"}""");
-        return $$"""{"tag_name":"{{tag}}","draft":{{(draft ? "true" : "false")}},"prerelease":{{(prerelease ? "true" : "false")}},"html_url":"https://example.invalid/{{tag}}","body":"","assets":[{{assets}}]}""";
-    }
 
     [UnitTest]
     public static void Versions_parse_and_order()
@@ -72,49 +65,6 @@ internal static class UpdaterChannelTests
     }
 
     [UnitTest]
-    public static void PickRelease_takes_the_newest_usable_entry()
-    {
-        string list = "[" + string.Join(",",
-            Entry("v0.3.0"),
-            Entry("v0.3.1-dev.9", prerelease: true),
-            Entry("v0.3.1-dev.10", prerelease: true),
-            Entry("v0.3.1-dev.11", prerelease: true, draft: true),
-            Entry("v0.3.1-dev.12", prerelease: true, sha: false),
-            Entry("v0.4.0-beta.1", prerelease: true),
-            Entry("v0.3.1-dev.13", prerelease: false)) + "]";
-
-        var dev = Updater.PickRelease(list, true, out string? problem);
-        Check.NotNull(dev);
-        Check.Null(problem);
-        Check.Equal("v0.3.1-dev.10", dev!.Tag);
-        Check.Equal(V("0.3.1-dev.10"), dev.Version);
-
-        string list2 = "[" + string.Join(",", Entry("v0.3.1-dev.3", prerelease: true), Entry("v0.3.0"), Entry("v0.3.1")) + "]";
-        Check.Equal("v0.3.1", Updater.PickRelease(list2, true, out _)!.Tag, "a release beats the dev builds of its number whatever the list order");
-
-        Check.Null(Updater.PickRelease("[]", true, out problem));
-        Check.Equal("no usable release or dev build found", problem);
-        Check.Null(Updater.PickRelease("""[{"tag_name":"v0.4.0-beta.1","prerelease":true}]""", true, out problem));
-        Check.NotNull(problem);
-    }
-
-    [UnitTest]
-    public static void ParseRelease_applies_the_channel_rules()
-    {
-        string devEntry = Entry("v0.3.1-dev.57", prerelease: true);
-        Check.Null(Updater.ParseRelease(devEntry, false, out _), "the stable channel rejects a pre-release");
-        Check.Equal("v0.3.1-dev.57", Updater.ParseRelease(devEntry, true, out _)!.Tag);
-        Check.Null(Updater.ParseRelease(Entry("v0.3.1-dev.57", prerelease: false), true, out _), "a dev tag not flagged pre-release is skipped");
-        Check.Null(Updater.ParseRelease(Entry("v0.4.0-beta.1", prerelease: true), true, out _), "betas are skipped");
-        Check.Null(Updater.ParseRelease(Entry("v0.3.1", draft: true), false, out _));
-        var release = Updater.ParseRelease(Entry("v0.3.1"), false, out string? problem);
-        Check.NotNull(release);
-        Check.Null(problem);
-        Check.Null(Updater.ParseRelease(Entry("v0.3.1", sha: false), false, out problem), "a release without a hash is refused");
-        Check.Contains(problem, "sha256");
-    }
-
-    [UnitTest]
     public static void File_names_round_trip_with_a_prerelease()
     {
         using var dir = new TempDir();
@@ -139,9 +89,10 @@ internal static class UpdaterChannelTests
         File.WriteAllBytes(file, new byte[] { (byte)'M', (byte)'Z', 0, 0, 0, 0 });
         string sha = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(file)));
 
-        var settings = Settings.FromJson("""{"UpdateRepo":"owner/repo"}""");
+        var settings = new Settings();
         settings.PendingUpdateVersion = v.ToString();
         settings.PendingUpdateSha256 = sha;
+        settings.PendingUpdateSignedSha256 = sha;   // only a download made from a signed manifest (its hash) is ever installed
         var up = new Updater(settings);
 
         Check.False(up.TryGetPendingUpdate(out _, out _), "stable channel: a dev build in the folder is ignored");
@@ -172,14 +123,6 @@ internal static class UpdaterChannelTests
     }
 
     [UnitTest]
-    public static void PickRelease_says_why_nothing_was_usable()
-    {
-        Updater.PickRelease("[" + Entry("v0.3.1-dev.12", prerelease: true, sha: false) + "]", true, out string? problem);
-        Check.Contains(problem, "no usable release or dev build found");
-        Check.Contains(problem, "sha256");
-    }
-
-    [UnitTest]
     public static void An_exe_must_report_the_dev_suffix_its_tag_promises()
     {
         Check.NotNull(Updater.EmbeddedVersionProblem(V("0.3.1"), V("0.3.1-dev.57")), "a release exe in a dev build's place");
@@ -199,7 +142,7 @@ internal static class UpdaterChannelTests
     [UnitTest]
     public static void A_download_finished_after_the_channel_switched_is_not_offered()
     {
-        var settings = Settings.FromJson("""{"UpdateRepo":"owner/repo"}""");
+        var settings = new Settings();
         using var up = new Updater(settings, V("0.3.0"));
         int ready = 0, cleared = 0;
         up.UpdateReady += _ => ready++;
@@ -236,7 +179,7 @@ internal static class UpdaterChannelTests
     [UnitTest]
     public static void Leaving_a_dev_build_needs_a_manual_check()
     {
-        var settings = Settings.FromJson("""{"UpdateRepo":"owner/repo"}""");
+        var settings = new Settings();
         using var up = new Updater(settings, V("0.3.1-dev.5"));
         using var dir = new TempDir();
         Updater.UpdatesDirOverride = dir.File("updates");
@@ -275,9 +218,10 @@ internal static class UpdaterChannelTests
         File.WriteAllBytes(file, new byte[] { (byte)'M', (byte)'Z', 0, 0, 0, 0 });
         string sha = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(file)));
 
-        var settings = Settings.FromJson("""{"UpdateRepo":"owner/repo"}""");
+        var settings = new Settings();
         settings.PendingUpdateVersion = target.ToString();
         settings.PendingUpdateSha256 = sha;
+        settings.PendingUpdateSignedSha256 = sha;
         settings.PendingUpdateFrom = "0.2.9";   // left by an older exe, before this dev build was installed by hand
         using var up = new Updater(settings, V("0.3.1-dev.5"));
 
@@ -303,52 +247,32 @@ internal static class UpdaterChannelTests
         Check.Null(up.InstallProblem);
     }
 
-    // ------------------------------------------------------------------ M1: only the tag shapes the workflows produce
+    // ------------------------------------------------------------------ M1: only the version shapes the workflows produce
 
     [UnitTest]
-    public static void Release_tags_are_vX_Y_Z_or_vX_Y_Z_dev_N_and_nothing_else()
+    public static void Canonical_versions_are_X_Y_Z_or_X_Y_Z_dev_N_and_nothing_else()
     {
-        Check.Equal(V("0.4.2"), ReleaseVersion.ParseTag("v0.4.2"));
-        Check.Equal(V("10.20.30"), ReleaseVersion.ParseTag("v10.20.30"));
-        Check.Equal(V("0.4.3-dev.7"), ReleaseVersion.ParseTag("v0.4.3-dev.7"));
-        Check.Equal(V("0.4.3-dev.0"), ReleaseVersion.ParseTag("v0.4.3-dev.0"));
+        Check.Equal(V("0.4.2"), ReleaseVersion.ParseCanonical("0.4.2"));
+        Check.Equal(V("10.20.30"), ReleaseVersion.ParseCanonical("10.20.30"));
+        Check.Equal(V("0.4.3-dev.7"), ReleaseVersion.ParseCanonical("0.4.3-dev.7"));
+        Check.Equal(V("0.4.3-dev.0"), ReleaseVersion.ParseCanonical("0.4.3-dev.0"));
         foreach (string? bad in new string?[]
                  {
-                     null, "", " ", "9.9.9", "V9.9.9", "v9.9", "v9", "v9.9.9.9", "v9.9.9-beta", "v9.9.9-beta.1", "v9.9.9-rc.1", "v9.9.9-dev", "v9.9.9-dev.",
-                     "v9.9.9-dev.x", "v9.9.9-dev.07", "v9.9.9-Dev.1", "v9.9.9-dev.1.2", "v9.9.9+abc", "v9.9.9-dev.1+abc", "v09.9.9", "v9.09.9", "v9.9.09",
-                     "v-1.0.0", "v1.0.0 ", " v1.0.0", "v1.0.0\n", "v1.0.0\u0660", "v\u0661.0.0", "v99999999999.0.0", "v1.0.0-dev.99999999999", "vv1.0.0", "v1..0", "v1.0.0-",
-                     "latest", "../v1.0.0", "v1.0.0/../x",
+                     null, "", " ", "v9.9.9", "V9.9.9", "9.9", "9", "9.9.9.9", "9.9.9-beta", "9.9.9-beta.1", "9.9.9-rc.1", "9.9.9-dev", "9.9.9-dev.",
+                     "9.9.9-dev.x", "9.9.9-dev.07", "9.9.9-Dev.1", "9.9.9-dev.1.2", "9.9.9+abc", "9.9.9-dev.1+abc", "09.9.9", "9.09.9", "9.9.09",
+                     "-1.0.0", "1.0.0 ", " 1.0.0", "1.0.0\n", "1.0.0٠", "١0.0.0", "99999999999.0.0", "1.0.0-dev.99999999999", "1..0", "1.0.0-",
+                     "latest", "../1.0.0", "1.0.0/../x",
                  })
-            Check.Null(ReleaseVersion.ParseTag(bad), $"'{bad}' is not a release tag");
+            Check.Null(ReleaseVersion.ParseCanonical(bad), $"'{bad}' is not a canonical version");
         Check.Null(ReleaseVersion.ParseCanonical("v1.2.3"), "the file/manifest form has no v");
         Check.Null(ReleaseVersion.ParseCanonical("1.2"));
         Check.Equal(V("1.2.3-dev.4"), ReleaseVersion.ParseCanonical("1.2.3-dev.4"));
     }
 
     [UnitTest]
-    public static void Odd_release_tags_are_refused_on_both_channels()
+    public static void A_pre_release_that_is_not_a_dev_build_is_never_installed()
     {
-        foreach (bool dev in new[] { false, true })
-        {
-            foreach (string tag in new[] { "9.9.9", "V9.9.9", "v9.9", "v9.9.9-beta", "v9.9.9+x", "v09.9.9", "v9.9.9-dev.07" })
-            {
-                foreach (bool prerelease in new[] { false, true })
-                {
-                    string entry = Entry(tag, prerelease);
-                    Check.Null(Updater.ParseRelease(entry, dev, out string? problem), $"{tag} (pre-release {prerelease}, dev channel {dev})");
-                    if (!prerelease || dev) Check.NotNull(problem, $"{tag}: says why");
-                    Check.Null(Updater.PickRelease("[" + entry + "]", dev, out _), $"{tag} picked from a list");
-                }
-            }
-            // The flag and the tag must agree on every channel, not only on dev.
-            Check.Null(Updater.ParseRelease(Entry("v9.9.9-dev.1", prerelease: false), dev, out _), $"dev tag without the pre-release flag (dev channel {dev})");
-            Check.Null(Updater.ParseRelease(Entry("v9.9.9", prerelease: true), dev, out _), $"release tag flagged pre-release (dev channel {dev})");
-        }
-        Check.NotNull(Updater.ParseRelease(Entry("v9.9.9"), false, out _));
-        Check.NotNull(Updater.ParseRelease(Entry("v9.9.9"), true, out _));
-        Check.NotNull(Updater.ParseRelease(Entry("v9.9.9-dev.3", prerelease: true), true, out _));
-
-        // A hostile release marked "latest" with a non-dev pre-release tag is not installed even if everything else accepted it.
+        // Even a signed manifest cannot make the updater install anything but a release or an X.Y.Z-dev.N build.
         Check.False(Updater.ShouldInstall(V("9.9.9-beta"), V("0.4.1"), false, true));
         Check.False(Updater.ShouldInstall(V("9.9.9-beta"), V("0.4.1"), true, true));
         Check.False(Updater.ShouldInstall(V("9.9.9-rc.1"), V("0.4.1-dev.3"), false, true));
@@ -379,61 +303,36 @@ internal static class UpdaterChannelTests
         Check.Equal(V("1.2.3-dev.4"), Updater.VersionFromFile(@"C:\x\Clink-1.2.3-dev.4.exe"));
     }
 
-    // ------------------------------------------------------------------ L5: only this repo's github.com release pages are opened
+    // ------------------------------------------------------------------ an older copy still running (v0.4.1 users upgrade by hand)
 
     [UnitTest]
-    public static void A_release_page_is_opened_only_when_it_is_this_repos_on_github_com()
+    public static void A_plain_start_names_an_older_copy_still_running_from_another_exe()
     {
-        const string repo = "Euphoric-Software/Clink";
-        foreach (string good in new[]
-                 {
-                     "https://github.com/Euphoric-Software/Clink/releases/latest", "https://github.com/Euphoric-Software/Clink/releases/tag/v0.4.2",
-                     "https://github.com/euphoric-software/clink/releases/tag/v0.4.2-dev.3", "https://GITHUB.com/Euphoric-Software/Clink/releases/latest",
-                     "https://github.com:443/Euphoric-Software/Clink/releases/tag/v1.0.0",
-                 })
-            Check.True(Updater.IsOwnReleasePage(good, repo), good);
-        // What is opened is the normalised address, not the raw string.
-        Check.Equal("https://github.com/Euphoric-Software/Clink/releases/latest", Updater.OwnReleasePage("https://GITHUB.com:443/Euphoric-Software/Clink/releases/latest", repo));
-        Check.Equal("https://github.com/Euphoric-Software/Clink/releases/tag/v1.0.0", Updater.OwnReleasePage("https://github.com:443/Euphoric-Software/Clink/releases/tag/v1.0.0", repo));
-        Check.Null(Updater.OwnReleasePage("https://evil.example/x", repo));
-        // .NET decodes an escaped unreserved character, so what is opened is the plain, normalised address
-        Check.Equal("https://github.com/Euphoric-Software/Clink/releases/tag/v0.4.2", Updater.OwnReleasePage("https://github.com/Euphoric-Software/Clink/releases/tag/v0.4.%32", repo));
+        const string Own = @"C:\Users\Me\AppData\Local\Programs\Clink\Clink.exe", Old = @"C:\Users\Me\Downloads\Clink.exe";
+        var own = V("0.4.2");
+        const int Pid = 100, Session = 1;
+        AppController.RunningClink Other(string path, string? version, int session = Session, int pid = 200) => new(pid, session, path, version);
+        string? Ask(IEnumerable<AppController.RunningClink> running, string? command = null, bool dev = false, ReleaseVersion? ownVersion = null) =>
+            AppController.OlderRunningCopy(running, Own, ownVersion ?? own, Pid, Session, command, dev);
 
-        // Only releases/latest and releases/tag/<canonical tag>: not downloads, not an arbitrary tag text, no query, no fragment.
-        foreach (string bad in new[]
-                 {
-                     "https://github.com/Euphoric-Software/Clink/releases/download/v0.4.2/Clink.exe", "https://github.com/Euphoric-Software/Clink/releases/latest?a=1",
-                     "https://github.com/Euphoric-Software/Clink/releases/latest#b", "https://github.com/Euphoric-Software/Clink/releases/latest?", "https://github.com/Euphoric-Software/Clink/releases/latest#",
-                     "https://github.com/Euphoric-Software/Clink/releases/tag/v0.4.2?a", "https://github.com/Euphoric-Software/Clink/releases/tag/v0.4.2#b",
-                     "https://github.com/Euphoric-Software/Clink/releases/tag/", "https://github.com/Euphoric-Software/Clink/releases/tag/0.4.2",
-                     "https://github.com/Euphoric-Software/Clink/releases/tag/v0.4.2-beta.1", "https://github.com/Euphoric-Software/Clink/releases/tag/v0.4.2/extra",
-                     "https://github.com/Euphoric-Software/Clink/releases/tag/v0.4.%2F2", "https://github.com/Euphoric-Software/Clink/releases/latest/",
-                     "https://github.com/Euphoric-Software/Clink/releases/Latest", "https://github.com/Euphoric-Software/Clink/releases/",
-                 })
-            Check.False(Updater.IsOwnReleasePage(bad, repo), $"'{bad}'");
+        // an older copy elsewhere: the message, with its version and path
+        string? msg = Ask(new[] { Other(Old, "0.4.1+abc123") });
+        Check.Equal(@"An older Clink (v0.4.1) is still running from C:\Users\Me\Downloads\Clink.exe. Right-click its tray icon, choose Quit, then start Clink again.", msg);
+        Check.NotNull(Ask(new[] { Other(Old, "0.4.2-dev.9") }), "a dev build of this version is older too");
+        Check.NotNull(Ask(new[] { Other(Old, "garbage"), Other(Old, "0.3.0", pid: 300) }), "the one that reads as older is found");
 
-        foreach (string? bad in new string?[]
-                 {
-                     null, "", " ", "http://github.com/Euphoric-Software/Clink/releases/latest", "ftp://github.com/Euphoric-Software/Clink/releases/latest",
-                     "file:///C:/Windows/System32/calc.exe", "calc.exe", @"C:\Windows\System32\calc.exe", "javascript:alert(1)", "//github.com/Euphoric-Software/Clink/releases/latest",
-                     "https://evil.example/Euphoric-Software/Clink/releases/latest", "https://github.com.evil.example/Euphoric-Software/Clink/releases/latest",
-                     "https://evilgithub.com/Euphoric-Software/Clink/releases/latest", "https://gist.github.com/Euphoric-Software/Clink/releases/latest",
-                     "https://www.github.com/Euphoric-Software/Clink/releases/latest", "https://github.com@evil.example/Euphoric-Software/Clink/releases/latest",
-                     "https://evil.example@github.com/Euphoric-Software/Clink/releases/latest", "https://github.com:8443/Euphoric-Software/Clink/releases/latest",
-                     "https://github.com/other/repo/releases/latest", "https://github.com/Euphoric-Software/Clink-evil/releases/latest",
-                     "https://github.com/Euphoric-Software/Clink", "https://github.com/Euphoric-Software/Clink/", "https://github.com/Euphoric-Software/Clink/issues/1",
-                     "https://github.com/Euphoric-Software/Clink/releases", "https://github.com/Euphoric-Software/Clink/releases/../../../evil/x/releases/latest",
-                     "https://github.com/Euphoric-Software/Clink/releases/%2e%2e/%2e%2e/evil", "https://github.com/Euphoric-Software/Clink/releases/..%2f..%2fx",
-                     @"https://github.com/Euphoric-Software/Clink/releases/..\x", "https://github.com/Euphoric-Software/Clink/releases/latest\r\nHost: x",
-                     "https://github.com/Euphoric-Software/Clink/releases/latest calc.exe", "https://github.com\\@evil.example/Euphoric-Software/Clink/releases/latest",
-                 })
-            Check.False(Updater.IsOwnReleasePage(bad, repo), $"'{bad}'");
-
-        Check.False(Updater.IsOwnReleasePage("https://github.com/Euphoric-Software/Clink/releases/latest", null), "no repo, no page");
-        Check.False(Updater.IsOwnReleasePage("https://github.com/Euphoric-Software/Clink/releases/latest", ""));
-        Check.False(Updater.IsOwnReleasePage("https://github.com/Euphoric-Software/Clink/releases/latest", "not a repo"));
-        Check.False(Updater.IsOwnReleasePage("https://github.com/a/b/releases/latest", "../b"));
-        Check.True(Updater.IsOwnReleasePage("https://github.com/a/b/releases/latest", "a/b/"));
-        Check.False(Updater.IsOwnReleasePage("https://github.com/a/b/releases/latest", "a/c"));
+        // no message
+        Check.Null(Ask(new[] { Other(Old, "0.4.2") }), "the same version");
+        Check.Null(Ask(new[] { Other(Old, "0.4.3") }), "a newer one");
+        Check.Null(Ask(new[] { Other(Own, "0.4.1") }), "the same exe (path)");
+        Check.Null(Ask(new[] { Other(Own.ToUpperInvariant(), "0.4.1") }), "the same exe, other case");
+        Check.Null(Ask(new[] { Other(Old, "0.4.1") }, command: "clip"), "a forwarded command (--clip, ...)");
+        Check.Null(Ask(new[] { Other(Old, "0.4.1") }, dev: true), "a --dev start");
+        Check.Null(Ask(new[] { Other(Old, "0.4.1", session: 2) }), "another Windows session");
+        Check.Null(Ask(new[] { Other(Old, "0.4.1", pid: Pid) }), "this process itself");
+        Check.Null(Ask(new[] { Other(Old, null) }), "an unreadable version");
+        Check.Null(Ask(new[] { new AppController.RunningClink(200, Session, null, "0.4.1") }), "an unreadable path");
+        Check.Null(Ask(Array.Empty<AppController.RunningClink>()), "nothing else running");
+        Check.Null(AppController.OlderRunningCopy(new[] { Other(Old, "0.4.1") }, Own, null, Pid, Session, null, false), "this exe's own version unreadable");
     }
 }
