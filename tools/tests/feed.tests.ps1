@@ -715,7 +715,7 @@ try {
             $off = Get-FeedConfig -Path (New-FeedJsonFile 'cfg-off' -FeedUrl '' -Stable @() -Dev @() -Extra $extra) -Channel dev
             Assert-True ((-not $off.Enabled) -and $off.Mode -eq 'off' -and $off.FeedUrl -ceq '') "an empty file is not off (extra [$extra])"
         }
-        # The committed file must keep parsing (it is empty today: off).
+        # The committed file must keep parsing (it is on).
         $committed = Get-FeedConfig -Path (Join-Path $repo 'Clink\Assets\feed.json') -Channel dev
         Assert-True ($committed.Mode -eq 'off' -or $committed.Mode -eq 'on') 'the committed feed.json does not parse'
     }

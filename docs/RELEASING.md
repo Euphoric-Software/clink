@@ -155,11 +155,9 @@ admins and both use 2FA. Keep the writer list at exactly those two, watch the Ac
 
 ### The feed-on change
 
-Until this lands the feed is OFF, and **both publish jobs refuse to publish**: `Read feed configuration` throws before any draft exists and
-before any secret is read, so nothing reaches GitHub or R2. The build jobs still run (they build, test and package), which means that **every
-push to `dev` shows a red `publish` job until the feed-on commit lands** (and a stable tag would end the same way). That is by design: a
-feed-less release would give every client an update path that goes nowhere. One reviewed commit to `Clink/Assets/feed.json` turns the feed
-on for both channels:
+The feed is now ON for both channels: `Clink/Assets/feed.json` carries the URLs and the public keys shown below. A feed-less publish is
+refused by both publish jobs (`Read feed configuration` throws before any draft exists and before any secret is read, so nothing reaches
+GitHub or R2), because a feed-less release would give every client an update path that goes nowhere. The shipped file is:
 
 ```json
 { "schema": 1, "feedUrl": "https://dl.euphoric.software/clink/", "devFeedUrl": "https://dl-dev.euphoric.software/clink/",
@@ -167,13 +165,14 @@ on for both channels:
 ```
 
 - Both channels are enabled together: `feedUrl` plus at least one key in BOTH lists (a partly filled file fails CI by design).
-- Before the commit lands: the buckets, the custom domains, the Bucket Lock rules, the 12 repo secrets (step 5) and the keys must all exist,
-  or the publish job fails by design. Check that no release or draft already carries `stable.json` or `dev.json`.
+- The keys are, in order, `stableKeys` = [stable, stable-next] and `devKeys` = [dev, dev-next].
+- The buckets, the custom domains, the Bucket Lock rules, the 12 repo secrets (step 5) and the keys must all exist, or the publish job fails
+  by design.
 - **It cannot be switched off.** Once a release has carried `stable.json` / `dev.json`, both publish jobs refuse a feed-less publish
   (`Guard - a feed that was on stays on`), and every client that shipped with these URLs and keys trusts them for good: a wrong URL or key
-  in a shipped build means a new installer download for every user. Triple-check the URLs (canonical form, trailing `/`, path exactly
-  `/clink/`) and paste the PUBLIC keys, not the private ones. `feed.json` can still change freely until the first feed-on build ships.
-- Merge it to `dev` FIRST (see "Staging plan"), look at the first dev run, and only then carry it to `main`.
+  in a shipped build means a new installer download for every user. The URLs (canonical form, trailing `/`, path exactly `/clink/`) and the
+  PUBLIC keys must therefore never change carelessly; a key is only ever replaced through the rotation steps.
+- The feed-on change goes to `dev` FIRST (see "Staging plan"); look at the first dev run, and only then carry it to `main`.
 
 ### Releasing
 
@@ -223,8 +222,7 @@ A PUBLIC fork would expose the private source, so there is no public staging for
    `stable.json` or any stable user; only users who ticked "Dev Build" can see it. Pass criteria: the log shows `no dev floor (first publish)`,
    `public URL ok` for all six objects including `notes.txt`, `Verify the published release` and `Verify the published tag` are green, the bucket copies
    are byte-equal to the release assets, `https://dl-dev.euphoric.software/clink/dev.json` and its `.sig` are served with `max-age=60`, the Notes
-   link opens, `notes.txt` is served as `text/plain; charset=utf-8` with `nosniff` (no `nosniff` warning in the log), and a second dev push moves the feed forward (the downgrade floor works). Before the feed-on commit
-   lands, every dev push has a red `publish` job (the refusal described in "The feed-on change"); that is the expected state, not a failure to chase. Then merge to `main` and tag. What the dev run cannot prove:
+   link opens, `notes.txt` is served as `text/plain; charset=utf-8` with `nosniff` (no `nosniff` warning in the log), and a second dev push moves the feed forward (the downgrade floor works). Then merge to `main` and tag. What the dev run cannot prove:
    the stable token and bucket, the stable Bucket Lock and the stable CORS rule. Check those by hand before tagging: `npx wrangler r2 bucket lock list clink-stable`
    shows the `clink/releases/` rule with indefinite retention (read-only; setup step 1.4 explains the optional live probe and what it leaves behind), and the CORS probe in setup step 1.5 passes.
    **Cloudflare bot and WAF rules must not challenge the runners.** `upload-feed.ps1` GETs every object at its PUBLIC URL from a GitHub-hosted runner
@@ -552,10 +550,11 @@ CI note: the runner appends `if ((Test-Path -LiteralPath variable:\LASTEXITCODE)
      the earlier releases (`gh api repos/<repo>/releases --paginate`, GET only) and computes the highest NON-DRAFT release of the channel,
      made by `github-actions[bot]`, that carried `<channel>.json`; it must equal the build job's seed for the channel (see "Embedded floor
      seeds" above) or the step fails; `upload-feed.ps1` receives it as `-HistoryFloor`.
-   - Feed not enabled: the step `Read feed configuration` THROWS (refusing to publish) before the draft and before any secret step; nothing is
-     published to GitHub or R2, the build job's result is untouched, and every dev push is red in the publish job until the feed-on commit lands. The step
-     `Guard - a feed that was on stays on` (it lists the assets of every earlier release, GET only, and FAILS when one carried `<channel>.json`, see "The feed
-     cannot be switched off") is kept as defence in depth: it is skipped today, and enforces the rule if the refusal is ever relaxed.
+   - Feed not enabled (the shipped `feed.json` is on, so this only happens if the file is broken): the step `Read feed configuration` THROWS
+     (refusing to publish) before the draft and before any secret step; nothing is published to GitHub or R2 and the build job's result is
+     untouched. The step `Guard - a feed that was on stays on` (it lists the assets of every earlier release, GET only, and FAILS when one
+     carried `<channel>.json`, see "The feed cannot be switched off") is kept as defence in depth: it is skipped while the feed is on, and
+     enforces the rule if the refusal is ever relaxed.
    - `make-manifest.ps1` binds `package.json` to the manifest: `files.exe.file` must be exactly `Clink.exe`, `files.exeFramework.file`
      `Clink-framework.exe` and `files.installer.file` `Clink-Setup.exe` (case-sensitive), the `exe` and `exeFramework` hashes must differ,
      and `minRuntime` must be `10.x.y` (the app targets `net10.0-windows`; raise the constant in `make-manifest.ps1` with the `TargetFramework`).
@@ -611,7 +610,7 @@ Node 20 actions): `actions/checkout` v5.1.0, `actions/setup-dotnet` v5.4.0, `act
 
 Once a release of a channel has carried `<channel>.json`, the feed is on for good. A publish with the feed disabled in `feed.json` would
 leave the bucket's last manifest (and every client that trusts it) frozen, a replay target for an old, still validly signed manifest. Both
-publish jobs therefore refuse a feed-less publish: always (`Read feed configuration` throws while `feed.json` is off), and, as a second lock that
+publish jobs therefore refuse a feed-less publish: always (`Read feed configuration` throws if `feed.json` is ever off), and, as a second lock that
 stays even if that refusal is relaxed, when any earlier release of the repository (drafts included) has an asset named
 `stable.json` (stable) or `dev.json` (dev). To recover, restore `feedUrl` and the keys in `Clink/Assets/feed.json`. Deleting old releases to
 get around the check is not a supported way to turn the feed off.
@@ -636,11 +635,9 @@ The owner guide has the steps ("One-time setup" 4 and 5, "The feed-on change"). 
 
 ### Enabling the feed
 
-The reviewed commit that sets `feedUrl`, `devFeedUrl` and the keys of BOTH channels in `Clink/Assets/feed.json` is described in the owner guide
-("The feed-on change"). The next build embeds the new anchors and the publish jobs start signing and uploading. The buckets, the repo secrets
-and the keys must exist before the commit lands, or the publish job fails by design. Before it, check that no existing release or draft
-already carries `stable.json` or `dev.json`. `feed.json` can still change freely until the first feed-on build ships; after that the URLs and
-keys are baked into installed clients.
+`Clink/Assets/feed.json` now sets `feedUrl`, `devFeedUrl` and the keys of BOTH channels (see the owner guide, "The feed-on change"). Every
+build embeds these anchors and the publish jobs sign and upload. The buckets, the repo secrets and the keys must exist, or the publish job
+fails by design. Once a build with this file ships, the URLs and keys are baked into installed clients and cannot be taken back.
 
 ### Rotation
 
