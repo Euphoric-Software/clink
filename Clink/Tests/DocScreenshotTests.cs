@@ -387,6 +387,108 @@ internal static class DocScreenshotTests
     }
 
     [UnitTest]
+    public static void Samples_command_only_runs_with_the_dev_flag()
+    {
+        using var dir = new TempDir();
+        string folder = dir.File("clips");
+        int attached = 0;
+        Check.True(SampleClips.TryRunCli(new[] { "--dev-make-samples", folder }, () => attached++, out int code), "it is the samples command");
+        Check.Equal(2, code, "refused without --dev");
+        Check.Equal(1, attached);
+        Check.False(Directory.Exists(folder), "nothing was written");
+        Check.False(SampleClips.HasDevFlag(new[] { "--dev-make-samples", "--dev" }), "the folder position is not a flag");
+        Check.False(SampleClips.HasDevFlag(new[] { "--dev-make-samples", folder, "--index", "--dev" }), "an index value is not a flag");
+        Check.False(SampleClips.HasDevFlag(new[] { "--dev-make-samples", folder, "-dev" }), "a look-alike is not the flag");
+        Check.True(SampleClips.HasDevFlag(new[] { "--dev-make-samples", folder, "--dev" }));
+        Check.True(SampleClips.HasDevFlag(new[] { "--dev-make-samples", folder, "--index", dir.File("i.json"), "--DEV" }));
+        var (f, i) = SampleClips.ParseArgs(new[] { "--dev-make-samples", folder, "--dev" });
+        Check.Equal(Path.GetFullPath(folder), f, "--dev is accepted by the parser");
+        Check.Equal(Path.Combine(dir.Path, "clips.json"), i);
+    }
+
+    [UnitTest]
+    public static void Samples_index_must_be_a_json_file_without_stream_colons_and_is_written_without_overwriting()
+    {
+        using var dir = new TempDir();
+        var none = new List<(string Path, string What)>();
+        string own = dir.File("own");
+        // --index must name a .json file (so it can never be a drive root or the profile folder), in any case
+        Check.Throws<ArgumentException>(() => SampleClips.ParseArgs(new[] { "--dev-make-samples", own, "--index", Path.GetPathRoot(dir.Path)! }), "a drive root");
+        Check.Throws<ArgumentException>(() => SampleClips.ParseArgs(new[] { "--dev-make-samples", own, "--index", Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) }), "the profile folder");
+        Check.Throws<ArgumentException>(() => SampleClips.ParseArgs(new[] { "--dev-make-samples", own, "--index", dir.File("notes.txt") }), "not .json");
+        Check.Equal(dir.File("UP.JSON"), SampleClips.ParseArgs(new[] { "--dev-make-samples", own, "--index", dir.File("UP.JSON") }).Index, ".JSON counts");
+        // a ':' after the drive is an alternate data stream, in the folder and in the index
+        Check.Throws<ArgumentException>(() => SampleClips.ParseArgs(new[] { "--dev-make-samples", dir.Path + @"\clips:stream" }), "a stream in the folder");
+        Check.Throws<ArgumentException>(() => SampleClips.ParseArgs(new[] { "--dev-make-samples", own, "--index", dir.Path + @"\a:b.json" }), "a colon in the index");
+        Check.Equal(2, SampleClips.Run(new[] { "--dev-make-samples", dir.Path + @"\clips:stream", "--dev" }, _ => { }), "Run refuses it too");
+        Check.True(SampleClips.Refusal(own, dir.File("ok.json"), none) == null);
+
+        string idx = dir.File("new.json");
+        SampleClips.WriteIndex(idx, own, "[]");
+        Check.Equal("[]", File.ReadAllText(idx));
+        // an existing index that is not ours is never written
+        Check.Throws<IOException>(() => SampleClips.WriteIndex(idx, own, "[1]"));
+        Check.Equal("[]", File.ReadAllText(idx));
+        // our own is replaced
+        File.WriteAllText(idx, $"[ {{ \"Path\": {System.Text.Json.JsonSerializer.Serialize(Path.Combine(own, "a.mp4"))} }} ]");
+        SampleClips.WriteIndex(idx, own, "[2]");
+        Check.Equal("[2]", File.ReadAllText(idx));
+    }
+
+    [UnitTest]
+    public static void A_path_that_cannot_be_resolved_is_refused_not_waved_through()
+    {
+        using var dir = new TempDir();
+        var none = new List<(string Path, string What)>();
+        // what does not exist yet, under a folder that does, is still fine
+        Check.True(SampleClips.Refusal(dir.File(@"not\yet\there"), dir.File("i.json"), none) == null);
+        Check.NotNull(AppDataRedirect.ResolvedPath(dir.Path), "an existing folder resolves");
+
+        // a junction whose target is gone leads nowhere: ResolvedPath cannot say, so everything through it is refused
+        string target = dir.File("target"), link = dir.File("link");
+        Directory.CreateDirectory(target);
+        if (!TestJunction.TryMake(link, target, out string why)) { TestJunction.Skipped(nameof(A_path_that_cannot_be_resolved_is_refused_not_waved_through), why); return; }
+        try
+        {
+            Directory.Delete(target);
+            string below = Path.Combine(link, "new");
+            Check.Null(AppDataRedirect.ResolvedPath(link), "a dangling junction does not resolve");
+            Check.Null(AppDataRedirect.ResolvedPath(below), "nor does what is below it");
+            Check.Throws<IOException>(() => SampleClips.Refusal(below, dir.File("i.json"), none), "Refusal: the folder");
+            Check.Throws<IOException>(() => SampleClips.Refusal(dir.File("own"), Path.Combine(link, "i.json"), none), "Refusal: the index");
+            Check.Contains(Check.Throws<ArgumentException>(() => DevOptions.Parse(new[] { "--dev", below })).Message, "cannot be checked", "DevOptions.Parse");
+            Check.Equal(2, SampleClips.Run(new[] { "--dev-make-samples", link, "--dev" }, _ => { }), "Run: the link");
+            Check.Equal(2, SampleClips.Run(new[] { "--dev-make-samples", below, "--dev" }, _ => { }), "Run: below the link");
+            Check.False(Directory.Exists(below), "nothing was made");
+        }
+        finally { TestJunction.Remove(link); }
+    }
+
+    [UnitTest]
+    public static void A_path_in_the_device_form_is_refused()
+    {
+        using var dir = new TempDir();
+        var none = new List<(string Path, string What)>();
+        string place = dir.File("place");
+        foreach (string prefix in new[] { @"\??\", @"\\?\", @"\\.\", "//?/" })
+        {
+            string folder = prefix + place + @"\new";
+            Check.True(SampleClips.Refusal(folder, dir.File("i.json"), none) != null, "Refusal: " + prefix);
+            Check.True(SampleClips.Refusal(dir.File("own"), prefix + dir.File("i.json"), none) != null, "Refusal, index: " + prefix);
+            Check.Throws<ArgumentException>(() => SampleClips.ParseArgs(new[] { "--dev-make-samples", folder, "--dev" }), "ParseArgs folder: " + prefix);
+            Check.Throws<ArgumentException>(() => SampleClips.ParseArgs(new[] { "--dev-make-samples", dir.File("own"), "--index", prefix + dir.File("i.json") }), "ParseArgs index: " + prefix);
+            Check.Equal(2, SampleClips.Run(new[] { "--dev-make-samples", folder, "--dev" }, _ => { }), "Run: " + prefix);
+            Check.Throws<ArgumentException>(() => DevOptions.Parse(new[] { "--dev", folder }), "DevOptions.Parse: " + prefix);
+        }
+        Check.Throws<ArgumentException>(() => DevOptions.Parse(new[] { "--dev", @"\\?\GLOBALROOT\Device\HarddiskVolume1\x" }), "GLOBALROOT");
+        Check.Throws<ArgumentException>(() => DevOptions.Parse(new[] { "--dev", @"\\?\Volume{00000000-0000-0000-0000-000000000000}\x" }), "Volume{GUID}");
+        Check.Throws<ArgumentException>(() => DevOptions.Parse(new[] { "--dev", dir.Path + @"\dev:stream" }), "a stream colon");
+        // the fake package layout of the import tests, in the \??\ form: refused, not read as a folder that is "somewhere else"
+        string fakePackage = dir.File(@"AppData\Local\Packages\Fake_abc\LocalCache\Roaming\Clink");
+        Check.Throws<ArgumentException>(() => DevOptions.Parse(new[] { "--dev", @"\??\" + fakePackage }), @"\??\ fake package folder");
+    }
+
+    [UnitTest]
     public static void Samples_run_exit_codes()
     {
         using var dir = new TempDir();

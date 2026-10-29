@@ -302,4 +302,138 @@ internal static class UpdaterChannelTests
         Check.False(up.TryGetPendingUpdate(out _, out _), "the dev channel never goes down to an older release");
         Check.Null(up.InstallProblem);
     }
+
+    // ------------------------------------------------------------------ M1: only the tag shapes the workflows produce
+
+    [UnitTest]
+    public static void Release_tags_are_vX_Y_Z_or_vX_Y_Z_dev_N_and_nothing_else()
+    {
+        Check.Equal(V("0.4.2"), ReleaseVersion.ParseTag("v0.4.2"));
+        Check.Equal(V("10.20.30"), ReleaseVersion.ParseTag("v10.20.30"));
+        Check.Equal(V("0.4.3-dev.7"), ReleaseVersion.ParseTag("v0.4.3-dev.7"));
+        Check.Equal(V("0.4.3-dev.0"), ReleaseVersion.ParseTag("v0.4.3-dev.0"));
+        foreach (string? bad in new string?[]
+                 {
+                     null, "", " ", "9.9.9", "V9.9.9", "v9.9", "v9", "v9.9.9.9", "v9.9.9-beta", "v9.9.9-beta.1", "v9.9.9-rc.1", "v9.9.9-dev", "v9.9.9-dev.",
+                     "v9.9.9-dev.x", "v9.9.9-dev.07", "v9.9.9-Dev.1", "v9.9.9-dev.1.2", "v9.9.9+abc", "v9.9.9-dev.1+abc", "v09.9.9", "v9.09.9", "v9.9.09",
+                     "v-1.0.0", "v1.0.0 ", " v1.0.0", "v1.0.0\n", "v1.0.0\u0660", "v\u0661.0.0", "v99999999999.0.0", "v1.0.0-dev.99999999999", "vv1.0.0", "v1..0", "v1.0.0-",
+                     "latest", "../v1.0.0", "v1.0.0/../x",
+                 })
+            Check.Null(ReleaseVersion.ParseTag(bad), $"'{bad}' is not a release tag");
+        Check.Null(ReleaseVersion.ParseCanonical("v1.2.3"), "the file/manifest form has no v");
+        Check.Null(ReleaseVersion.ParseCanonical("1.2"));
+        Check.Equal(V("1.2.3-dev.4"), ReleaseVersion.ParseCanonical("1.2.3-dev.4"));
+    }
+
+    [UnitTest]
+    public static void Odd_release_tags_are_refused_on_both_channels()
+    {
+        foreach (bool dev in new[] { false, true })
+        {
+            foreach (string tag in new[] { "9.9.9", "V9.9.9", "v9.9", "v9.9.9-beta", "v9.9.9+x", "v09.9.9", "v9.9.9-dev.07" })
+            {
+                foreach (bool prerelease in new[] { false, true })
+                {
+                    string entry = Entry(tag, prerelease);
+                    Check.Null(Updater.ParseRelease(entry, dev, out string? problem), $"{tag} (pre-release {prerelease}, dev channel {dev})");
+                    if (!prerelease || dev) Check.NotNull(problem, $"{tag}: says why");
+                    Check.Null(Updater.PickRelease("[" + entry + "]", dev, out _), $"{tag} picked from a list");
+                }
+            }
+            // The flag and the tag must agree on every channel, not only on dev.
+            Check.Null(Updater.ParseRelease(Entry("v9.9.9-dev.1", prerelease: false), dev, out _), $"dev tag without the pre-release flag (dev channel {dev})");
+            Check.Null(Updater.ParseRelease(Entry("v9.9.9", prerelease: true), dev, out _), $"release tag flagged pre-release (dev channel {dev})");
+        }
+        Check.NotNull(Updater.ParseRelease(Entry("v9.9.9"), false, out _));
+        Check.NotNull(Updater.ParseRelease(Entry("v9.9.9"), true, out _));
+        Check.NotNull(Updater.ParseRelease(Entry("v9.9.9-dev.3", prerelease: true), true, out _));
+
+        // A hostile release marked "latest" with a non-dev pre-release tag is not installed even if everything else accepted it.
+        Check.False(Updater.ShouldInstall(V("9.9.9-beta"), V("0.4.1"), false, true));
+        Check.False(Updater.ShouldInstall(V("9.9.9-beta"), V("0.4.1"), true, true));
+        Check.False(Updater.ShouldInstall(V("9.9.9-rc.1"), V("0.4.1-dev.3"), false, true));
+        Check.True(Updater.ShouldInstall(V("9.9.9"), V("0.4.1"), false, false));
+        Check.True(Updater.ShouldInstall(V("9.9.9-dev.1"), V("0.4.1"), true, false));
+    }
+
+    [UnitTest]
+    public static void Only_canonical_versions_become_update_files()
+    {
+        using var dir = new TempDir();
+        Updater.UpdatesDirOverride = dir.File("updates");
+        Check.Equal("Clink-1.2.3-dev.4.exe", Path.GetFileName(Updater.FileFor(V("1.2.3-dev.4"))));
+        Check.Equal(Path.GetFullPath(dir.File("updates")), Path.GetDirectoryName(Path.GetFullPath(Updater.FileFor(V("1.2.3")))));
+
+        // A version with any other suffix (only reachable by a bug) does not become a file name, least of all one with separators.
+        foreach (string suffix in new[] { "beta.1", "dev.07", @"..\..\x", "a/b", "x:y", "dev.1+meta" })
+        {
+            var weird = new ReleaseVersion(new Version(1, 2, 3), suffix);
+            bool threw = false;
+            try { Updater.FileFor(weird); } catch (ArgumentException) { threw = true; }
+            Check.True(threw, $"suffix '{suffix}'");
+        }
+
+        foreach (string name in new[] { "Clink-1.2.exe", "Clink-v1.2.3.exe", "Clink-1.2.3-beta.1.exe", "Clink-1.2.3+x.exe", "Clink-1.2.3.exe.failed", "Clink-01.2.3.exe", "Clink-.exe", "Clink-1.2.3-dev.07.exe" })
+            Check.Null(Updater.VersionFromFile(@"C:\x\" + name), name);
+        Check.Equal(V("1.2.3"), Updater.VersionFromFile(@"C:\x\Clink-1.2.3.exe"));
+        Check.Equal(V("1.2.3-dev.4"), Updater.VersionFromFile(@"C:\x\Clink-1.2.3-dev.4.exe"));
+    }
+
+    // ------------------------------------------------------------------ L5: only this repo's github.com release pages are opened
+
+    [UnitTest]
+    public static void A_release_page_is_opened_only_when_it_is_this_repos_on_github_com()
+    {
+        const string repo = "Euphoric-Software/Clink";
+        foreach (string good in new[]
+                 {
+                     "https://github.com/Euphoric-Software/Clink/releases/latest", "https://github.com/Euphoric-Software/Clink/releases/tag/v0.4.2",
+                     "https://github.com/euphoric-software/clink/releases/tag/v0.4.2-dev.3", "https://GITHUB.com/Euphoric-Software/Clink/releases/latest",
+                     "https://github.com:443/Euphoric-Software/Clink/releases/tag/v1.0.0",
+                 })
+            Check.True(Updater.IsOwnReleasePage(good, repo), good);
+        // What is opened is the normalised address, not the raw string.
+        Check.Equal("https://github.com/Euphoric-Software/Clink/releases/latest", Updater.OwnReleasePage("https://GITHUB.com:443/Euphoric-Software/Clink/releases/latest", repo));
+        Check.Equal("https://github.com/Euphoric-Software/Clink/releases/tag/v1.0.0", Updater.OwnReleasePage("https://github.com:443/Euphoric-Software/Clink/releases/tag/v1.0.0", repo));
+        Check.Null(Updater.OwnReleasePage("https://evil.example/x", repo));
+        // .NET decodes an escaped unreserved character, so what is opened is the plain, normalised address
+        Check.Equal("https://github.com/Euphoric-Software/Clink/releases/tag/v0.4.2", Updater.OwnReleasePage("https://github.com/Euphoric-Software/Clink/releases/tag/v0.4.%32", repo));
+
+        // Only releases/latest and releases/tag/<canonical tag>: not downloads, not an arbitrary tag text, no query, no fragment.
+        foreach (string bad in new[]
+                 {
+                     "https://github.com/Euphoric-Software/Clink/releases/download/v0.4.2/Clink.exe", "https://github.com/Euphoric-Software/Clink/releases/latest?a=1",
+                     "https://github.com/Euphoric-Software/Clink/releases/latest#b", "https://github.com/Euphoric-Software/Clink/releases/latest?", "https://github.com/Euphoric-Software/Clink/releases/latest#",
+                     "https://github.com/Euphoric-Software/Clink/releases/tag/v0.4.2?a", "https://github.com/Euphoric-Software/Clink/releases/tag/v0.4.2#b",
+                     "https://github.com/Euphoric-Software/Clink/releases/tag/", "https://github.com/Euphoric-Software/Clink/releases/tag/0.4.2",
+                     "https://github.com/Euphoric-Software/Clink/releases/tag/v0.4.2-beta.1", "https://github.com/Euphoric-Software/Clink/releases/tag/v0.4.2/extra",
+                     "https://github.com/Euphoric-Software/Clink/releases/tag/v0.4.%2F2", "https://github.com/Euphoric-Software/Clink/releases/latest/",
+                     "https://github.com/Euphoric-Software/Clink/releases/Latest", "https://github.com/Euphoric-Software/Clink/releases/",
+                 })
+            Check.False(Updater.IsOwnReleasePage(bad, repo), $"'{bad}'");
+
+        foreach (string? bad in new string?[]
+                 {
+                     null, "", " ", "http://github.com/Euphoric-Software/Clink/releases/latest", "ftp://github.com/Euphoric-Software/Clink/releases/latest",
+                     "file:///C:/Windows/System32/calc.exe", "calc.exe", @"C:\Windows\System32\calc.exe", "javascript:alert(1)", "//github.com/Euphoric-Software/Clink/releases/latest",
+                     "https://evil.example/Euphoric-Software/Clink/releases/latest", "https://github.com.evil.example/Euphoric-Software/Clink/releases/latest",
+                     "https://evilgithub.com/Euphoric-Software/Clink/releases/latest", "https://gist.github.com/Euphoric-Software/Clink/releases/latest",
+                     "https://www.github.com/Euphoric-Software/Clink/releases/latest", "https://github.com@evil.example/Euphoric-Software/Clink/releases/latest",
+                     "https://evil.example@github.com/Euphoric-Software/Clink/releases/latest", "https://github.com:8443/Euphoric-Software/Clink/releases/latest",
+                     "https://github.com/other/repo/releases/latest", "https://github.com/Euphoric-Software/Clink-evil/releases/latest",
+                     "https://github.com/Euphoric-Software/Clink", "https://github.com/Euphoric-Software/Clink/", "https://github.com/Euphoric-Software/Clink/issues/1",
+                     "https://github.com/Euphoric-Software/Clink/releases", "https://github.com/Euphoric-Software/Clink/releases/../../../evil/x/releases/latest",
+                     "https://github.com/Euphoric-Software/Clink/releases/%2e%2e/%2e%2e/evil", "https://github.com/Euphoric-Software/Clink/releases/..%2f..%2fx",
+                     @"https://github.com/Euphoric-Software/Clink/releases/..\x", "https://github.com/Euphoric-Software/Clink/releases/latest\r\nHost: x",
+                     "https://github.com/Euphoric-Software/Clink/releases/latest calc.exe", "https://github.com\\@evil.example/Euphoric-Software/Clink/releases/latest",
+                 })
+            Check.False(Updater.IsOwnReleasePage(bad, repo), $"'{bad}'");
+
+        Check.False(Updater.IsOwnReleasePage("https://github.com/Euphoric-Software/Clink/releases/latest", null), "no repo, no page");
+        Check.False(Updater.IsOwnReleasePage("https://github.com/Euphoric-Software/Clink/releases/latest", ""));
+        Check.False(Updater.IsOwnReleasePage("https://github.com/Euphoric-Software/Clink/releases/latest", "not a repo"));
+        Check.False(Updater.IsOwnReleasePage("https://github.com/a/b/releases/latest", "../b"));
+        Check.True(Updater.IsOwnReleasePage("https://github.com/a/b/releases/latest", "a/b/"));
+        Check.False(Updater.IsOwnReleasePage("https://github.com/a/b/releases/latest", "a/c"));
+    }
 }

@@ -302,6 +302,41 @@ try {
         Assert-True ((Get-Content -Raw -LiteralPath (Join-Path $out2 'package.json') | ConvertFrom-Json).files.notices.size -eq 16) 'files.notices.size of the custom file'
     }
 
+    Invoke-Test 'package.ps1 passes /DAppProductVersion (default: the exe ProductVersion or the version; explicit value must start with the version) and refuses others' {
+        $out = Get-ScratchFolder 'pkg-productversion'
+        $fake = New-FakeIscc 'fake-iscc-pv' (Join-Path $out 'Clink-Setup.exe')
+        $common = @('-ExePath', $scExe, '-FrameworkExePath', $fxExe, '-OutDir', $out, '-MinRuntime', '10.0.0', '-IsccPath', $fake.Cmd, '-RuntimeInfoPath', $runtimeInfo, '-RequireInstaller', '-SkipVersionCheck', '-SkipSetupSizeCheck')
+        $sha = 'a' * 30
+        $r = Invoke-ScriptChild $packageScript (@('-Version', '0.4.2-dev.11') + $common)
+        Assert-True ($r.Code -eq 0) "default failed: $($r.Out) $($r.Err)"
+        Assert-True ([System.IO.File]::ReadAllText($fake.Args) -match '/DAppProductVersion=0\.4\.2-dev\.11(\s|$)') 'no /DAppProductVersion=<Version> when the exe has no version info'
+        $r = Invoke-ScriptChild $packageScript (@('-Version', '0.4.2-dev.11', '-ProductVersion', "0.4.2-dev.11+$sha") + $common)
+        Assert-True ($r.Code -eq 0) "explicit failed: $($r.Out) $($r.Err)"
+        Assert-True ([System.IO.File]::ReadAllText($fake.Args).Contains("/DAppProductVersion=0.4.2-dev.11+$sha")) 'the explicit ProductVersion was not passed'
+        # Exactly 50 characters fits; a stable one fits whole.
+        $fifty = '0.4.2-dev.11+' + ('b' * 37)
+        $r = Invoke-ScriptChild $packageScript (@('-Version', '0.4.2-dev.11', '-ProductVersion', $fifty) + $common)
+        Assert-True ($r.Code -eq 0) "50-character value: $($r.Code) $($r.Out) $($r.Err)"
+        Assert-True ([System.IO.File]::ReadAllText($fake.Args).Contains('/DAppProductVersion=' + $fifty + ' ')) 'the 50-character ProductVersion was altered'
+        $stable = '0.4.2+' + ('c' * 40)
+        $r = Invoke-ScriptChild $packageScript (@('-Version', '0.4.2', '-ProductVersion', $stable) + $common)
+        Assert-True ($r.Code -eq 0 -and $r.Out -notmatch 'note: ProductVersion') "stable value: $($r.Code) $($r.Out) $($r.Err)"
+        Assert-True ([System.IO.File]::ReadAllText($fake.Args).Contains('/DAppProductVersion=' + $stable + ' ')) 'the stable ProductVersion was altered'
+        # Bad values: refused before anything is written (OutDir stays empty) and the fake ISCC never runs. A quote is passed as \" so the
+        # child's command line carries a literal quote.
+        $badOut = Get-ScratchFolder 'pkg-productversion-bad'
+        $badFake = New-FakeIscc 'fake-iscc-pv-bad' (Join-Path $badOut 'Clink-Setup.exe')
+        $badCommon = @('-ExePath', $scExe, '-FrameworkExePath', $fxExe, '-OutDir', $badOut, '-MinRuntime', '10.0.0', '-IsccPath', $badFake.Cmd, '-RuntimeInfoPath', $runtimeInfo, '-RequireInstaller', '-SkipVersionCheck', '-SkipSetupSizeCheck')
+        $tooLong = '0.4.2+' + ('d' * 45)
+        foreach ($bad in '0.4.3+abc', '0.4.2-dev.1+abc', 'x;y', '0.4.2+a;b', '0.4.2+', '0.4.2+a\"b', '0.4.2 +x', '0.4.2+{app}', '0.4.2+#x', "0.4.2+abc`n", "0.4.2`n", $tooLong, ('0.4.2-dev.11+' + ('b' * 38))) {
+            $ver = if ($bad.StartsWith('0.4.2-dev.11')) { '0.4.2-dev.11' } else { '0.4.2' }
+            $r = Invoke-ScriptChild $packageScript (@('-Version', $ver, '-ProductVersion', $bad) + $badCommon)
+            Assert-True ($r.Code -ne 0) "accepted -ProductVersion $bad"
+            Assert-True (-not (Test-Path -LiteralPath $badFake.Args)) "the fake ISCC ran for -ProductVersion $bad"
+            Assert-True (@(Get-ChildItem -LiteralPath $badOut -Force).Count -eq 0) "OutDir is not empty after refusing -ProductVersion $bad"
+        }
+    }
+
     Invoke-Test 'package.ps1 -RequireInstaller is refused without runtime info, with bad runtime info, or with a missing notices file (nothing is run or written)' {
         $fake = New-FakeIscc 'fake-iscc-refuse'
         $good = @('-ExePath', $scExe, '-FrameworkExePath', $fxExe, '-Version', '0.4.2', '-MinRuntime', '10.0.0', '-IsccPath', $fake.Cmd, '-RequireInstaller', '-SkipVersionCheck')
@@ -511,6 +546,177 @@ try {
                 Assert-True $child.HasExited "the process survived ($name stub): Kill() was not reached"
             } finally { if (-not $child.HasExited) { $child.Kill() } }
         }
+    }
+
+    Invoke-Test 'check-published.ps1 Assert-FrameworkRuntimeDir accepts a real shared\Microsoft.NETCore.App\<version> folder under a trusted root' {
+        . ([scriptblock]::Create((Import-ScriptFunction $checkScript @('Assert-FrameworkRuntimeDir', 'Assert-NoReparseComponent', 'Get-FinalPath'))))
+        $root = Join-Path (Get-ScratchFolder 'fxdir-good') 'dotnet'
+        $dir = Join-Path $root 'shared\Microsoft.NETCore.App\10.0.14'
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+        [System.IO.File]::WriteAllBytes((Join-Path $dir 'System.Private.CoreLib.dll'), [byte[]](1, 2, 3))
+        $resolved = Assert-FrameworkRuntimeDir 'fx' $dir '10.0.14' @('C:\nowhere', $root)
+        Assert-True ($resolved -ieq $dir) "returned $resolved"
+        $resolved = Assert-FrameworkRuntimeDir 'fx' ($dir + '\') '10.0.14' @($root.ToUpperInvariant() + '\')
+        Assert-True ($resolved -ieq $dir) "trailing slash or case changed the result: $resolved"
+    }
+    Invoke-Test 'check-published.ps1 Assert-FrameworkRuntimeDir rejects planted and malformed fx_dir values' {
+        . ([scriptblock]::Create((Import-ScriptFunction $checkScript @('Assert-FrameworkRuntimeDir', 'Assert-NoReparseComponent', 'Get-FinalPath'))))
+        $base = Get-ScratchFolder 'fxdir-bad'
+        $root = Join-Path $base 'dotnet'
+        $dir = Join-Path $root 'shared\Microsoft.NETCore.App\10.0.14'
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+        [System.IO.File]::WriteAllBytes((Join-Path $dir 'System.Private.CoreLib.dll'), [byte[]](1, 2, 3))
+        $planted = Join-Path $base 'planted\shared\Microsoft.NETCore.App\10.0.14'   # well-formed, but not under a trusted root
+        New-Item -ItemType Directory -Force -Path $planted | Out-Null
+        [System.IO.File]::WriteAllBytes((Join-Path $planted 'System.Private.CoreLib.dll'), [byte[]](1, 2, 3))
+        $noCorelib = Join-Path $root 'shared\Microsoft.NETCore.App\10.0.15'
+        New-Item -ItemType Directory -Force -Path $noCorelib | Out-Null
+        $cases = [ordered]@{
+            'empty dir'             = @('', '10.0.14', $root)
+            'empty version'         = @($dir, '', $root)
+            'garbage version'       = @($dir, '10.0', $root)
+            'version mismatch'      = @($dir, '10.0.13', $root)
+            'untrusted root'        = @($planted, '10.0.14', $root)
+            'no trusted roots'      = @($dir, '10.0.14', $null)
+            'dotdot'                = @((Join-Path $planted '..\..\..\..\..\dotnet\shared\Microsoft.NETCore.App\10.0.14'), '10.0.14', $root)
+            'wrong shape'           = @((Join-Path $root 'Microsoft.NETCore.App\10.0.14'), '10.0.14', $root)
+            'wrong framework'       = @((Join-Path $root 'shared\Microsoft.WindowsDesktop.App\10.0.14'), '10.0.14', $root)
+            'folder does not exist' = @((Join-Path $root 'shared\Microsoft.NETCore.App\10.0.99'), '10.0.99', $root)
+            'no System.Private.CoreLib.dll' = @($noCorelib, '10.0.15', $root)
+            'parent of the root'    = @($root, '10.0.14', $root)
+        }
+        foreach ($name in $cases.Keys) {
+            $case = $cases[$name]
+            $threw = $false
+            try { Assert-FrameworkRuntimeDir 'fx' $case[0] $case[1] @($case[2]) | Out-Null } catch { $threw = $true }
+            Assert-True $threw "accepted: $name"
+        }
+        # A junction inside the trusted root that points at a planted folder is refused.
+        $junctionRoot = Join-Path $base 'junction-dotnet'
+        New-Item -ItemType Directory -Force -Path (Join-Path $junctionRoot 'shared\Microsoft.NETCore.App') | Out-Null
+        $junction = Join-Path $junctionRoot 'shared\Microsoft.NETCore.App\10.0.14'
+        $made = $false
+        try { New-Item -ItemType Junction -Path $junction -Target $planted -ErrorAction Stop | Out-Null; $made = $true } catch { }
+        if ($made) {
+            $threw = $false
+            try { Assert-FrameworkRuntimeDir 'fx' $junction '10.0.14' @($junctionRoot) | Out-Null } catch { $threw = $true }
+            Assert-True $threw 'accepted a junction as the runtime folder'
+            (Get-Item -LiteralPath $junction -Force).Delete()   # removes the link only, never the planted folder
+        }
+        # A junction at the ROOT level (<scratch>\dotnet -> a planted dotnet tree) is refused, although every folder below it looks real.
+        $plantedRoot = Join-Path $base 'planted-root'
+        $plantedFx = Join-Path $plantedRoot 'shared\Microsoft.NETCore.App\10.0.14'
+        New-Item -ItemType Directory -Force -Path $plantedFx | Out-Null
+        [System.IO.File]::WriteAllBytes((Join-Path $plantedFx 'System.Private.CoreLib.dll'), [byte[]](1, 2, 3))
+        $linkParent = Get-ScratchFolder 'fxdir-rootlink'
+        $rootLink = Join-Path $linkParent 'dotnet'
+        $made = $false
+        try { New-Item -ItemType Junction -Path $rootLink -Target $plantedRoot -ErrorAction Stop | Out-Null; $made = $true } catch { }
+        Assert-True $made 'could not create the root-level junction'
+        $threw = $false
+        try { Assert-FrameworkRuntimeDir 'fx' (Join-Path $rootLink 'shared\Microsoft.NETCore.App\10.0.14') '10.0.14' @($rootLink) | Out-Null } catch { $threw = $true }
+        Assert-True $threw 'accepted a junction at the dotnet root'
+        (Get-Item -LiteralPath $rootLink -Force).Delete()
+        Assert-True (Test-Path -LiteralPath $plantedFx) 'the planted tree was touched'
+        # A junction ABOVE the dotnet root (a parent folder) is refused as well.
+        $parentLink = Join-Path $linkParent 'parent'
+        New-Item -ItemType Directory -Force -Path (Join-Path $base 'real-parent') | Out-Null
+        Copy-Item -LiteralPath $root -Destination (Join-Path $base 'real-parent\dotnet') -Recurse
+        New-Item -ItemType Junction -Path $parentLink -Target (Join-Path $base 'real-parent') | Out-Null
+        $threw = $false
+        try { Assert-FrameworkRuntimeDir 'fx' (Join-Path $parentLink 'dotnet\shared\Microsoft.NETCore.App\10.0.14') '10.0.14' @((Join-Path $parentLink 'dotnet')) | Out-Null } catch { $threw = $true }
+        Assert-True $threw 'accepted a junction above the dotnet root'
+        (Get-Item -LiteralPath $parentLink -Force).Delete()
+    }
+    Invoke-Test 'check-published.ps1 Assert-FrameworkRuntimeDir refuses a System.Private.CoreLib.dll that is a symbolic link (not runnable without symlink privilege)' {
+        . ([scriptblock]::Create((Import-ScriptFunction $checkScript @('Assert-FrameworkRuntimeDir', 'Assert-NoReparseComponent', 'Get-FinalPath'))))
+        $base = Get-ScratchFolder 'fxdir-corelib-link'
+        $root = Join-Path $base 'dotnet'
+        $dir = Join-Path $root 'shared\Microsoft.NETCore.App\10.0.14'
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+        $realCorelib = Join-Path $base 'elsewhere.dll'
+        [System.IO.File]::WriteAllBytes($realCorelib, [byte[]](1, 2, 3))
+        $made = $false
+        try { New-Item -ItemType SymbolicLink -Path (Join-Path $dir 'System.Private.CoreLib.dll') -Target $realCorelib -ErrorAction Stop | Out-Null; $made = $true } catch { }
+        if (-not $made) { Write-Host '      NOT RUNNABLE: cannot create a file symbolic link here (needs Developer Mode or the symlink privilege); the CoreLib-symlink case was not exercised.'; return }
+        $threw = $false
+        try { Assert-FrameworkRuntimeDir 'fx' $dir '10.0.14' @($root) | Out-Null } catch { $threw = $true }
+        Assert-True $threw 'accepted a symbolic-link System.Private.CoreLib.dll'
+    }
+    Invoke-Test 'check-published.ps1 Test-AdminOnlyAcl accepts admin-owned lists and refuses user owners and write rights for Users, Authenticated Users, Everyone, INTERACTIVE' {
+        . ([scriptblock]::Create((Import-ScriptFunction $checkScript @('Test-AdminOnlyAcl'))))
+        $sid = { param($text) New-Object System.Security.Principal.SecurityIdentifier $text }
+        $make = {
+            param([string]$ownerSid, [string]$rightsSid, [string]$rights)
+            $acl = New-Object System.Security.AccessControl.DirectorySecurity
+            $acl.SetOwner((& $sid $ownerSid))
+            $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule((& $sid 'S-1-5-18'), 'FullControl', 'ContainerInherit, ObjectInherit', 'None', 'Allow')))
+            if ($rightsSid) { $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule((& $sid $rightsSid), $rights, 'ContainerInherit, ObjectInherit', 'None', 'Allow'))) }
+            $acl
+        }
+        Assert-True (Test-AdminOnlyAcl (& $make 'S-1-5-32-544' 'S-1-5-32-545' 'ReadAndExecute')) 'refused Users with read-only rights'
+        Assert-True (Test-AdminOnlyAcl (& $make 'S-1-5-18' $null $null)) 'refused a SYSTEM-owned list'
+        Assert-True (Test-AdminOnlyAcl (& $make 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464' $null $null)) 'refused a TrustedInstaller-owned list'
+        Assert-True (-not (Test-AdminOnlyAcl (& $make 'S-1-5-21-1-2-3-1001' $null $null))) 'accepted a user-owned list'
+        foreach ($loose in 'S-1-5-32-545', 'S-1-5-11', 'S-1-1-0', 'S-1-5-4') {
+            foreach ($right in 'Write', 'Modify', 'FullControl', 'CreateFiles', 'Delete') {
+                Assert-True (-not (Test-AdminOnlyAcl (& $make 'S-1-5-32-544' $loose $right))) "accepted $right for $loose"
+            }
+        }
+        # The real C:\Windows is admin-only; the scratch folder (owned by the current user) is not.
+        Assert-True (Test-AdminOnlyAcl (Get-Acl -LiteralPath $env:SystemRoot)) 'the Windows folder is not admin-only'
+        Assert-True (-not (Test-AdminOnlyAcl (Get-Acl -LiteralPath $scratch))) 'the user-owned scratch folder was accepted'
+    }
+    Invoke-Test 'check-published.ps1 Get-TrustedDotNetRoots trusts Program Files\dotnet, de-duplicates, and trusts a registry location only when it is that folder or admin-only' {
+        . ([scriptblock]::Create((Import-ScriptFunction $checkScript @('Get-TrustedDotNetRoots', 'Test-AdminOnlyAcl'))))
+        $default = (Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'dotnet')
+        $roots = @(Get-TrustedDotNetRoots -ReadInstallLocation { $null })
+        Assert-True ($roots.Count -eq 1 -and $roots[0] -ieq $default) "no registry value: $($roots -join '; ')"
+        # Program Files\dotnet\ in other spellings collapses into the one root.
+        foreach ($spelling in ($default + '\'), $default.ToUpperInvariant(), ($default + '\.'), ($default + '\shared\..')) {
+            $reader = { $spelling }.GetNewClosure()
+            $roots = @(Get-TrustedDotNetRoots -ReadInstallLocation $reader)
+            Assert-True ($roots.Count -eq 1 -and $roots[0] -ieq $default) "spelling '$spelling' gave: $($roots -join '; ')"
+        }
+        # A user-writable (scratch) location, a missing folder, and a throwing reader add nothing.
+        $userFolder = Get-ScratchFolder 'roots-user-writable'
+        foreach ($reader in ({ $userFolder }.GetNewClosure()), { Join-Path $scratch 'does-not-exist' }, { throw 'registry unavailable' }, { $env:TEMP }, { $env:USERPROFILE }) {
+            $roots = @(Get-TrustedDotNetRoots -ReadInstallLocation $reader)
+            Assert-True ($roots.Count -eq 1 -and $roots[0] -ieq $default) "an untrusted location was added: $($roots -join '; ')"
+        }
+        # An admin-only location other than Program Files\dotnet is added (the Windows folder stands in for it).
+        $roots = @(Get-TrustedDotNetRoots -ReadInstallLocation { $env:SystemRoot })
+        Assert-True ($roots.Count -eq 2 -and ($roots | Where-Object { $_ -ieq $env:SystemRoot })) "an admin-only location was not added: $($roots -join '; ')"
+        # The real registry reader (32-bit view) works and never yields the x86 Program Files folder.
+        $real = @(Get-TrustedDotNetRoots)
+        Assert-True (($real | Where-Object { $_ -ieq $default }).Count -eq 1) "the real roots miss Program Files\dotnet: $($real -join '; ')"
+        Assert-True (-not ($real | Where-Object { $_ -like '*(x86)*' })) "an x86 root is trusted: $($real -join '; ')"
+    }
+    Invoke-Test 'check-published.ps1 Assert-BundledRuntime accepts the self-contained line and rejects a framework or doctored one' {
+        . ([scriptblock]::Create((Import-ScriptFunction $checkScript @('Assert-BundledRuntime'))))
+        $good = 'packaging=SelfContained build=SelfContained runtime=SelfContained corelib=bundled fx_deps=absent fx_version=10.0.14 fx_dir="" result=ok'
+        Assert-BundledRuntime 'sc' $good
+        $bad = @(
+            'packaging=SelfContained corelib=on-disk fx_deps=absent fx_version=10.0.14 fx_dir="" result=ok',
+            'packaging=SelfContained corelib=bundled fx_deps=present fx_version=10.0.14 fx_dir="" result=ok',
+            'packaging=SelfContained corelib=bundled fx_deps=absent fx_version=10.0.14 fx_dir="C:\Program Files\dotnet\shared\Microsoft.NETCore.App\10.0.14" result=ok',
+            'packaging=SelfContained corelib=bundled fx_deps=absent fx_version=10.0.14 result=ok',
+            'packaging=Framework build=Framework runtime=Framework corelib=on-disk fx_deps=present fx_version=10.0.14 fx_dir="C:\Program Files\dotnet\shared\Microsoft.NETCore.App\10.0.14" result=ok')
+        foreach ($line in $bad) {
+            $threw = $false
+            try { Assert-BundledRuntime 'sc' $line } catch { $threw = $true }
+            Assert-True $threw "accepted: $line"
+        }
+    }
+    Invoke-Test 'check-published.ps1 checks fx_dir for the framework exe and bundled for the self-contained exe, with trusted roots from Program Files and the HKLM 32-bit view' {
+        $text = [System.IO.File]::ReadAllText($checkScript)
+        foreach ($needle in 'Assert-FrameworkRuntimeDir "$($t.Label) --packaging-check"', 'Assert-BundledRuntime "$($t.Label) --packaging-check"', 'Get-TrustedDotNetRoots', "OpenBaseKey('LocalMachine', 'Registry32')", 'SOFTWARE\dotnet\Setup\InstalledVersions\x64', 'InstallLocation', '[Environment]::GetFolderPath(''ProgramFiles'')', 'Test-AdminOnlyAcl', 'GetFinalPathNameByHandle', "Assert-FrameworkRuntimeDir 'N-1 framework") {
+            Assert-True ($text.Contains($needle)) "check-published.ps1 does not contain $needle"
+        }
+        . ([scriptblock]::Create((Import-ScriptFunction $checkScript @('Get-TrustedDotNetRoots', 'Test-AdminOnlyAcl'))))
+        $roots = @(Get-TrustedDotNetRoots)
+        Assert-True (($roots | Where-Object { $_ -ieq (Join-Path $env:ProgramFiles 'dotnet') }).Count -eq 1) "Program Files\dotnet is not a trusted root: $($roots -join '; ')"
+        Assert-True (-not ($roots | Where-Object { $_ -like "$env:TEMP*" -or $_ -like "$env:LOCALAPPDATA*" -or $_ -like "$env:USERPROFILE*" })) "a user-writable folder is trusted: $($roots -join '; ')"
     }
 
     Invoke-Test 'check-published.ps1 has the TimeoutSeconds range, the whole-token MustContain, the notices self-test and the N-1 regression' {

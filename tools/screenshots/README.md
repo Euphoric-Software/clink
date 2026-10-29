@@ -16,7 +16,7 @@ ones, a recording header ("Recording · NeonDrift") without recording anything, 
 - Activates a window or takes the foreground. A watcher samples the foreground window every 100 ms; if the test instance holds it
   for 200 ms in a row, the watcher stops that one process and the run ends.
 - Captures the screen or the desktop. Each window is drawn by `PrintWindow` from its own contents.
-- Touches your real clips, settings or account. The sample clips are drawn frames (`Clink.exe --dev-make-samples`) in a scratch
+- Touches your real clips, settings or account. The sample clips are drawn frames (`Clink.exe --dev-make-samples <folder> --dev`; it refuses to run without `--dev`) in a scratch
   `--dev` folder; the instance is `--dev --dev-quiet`, which starts paused, silent and off-screen.
 - Records anything. `--dev-demo-status` only changes the header text (and shows the demo game as detected). The settings pictures show the
   normal install's locations (`%APPDATA%\Clink`, `%USERPROFILE%\Videos\Clink`) instead of the scratch folder; that is display only and never saved.

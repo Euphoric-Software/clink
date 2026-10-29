@@ -19,6 +19,7 @@ param(
     [string]$DotNetRuntimeVersion,
     [string]$NoticesPath,   # default <repo>\THIRD-PARTY-NOTICES.txt; must exist
     [string]$IsccPath,
+    [string]$ProductVersion,   # the setup's ProductVersion text, e.g. 0.4.2-dev.11+<sha>; default: <Version>+<first 12 hex of the framework exe's commit> (just <Version> when the exe has none); max 50 characters
     [switch]$SkipInstaller,     # never build the installer, even when Inno Setup is installed (CI package dry run)
     [switch]$RequireInstaller,   # fail instead of skipping when Inno Setup is missing
     [switch]$SkipSetupSizeCheck, # TEST-ONLY (the script tests use a fake ISCC that writes a tiny file): skips the "setup exe > 1 MiB" check on the ISCC output
@@ -28,7 +29,7 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot 'lib\dotnet-runtime-lib.ps1')
 
-if ($Version -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$') { throw "'$Version' is not a valid version (expected X.Y.Z or X.Y.Z-dev.N)" }
+if ($Version -cnotmatch '\A[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?\z') { throw "'$Version' is not a valid version (expected X.Y.Z or X.Y.Z-dev.N)" }
 if (-not (Test-Path -LiteralPath $ExePath -PathType Leaf)) { throw "Clink.exe not found: $ExePath" }
 if (-not (Test-Path -LiteralPath $FrameworkExePath -PathType Leaf)) { throw "Framework Clink.exe not found: $FrameworkExePath" }
 $ExePath = (Resolve-Path -LiteralPath $ExePath).Path
@@ -97,6 +98,24 @@ if ($runtime) {
     throw '-RequireInstaller needs the .NET runtime inputs: pass -RuntimeInfoPath (output of tools/resolve-dotnet-runtime.ps1) or -DotNetRuntimeUrl, -DotNetRuntimeSha256 and -DotNetRuntimeVersion.'
 }
 
+# The setup's ProductVersion text: <Version>+<first 12 hex of the commit> for every channel (the commit comes from the framework exe's
+# ProductVersion metadata; an exe without +<hex> metadata gives just <Version>). An explicit -ProductVersion must be <Version> optionally
+# followed by +<letters, digits, dots, hyphens>. Validated here, BEFORE anything is written, by an allow-list, because the text is pasted into
+# the .iss (a quote, brace, # or ; would be interpreted by the preprocessor). Inno stores it in a 50-character slot and silently cuts
+# longer text, so a longer value is a bug and is refused, not cut.
+if (-not $SkipInstaller) {
+    if (-not $ProductVersion) {
+        $ProductVersion = $Version
+        $metadata = ([string](Get-Item -LiteralPath $FrameworkExePath).VersionInfo.ProductVersion).Trim()
+        $commit = [regex]::Match($metadata, '\A[^+]*\+([0-9a-fA-F]{7,64})\z')
+        if ($commit.Success) { $ProductVersion = $Version + '+' + $commit.Groups[1].Value.Substring(0, [Math]::Min(12, $commit.Groups[1].Value.Length)).ToLowerInvariant() }
+    }
+    if ($ProductVersion -cnotmatch ('\A' + [regex]::Escape($Version) + '(\+[0-9A-Za-z.-]+)?\z')) {
+        throw "ProductVersion '$ProductVersion' must be '$Version' optionally followed by +<build metadata> (letters, digits, dots, hyphens)."
+    }
+    if ($ProductVersion.Length -gt 50) { throw "ProductVersion '$ProductVersion' is longer than Inno's 50-character slot ($($ProductVersion.Length) characters)." }
+}
+
 # The third-party notices file (shipped beside the exes, listed in package.json, embedded in the installer).
 if (-not $NoticesPath) { $NoticesPath = Join-Path $root 'THIRD-PARTY-NOTICES.txt' }
 if (-not (Test-Path -LiteralPath $NoticesPath -PathType Leaf)) { throw "Third-party notices file not found: $NoticesPath (tools/notices/make-notices.ps1 -Generate writes it)." }
@@ -148,7 +167,7 @@ if (Test-Path -LiteralPath "$setupPath.sha256") { Remove-Item -LiteralPath "$set
 if ($iscc) {
     $numeric = ($Version -replace '-.*$', '') + '.0'
     $iss = Join-Path $root 'installer\Clink.iss'
-    $isccArguments = @("/DAppVersion=$Version", "/DAppFileVersion=$numeric", "/DSourceExe=$fxOut", "/DOutDir=$OutDir", "/DNoticesFile=$noticesOut")
+    $isccArguments = @("/DAppVersion=$Version", "/DAppFileVersion=$numeric", "/DAppProductVersion=$ProductVersion", "/DSourceExe=$fxOut", "/DOutDir=$OutDir", "/DNoticesFile=$noticesOut")
     if ($runtime) {
         $isccArguments += "/DDotNetRuntimeUrl=$($runtime.Url)", "/DDotNetRuntimeSha256=$($runtime.Sha256)", "/DDotNetRuntimeVersion=$($runtime.Version)"
     } else {

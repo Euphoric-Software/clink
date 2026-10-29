@@ -439,22 +439,14 @@ internal static class ArchiveTests
         }
     }
 
-    /// <summary>A junction (a second name for a folder, no privilege needed) made with the system's own mklink.</summary>
+    /// <summary>
+    /// A junction (a second name for a folder, no privilege needed) from <see cref="TestJunction"/>, which also copes with paths past
+    /// MAX_PATH. A hard failure, not a skip, when none can be made: true, or the test fails saying why.
+    /// </summary>
     private static bool TryMakeJunction(string link, string target)
     {
-        try
-        {
-            var psi = new ProcessStartInfo("cmd.exe", $"/c mklink /J \"{link}\" \"{target}\"")
-            {
-                UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true,
-            };
-            using var p = Process.Start(psi)!;
-            p.StandardOutput.ReadToEnd();
-            p.StandardError.ReadToEnd();
-            if (!p.WaitForExit(15000)) { try { p.Kill(); } catch { } return false; }
-            return p.ExitCode == 0 && Directory.Exists(link);
-        }
-        catch { return false; }
+        Check.True(TestJunction.TryMake(link, target, out string why), "no junction could be made: " + why);
+        return true;
     }
 
     private static string[] FileNames(string folder) =>

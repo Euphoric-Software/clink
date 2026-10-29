@@ -98,23 +98,56 @@ internal static class SampleClips
     // ------------------------------------------------------------------ the command line (pure)
 
     /// <summary>
-    /// <c>--dev-make-samples &lt;clips folder&gt; [--index &lt;file&gt;]</c> (the first argument is the switch). The index defaults to
-    /// <c>clips.json</c> beside the clips folder, which is where a <c>--dev &lt;folder&gt;</c> instance whose clips are in <c>&lt;folder&gt;\clips</c> reads it.
-    /// Throws <see cref="ArgumentException"/> for anything else.
+    /// <c>--dev-make-samples &lt;clips folder&gt; [--index &lt;file.json&gt;] --dev</c> (the first argument is the switch). The index defaults to
+    /// <c>clips.json</c> beside the clips folder, which is where a <c>--dev &lt;folder&gt;</c> instance whose clips are in <c>&lt;folder&gt;\clips</c> reads it;
+    /// one that is given must end in <c>.json</c>. Throws <see cref="ArgumentException"/> for anything else, for a folder or index in
+    /// the device form (<c>\\?\</c>, <c>\\.\</c>, <c>\??\</c>) and for a ':' after the drive (alternate data streams).
     /// </summary>
     public static (string Folder, string Index) ParseArgs(string[] args)
     {
         if (args.Length < 2 || string.IsNullOrWhiteSpace(args[1]) || args[1].StartsWith("--", StringComparison.Ordinal))
-            throw new ArgumentException("--dev-make-samples needs the clips folder to write: Clink.exe --dev-make-samples <clips folder> [--index <clips.json>]");
-        string folder = Path.GetFullPath(args[1].Trim().Trim('"'));
+            throw new ArgumentException("--dev-make-samples needs the clips folder to write: Clink.exe --dev-make-samples <clips folder> [--index <clips.json>] --dev");
+        string folder = PlainFullPath(args[1], "the clips folder");
         string? index = null;
         for (int i = 2; i < args.Length; i++)
         {
-            if (args[i].Equals("--index", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length && index == null) index = Path.GetFullPath(args[++i].Trim().Trim('"'));
+            if (args[i].Equals("--dev", StringComparison.OrdinalIgnoreCase)) continue;   // the opt-in flag (HasDevFlag), nothing to parse
+            if (args[i].Equals("--index", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length && index == null)
+            {
+                index = PlainFullPath(args[++i], "--index");
+                if (!index.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+                    throw new ArgumentException($"--index '{index}' must be a .json file");
+            }
             else throw new ArgumentException($"--dev-make-samples: unexpected argument '{args[i]}'");
         }
         index ??= Path.Combine(Path.GetDirectoryName(folder.TrimEnd('\\', '/')) ?? folder, "clips.json");
         return (folder, index);
+    }
+
+    /// <summary>The full path of a command-line path; refuses the device / extended forms and a ':' after the drive (alternate data streams).</summary>
+    private static string PlainFullPath(string arg, string what)
+    {
+        string path = arg.Trim().Trim('"');
+        if (AppDataRedirect.IsDevicePath(path))
+            throw new ArgumentException($"{what} '{path}' is written in the device form (\\\\?\\, \\\\.\\, \\??\\): use a plain path");
+        if (AppDataRedirect.HasStreamColon(path))
+            throw new ArgumentException($"{what} '{path}' has a ':' after the drive (an alternate data stream): use a plain path");
+        return Path.GetFullPath(path);
+    }
+
+    /// <summary>
+    /// True when the command line carries the bare <c>--dev</c> flag after the switch (the match is case-insensitive, so <c>--DEV</c> counts; a look-alike does not): the command writes
+    /// files and is a developer tool, so a release build runs it only when asked to as a <c>--dev</c> run. The clips folder (the first
+    /// argument) and the value of <c>--index</c> are not flags, so <c>--dev</c> there does not count.
+    /// </summary>
+    public static bool HasDevFlag(string[] args)
+    {
+        for (int i = 2; i < args.Length; i++)
+        {
+            if (args[i].Equals("--index", StringComparison.OrdinalIgnoreCase)) { i++; continue; }
+            if (args[i].Equals("--dev", StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        return false;
     }
 
     /// <summary>Written into a clips folder by a samples run: only such a folder (or an empty / new one) is written into again.</summary>
@@ -127,6 +160,8 @@ internal static class SampleClips
     /// </summary>
     public static string? Refusal(string folder, string index, IEnumerable<(string Path, string What)> realPlaces)
     {
+        if (AppDataRedirect.IsDevicePath(folder)) return $"{folder} is written in the device form (\\\\?\\, \\\\.\\, \\??\\)";
+        if (AppDataRedirect.IsDevicePath(index)) return $"{index} is written in the device form (\\\\?\\, \\\\.\\, \\??\\)";
         var places = realPlaces.ToList();
         string profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         foreach (string f in Candidates(folder))
@@ -139,15 +174,22 @@ internal static class SampleClips
                 if (Within(f, place) || Within(place, f)) return $"{shown} is, holds or lies inside {what} ({place})";
         }
         foreach (string i in Candidates(index))
+        {
+            string shown = SamePath(i, index) ? index : $"{index} (really {i})";
+            // (A drive root or the profile folder cannot be an index: ParseArgs insists on a .json file name.)
             foreach (var (place, what) in places)
-                if (Within(i, place)) return $"{index} lies inside {what} ({place})";
+                if (Within(i, place)) return $"{shown} lies inside {what} ({place})";
+        }
         return null;
     }
 
+    /// <summary>The path as given and, when links send it elsewhere, where it really is. Throws when it cannot be resolved (fail closed).</summary>
     private static List<string> Candidates(string path)
     {
         var list = new List<string> { Path.GetFullPath(path) };
         string? resolved = AppDataRedirect.ResolvedPath(path);
+        if (resolved == null)   // no part of it exists, or Windows will not say (a junction whose target is gone, say)
+            throw new IOException($"{path} cannot be checked: Windows will not say where it really is (its drive, or a junction or symbolic link in it, does not lead anywhere)");
         if (resolved != null && !SamePath(resolved, list[0])) list.Add(resolved);
         return list;
     }
@@ -199,6 +241,14 @@ internal static class SampleClips
     {
         exitCode = 0;
         if (args.Length == 0 || !args[0].Equals("--dev-make-samples", StringComparison.OrdinalIgnoreCase)) return false;
+        if (!HasDevFlag(args))
+        {
+            // Before the log and the files: nothing is touched without the opt-in.
+            attachConsole();
+            Console.WriteLine("Clink: --dev-make-samples only runs as a --dev command: Clink.exe --dev-make-samples <clips folder> [--index <clips.json>] --dev");
+            exitCode = 2;
+            return true;
+        }
         Log.Init(Path.Combine(Path.GetTempPath(), "clink-samples"), Log.CliFile);
         attachConsole();
         int code = 0;
@@ -244,6 +294,24 @@ internal static class SampleClips
             return 5;
         }
     }
+    /// <summary>
+    /// Writes the index. A new index is created with <see cref="FileMode.CreateNew"/> (so a file or link that appeared since the check
+    /// is never written into); only an index that is our own, from an earlier run for this folder, is replaced.
+    /// </summary>
+    internal static void WriteIndex(string indexPath, string folder, string json)
+    {
+        if (File.Exists(indexPath))
+        {
+            if ((File.GetAttributes(indexPath) & FileAttributes.ReparsePoint) != 0 || !IndexIsOurs(indexPath, folder))
+                throw new IOException($"{indexPath} is not an index of this run's folder; not replaced");
+            File.WriteAllText(indexPath, json);
+            return;
+        }
+        using var fs = new FileStream(indexPath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+        using var w = new StreamWriter(fs, new System.Text.UTF8Encoding(false));
+        w.Write(json);
+    }
+
     /// <summary>Draws, encodes and writes every planned clip into <paramref name="folder"/>, then the index. Existing files of the same names are replaced.</summary>
     public static void Generate(string folder, string indexPath, DateTime now, Action<string> say)
     {
@@ -277,7 +345,7 @@ internal static class SampleClips
             say($"{names[i]}  {frames / (double)Fps:0.0} s  {size / 1024.0 / 1024.0:0.0} MB");
         }
         Directory.CreateDirectory(Path.GetDirectoryName(indexPath) ?? folder);
-        File.WriteAllText(indexPath, JsonSerializer.Serialize(BuildIndex(plan, folder, results), s_json));
+        WriteIndex(indexPath, folder, JsonSerializer.Serialize(BuildIndex(plan, folder, results), s_json));
         say($"index: {indexPath}");
     }
 }

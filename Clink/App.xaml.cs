@@ -132,7 +132,7 @@ public partial class App : System.Windows.Application
             return;
         }
 
-        // Clink.exe --dev-make-samples <clips folder> [--index <clips.json>]: drawn sample clips for the documentation screenshots (Services/SampleClips.cs)
+        // Clink.exe --dev-make-samples <clips folder> [--index <clips.json>] --dev: drawn sample clips for the documentation screenshots (Services/SampleClips.cs)
         if (Services.SampleClips.TryRunCli(args, () => AttachParentConsole(), out int samplesCode)) { Shutdown(samplesCode); return; }
 
         try { RunNormal(args); }

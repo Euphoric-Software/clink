@@ -71,6 +71,40 @@ internal static class SettingsImportTests
     }
 
     [UnitTest]
+    public static void ExtendedPath_prefixes_drive_and_share_paths_and_leaves_prefixed_ones_alone()
+    {
+        Check.Equal(@"\\?\C:\a\b.txt", AppDataRedirect.ExtendedPath(@"C:\a\b.txt"));
+        Check.Equal(@"\\?\C:\a\b.txt", AppDataRedirect.ExtendedPath(@"C:\a\x\..\b.txt"), "dots are resolved first, \\?\\ does not do it");
+        Check.Equal(@"\\?\UNC\nas\share\a", AppDataRedirect.ExtendedPath(@"\\nas\share\a"));
+        Check.Equal(@"\\?\C:\a", AppDataRedirect.ExtendedPath(@"\\?\C:\a"));
+        Check.Equal(@"\\?\UNC\nas\share\a", AppDataRedirect.ExtendedPath(@"\\?\UNC\nas\share\a"));
+        Check.Equal(@"\\.\pipe\x", AppDataRedirect.ExtendedPath(@"\\.\pipe\x"));
+        Check.Equal(@"\??\C:\a", AppDataRedirect.ExtendedPath(@"\??\C:\a"), @"the NT form is not prefixed again (\\?\\??\...)");
+        Check.True(AppDataRedirect.IsDevicePath(@"\??\C:\a") && AppDataRedirect.IsDevicePath("//?/C:/a") && AppDataRedirect.IsDevicePath(@"\\.\C:\a") && !AppDataRedirect.IsDevicePath(@"C:\a"));
+        Check.Equal("", AppDataRedirect.ExtendedPath(""));
+        string rel = AppDataRedirect.ExtendedPath(@"sub\f.txt");
+        Check.Equal(@"\\?\" + Path.GetFullPath(@"sub\f.txt"), rel, "a relative path is made absolute");
+        string longName = @"C:\" + string.Join(@"\", Enumerable.Repeat(new string('d', 50), 8)) + @"\f.txt";
+        Check.Equal(@"\\?\" + longName, AppDataRedirect.ExtendedPath(longName), "past MAX_PATH it is only prefixed");
+    }
+
+    [UnitTest]
+    public static void FinalFolderOf_and_ResolvedPath_work_past_MAX_PATH()
+    {
+        using var dir = new TempDir();
+        string deep = dir.Path;
+        while (deep.Length < 300) deep = Path.Combine(deep, new string('p', 60));
+        Directory.CreateDirectory(deep);
+        string? folder = AppDataRedirect.FinalFolderOf(deep);
+        Check.NotNull(folder, "the probe can be created in a folder whose path is over 260 characters");
+        Check.True(folder!.EndsWith(Path.GetFileName(deep), StringComparison.OrdinalIgnoreCase), folder);
+        string? resolved = AppDataRedirect.ResolvedPath(deep);
+        Check.NotNull(resolved);
+        Check.False(resolved!.StartsWith(@"\\?\", StringComparison.Ordinal), "the normal form is given back");
+        Check.True(resolved.Length >= 300);
+    }
+
+    [UnitTest]
     public static void The_friendly_name_is_the_package_without_the_publisher()
     {
         Check.Equal("Notes", AppDataRedirect.FriendlyNameOf("Contoso.Notes_pzs8sxrjxfjjc"));
@@ -128,6 +162,13 @@ internal static class SettingsImportTests
         Settings.DirOverride = dir.File("file.txt");   // a file where the folder should be
         Check.False(AppDataRedirect.Detect());
         Check.Null(AppDataRedirect.Package);
+        // Not redirected is not the same as "could not tell": a first start does not take a copy over by itself on a guess
+        Check.True(AppDataRedirect.Unknown, "the third state");
+        Check.False(SettingsImport.CanTakeOverAtStart(freshStore: true, isDev: false), "unknown: no automatic take-over");
+        Settings.DirOverride = dir.File("ordinary");
+        Check.False(AppDataRedirect.Detect());
+        Check.False(AppDataRedirect.Unknown, "a folder that could be looked at is known");
+        Check.True(SettingsImport.CanTakeOverAtStart(freshStore: true, isDev: false), "known and ordinary: as before");
     }
 
     // ------------------------------------------------------------------ finding other copies

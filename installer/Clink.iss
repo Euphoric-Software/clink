@@ -1,4 +1,4 @@
-﻿; Clink installer (Inno Setup 6). Build: ISCC.exe /DAppVersion=0.4.2 /DSourceExe=path [/DAppFileVersion=0.4.2.0] [/DOutDir=path] installer\Clink.iss
+﻿; Clink installer (Inno Setup 6). Build: ISCC.exe /DAppVersion=0.4.2 /DSourceExe=path [/DAppFileVersion=0.4.2.0] [/DAppProductVersion=0.4.2+sha] [/DOutDir=path] installer\Clink.iss
 ;   [/DDotNetRuntimeUrl=https://... /DDotNetRuntimeSha256=<64 hex> [/DDotNetRuntimeVersion=10.0.14]] [/DNoticesFile=path]
 ; SourceExe is mandatory and must be the FRAMEWORK-DEPENDENT Clink.exe (the installer flavour needs the .NET 10 Desktop Runtime).
 ; DotNetRuntimeUrl/DotNetRuntimeSha256 come from tools\resolve-dotnet-runtime.ps1 (SHA-256 of the verified Microsoft installer).
@@ -12,6 +12,23 @@
 #endif
 #ifndef AppFileVersion
   #define AppFileVersion "0.0.0.0"
+#endif
+#ifndef AppProductVersion
+  #define AppProductVersion AppVersion
+#endif
+; Same allow-list as tools\package.ps1 (letters, digits, dot, hyphen, plus; at most 50 characters), so a hand-run ISCC is held to the same
+; rule: the text is pasted into [Setup] lines and a quote, brace, # or ; would be interpreted by the preprocessor / Inno.
+#define PvAllowed "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz.-+"
+#define PvBad 0
+#define PvI 0
+#sub PvCheckProductChar
+  #if Pos(Copy(AppProductVersion, PvI, 1), PvAllowed) == 0
+    #expr PvBad = 1
+  #endif
+#endsub
+#for {PvI = 1; PvI <= Len(AppProductVersion); PvI++} PvCheckProductChar
+#if PvBad || Len(AppProductVersion) == 0 || Len(AppProductVersion) > 50
+  #error AppProductVersion must be 1 to 50 characters of letters, digits, dot, hyphen and plus (no quotes, spaces, braces, # or ;)
 #endif
 #ifndef SourceExe
   #error Pass the framework-dependent exe: ISCC.exe /DSourceExe=path\Clink-framework.exe (no default, so the self-contained exe is never packed by accident)
@@ -51,6 +68,10 @@ AppPublisher=Euphoric Software
 AppPublisherURL=https://euphoric.software
 VersionInfoVersion={#AppFileVersion}
 VersionInfoProductName=Clink
+; The exes' ProductVersion text (X.Y.Z[-pre]+<commit>), passed by tools\package.ps1. Inno keeps version strings in fixed-width slots
+; (ProductVersion 50 characters, space-padded); package.ps1 refuses longer text.
+VersionInfoProductVersion={#AppFileVersion}
+VersionInfoProductTextVersion={#AppProductVersion}
 DefaultDirName={autopf}\Clink
 DefaultGroupName=Clink
 DisableProgramGroupPage=yes

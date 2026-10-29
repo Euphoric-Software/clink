@@ -6,12 +6,26 @@ namespace Clink.Tests;
 /// <summary>.lnk files written and read back, only inside a temp folder (never the real Start menu or Desktop).</summary>
 internal static class ShortcutTests
 {
+    /// <summary>
+    /// IShellLink / IPersistFile cannot save or load a path of MAX_PATH (260) characters or more, even where long paths are on. A test
+    /// whose shortcut or target would be that long skips, saying so; with the short TEMP of CI (and CLINK_TESTS_NO_SKIP=1) it never does.
+    /// <paramref name="folders"/> are folders a Clink.lnk is made in; <paramref name="paths"/> are targets and other files.
+    /// </summary>
+    private static void SkipPastMaxPath(string[] folders, params string[] paths)
+    {
+        int longest = 0;
+        foreach (string f in folders) longest = Math.Max(longest, Path.GetFullPath(Shortcuts.LinkPath(f)).Length);
+        foreach (string p in paths) longest = Math.Max(longest, Path.GetFullPath(p).Length);
+        if (longest >= 260) Check.Skip($"IShellLink cannot save past MAX_PATH; path is {longest} chars");
+    }
+
     [UnitTest]
     public static void A_shortcut_round_trips_its_target()
     {
         using var dir = new TempDir();
         string exe = dir.File(@"app\Clink.exe");
         string folder = dir.File("StartMenu");
+        SkipPastMaxPath(new[] { folder }, exe);
         var r = Shortcuts.Create(folder, exe, notifyShell: false);
         Check.Equal(ShortcutOutcome.Created, r.Outcome, r.Detail);
         Check.Equal(Path.Combine(folder, "Clink.lnk"), r.Path);
@@ -24,8 +38,9 @@ internal static class ShortcutTests
     {
         using var dir = new TempDir();
         string folder = dir.File("Desktop");
-        Shortcuts.Create(folder, dir.File(@"old\Clink.exe"), notifyShell: false);
         string newExe = dir.File(@"new\Clink.exe");
+        SkipPastMaxPath(new[] { folder }, dir.File(@"old\Clink.exe"), newExe);
+        Shortcuts.Create(folder, dir.File(@"old\Clink.exe"), notifyShell: false);
         var r = Shortcuts.Create(folder, newExe, notifyShell: false);
         Check.Equal(ShortcutOutcome.Replaced, r.Outcome, r.Detail);
         Check.Equal(newExe, Shortcuts.ReadTarget(r.Path));
@@ -37,6 +52,7 @@ internal static class ShortcutTests
         using var dir = new TempDir();
         string folder = dir.File("Desktop");
         string other = dir.File(@"tools\Notepad.exe");
+        SkipPastMaxPath(new[] { folder }, other, dir.File(@"new\Clink.exe"));
         Shortcuts.Create(folder, other, notifyShell: false);   // nothing exists yet, so the first Create writes this link to a non-Clink exe; the second Create must then leave it alone
         var r = Shortcuts.Create(folder, dir.File(@"new\Clink.exe"), notifyShell: false);
         Check.Equal(ShortcutOutcome.LeftAlone, r.Outcome);
@@ -48,6 +64,7 @@ internal static class ShortcutTests
     {
         using var dir = new TempDir();
         string folder = dir.File("Desktop");
+        SkipPastMaxPath(new[] { folder }, dir.File(@"new\Clink.exe"));
         Directory.CreateDirectory(folder);
         File.WriteAllText(Path.Combine(folder, "Clink.lnk"), "not a shortcut");
         var r = Shortcuts.Create(folder, dir.File(@"new\Clink.exe"), notifyShell: false);
@@ -62,6 +79,7 @@ internal static class ShortcutTests
         using var dir = new TempDir();
         string folder = dir.File("StartMenu");
         string mine = dir.File(@"a\Clink.exe"), other = dir.File(@"b\Clink.exe");
+        SkipPastMaxPath(new[] { folder }, mine, other);
 
         Check.Equal(ShortcutOutcome.Missing, Shortcuts.Remove(folder, mine, notifyShell: false).Outcome);
 
@@ -80,6 +98,7 @@ internal static class ShortcutTests
     public static void Remove_leaves_an_unreadable_file_alone()
     {
         using var dir = new TempDir();
+        SkipPastMaxPath(new[] { dir.Path }, dir.File("Clink.exe"));
         Directory.CreateDirectory(dir.Path);
         string link = Path.Combine(dir.Path, "Clink.lnk");
         File.WriteAllText(link, "junk");
@@ -94,6 +113,7 @@ internal static class ShortcutTests
         string dev = dir.File("dev");
         string inside = Path.Combine(dev, "Programs"), outside = dir.File("StartMenu");
         string devExe = Path.Combine(dev, "Clink.exe");
+        SkipPastMaxPath(new[] { inside, outside, Path.Combine(dev + "X", "p") }, devExe, dir.File("real\\Clink.exe"));
 
         var refused = Shortcuts.Create(outside, devExe, notifyShell: false, devFolder: dev);
         Check.Equal(ShortcutOutcome.Refused, refused.Outcome);

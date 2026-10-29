@@ -187,6 +187,26 @@ internal sealed class Settings
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? FeedFloorStable { get; set; }
     /// <inheritdoc cref="FeedFloorStable"/>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? FeedFloorDev { get; set; }
+    /// <summary>
+    /// Written by the updater, per channel, as <c>"&lt;running version&gt;@&lt;UTC ISO-8601&gt;"</c> ("0.4.2@2026-10-28T09:00:00.0000000Z"): when
+    /// the signed GitHub path last said nothing newer than that version exists (<c>GitHubConfirm</c>); when a manifest younger than 14
+    /// days or such a GitHub answer last confirmed that version (<c>UpToDate</c>); and when the current streak of checks that could not
+    /// confirm it began (<c>SoftSince</c>, cleared by every real confirmation). A stamp of another version than the running one, more than
+    /// a day in the future, or unreadable counts as absent. They keep an old "up to date" feed manifest from being cross-checked on every
+    /// check, and decide when GitHub being unreachable turns into a failed check. Named FeedFloor* so that a settings import treats them
+    /// as this installation's own (never imported). Left out while null.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? FeedFloorStableGitHubConfirm { get; set; }
+    /// <inheritdoc cref="FeedFloorStableGitHubConfirm"/>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? FeedFloorDevGitHubConfirm { get; set; }
+    /// <inheritdoc cref="FeedFloorStableGitHubConfirm"/>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? FeedFloorStableUpToDate { get; set; }
+    /// <inheritdoc cref="FeedFloorStableGitHubConfirm"/>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? FeedFloorDevUpToDate { get; set; }
+    /// <inheritdoc cref="FeedFloorStableGitHubConfirm"/>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? FeedFloorStableSoftSince { get; set; }
+    /// <inheritdoc cref="FeedFloorStableGitHubConfirm"/>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? FeedFloorDevSoftSince { get; set; }
 
     // ---- v3 (v0.2.5) ----
     /// <summary>dark | light</summary>

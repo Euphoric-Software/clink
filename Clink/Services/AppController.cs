@@ -692,7 +692,20 @@ internal sealed partial class AppController : IDisposable
 
     private bool _applying;   // UI thread: a click on Update is being handled (the check of the download is running or the apply was started)
 
+    /// <summary>The body is fire-and-forget (<see cref="UpdateNow"/>): whatever it does not handle itself is logged and said, and the next click is not blocked, unless Quit has started.</summary>
     private async Task UpdateNowAsync()
+    {
+        try { await UpdateNowCoreAsync(); }
+        catch (Exception ex)
+        {
+            Log.Error("update: unexpected failure", ex);
+            if (_exiting || _disposed) return;
+            Say("Update failed: " + ex.Message);
+            _applying = false;
+        }
+    }
+
+    private async Task UpdateNowCoreAsync()
     {
         if (IsDev) { Say(Updater.DevModeNote); return; }   // the updates folder is the real Clink's, and the new process would not be this dev instance
         if (_applying) { Say("Still checking…"); return; }   // a second click while the first one is still checking the download
