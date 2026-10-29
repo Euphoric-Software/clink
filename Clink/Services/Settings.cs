@@ -452,11 +452,13 @@ internal sealed class Settings
     }
 
     /// <summary>
-    /// Keys that only pre-release builds of the signed update feed wrote and that nothing reads any more: the per-channel stamps of the
-    /// retired cross-check against the old release host (FeedFloorStable / FeedFloorDev followed by *Confirm, UpToDate, SoftSince or
-    /// SoftGrace) and the signed marks that were not tied to a hash (PendingUpdateSigned, PendingUpdateFxSigned; replaced by
-    /// <see cref="PendingUpdateSignedSha256"/>). Dropped on load instead of being carried along in <see cref="Unknown"/>: a stale one could
-    /// only ever confuse. Any other unknown key, a FeedFloor* one of a newer Clink included, is kept as before.
+    /// Keys that only pre-release builds of the signed update feed wrote and that nothing reads any more, matched case-insensitively and
+    /// as the WHOLE key: (1) the per-channel stamps of the retired cross-check against the old release host, i.e. FeedFloorStable or
+    /// FeedFloorDev followed by one of UpToDate, SoftSince, SoftGrace, or by one or more letters and then Confirm (the letters named the
+    /// old host); and (2) the two old PendingUpdate booleans that were not tied to a hash (PendingUpdateSigned, PendingUpdateFxSigned;
+    /// replaced by <see cref="PendingUpdateSignedSha256"/>). Dropped on load instead of being carried along in <see cref="Unknown"/>: a
+    /// stale one could only ever confuse. Any other key is kept as before, live FeedFloor* settings (FeedFloorStable, FeedFloorDev,
+    /// FeedFloorFailingSince, ...) and keys of a newer Clink included.
     /// </summary>
     internal static bool IsRetiredKey(string key) =>
         key.Equals("PendingUpdateSigned", StringComparison.OrdinalIgnoreCase)
@@ -464,7 +466,7 @@ internal sealed class Settings
         || s_retiredStamp.IsMatch(key);
 
     private static readonly System.Text.RegularExpressions.Regex s_retiredStamp = new(
-        @"^FeedFloor(Stable|Dev)([A-Za-z]+Confirm|UpToDate|SoftSince|SoftGrace)$",
+        @"\AFeedFloor(Stable|Dev)([A-Za-z]+Confirm|UpToDate|SoftSince|SoftGrace)\z",
         System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
     /// <summary>Deserializes one settings file and applies the migrations that need to know which keys the file had.</summary>

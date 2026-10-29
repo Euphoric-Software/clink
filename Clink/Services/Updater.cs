@@ -1507,7 +1507,7 @@ internal sealed class Updater : IDisposable
     {
         if (AppController.IsDev) { LastError = DevModeNote.ToLowerInvariant(); CheckFailed = true; return null; }   // nothing is looked for, downloaded or deleted
         try { return await CheckAndMaybeDownloadAsync(_cts.Token, manual: true).ConfigureAwait(false); }
-        catch (Exception ex) { Log.Warn("updater: manual check failed: " + ex.Message); LastError = "the update check failed (details in the log)"; return null; }
+        catch (Exception ex) { Log.Warn("updater: manual check failed: " + ex.Message); LastError = "the update check failed (details in the log)"; CheckFailed = true; return null; }
     }
 
     /// <summary>One pass of the background loop (not manual: the download attempt cap applies), for the unit tests.</summary>

@@ -235,21 +235,25 @@ internal sealed partial class AppController : IDisposable
     /// earlier cannot update itself any more: its users upgrade by hand, and the old copy in the tray would keep the new one from
     /// starting), or null. Only for a plain start: <paramref name="forwardedCommand"/> null (no --clip, --show, ...) and not
     /// <paramref name="dev"/>. Only a process in <paramref name="ownSession"/>, other than <paramref name="ownPid"/>, whose exe path is not
-    /// <paramref name="ownPath"/> and whose version sorts below <paramref name="ownVersion"/> counts. Pure: the process list is given.
+    /// <paramref name="ownPath"/> and whose version sorts below <paramref name="ownVersion"/> counts. Also null when this start is a
+    /// <paramref name="restart"/> (--after-pid), and when ANY other process of the session runs from this very exe path or has a version
+    /// at or above this one: then the instance holding the lock is probably not the old one. Pure: the process list is given.
     /// </summary>
     internal static string? OlderRunningCopy(IEnumerable<RunningClink> running, string? ownPath, ReleaseVersion? ownVersion, int ownPid, int ownSession,
-        string? forwardedCommand, bool dev)
+        string? forwardedCommand, bool dev, bool restart = false)
     {
-        if (dev || forwardedCommand != null || ownVersion is not { } own || string.IsNullOrEmpty(ownPath)) return null;
+        if (dev || restart || forwardedCommand != null || ownVersion is not { } own || string.IsNullOrEmpty(ownPath)) return null;
         string self = FullPathOrSelf(ownPath);
+        string? message = null;
         foreach (var p in running)
         {
             if (p.Pid == ownPid || p.SessionId != ownSession || string.IsNullOrEmpty(p.ExePath)) continue;
-            if (string.Equals(FullPathOrSelf(p.ExePath), self, StringComparison.OrdinalIgnoreCase)) continue;   // this very exe started twice
-            if (ReleaseVersion.Parse(p.Version) is not { } v || v >= own) continue;
-            return $"An older Clink (v{v}) is still running from {p.ExePath}. Right-click its tray icon, choose Quit, then start Clink again.";
+            if (string.Equals(FullPathOrSelf(p.ExePath), self, StringComparison.OrdinalIgnoreCase)) return null;   // this very exe runs already: it holds the lock
+            if (ReleaseVersion.Parse(p.Version) is not { } v) continue;
+            if (v >= own) return null;   // a copy as new as this one (or newer) is probably the one holding the lock
+            message ??= $"An older Clink (v{v}) is still running from {p.ExePath}. Right-click its tray icon, choose Quit, then start Clink again.";
         }
-        return null;
+        return message;
     }
 
     private static string FullPathOrSelf(string path)

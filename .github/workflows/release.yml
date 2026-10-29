@@ -125,11 +125,13 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           . ./tools/lib/feed-publish-lib.ps1
           $listing = @(& gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" --paginate --jq '.[] | [.tag_name, (.draft | tostring), ([.assets[].name] | join(",")), (.author.login | tostring)] | @tsv')
           if ($LASTEXITCODE -ne 0) { throw 'Could not list the earlier releases.' }
           $seeds = Get-FeedFloorSeeds -Listing $listing
+          Assert-FeedSeedBelowVersion -Channel stable -Seed $seeds.Stable -Version $env:VERSION
           Write-Output "Embedded floor seeds: stable '$($seeds.Stable)', dev '$($seeds.Dev)'"
           Add-Content -Path $env:GITHUB_OUTPUT -Value "min_stable=$($seeds.Stable)"
           Add-Content -Path $env:GITHUB_OUTPUT -Value "min_dev=$($seeds.Dev)"
