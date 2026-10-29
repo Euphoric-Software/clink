@@ -16,8 +16,8 @@
 #             tests), packages and uploads the package as an artifact (kept 1 day).
 #   publish - NO environment (the plan has none on a private repo), contents: write only; the signing key, the R2 credentials and the
 #             purge token are REPO secrets, named only by the steps that need them; the job runs only for a push to refs/heads/dev (or a dispatch on it).
-#             Guards, re-checks the artifact, REFUSES to publish while Clink/Assets/feed.json does not enable the feed (a red
-#             publish job on every dev push until the feed-on commit lands; the build job still runs), writes notes.txt, signs the dev
+#             Guards, re-checks the artifact, REFUSES to publish when Clink/Assets/feed.json does not enable the feed (the feed is ON
+#             in the committed file, so a red publish job here means it was switched off; the build job still runs), writes notes.txt, signs the dev
 #             manifest, creates a DRAFT prerelease, verifies it by ID, uploads to the bucket,
 #             verifies the draft AGAIN right before publishing it, publishes it, verifies the published release and tag (a failed
 #             second or third check deletes the release: docs/RELEASING.md, "Integrity incident"), prunes.
@@ -451,7 +451,7 @@ jobs:
           . ./tools/lib/release-mode-lib.ps1
           $cfg = Get-FeedConfig -Path Clink/Assets/feed.json -Channel dev
           # H1. A feed-less dev publish is REFUSED: nothing is signed, no draft exists, no secret was read. The build job still ran (it builds
-          # and runs the unit tests), only publishing is red until the feed-on commit lands (docs/RELEASING.md, "The feed-on change").
+          # and runs the unit tests), only publishing is red if the feed is ever switched off again (docs/RELEASING.md, "The feed-on change").
           if (-not $cfg.Enabled) { throw "The dev update feed is not enabled in Clink/Assets/feed.json ($($cfg.Reason)); refusing to publish (a GitHub prerelease without the feed would reach nobody). Land the feed-on commit first (docs/RELEASING.md, 'The feed-on change')." }
           # L-2. A mistyped CLINK_IMMUTABLE_RELEASES fails HERE, before the draft exists (the three release checks validate it again).
           [void](Get-ImmutableReleasesMode -Value $env:CLINK_IMMUTABLE_RELEASES)
@@ -460,7 +460,7 @@ jobs:
           Add-Content -Path $env:GITHUB_OUTPUT -Value 'enabled=true'
           Add-Content -Path $env:GITHUB_OUTPUT -Value "feed_url=$($cfg.FeedUrl)"
 
-      # Defence in depth: "Read feed configuration" above already refuses a feed-less publish, so this step is skipped today. It stays so that
+      # Defence in depth: "Read feed configuration" above already refuses a feed-less publish, so this step is skipped while the feed is on (the normal case). It stays so that
       # the rule "a feed that was on stays on" (docs/RELEASING.md) is still enforced if that refusal is ever relaxed: refuse a feed-less
       # publish when any earlier release (drafts included) of this repository carried dev.json. Read-only API calls with the job token.
       - name: Guard - a feed that was on stays on
@@ -488,6 +488,9 @@ jobs:
           $missing = 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_ENDPOINT', 'R2_BUCKET' |
             Where-Object { [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) }
           if ($missing) { throw "The dev feed is enabled in feed.json but these repo secrets are missing (R2_DEV_ACCESS_KEY_ID, R2_DEV_SECRET_ACCESS_KEY, R2_DEV_ENDPOINT, R2_DEV_BUCKET; repo > Settings > Secrets and variables > Actions): $($missing -join ', ')" }
+          # Bucket-name sanity check: R2_DEV_BUCKET must be exactly the dev bucket (a swapped secret would publish dev files into the stable bucket).
+          # Bucket names are not sensitive, so the expected name is printed; the endpoint never is.
+          if ($env:R2_BUCKET -cne 'clink-dev') { throw "R2_DEV_BUCKET must be exactly 'clink-dev' (the dev bucket name); the secret holds something else. Fix the repo secret (docs/RELEASING.md, setup)." }
           # L7. The endpoint must have exactly the shape of an R2 account endpoint (the value is not printed).
           Assert-FeedR2Endpoint -Value $env:R2_ENDPOINT -Name 'R2_DEV_ENDPOINT'
 

@@ -122,8 +122,14 @@ try {
 if ($sig.Length -ne 64) { throw "Unexpected signature length $($sig.Length)." }
 $sigText = [Convert]::ToBase64String($sig)
 
-if (-not (Test-FeedSignature -Bytes $bytes -SigBase64 $sigText -Keys $cfg.Keys)) {
+$signedIndex = Get-FeedSignatureKeyIndex -Bytes $bytes -SigBase64 $sigText -Keys $cfg.Keys
+if ($signedIndex -lt 0) {
     throw "The signature does not verify against the $Channel keys in feed.json: the signing key is not one of them. Nothing was written."
+}
+# Say WHICH listed key signed: index 0 is the normal CI key; anything else means the CI secret holds the spare ("next") key.
+Write-Host "signed with $($Channel)Keys[$signedIndex] (spki sha256 $(Get-FeedKeyFingerprint -Base64 $cfg.Keys[$signedIndex]))"
+if ($signedIndex -ne 0) {
+    Write-Host "::warning::The $Channel manifest was signed with $($Channel)Keys[$signedIndex], the spare (next) key: the CI signing key is the spare key. Check this is intended (docs/RELEASING.md, 'Rotation')."
 }
 
 $jsonPath = Join-Path $PackageDir "$Channel.json"

@@ -329,6 +329,73 @@ function Assert-FeedPublicAsset {
     throw "Public URL check failed for $($Asset.Url): $last"
 }
 
+function Assert-FeedPublishedManifest {
+    # Reads <BaseUrl><Channel>.json and <BaseUrl><Channel>.json.sig back over the PUBLIC host (through the same Http invoker as
+    # Assert-FeedPublicAsset) and requires, for the pair together:
+    #   - status 200 and bytes EXACTLY equal to the local files (ManifestPath, SigPath);
+    #   - the served signature verifies the served manifest under Keys (the channel's keys of feed.json);
+    #   - Content-Type application/json (.json) / text/plain (.sig), each with an optional "; charset=..." (the upload sets the bare type);
+    #   - Cache-Control contains max-age=60 (the upload sets "public, max-age=60"; max-age=600 does not count);
+    #   - X-Content-Type-Options nosniff: like notes.txt that header comes from a Cloudflare Transform Rule, so a missing one is a
+    #     ::warning::, and -RequireNoSniff makes it a failure.
+    # Retries (propagation, transient errors) like Assert-FeedPublicAsset; throws when the last attempt still fails.
+    param(
+        [Parameter(Mandatory)] [scriptblock]$Http, [Parameter(Mandatory)] [string]$BaseUrl, [Parameter(Mandatory)] [ValidateSet('stable', 'dev')] [string]$Channel,
+        [Parameter(Mandatory)] [string]$ManifestPath, [Parameter(Mandatory)] [string]$SigPath, [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$Keys,
+        [int]$Attempts = 5, [int]$DelaySeconds = 4, [string]$ScratchDir = [System.IO.Path]::GetTempPath(), [switch]$RequireNoSniff
+    )
+    $targets = @(
+        [pscustomobject]@{ Url = "$BaseUrl$Channel.json"; Local = $ManifestPath; Type = 'application/json' }
+        [pscustomobject]@{ Url = "$BaseUrl$Channel.json.sig"; Local = $SigPath; Type = 'text/plain' }
+    )
+    $last = ''
+    for ($i = 1; $i -le $Attempts; $i++) {
+        $problem = ''
+        $served = @{}
+        $warnings = New-Object System.Collections.ArrayList
+        foreach ($t in $targets) {
+            $tmp = Join-Path $ScratchDir ('clink-feed-' + [guid]::NewGuid().ToString('N') + '.tmp')
+            try {
+                $resp = @(& $Http -Url $t.Url -OutFile $tmp) | Select-Object -Last 1
+                $status = if ($resp -and $null -ne $resp.Status) { [int]$resp.Status } else { 0 }
+                if ($status -ne 200) { $problem = "$($t.Url): status $status" }
+                elseif (-not (Test-Path -LiteralPath $tmp -PathType Leaf)) { $problem = "$($t.Url): no body was received" }
+                else {
+                    $body = [System.IO.File]::ReadAllBytes($tmp)
+                    $expected = [System.IO.File]::ReadAllBytes($t.Local)
+                    $headers = @{}
+                    if ($resp.Headers) { foreach ($k in @($resp.Headers.Keys)) { $headers[([string]$k).ToLowerInvariant()] = (@($resp.Headers[$k]) -join ', ') } }
+                    $type = ([string]$headers['content-type']).Trim()
+                    $cache = ([string]$headers['cache-control']).Trim()
+                    $sniff = ([string]$headers['x-content-type-options']).Trim()
+                    if (-not [System.Linq.Enumerable]::SequenceEqual([byte[]]$body, [byte[]]$expected)) { $problem = "$($t.Url): served bytes differ from the local file ($($body.Length) bytes served, $($expected.Length) expected)" }
+                    elseif ($type -cnotmatch ('(?i)\A' + [regex]::Escape($t.Type) + '(\s*;\s*charset=[A-Za-z0-9._-]+)?\z')) { $problem = "$($t.Url): served with Content-Type '$type', expected '$($t.Type)'" }
+                    elseif ($cache -notmatch '(?i)(\A|[\s,])max-age=60(\s*,|\s*\z)') { $problem = "$($t.Url): served with Cache-Control '$cache', expected it to contain max-age=60" }
+                    elseif (-not ($sniff -ieq 'nosniff')) {
+                        if ($RequireNoSniff) { $problem = "$($t.Url): served without 'X-Content-Type-Options: nosniff' (got '$sniff')" }
+                        else { [void]$warnings.Add("::warning::$($t.Url) is served without 'X-Content-Type-Options: nosniff' (got '$sniff'). Add the Cloudflare Transform Rule (Modify Response Header) for both download hosts (docs/RELEASING.md, setup step 1.7).") }
+                    }
+                    if (-not $problem) { $served[$t.Type] = $body }
+                }
+            } catch { $problem = "$($t.Url): $($_.Exception.Message)" }
+            finally { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+            if ($problem) { break }
+        }
+        if (-not $problem) {
+            $sigText = [System.Text.Encoding]::UTF8.GetString($served['text/plain']).Trim()
+            if (-not (Test-FeedSignature -Bytes ([byte[]]$served['application/json']) -SigBase64 $sigText -Keys $Keys)) { $problem = "the served $Channel.json.sig does not verify the served $Channel.json against the $Channel keys in feed.json" }
+        }
+        if (-not $problem) {
+            foreach ($w in $warnings) { Write-Host $w }
+            Write-Host "live manifest ok: $BaseUrl$Channel.json (+ .sig)"
+            return
+        }
+        $last = $problem
+        if ($i -lt $Attempts -and $DelaySeconds -gt 0) { Start-Sleep -Seconds $DelaySeconds }
+    }
+    throw "Live manifest check failed for $BaseUrl$Channel.json: $last"
+}
+
 function Assert-FeedFloorSeed {
     # M1. A version that becomes an MSBuild property value (-p:ClinkMinStable=<v> / -p:ClinkMinDev=<v>): X.Y.Z or X.Y.Z-dev.N and NOTHING
     # else (a ';' would add a second MSBuild property, a newline or a quote would break the command line). '' means "no seed" and passes.

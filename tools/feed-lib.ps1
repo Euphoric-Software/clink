@@ -186,14 +186,28 @@ function ConvertFrom-SpkiBase64 {
 # True when SigBase64 (one-line Base64, IEEE P1363 r||s) is a valid ECDSA P-256/SHA-256 signature of Bytes under ANY of Keys.
 function Test-FeedSignature {
     param([Parameter(Mandatory)] [byte[]]$Bytes, [Parameter(Mandatory)] [string]$SigBase64, [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$Keys)
-    try { $sig = [Convert]::FromBase64String($SigBase64.Trim()) } catch { return $false }
-    if ($sig.Length -ne 64) { return $false }
-    foreach ($k in $Keys) {
-        $ec = ConvertFrom-SpkiBase64 $k
-        try { if ($ec.VerifyData($Bytes, $sig, [System.Security.Cryptography.HashAlgorithmName]::SHA256)) { return $true } }
+    return ((Get-FeedSignatureKeyIndex -Bytes $Bytes -SigBase64 $SigBase64 -Keys $Keys) -ge 0)
+}
+
+# The zero-based index in Keys of the first key that verifies SigBase64 over Bytes (same rules as Test-FeedSignature), or -1 when none does.
+function Get-FeedSignatureKeyIndex {
+    param([Parameter(Mandatory)] [byte[]]$Bytes, [Parameter(Mandatory)] [string]$SigBase64, [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$Keys)
+    try { $sig = [Convert]::FromBase64String($SigBase64.Trim()) } catch { return -1 }
+    if ($sig.Length -ne 64) { return -1 }
+    for ($index = 0; $index -lt $Keys.Count; $index++) {
+        $ec = ConvertFrom-SpkiBase64 $Keys[$index]
+        try { if ($ec.VerifyData($Bytes, $sig, [System.Security.Cryptography.HashAlgorithmName]::SHA256)) { return $index } }
         finally { $ec.Dispose() }
     }
-    return $false
+    return -1
+}
+
+# The first 16 upper-case hex digits of SHA-256 over the decoded SPKI DER bytes of a feed.json key (for logs and the shipped-key pin test).
+function Get-FeedKeyFingerprint {
+    param([Parameter(Mandatory)] [string]$Base64)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { $hash = $sha.ComputeHash([Convert]::FromBase64String($Base64)) } finally { $sha.Dispose() }
+    (($hash[0..7] | ForEach-Object { $_.ToString('X2') }) -join '')
 }
 
 # Sort key for X.Y.Z and X.Y.Z-dev.N (ASCII digits only: the .NET digit shorthand also matches other Unicode digits): a final build sorts above any dev build of the same X.Y.Z.
