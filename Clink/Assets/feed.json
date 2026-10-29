@@ -1,1 +1,13 @@
-{"schema":1,"feedUrl":"","stableKeys":[],"devKeys":[]}
+{
+  "schema": 1,
+  "feedUrl": "https://dl.euphoric.software/clink/",
+  "devFeedUrl": "https://dl-dev.euphoric.software/clink/",
+  "stableKeys": [
+    "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAENsIjTGRVyauCyxmU6Vj7X5DCT4anXazvrHjIzu+rCKHwyTZ2qJQFFei6ovI/O3nf+5Nhku/cgdURfSg6VjpmXg==",
+    "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEx/Mkg37pRuK5t9mCzE2Vam8vfvYiwfHYdAw+c3q7I/Sy+yPKIrAryQxTAfVGx4gpSJlTIZmdJ77AkvKbi+gBrw=="
+  ],
+  "devKeys": [
+    "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE6zhmsNnRnWxo0HtqE8Ea62QGtkB9KBgUzU9uBTB244v6xVBLQrw0ysk6ARCGN3MbvzcNFH3ZtUhLw69JyBPd5w==",
+    "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEAGKHX8tW+nK/cF+0X/57bNE4u3TYoduysw3b+TjSvfhviip6Zo8voHDMFeXFh1PSjk4AhWHbM86p/VdyvIBI6w=="
+  ]
+}

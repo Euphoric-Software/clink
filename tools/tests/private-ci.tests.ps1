@@ -1180,9 +1180,9 @@ try {
         Write-Host "      (this tree: legacy GitHub update path $(if ($legacyHere) { 'still defined' } else { 'gone' }); CI always runs the guard strict)"
     }
 
-    Invoke-Test 'docs: RELEASING.md carries the repair-round rules (feed-off red job, immutable variable, nosniff rule, lock list, keys without the clipboard, fork settings, stable-only first run, PR titles, actions budget)' {
+    Invoke-Test 'docs: RELEASING.md carries the repair-round rules (immutable variable, nosniff rule, lock list, keys without the clipboard, fork settings, stable-only first run, PR titles, actions budget)' {
         $doc = [System.IO.File]::ReadAllText((Join-Path $repo 'docs\RELEASING.md'))
-        foreach ($needle in 'every\s+push to `dev` shows a red `publish` job', 'CLINK_IMMUTABLE_RELEASES', '`unavailable`', 'X-Content-Type-Options', 'Modify Response Header', 'nosniff',
+        foreach ($needle in 'CLINK_IMMUTABLE_RELEASES', '`unavailable`', 'X-Content-Type-Options', 'Modify Response Header', 'nosniff',
             'npx wrangler r2 bucket lock list clink-stable', '_lock-probe', 'indefinite retention\) and for 30 days', "Get-Content -Raw 'E:\\keys\\clink-stable.pem' \| gh secret set CLINK_FEED_STABLE_SIGNING_KEY", 'exFAT',
             'Send secrets to workflows from fork pull requests', 'Send write tokens', 'Allow forking of private repositories', 'run for the FIRST time on `v0.4.2` itself', 'generate-notes', 'merge-base', 'annotated-tag|ANNOTATED', 'make_latest',
             'read the\s+titles of the pull requests', 'Actions budget', 'about 150 MB per run', '`Delete the build artifact`', 'do NOT hand-publish', 'release.s OWN `.sha256` assets', 'Find the embedded floor seeds', 'ClinkMinStable', 'ClinkMinDev',
