@@ -207,6 +207,14 @@ try {
         Assert-Throws { New-FreshNuGetFolders -TempRoot (Join-Path $scratch 'no-such-temp') -RunId '1' -RunAttempt '1' } 'does not exist' 'a missing temp folder'
     }
 
+    Invoke-Test 'the SDK library-packs source is refused, and Clink.csproj turns the implicit one off' {
+        $p = Get-Problems (New-Assets -PackagesRoot $pkgRoot -RepoConfig $repoConfig -Sources @('C:\Program Files\dotnet\library-packs', $nugetOrg))
+        Assert-True ($p.Count -eq 1 -and $p[0] -match 'project\.restore\.sources') "a library-packs source: $($p -join ' | ')"
+        $csproj = [xml](Get-Content -LiteralPath (Join-Path $repo 'Clink\Clink.csproj') -Raw)
+        $vals = @($csproj.Project.PropertyGroup.DisableImplicitLibraryPacksFolder | Where-Object { $_ })
+        Assert-True ($vals.Count -eq 1 -and $vals[0] -eq 'true') 'Clink.csproj does not set DisableImplicitLibraryPacksFolder to true'
+    }
+
     Invoke-Test 'the lib is BOM-free ASCII' {
         foreach ($p in (Join-Path $toolsDir 'lib\nuget-restore-lib.ps1'), $PSCommandPath) {
             $bytes = [System.IO.File]::ReadAllBytes($p)

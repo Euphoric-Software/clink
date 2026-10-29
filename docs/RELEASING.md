@@ -809,6 +809,8 @@ tested by `tools/tests/nuget-restore.tests.ps1`):
   `RestoreAdditionalProjectFallbackFolders` and the environment variable `NUGET_FALLBACK_PACKAGES` are not undone by `<clear/>`: they show
   up in the record); and the `.nupkg.metadata` of every package the restore used (libraries and exact-pinned runtime packs) names nuget.org as its source.
 
+The SDK's implicit `library-packs` restore source (`<NetCoreRoot>\library-packs`, present on the CI runner) is turned off in `Clink.csproj` (`DisableImplicitLibraryPacksFolder`) so restore uses nuget.org only; the CI assertion would catch it otherwise.
+
 Never lower `signatureValidationMode`, never add a source or an unsigned signer to make a restore pass.
 
 ### Certificate rotation runbook (NU3034 on a new Microsoft certificate)
