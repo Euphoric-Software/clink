@@ -122,9 +122,9 @@ internal sealed class Settings
     public float KeyframeSeconds { get; set; } = 1f;
     public double? WindowX { get; set; }
     public double? WindowY { get; set; }
-    public bool AutoUpdate { get; set; } = true;               // check GitHub on start + every 6 h, download new releases and install on next start; off = never contact GitHub unprompted
+    public bool AutoUpdate { get; set; } = true;               // check the signed update feed on start + every 6 h, download new releases and install on next start; off = never contact the feed unprompted
     public bool UseDevBuilds { get; set; }                     // install dev-branch prereleases (Dev Build in the version popup); per installation, never imported
-    public string? UpdateRepo { get; set; }                    // "owner/repo"; overrides the UpdateRepo baked into the exe at build time (validated, logged at start, shown in the version tooltip)
+    public string? UpdateRepo { get; set; }                    // legacy, ignored: updates come only from the signed feed (kept so an old settings.json round-trips and the import still knows the key)
     public DateTime? LastUpdateCheck { get; set; }
 
     // ---- v2 (see docs/SPEC-v2.md) ----
@@ -162,23 +162,25 @@ internal sealed class Settings
     public double ArchiveWhenLocalExceedsGB { get; set; } = 0;
     public double? WindowWidth { get; set; }
     public double? WindowHeight { get; set; }
-    public string? PendingUpdateVersion { get; set; }          // written by the updater: version and SHA-256 of the download it verified in %LOCALAPPDATA%\Clink\updates;
-    public string? PendingUpdateSha256 { get; set; }           // the file is hashed again against this before it is ever installed
+    public string? PendingUpdateVersion { get; set; }          // written by the updater: version and SHA-256 of the download it verified in %LOCALAPPDATA%\Clink\updates
+    public string? PendingUpdateSha256 { get; set; }           // (against the signed manifest's hash); the file is hashed again against this before it is ever installed
     public string? PendingUpdateFrom { get; set; }             // version of the exe that made that download: only that exe may go from a dev build back to it at startup
     /// <summary>
-    /// Written by the updater: true when the recorded download (<see cref="PendingUpdateVersion"/>) was verified against a signed
-    /// manifest (<see cref="UpdateFeed"/>), null for one checked against Clink.exe.sha256. A build with the signed feed on installs or
-    /// reuses only a signed download. Per installation (a PendingUpdate* key): never imported. Left out of the file while null.
+    /// Written by the updater: the SHA-256 of the recorded download as the signed manifest (<see cref="UpdateFeed"/>) gave it, set only by a
+    /// download that verified against it. A download is installed or reused only when this equals <see cref="PendingUpdateSha256"/> and the
+    /// file's own hash. v0.4.1 and older keep keys they do not know and rewrite only their own PendingUpdate* keys, so a mark that is not
+    /// tied to the hash (the old <c>PendingUpdateSigned: true</c>) could sit beside an unsigned download of theirs; this name is new to them
+    /// and the hash must match. Per installation (a PendingUpdate* key): never imported. Left out of the file while null.
     /// </summary>
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public bool? PendingUpdateSigned { get; set; }
-    // The same record for the Framework flavour, which downloads into updates\fx\ (the four PendingUpdate* keys above describe the root
-    // updates\ folder: SelfContained copies, and v0.4.1 / dev.10, which keep unknown keys and rewrite only those four). Two records,
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? PendingUpdateSignedSha256 { get; set; }
+    // The same record for the Framework flavour, which downloads into updates\fx\ (the PendingUpdate* keys above describe the root
+    // updates\ folder: SelfContained copies, and v0.4.1 / dev.10, which keep unknown keys and rewrite only their own). Two records,
     // so a copy of one flavour never reads, rewrites or deletes on the strength of the other's. Per installation (PendingUpdate* keys):
     // never imported. Left out of the file while null.
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? PendingUpdateFxVersion { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? PendingUpdateFxSha256 { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? PendingUpdateFxFrom { get; set; }
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public bool? PendingUpdateFxSigned { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? PendingUpdateFxSignedSha256 { get; set; }
     /// <summary>
     /// Written by the updater: the highest version it has seen in a verified stable / dev manifest of the signed feed (<see cref="UpdateFeed"/>).
     /// A verified manifest below it is a replayed old one and is not trusted. Per installation: never imported. Left out of the file while
@@ -188,25 +190,12 @@ internal sealed class Settings
     /// <inheritdoc cref="FeedFloorStable"/>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? FeedFloorDev { get; set; }
     /// <summary>
-    /// Written by the updater, per channel, as <c>"&lt;running version&gt;@&lt;UTC ISO-8601&gt;"</c> ("0.4.2@2026-10-28T09:00:00.0000000Z"): when
-    /// the signed GitHub path last said nothing newer than that version exists (<c>GitHubConfirm</c>); when a manifest younger than 14
-    /// days or such a GitHub answer last confirmed that version (<c>UpToDate</c>); and when the current streak of checks that could not
-    /// confirm it began (<c>SoftSince</c>, cleared by every real confirmation). A stamp of another version than the running one, more than
-    /// a day in the future, or unreadable counts as absent. They keep an old "up to date" feed manifest from being cross-checked on every
-    /// check, and decide when GitHub being unreachable turns into a failed check. Named FeedFloor* so that a settings import treats them
-    /// as this installation's own (never imported). Left out while null.
+    /// Written by the updater: when the current run of failed update checks began, as <c>"&lt;running version&gt;@&lt;UTC ISO-8601&gt;"</c>
+    /// ("0.4.2@2026-10-28T09:00:00.0000000Z"). Set at the first failed check, cleared by any successful one; background checks that
+    /// have failed for over 3 days earn one tray notice per session. A stamp of another version, from the future or unreadable counts as
+    /// absent. Named FeedFloor* so that a settings import treats it as this installation's own (never imported). Left out while null.
     /// </summary>
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? FeedFloorStableGitHubConfirm { get; set; }
-    /// <inheritdoc cref="FeedFloorStableGitHubConfirm"/>
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? FeedFloorDevGitHubConfirm { get; set; }
-    /// <inheritdoc cref="FeedFloorStableGitHubConfirm"/>
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? FeedFloorStableUpToDate { get; set; }
-    /// <inheritdoc cref="FeedFloorStableGitHubConfirm"/>
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? FeedFloorDevUpToDate { get; set; }
-    /// <inheritdoc cref="FeedFloorStableGitHubConfirm"/>
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? FeedFloorStableSoftSince { get; set; }
-    /// <inheritdoc cref="FeedFloorStableGitHubConfirm"/>
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? FeedFloorDevSoftSince { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? FeedFloorFailingSince { get; set; }
 
     // ---- v3 (v0.2.5) ----
     /// <summary>dark | light</summary>
@@ -462,6 +451,22 @@ internal sealed class Settings
         lock (s_saveGate) return JsonSerializer.SerializeToElement(this, s_json);
     }
 
+    /// <summary>
+    /// Keys that only pre-release builds of the signed update feed wrote and that nothing reads any more: the per-channel stamps of the
+    /// retired cross-check against the old release host (FeedFloorStable / FeedFloorDev followed by *Confirm, UpToDate, SoftSince or
+    /// SoftGrace) and the signed marks that were not tied to a hash (PendingUpdateSigned, PendingUpdateFxSigned; replaced by
+    /// <see cref="PendingUpdateSignedSha256"/>). Dropped on load instead of being carried along in <see cref="Unknown"/>: a stale one could
+    /// only ever confuse. Any other unknown key, a FeedFloor* one of a newer Clink included, is kept as before.
+    /// </summary>
+    internal static bool IsRetiredKey(string key) =>
+        key.Equals("PendingUpdateSigned", StringComparison.OrdinalIgnoreCase)
+        || key.Equals("PendingUpdateFxSigned", StringComparison.OrdinalIgnoreCase)
+        || s_retiredStamp.IsMatch(key);
+
+    private static readonly System.Text.RegularExpressions.Regex s_retiredStamp = new(
+        @"^FeedFloor(Stable|Dev)([A-Za-z]+Confirm|UpToDate|SoftSince|SoftGrace)$",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
     /// <summary>Deserializes one settings file and applies the migrations that need to know which keys the file had.</summary>
     private static Settings Parse(string json) => ParseCore(json, quiet: false);
 
@@ -482,6 +487,7 @@ internal sealed class Settings
         {
             if (!Bindable.TryGetValue(p.Name, out var prop))
             {
+                if (IsRetiredKey(p.Name)) continue;   // a key of ours that no version reads any more: not kept as an unknown one
                 (s.Unknown ??= new())[p.Name] = p.Value.Clone();   // the document is disposed below: keep a copy of the element
                 continue;
             }

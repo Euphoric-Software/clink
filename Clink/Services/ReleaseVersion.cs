@@ -50,13 +50,6 @@ internal readonly record struct ReleaseVersion(Version Number, string? Prereleas
     private static readonly Regex s_canonical = new(@"^" + Num3 + @"(-dev\.(0|[1-9][0-9]*))?\z", RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     /// <summary>
-    /// A release tag exactly as the workflows publish it: <c>vX.Y.Z</c> (stable) or <c>vX.Y.Z-dev.N</c> (dev build). Case-sensitive "v"
-    /// (no "V", no missing "v"), three numeric parts (no "v9.9"), no leading zeros, no build metadata, no other pre-release
-    /// ("v9.9.9-beta"). Null for anything else. <see cref="Parse"/> stays lenient: it also reads the running exe's own version.
-    /// </summary>
-    public static ReleaseVersion? ParseTag(string? tag) => tag != null && tag.StartsWith('v') ? ParseCanonical(tag[1..]) : null;
-
-    /// <summary>
     /// <paramref name="text"/> when it is exactly "X.Y.Z" or "X.Y.Z-dev.N" (no "v", nothing else), otherwise null. Used for the file
     /// names in the updates folder and (after the "v") for release tags: nothing else becomes a path.
     /// </summary>

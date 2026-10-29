@@ -17,8 +17,6 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\clink.ico</ApplicationIcon>
     <Version>0.4.2</Version>
-    <!-- GitHub "owner/repo" the app checks for updates. Empty = updates off; CI passes -p:UpdateRepo=owner/repo -p:Version=X.Y.Z -->
-    <UpdateRepo Condition="'$(UpdateRepo)' == ''"></UpdateRepo>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <NoWarn>$(NoWarn);CA1416;CS8981</NoWarn>
@@ -43,16 +41,20 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Capture\Convert.hlsl" LogicalName="Convert.hlsl" />
-    <!-- Trust anchors of the signed update feed (Services/UpdateFeed.cs, FeedTrust): {"schema":1,"feedUrl":"","stableKeys":[],"devKeys":[]}. Empty = GitHub only, as before. -->
+    <!-- Trust anchors of the signed update feed (Services/UpdateFeed.cs, FeedTrust): {"schema":1,"feedUrl":"","stableKeys":[],"devKeys":[]}. Empty = no updates at all (the client contacts nothing). -->
     <EmbeddedResource Include="Assets\feed.json" LogicalName="feed.json" />
     <EmbeddedResource Include="..\THIRD-PARTY-NOTICES.txt" LogicalName="THIRD-PARTY-NOTICES.txt" />
   </ItemGroup>
 
   <ItemGroup>
-    <AssemblyMetadata Include="UpdateRepo" Value="$(UpdateRepo)" />
     <!-- What this build is, from $(SelfContained) alone (no separate property to override). Services/Packaging.cs cross-checks it against the runtime. -->
     <AssemblyMetadata Include="Packaging" Value="SelfContained" Condition="'$(SelfContained)' == 'true'" />
     <AssemblyMetadata Include="Packaging" Value="Framework" Condition="'$(SelfContained)' != 'true'" />
+    <!-- Floor seeds of the signed update feed (Services/Updater.cs, FloorSeed): the newest published stable (X.Y.Z) and dev (X.Y.Z-dev.N)
+         versions when this exe was built; no manifest older than these is accepted, even on a fresh install. CI passes
+         -p:ClinkMinStable=<X.Y.Z> -p:ClinkMinDev=<X.Y.Z-dev.N>; a local build has none (only set when non-empty). -->
+    <AssemblyMetadata Include="ClinkMinStable" Value="$(ClinkMinStable)" Condition="'$(ClinkMinStable)' != ''" />
+    <AssemblyMetadata Include="ClinkMinDev" Value="$(ClinkMinDev)" Condition="'$(ClinkMinDev)' != ''" />
   </ItemGroup>
 
   <ItemGroup>

@@ -23,9 +23,9 @@ internal sealed record FeedManifest(string Channel, ReleaseVersion Version, stri
 /// <summary>What the embedded feed.json says about updates (<see cref="FeedTrust.State"/>).</summary>
 internal enum FeedState
 {
-    /// <summary>feed.json is the empty template: no feed, today's GitHub path (settings.json's UpdateRepo honoured).</summary>
+    /// <summary>feed.json is the empty template: no feed, so no updates at all (the client contacts nothing).</summary>
     Off,
-    /// <summary>A valid feedUrl and non-empty, valid, disjoint stableKeys and devKeys: the signed feed and the signed GitHub path, for both channels.</summary>
+    /// <summary>A valid feedUrl and non-empty, valid, disjoint stableKeys and devKeys: the signed feed, for both channels.</summary>
     On,
     /// <summary>feed.json names a feedUrl or a key (or cannot be read) but is not fully valid: no update checks at all, fail closed.</summary>
     Misconfigured,
@@ -34,10 +34,10 @@ internal enum FeedState
 /// <summary>
 /// The trust anchors of the signed update feed, read from the embedded resource <see cref="ResourceName"/> (committed as
 /// <c>Clink/Assets/feed.json</c>): <c>{"schema":1,"feedUrl":"https://host/path/","stableKeys":["&lt;Base64 DER SPKI&gt;", ...],"devKeys":[...]}</c>.
-/// <para>All or nothing (<see cref="State"/>): the fully empty file is <see cref="FeedState.Off"/> (GitHub only, as before); a valid
+/// <para>All or nothing (<see cref="State"/>): the fully empty file is <see cref="FeedState.Off"/> (no updates at all); a valid
 /// feedUrl with non-empty, all-valid stableKeys and devKeys that share no key is <see cref="FeedState.On"/> for both channels; anything
 /// else that names a URL or a key, or a file that cannot be read, is <see cref="FeedState.Misconfigured"/>: the updater then checks
-/// nothing at all (neither the feed nor GitHub), so a broken trust anchor can never silently drop a build back to the unsigned path.
+/// nothing at all, so a broken trust anchor can never silently drop a build back to an unsigned path.
 /// What is wrong is listed in <see cref="Problems"/> (never with key bytes) for the loud startup log line (<see cref="Describe"/>).</para>
 /// </summary>
 internal sealed class FeedTrust
@@ -49,7 +49,7 @@ internal sealed class FeedTrust
     internal const string P256Oid = "1.2.840.10045.3.1.7";
 
     public FeedState State { get; }
-    /// <summary>The signed feed is used (both channels); settings.json's UpdateRepo is ignored.</summary>
+    /// <summary>The signed feed is used (both channels); settings.json's legacy UpdateRepo key is ignored.</summary>
     public bool On => State == FeedState.On;
     /// <summary>feed.json is broken: no update checks and no installs at all.</summary>
     public bool Misconfigured => State == FeedState.Misconfigured;
@@ -85,7 +85,7 @@ internal sealed class FeedTrust
         _urlListed = urlListed; _urlValid = urlValid;
     }
 
-    /// <summary>No feed at all (GitHub only): what the empty feed.json gives.</summary>
+    /// <summary>No feed at all (no updates): what the empty feed.json gives.</summary>
     public static FeedTrust None => new(FeedState.Off, null, null, new(), new(), new(), 0, 0, false, false);
 
     /// <summary>The keys that may sign a manifest of <paramref name="channel"/> ("stable" or "dev"); any one of them verifying is enough (rotation).</summary>
@@ -207,10 +207,10 @@ internal sealed class FeedTrust
         string counts = $"feedUrl {url}{devUrl}; stableKeys {_stableValid} valid of {_stableListed}; devKeys {_devValid} valid of {_devListed}";
         return State switch
         {
-            FeedState.Off => $"no signed update feed in this build ({ResourceName} is empty): GitHub only",
+            FeedState.Off => $"no signed update feed in this build ({ResourceName} is empty): updates are off",
             FeedState.On => $"signed update feed ({ResourceName}): {counts}; on for both channels",
             _ => $"update configuration invalid ({ResourceName}): {string.Join("; ", Problems)}; {counts}. "
-                 + "No update checks at all (neither the signed feed nor GitHub) and no downloaded update is installed",
+                 + "No update checks at all and no downloaded update is installed",
         };
     }
 
@@ -271,13 +271,18 @@ internal sealed class FeedTrust
     }
 }
 
-/// <summary>Reaching the feed failed (network error, HTTP error status, timeout): the updater falls back to the signed GitHub path.</summary>
+/// <summary>
+/// Reaching the feed failed (network error, HTTP error status, timeout): the check fails, there is no fallback. <see cref="UserDetail"/>
+/// is the short safe part that may be shown to the user ("HTTP 503", "no answer within 10 s": built here, never a server's text such as
+/// a reason phrase); <see cref="Exception.Message"/> is for the log.
+/// </summary>
 internal sealed class FeedUnreachableException : Exception
 {
-    public FeedUnreachableException(string message, Exception? inner = null) : base(message, inner) { }
+    public string? UserDetail { get; }
+    public FeedUnreachableException(string message, Exception? inner = null, string? userDetail = null) : base(message, inner) { UserDetail = userDetail; }
 }
 
-/// <summary>Something was fetched but cannot be trusted (missing or bad signature, too large, invalid manifest): it is not used, and the updater falls back to the signed GitHub path.</summary>
+/// <summary>Something was fetched but cannot be trusted (missing or bad signature, too large, invalid manifest): it is not used and the check fails (no fallback).</summary>
 internal sealed class FeedRejectedException : Exception
 {
     public FeedRejectedException(string message) : base(message) { }
@@ -286,23 +291,14 @@ internal sealed class FeedRejectedException : Exception
 /// <summary>
 /// The signed static update feed (schema 1): <c>&lt;feedUrl&gt;stable.json</c> / <c>dev.json</c> plus <c>&lt;channel&gt;.json.sig</c>, the
 /// Base64 of an ECDSA P-256 / SHA-256 signature (IEEE P1363, 64 bytes) over the exact manifest bytes (a UTF-8 BOM included, if the
-/// file has one). The same two files are attached to every GitHub release as assets (the signed GitHub path). Nothing from a manifest
-/// is used before its signature has verified.
+/// file has one). Nothing from a manifest is used before its signature has verified. The newest valid signed manifest is trusted as it
+/// is: there is no age limit (<c>published</c> is parsed but never decides anything), and the updater's version floors refuse a replay.
 /// </summary>
 internal static class UpdateFeed
 {
     internal const int Schema = 1;
     internal const int MaxManifestBytes = 256 * 1024;
     internal const int MaxSignatureBytes = 4 * 1024;
-    /// <summary>A verified manifest published longer ago than this is stale (a frozen or replayed feed).</summary>
-    internal static readonly TimeSpan MaxAge = TimeSpan.FromDays(90);
-    /// <summary>
-    /// A verified manifest naming the running version ends a check as "up to date" only while it is younger than this; an older one
-    /// (a possibly frozen or replayed feed) is cross-checked against the signed GitHub path instead.
-    /// </summary>
-    internal static readonly TimeSpan MaxUpToDateAge = TimeSpan.FromDays(14);
-    /// <summary>A verified manifest published further ahead than this is stale too (a wrong clock or a forged date: never trusted as "newest").</summary>
-    internal static readonly TimeSpan MaxFuture = TimeSpan.FromDays(1);
     /// <summary>Per feed request, headers and body (a linked token: the caller's cancellation still wins). The default of the timeout parameters below.</summary>
     internal static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(10);
     private static readonly Regex s_sha = new("^[0-9a-f]{64}$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
@@ -341,7 +337,7 @@ internal static class UpdateFeed
             {
                 int code = (int)resp.StatusCode;
                 if (missingIsRejection && code is 404 or 410) throw new FeedRejectedException($"{name} is missing (HTTP {code})");
-                throw new FeedUnreachableException($"HTTP {code} for {name}");
+                throw new FeedUnreachableException($"HTTP {code} for {name}", null, $"HTTP {code}");   // the code only: the reason phrase is the server's text
             }
             if (resp.Content.Headers.ContentLength is long declared && declared > limit)
                 throw new FeedRejectedException($"{name} is too large ({declared} bytes, at most {limit})");
@@ -361,7 +357,11 @@ internal static class UpdateFeed
             return buf.AsSpan(0, total).ToArray();
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-        catch (OperationCanceledException ex) { throw new FeedUnreachableException($"no answer for {name} within {limitTime.TotalSeconds.ToString("0.##", CultureInfo.InvariantCulture)} s", ex); }
+        catch (OperationCanceledException ex)
+        {
+            string within = limitTime.TotalSeconds.ToString("0.##", CultureInfo.InvariantCulture);
+            throw new FeedUnreachableException($"no answer for {name} within {within} s", ex, $"no answer within {within} s");
+        }
         catch (Exception ex) when (ex is not FeedRejectedException and not FeedUnreachableException)
         {
             throw new FeedUnreachableException($"{name}: {ex.Message.ReplaceLineEndings(" ").Trim()}", ex);
@@ -450,7 +450,7 @@ internal static class UpdateFeed
     /// Validates manifest bytes (UTF-8 JSON, a leading BOM allowed) for <paramref name="channel"/>: schema 1, the channel it says, a
     /// version in canonical form ("0.4.2", "0.4.3-dev.7", no "v") of that channel (stable: a plain X.Y.Z; dev: an X.Y.Z-dev.N, a
     /// plain release in dev.json is refused: releases are published in stable.json only), tag "v"+version, an ISO 8601
-    /// <c>published</c> time, an https exe asset with a size &gt; 0 and a lowercase SHA-256, https for every other URL. Unknown fields
+    /// <c>published</c> time, an https exe asset with a size &gt; 0 and a lowercase SHA-256, https for every other asset URL (notesUrl is kept as signed and checked only when opened). Unknown fields
     /// are ignored. Does NOT check the signature (see <see cref="VerifyAny"/>).
     /// </summary>
     internal static FeedManifest? ParseManifest(byte[] json, string channel, out string? problem)
@@ -476,8 +476,7 @@ internal static class UpdateFeed
             if (!s_isoStart.IsMatch(publishedText)
                 || !DateTimeOffset.TryParse(publishedText, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var published))
             { problem = "published is missing or not an ISO 8601 time"; return null; }
-            string notes = Str(root, "notesUrl");
-            if (notes.Length > 0 && !IsHttps(notes)) { problem = "notesUrl is not an https URL"; return null; }
+            string notes = Str(root, "notesUrl");   // kept as signed; only opened after NotesPage has checked it (a bad one means the fallback page, never a refused manifest)
             if (!root.TryGetProperty("assets", out var assets) || assets.ValueKind != JsonValueKind.Object) { problem = "manifest has no assets"; return null; }
             if (!assets.TryGetProperty("exe", out var exeEl) || exeEl.ValueKind != JsonValueKind.Object) { problem = "manifest has no exe asset"; return null; }
             var exe = Asset(exeEl, "exe", out problem);
@@ -502,20 +501,7 @@ internal static class UpdateFeed
         }
     }
 
-    /// <summary>
-    /// Why a verified manifest is stale, or null when it is fresh: below <paramref name="floor"/> (the highest version verified before
-    /// on its channel: a replayed old manifest), published more than <see cref="MaxAge"/> before <paramref name="now"/>, or more than
-    /// <see cref="MaxFuture"/> after it. (Older than the running exe is decided by the updater, which knows the channel rules.)
-    /// </summary>
-    internal static string? StaleReason(FeedManifest m, ReleaseVersion? floor, DateTimeOffset now)
-    {
-        if (FloorReason(m, floor) is { } below) return below;
-        if (now - m.Published > MaxAge) return $"published {m.Published:yyyy-MM-dd}, more than {MaxAge.TotalDays:0} days ago";
-        if (m.Published - now > MaxFuture) return $"published {m.Published:yyyy-MM-dd HH:mm}Z, more than {MaxFuture.TotalDays:0} day in the future";
-        return null;
-    }
-
-    /// <summary>The floor part of <see cref="StaleReason"/> (all the signed GitHub path checks: a release may well be older than 90 days): why <paramref name="m"/> is below <paramref name="floor"/>, or null.</summary>
+    /// <summary>The floor check: why <paramref name="m"/> is below <paramref name="floor"/> (the highest version verified before on its channel: a replayed older manifest), or null. There is no age rule.</summary>
     internal static string? FloorReason(FeedManifest m, ReleaseVersion? floor) =>
         floor is { } f && m.Version < f ? $"v{m.Version} is older than v{f}, verified before" : null;
 
@@ -538,11 +524,26 @@ internal static class UpdateFeed
             : (m.Exe, Packaging.SelfContained);
     }
 
-    /// <summary>The updater's view of a feed manifest: the asset <see cref="PickAsset"/> chooses, ShaUrl empty, <see cref="UpdateInfo.Sha256"/> carries the hash.</summary>
+    /// <summary>Where the release notes go when a manifest's <c>notesUrl</c> is missing, not https or not under its feed's base.</summary>
+    internal const string FallbackNotesPage = "https://euphoric.software/";
+
+    /// <summary>
+    /// <paramref name="notesUrl"/> (a signed manifest's <c>notesUrl</c>) as the address to open, or null: only an https URL strictly under
+    /// <paramref name="feedBase"/>, the base of the very feed that manifest came from (<see cref="IsUnder"/>), passes. The result is the
+    /// normalised <see cref="Uri.AbsoluteUri"/>, which is what the shell is given (what was checked is what is opened). Null feedBase: null.
+    /// </summary>
+    internal static string? NotesPage(string? notesUrl, string? feedBase)
+    {
+        if (string.IsNullOrWhiteSpace(notesUrl) || feedBase == null || notesUrl.Length > 2048 || notesUrl.Any(c => char.IsControl(c) || char.IsWhiteSpace(c))) return null;
+        if (!IsUnder(notesUrl, feedBase)) return null;
+        return Uri.TryCreate(notesUrl, UriKind.Absolute, out var u) ? u.AbsoluteUri : null;
+    }
+
+    /// <summary>The updater's view of a feed manifest: the asset <see cref="PickAsset"/> chooses, <see cref="UpdateInfo.Sha256"/> carries the signed hash, <see cref="UpdateInfo.NotesUrl"/> the manifest's notes address as signed (checked only when opened).</summary>
     internal static UpdateInfo ToUpdateInfo(FeedManifest m, Packaging packaging = Packaging.SelfContained, IEnumerable<Version>? installedRuntimes = null)
     {
         var (a, flavour) = PickAsset(m, packaging, installedRuntimes);
-        return new(m.Version, m.Tag, a.Url, a.Size, "", m.NotesUrl, "", a.Sha256, flavour, FromFeed: true);
+        return new(m.Version, m.Tag, a.Url, a.Size, a.Sha256, m.NotesUrl, flavour);
     }
 
     private static string NameOf(string url) =>

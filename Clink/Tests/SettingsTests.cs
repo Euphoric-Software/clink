@@ -112,6 +112,158 @@ internal static class SettingsTests
         }
     }
 
+    // ------------------------------------------------------------------ a v0.4.1 settings.json (users of v0.4.1 upgrade by hand)
+
+    // Every key v0.4.1 wrote (git show v0.4.1:Clink/Services/Settings.cs), with values a real user has and none of them a default: hotkeys,
+    // folders, encoder, toasts, archive, the legacy UpdateRepo and the pending-update record of a download v0.4.1 made itself.
+    private const string V041 = """
+        {
+          "SchemaVersion": 3,
+          "MonitorDevice": "\\\\.\\DISPLAY2",
+          "Fps": 30,
+          "BitrateMbps": 35,
+          "Codec": "hevc",
+          "Resolution": "1440p",
+          "BufferSeconds": 120,
+          "CaptureCursor": false,
+          "Hotkey": { "Ctrl": true, "Alt": true, "Shift": false, "Win": false, "Vk": 121 },
+          "TrackDesktop": true,
+          "TrackGame": false,
+          "TrackMic": false,
+          "TrackVoice": true,
+          "AllDeviceId": "in:{0.0.1.00000000}.{55555555-5555-5555-5555-555555555555}",
+          "GameProcess": "VALORANT-Win64-Shipping",
+          "MicDeviceId": "{0.0.1.00000000}.{33333333-3333-3333-3333-333333333333}",
+          "VoiceApp": "Discord",
+          "ClickSound": false,
+          "ClickVolume": 0.35,
+          "ClipsFolder": "D:\\Videos\\Clink Clips",
+          "CopiumTokenProtected": "AQAAANCMnd8BFdERjHoAwE/Cl+sBAAAAexample",
+          "StartMinimized": true,
+          "RunAtStartup": true,
+          "ShowToast": false,
+          "HdrKnee": 0.8,
+          "HdrPeak": 6,
+          "KeyframeSeconds": 2,
+          "WindowX": 140,
+          "WindowY": 90,
+          "AutoUpdate": false,
+          "UseDevBuilds": true,
+          "UpdateRepo": "Euphoric-Software/clink",
+          "LastUpdateCheck": "2026-10-21T18:32:30.3344936Z",
+          "RecordingMode": "always",
+          "CustomApps": [ "obs64", "VALORANT-Win64-Shipping" ],
+          "Hotkeys": [
+            { "Keys": { "Ctrl": true, "Alt": true, "Shift": false, "Win": false, "Vk": 121 }, "Action": "clip", "Seconds": 0 },
+            { "Keys": { "Ctrl": false, "Alt": false, "Shift": false, "Win": false, "Vk": 120 }, "Action": "clip", "Seconds": 30 },
+            { "Keys": { "Ctrl": false, "Alt": false, "Shift": false, "Win": false, "Vk": 19 }, "Action": "pause", "Seconds": 0 },
+            { "Keys": { "Ctrl": true, "Alt": false, "Shift": true, "Win": false, "Vk": 83 }, "Action": "share-last", "Seconds": 0 },
+            { "Keys": { "Ctrl": false, "Alt": false, "Shift": false, "Win": false, "Vk": 44 }, "Action": "screenshot", "Seconds": 0 },
+            { "Keys": { "Ctrl": false, "Alt": false, "Shift": true, "Win": false, "Vk": 44 }, "Action": "screenshot-edit-last", "Seconds": 0 }
+          ],
+          "ToastPosition": "top-right",
+          "ToastClip": { "Enabled": false, "Seconds": 9 },
+          "ToastShared": { "Enabled": false, "Seconds": 3 },
+          "ToastRecording": { "Enabled": false, "Seconds": 2 },
+          "StatusDot": true,
+          "StatusDotPosition": "bottom-left",
+          "SizeTarget": "discord50",
+          "CopiumPlus": true,
+          "AudioSetupSeen": true,
+          "CaptureBorderNoticeDismissed": true,
+          "ArchiveEnabled": true,
+          "ArchivePath": "\\\\nas\\clips\\Clink",
+          "ArchiveAfterDays": 14,
+          "ArchiveWhenLocalExceedsGB": 250.5,
+          "WindowWidth": 1346,
+          "WindowHeight": 793,
+          "PendingUpdateVersion": "0.4.1",
+          "PendingUpdateSha256": "0A1B2C3D4E5F60718293A4B5C6D7E8F90A1B2C3D4E5F60718293A4B5C6D7E8F9",
+          "PendingUpdateFrom": "0.4.0",
+          "Theme": "light",
+          "Accent": "violet",
+          "ImportDeclined": "Some.Package_abc|638650000000000000",
+          "ScreenshotsEnabled": true,
+          "ScreenshotsFolder": "D:\\Pictures\\Clink Shots",
+          "ScreenshotMode": "after",
+          "ScreenshotEditor": {
+            "Color": "#43A047", "Width": 6, "TextColor": "#000000", "FontSize": 36, "Bold": true, "TextBackdrop": "box", "BackdropColor": "#FFFFFF",
+            "BlurRadius": 10, "PixelateBlock": 16, "HighlightColor": "#FF9800", "HighlightWidth": 24, "HighlightFreehand": true,
+            "SpotDim": 0.6, "SpotRadius": 20, "SpotGradient": true, "SpotFalloffPercent": 50, "MagnifyZoom": 3, "MagnifyOutline": false,
+            "MagnifyOutlineColor": "#000000", "MagnifyOutlineWidth": 5, "MagnifySmooth": true, "ImageOpacity": 0.9
+          },
+          "ScreenshotCopyImage": false,
+          "ScreenshotLoupe": false,
+          "ScreenshotUpload": true,
+          "ScreenshotCopyLink": false,
+          "CopiumImageUploadUrl": "https://img.copium.pics/upload",
+          "CopiumConsent": true,
+          "CopiumConsentDontAsk": true,
+          "CopiumConsentPromptedUtc": "2026-09-30T08:15:00Z",
+          "CopiumConsentPromptCount": 2,
+          "CopiumConsentScreenshots": 7,
+          "CloudSharingEnabled": false,
+          "ClipsEnabled": false,
+          "LibraryFeature": "screenshots",
+          "LibraryLevel": "shared",
+          "ScreenshotEditorExcludeFromCapture": false,
+          "ToastScreenshot": { "Enabled": false, "Seconds": 11 },
+          "SeededHotkeyDefaults": [ "screenshot", "screenshot-edit-last" ]
+        }
+        """;
+
+    /// <summary>Every key (nested ones too) of <paramref name="expected"/> is in <paramref name="actual"/> with the same value; null if so, else the first path that differs.</summary>
+    private static string? Missing(JsonElement expected, JsonElement actual, string at)
+    {
+        if (expected.ValueKind == JsonValueKind.Object)
+        {
+            if (actual.ValueKind != JsonValueKind.Object) return at;
+            foreach (var p in expected.EnumerateObject())
+            {
+                if (!actual.TryGetProperty(p.Name, out var other)) return at + "." + p.Name + " (gone)";
+                if (Missing(p.Value, other, at + "." + p.Name) is { } where) return where;
+            }
+            return null;
+        }
+        if (expected.ValueKind == JsonValueKind.Array)
+        {
+            if (actual.ValueKind != JsonValueKind.Array || actual.GetArrayLength() != expected.GetArrayLength()) return at + " (length)";
+            int i = 0;
+            foreach (var (e, a) in expected.EnumerateArray().Zip(actual.EnumerateArray()))
+                if (Missing(e, a, $"{at}[{i++}]") is { } where) return where;
+            return null;
+        }
+        return JsonSame(expected, actual) ? null : $"{at}: {expected.GetRawText()} became {actual.GetRawText()}";
+    }
+
+    [UnitTest]
+    public static void A_v041_settings_file_loads_whole_and_every_key_survives_a_save()
+    {
+        Settings.SeedDefaults = true;   // as in the app (the file has seen both defaults, so nothing is added)
+        using var dir = new TempDir();
+        using var fixture = JsonDocument.Parse(V041);
+        var s = LoadFrom(dir, V041);
+        Check.True(s.LoadedFromFile);
+        Check.False(s.FileWasSkipped);
+        Check.Equal(Array.Empty<string>(), s.UnreadableValues.ToArray(), "nothing unreadable");
+        Check.Null(s.LoadProblem);
+        Check.True(s.Unknown == null || s.Unknown.Count == 0, "every v0.4.1 key is still a setting: " + string.Join(", ", s.Unknown?.Keys ?? Enumerable.Empty<string>()));
+        Check.Null(Missing(fixture.RootElement, s.ToElement(), "$"), "loaded as written, nothing reset to its default");
+        Check.Equal("Euphoric-Software/clink", s.UpdateRepo, "the legacy key is kept (ignored)");
+        Check.Equal(@"D:\Videos\Clink Clips", s.ClipsFolder);
+        Check.Equal(6, s.Hotkeys.Count);
+        Check.Equal(121, s.Hotkeys[0].Keys.Vk);
+        Check.Null(s.PendingUpdateSignedSha256, "v0.4.1 never had the signed hash: its download is not one to install");
+
+        s.Save();
+        var again = Settings.Load();
+        Check.Equal(Array.Empty<string>(), again.UnreadableValues.ToArray());
+        Check.Null(again.LoadProblem);
+        using var saved = JsonDocument.Parse(File.ReadAllText(dir.File("settings.json")));
+        Check.Null(Missing(fixture.RootElement, saved.RootElement, "$"), "every key is in the saved file, with its value");
+        Check.Null(Missing(fixture.RootElement, again.ToElement(), "$"), "and reads back the same");
+    }
+
     // ------------------------------------------------------------------ fresh install, defaults
 
     [UnitTest]

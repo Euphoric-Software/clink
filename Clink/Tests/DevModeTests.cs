@@ -300,14 +300,14 @@ internal static class DevModeTests
         var settings = Settings.FromJson("""{ "UpdateRepo": "owner/repo", "AutoUpdate": true }""");
 
         var normal = new Updater(settings);
-        Check.Equal("owner/repo", normal.Repo, "outside --dev the repository of the settings counts");
+        Check.True(normal.UpdatesEnabled, "outside --dev a build with a signed feed updates");
 
         Check.Null(normal.LastError, "a normal Clink starts without a complaint");
         AppController.InstanceSuffix = ".dev.test";
         var up = new Updater(settings);
         Check.Equal("updates are off in dev mode", up.LastError, "the window shows this in the Updates card from the start");
         Check.True(up.CheckFailed);
-        Check.Null(up.Repo);
+        Check.False(up.UpdatesEnabled, "a dev instance never updates, whatever the feed says");
         Check.False(up.TryGetPendingUpdate(out _, out _));
         var info = up.CheckNowAsync().GetAwaiter().GetResult();   // returns at once: nothing is awaited
         Check.Null(info);
@@ -316,7 +316,7 @@ internal static class DevModeTests
         Check.Contains(up.LastError, "dev mode");
         Check.Throws<InvalidOperationException>(() => up.LaunchApply(real, @"C:\x\Clink.exe", Array.Empty<string>()));
         Check.Throws<InvalidOperationException>(() => up.PrepareApply(real));
-        var release = new UpdateInfo(new ReleaseVersion(new Version(9, 9, 9), null), "v9.9.9", "https://example.invalid/Clink.exe", 1, "https://example.invalid/Clink.exe.sha256", "", "");
+        var release = new UpdateInfo(new ReleaseVersion(new Version(9, 9, 9), null), "v9.9.9", "https://example.invalid/Clink.exe", 1, new string('a', 64), "");
         Check.Throws<InvalidOperationException>(() => up.DownloadAsync(release, null, CancellationToken.None).GetAwaiter().GetResult());
         Check.Equal("exe", File.ReadAllText(real), "what is in the updates folder is left alone");
         Check.Equal(1, Directory.GetFileSystemEntries(Updater.UpdatesDir).Length);
