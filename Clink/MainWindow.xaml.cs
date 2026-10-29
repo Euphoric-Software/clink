@@ -1119,7 +1119,8 @@ public partial class MainWindow : Window
         // mode" the updater leaves as its status (Updater.LastError) is not shown a second time as a problem.
         string? problem = _app.Updater.InstallProblem
             ?? (_app.Updater.LastError is string err && !(AppController.IsDev && string.Equals(err, Updater.DevModeNote, StringComparison.OrdinalIgnoreCase))
-                ? (_app.Updater.CheckFailed ? "Last check failed: " : "Update problem: ") + err : null);
+                ? (_app.Updater.CheckFailed ? "Last check failed: " : "Update problem: ") + err : null)
+            ?? _app.Updater.SoftNote;   // a soft result (a warning: GitHub could not confirm what the signed feed says) shows where a problem would
         UpdateProblemText.Text = problem ?? "";
         UpdateProblemText.Visibility = problem != null ? Visibility.Visible : Visibility.Collapsed;
         CheckUpdateButton.IsEnabled = _app.Updater.Repo != null;
@@ -1204,8 +1205,10 @@ public partial class MainWindow : Window
                 if (_app.LastNotice != text) _app.Say(text); else _noticeUntil = DateTime.UtcNow.AddSeconds(4);
             }
             var info = await check;
-            string releasePage = info == null || string.IsNullOrEmpty(info.HtmlUrl) ? $"https://github.com/{up.Repo}/releases/latest" : info.HtmlUrl;
-            if (info == null) _app.Say(up.LastError != null ? "Update check failed: " + up.LastError : $"You're up to date (v{up.VersionDisplay})");
+            // HtmlUrl is GitHub's html_url on the GitHub path and the signed manifest's notesUrl on the feed path (either may be anything but
+            // is checked): it is opened only when it is exactly <this repo>'s releases/latest or releases/tag/<tag>, else the repo's own releases page.
+            string releasePage = up.ReleasePageFor(info);
+            if (info == null) _app.Say(up.LastError != null ? "Update check failed: " + up.LastError : up.SoftNote ?? $"You're up to date (v{up.VersionDisplay})");
             else if (_app.PendingVersion is ReleaseVersion pending && pending >= info.Version) _app.Say($"Update v{info.Version} is ready - click 'Update to v{pending}' to restart");
             else if (!_app.Settings.AutoUpdate)
             {
@@ -1233,7 +1236,9 @@ public partial class MainWindow : Window
 
     private void OpenUrl(string url)
     {
-        try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); }
+        // The release page is the only URL opened from here; the shell never gets anything that is not a github.com release page of the updater's repo.
+        if (Updater.OwnReleasePage(url, _app.Updater.Repo) is not { } page) { _app.Say("Not opening an unexpected release page address"); return; }
+        try { Process.Start(new ProcessStartInfo(page) { UseShellExecute = true }); }
         catch (Exception ex) { _app.Say("Could not open the browser: " + ex.Message); }
     }
 

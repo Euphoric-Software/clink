@@ -225,13 +225,15 @@ internal static class TestRunner
     private sealed record Shared(string? SettingsDir, string? ClipIndex, string? UpdatesDir, string InstanceSuffix, bool DevHotkeys, bool DevAcceptImport, bool DevToken, bool DevRecord, bool DevQuiet, bool DevQuietRecord, bool DevNoMarker, string? DevDemoStatus,
         string? RealDir, string? PackagesRoot,
         Func<System.Net.Http.HttpRequestMessage, CancellationToken, Task<System.Net.Http.HttpResponseMessage>>? UpdaterHttp, FeedTrust? FeedTrust, string? BuiltInRepo,
-        TimeSpan? FeedTimeout, Packaging? Packaging, Func<string, TimeSpan, Updater.PreflightResult>? Preflight, IReadOnlyList<Version>? Runtimes, bool? Elevated)
+        TimeSpan? FeedTimeout, Packaging? Packaging, Func<string, TimeSpan, Updater.PreflightResult>? Preflight, IReadOnlyList<Version>? Runtimes, bool? Elevated,
+        Func<DateTimeOffset>? UpdaterClock, TimeSpan? GitHubTimeout, TimeSpan? DownloadAnswerTimeout, TimeSpan? DownloadReadTimeout, Action<string, bool>? SendObserver)
     {
         public static Shared Capture() => new(Settings.DirOverride, ClipLibrary.IndexPathOverride, Updater.UpdatesDirOverride,
             AppController.InstanceSuffix, AppController.DevHotkeys, AppController.DevAcceptImport, AppController.DevToken, AppController.DevRecord, AppController.DevQuiet, AppController.DevQuietRecord, AppController.DevNoMarker, AppController.DevDemoStatus,
             Settings.RealDirOverride, SettingsImport.PackagesRoot,
             Updater.HttpOverride, Updater.FeedOverride, Updater.BuiltInRepoOverride, Updater.FeedTimeoutOverride,
-            Updater.PackagingOverride, Updater.PreflightOverride, DotNetRuntimes.Override, Updater.IsElevatedOverride);
+            Updater.PackagingOverride, Updater.PreflightOverride, DotNetRuntimes.Override, Updater.IsElevatedOverride,
+            Updater.ClockOverride, Updater.GitHubTimeoutOverride, Updater.DownloadAnswerTimeoutOverride, Updater.DownloadReadTimeoutOverride, Updater.SendObserver);
     }
 
     /// <summary>
@@ -261,6 +263,11 @@ internal static class TestRunner
         Updater.FeedOverride = before.FeedTrust;
         Updater.BuiltInRepoOverride = before.BuiltInRepo;
         Updater.FeedTimeoutOverride = before.FeedTimeout;
+        Updater.ClockOverride = before.UpdaterClock;        // the updater's fake clock, its test timeouts and the client probe
+        Updater.GitHubTimeoutOverride = before.GitHubTimeout;
+        Updater.DownloadAnswerTimeoutOverride = before.DownloadAnswerTimeout;
+        Updater.DownloadReadTimeoutOverride = before.DownloadReadTimeout;
+        Updater.SendObserver = before.SendObserver;
         Updater.PackagingOverride = scratch != null ? Packaging.SelfContained : before.Packaging;   // tests run as the portable flavour (updates\ folder, Clink.exe) unless they say otherwise
         Updater.PreflightOverride = scratch != null ? static (_, _) => new(0, false, null) : before.Preflight;   // never a real process; a test installs its own fake
         DotNetRuntimes.Override = scratch != null ? new[] { new Version(10, 0, 0) } : before.Runtimes;
