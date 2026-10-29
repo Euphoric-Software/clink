@@ -1,7 +1,8 @@
-# Publishes a dev build of Clink as a GitHub PRERELEASE whenever the dev branch is
+# Publishes a dev build of Clink to the dev feed bucket (when feed.json enables the feed) and records it as a private GitHub PRERELEASE
+# (the archive, the audit trail and the history floor) whenever the dev branch is
 # pushed (or run by hand from the Actions tab, dev branch only). Clink installs it
 # only when "Dev Build" is ticked in its version popup (click the version in the
-# footer); the stable channel (/releases/latest) never sees a prerelease.
+# footer); the stable channel never sees a dev build. The app never contacts GitHub.
 #
 # Version: X.Y.Z-dev.N. X.Y.Z is <Version> in Clink/Clink.csproj when that is
 # ahead of the latest release (a bumped csproj gives a true prerelease of the
@@ -10,12 +11,17 @@
 # final build. N grows with every dev build (run number, or above the highest
 # existing dev tag); the app compares N numerically.
 #
-# Two jobs (contract v2, see docs/RELEASING.md):
+# Three jobs (contract v2, see docs/RELEASING.md):
 #   build   - no secrets, no environment, contents: read. Builds, runs the unit tests (a dev build never ships with failing
-#             tests), packages and uploads the package as an artifact.
-#   publish - environment feed-dev (limited to the dev branch). Guards, re-checks the artifact, signs the dev manifest when
-#             Clink/Assets/feed.json enables the feed, creates a DRAFT prerelease, uploads to the bucket, publishes the
-#             draft, prunes.
+#             tests), packages and uploads the package as an artifact (kept 1 day).
+#   publish - NO environment (the plan has none on a private repo), contents: write only; the signing key, the R2 credentials and the
+#             purge token are REPO secrets, named only by the steps that need them; the job runs only for a push to refs/heads/dev (or a dispatch on it).
+#             Guards, re-checks the artifact, REFUSES to publish while Clink/Assets/feed.json does not enable the feed (a red
+#             publish job on every dev push until the feed-on commit lands; the build job still runs), writes notes.txt, signs the dev
+#             manifest, creates a DRAFT prerelease, verifies it by ID, uploads to the bucket,
+#             verifies the draft AGAIN right before publishing it, publishes it, verifies the published release and tag (a failed
+#             second or third check deletes the release: docs/RELEASING.md, "Integrity incident"), prunes.
+#   cleanup - actions: write and nothing else, no checkout, no action, no secret: deletes this run's own build artifact (always, after publish).
 # Only the 10 newest dev builds are kept (GitHub prereleases and bucket folders).
 #
 # Same rules as release.yml: the assets are named exactly "Clink.exe" and "Clink-framework.exe", each with a
@@ -47,14 +53,29 @@ jobs:
       pkg_sha256: ${{ steps.package.outputs.pkg_sha256 }}
       setup_sha256: ${{ steps.package.outputs.setup_sha256 }}
       notices_sha256: ${{ steps.package.outputs.notices_sha256 }}
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      min_stable: ${{ steps.seeds.outputs.min_stable }}
+      min_dev: ${{ steps.seeds.outputs.min_dev }}
     steps:
       - name: Check out
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
 
+      # A fresh NuGet package folder and HTTP cache per run, under the runner temp folder: nothing a runner image or an earlier job left in
+      # ~/.nuget/packages is ever used, so every package is downloaded and its signature checked by this restore. No actions/cache here.
+      # The restore record is checked after the publish step below (tools/lib/nuget-restore-lib.ps1).
+      - name: Fresh NuGet folders
+        shell: pwsh
+        run: |
+          . ./tools/lib/nuget-restore-lib.ps1
+          $folders = New-FreshNuGetFolders -TempRoot $env:RUNNER_TEMP -RunId $env:GITHUB_RUN_ID -RunAttempt $env:GITHUB_RUN_ATTEMPT
+          Add-Content -Path $env:GITHUB_ENV -Value "NUGET_PACKAGES=$($folders.Packages)"
+          Add-Content -Path $env:GITHUB_ENV -Value "NUGET_HTTP_CACHE_PATH=$($folders.HttpCache)"
+          Write-Output "NuGet packages: $($folders.Packages)"
+
       - name: Set up .NET
-        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
           global-json-file: global.json
 
@@ -71,9 +92,48 @@ jobs:
         run: |
           if ($env:GITHUB_REF -ne 'refs/heads/dev') { throw "dev builds publish only from the dev branch (this run is on $env:GITHUB_REF)" }
 
+      # M1. The embedded floor seeds: the newest PUBLISHED stable and the newest PUBLISHED dev release that carried a manifest (the same
+      # Get-FeedHistoryFloor the publish job uses for its history floor), read with the job's read token (contents: read, GET only). They
+      # become -p:ClinkMinStable / -p:ClinkMinDev for the unit-tested build below AND for both published flavours, so the binary that is
+      # tested is the binary that ships. Each must be exactly X.Y.Z or X.Y.Z-dev.N (no ';' reaches MSBuild); empty = no seed. L-4: only
+      # releases made by github-actions[bot] count (the author column). The seeds are also job outputs: the publish job refuses when its
+      # dev history floor differs from the dev seed.
+      - name: Find the embedded floor seeds
+        id: seeds
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          . ./tools/lib/feed-publish-lib.ps1
+          $listing = @(& gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" --paginate --jq '.[] | [.tag_name, (.draft | tostring), ([.assets[].name] | join(",")), (.author.login | tostring)] | @tsv')
+          if ($LASTEXITCODE -ne 0) { throw 'Could not list the earlier releases.' }
+          $seeds = Get-FeedFloorSeeds -Listing $listing
+          Write-Output "Embedded floor seeds: stable '$($seeds.Stable)', dev '$($seeds.Dev)'"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "min_stable=$($seeds.Stable)"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "min_dev=$($seeds.Dev)"
+
       - name: Build
         shell: pwsh
-        run: dotnet build Clink/Clink.csproj -c Release
+        env:
+          MIN_STABLE: ${{ steps.seeds.outputs.min_stable }}
+          MIN_DEV: ${{ steps.seeds.outputs.min_dev }}
+        run: |
+          $props = @()
+          if ($env:MIN_STABLE) { $props += "-p:ClinkMinStable=$env:MIN_STABLE" }
+          if ($env:MIN_DEV) { $props += "-p:ClinkMinDev=$env:MIN_DEV" }
+          dotnet build Clink/Clink.csproj -c Release @props
+
+      # The Windows build and the Media Foundation files of this runner image, for the log (same step as build.yml): the unit tests
+      # below encode and decode video, so when one behaves differently from a PC, this says what the image was.
+      - name: Windows and Media Foundation versions
+        shell: pwsh
+        run: |
+          $cv = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
+          "OS: $([Environment]::OSVersion.VersionString); $($cv.ProductName) $($cv.DisplayVersion), build $($cv.CurrentBuild).$($cv.UBR)"
+          foreach ($dll in 'mfplat.dll', 'mfmp4srcsnk.dll', 'msauddecmft.dll', 'mfh264enc.dll', 'msmpeg2vdec.dll') {
+            $file = Join-Path $env:windir "System32\$dll"
+            if (Test-Path $file) { "$dll $((Get-Item $file).VersionInfo.FileVersionRaw)" } else { "$dll not found" }
+          }
 
       # Clink.exe is a GUI-subsystem exe: Start-Process -Wait -PassThru -NoNewWindow
       # is what shows its output and gives its exit code (same as build.yml).
@@ -84,7 +144,14 @@ jobs:
           CLINK_TESTS_NO_SKIP: '1'
         run: |
           . ./tools/feed-lib.ps1
-          $env:CLINK_EXPECT_FEED = (Get-FeedConfig -Path Clink/Assets/feed.json -Channel dev).Mode
+          # What CI reads from Clink/Assets/feed.json, for the embedded-feed self-test: the state, and the two resolved bases (normalised;
+          # the dev base is devFeedUrl, or feedUrl when that is empty). The test compares them ordinally with the bases the built exe
+          # resolves, and only when the variables are set (with the feed off both are empty, so the state alone is compared).
+          $stableCfg = Get-FeedConfig -Path Clink/Assets/feed.json -Channel stable
+          $devCfg = Get-FeedConfig -Path Clink/Assets/feed.json -Channel dev
+          $env:CLINK_EXPECT_FEED = $devCfg.Mode
+          $env:CLINK_EXPECT_FEED_URL = $stableCfg.FeedUrl
+          $env:CLINK_EXPECT_DEV_FEED_URL = $devCfg.FeedUrl
           $exe = Get-ChildItem -Path Clink/bin/Release -Filter Clink.exe -Recurse | Select-Object -First 1
           if (-not $exe) { throw 'Clink.exe was not found under Clink/bin/Release' }
           $run = Start-Process -FilePath $exe.FullName -ArgumentList '--unittest' -Wait -PassThru -NoNewWindow
@@ -107,21 +174,34 @@ jobs:
           $out = (& gh api "repos/$env:GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>&1 | Out-String)
           $code = $LASTEXITCODE
           $ErrorActionPreference = $eap
-          if ($code -eq 0) { $latest = [version](($out.Trim() -replace '^v', '') -replace '-.*$', '') }
-          elseif ($out -cmatch '\(HTTP 404\)') { $latest = [version]'0.0.0' }
+          if ($code -eq 0) {
+            $latest = [version](($out.Trim() -replace '^v', '') -replace '-.*$', '')
+            Write-Output "releases/latest answered with a release (200 path): $($out.Trim())"
+          }
+          elseif ($out -cmatch '\(HTTP 404\)') {
+            $latest = [version]'0.0.0'
+            Write-Output 'releases/latest answered HTTP 404 (404 path): the repository has no latest release yet'
+          }
           else { throw "Could not read the latest release: $out" }
 
           if ($csproj -gt $latest) { $xyz = "$($csproj.Major).$($csproj.Minor).$($csproj.Build)" }
           else { $xyz = "$($latest.Major).$($latest.Minor).$($latest.Build + 1)" }
 
-          # N: the run number, but always above every dev build already published (tags of deleted runs, re-runs, a reset counter).
-          $tags = & gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" --jq '.[].tag_name'
+          # N: the run number, but always above every dev N that is already taken: by a release (every page of the listing; this read token
+          # sees published releases only, drafts are invisible to it) or by a git tag. The tag list matters because an immutable release
+          # keeps its tag after the release itself is deleted (the prune step does that), so a pruned run's number must never come back.
+          $tags = @(& gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" --paginate --jq '.[].tag_name')
           if ($LASTEXITCODE -ne 0) { throw 'Could not list the releases' }
-          $maxN = 0
+          $refs = @(& gh api "repos/$env:GITHUB_REPOSITORY/git/matching-refs/tags/v?per_page=100" --paginate --jq '.[].ref')
+          if ($LASTEXITCODE -ne 0) { throw 'Could not list the tags' }
+          $maxN = [int64]0
           foreach ($tag in $tags) {
-            if ($tag -match '^v[0-9]+\.[0-9]+\.[0-9]+-dev\.([0-9]+)$') { $maxN = [Math]::Max($maxN, [int]$Matches[1]) }
+            if (([string]$tag) -cmatch '\Av[0-9]+\.[0-9]+\.[0-9]+-dev\.([0-9]+)\z') { $maxN = [Math]::Max($maxN, [int64]$Matches[1]) }
           }
-          $n = [Math]::Max([int]$env:GITHUB_RUN_NUMBER, $maxN + 1)
+          foreach ($ref in $refs) {
+            if (([string]$ref) -cmatch '\Arefs/tags/v[0-9]+\.[0-9]+\.[0-9]+-dev\.([0-9]+)\z') { $maxN = [Math]::Max($maxN, [int64]$Matches[1]) }
+          }
+          $n = [Math]::Max([int64]$env:GITHUB_RUN_NUMBER, $maxN + 1)
 
           $version = "$xyz-dev.$n"
           if ($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+-dev\.[0-9]+$') { throw "'$version' is not a valid version (expected X.Y.Z-dev.N)" }
@@ -134,9 +214,20 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
           UPDATE_REPO: ${{ github.repository }}
+          MIN_STABLE: ${{ steps.seeds.outputs.min_stable }}
+          MIN_DEV: ${{ steps.seeds.outputs.min_dev }}
         run: |
-          ./tools/publish-flavours.ps1 -Version $env:VERSION -UpdateRepo $env:UPDATE_REPO
+          ./tools/publish-flavours.ps1 -Version $env:VERSION -UpdateRepo $env:UPDATE_REPO -MinStable $env:MIN_STABLE -MinDev $env:MIN_DEV
           Get-ChildItem dist/sc, dist/fx | Select-Object FullName, Length
+
+      # What NuGet itself recorded for the three restores (the plain build in obj, and obj_sc, obj_fx): nuget.org is the only source, no
+      # fallback folder, the package folder is the fresh one, the repo nuget.config was read (a --configfile restore or a
+      # RestoreFallbackFolders property would show here), and every package's .nupkg.metadata names nuget.org.
+      - name: Verify the NuGet restore (nuget.org only, fresh package folder)
+        shell: pwsh
+        run: |
+          . ./tools/lib/nuget-restore-lib.ps1
+          Assert-NuGetRestoreTrusted -AssetsFile Clink/obj/project.assets.json, Clink/obj_sc/project.assets.json, Clink/obj_fx/project.assets.json
 
       # THIRD-PARTY-NOTICES.txt must match tools/notices/sources.json (hashes of every licence text) and the runtime packs / SDK
       # reference / CsWin32 this restore actually used. Fails when the file is stale or the assets file lacks the runtime packs.
@@ -185,8 +276,14 @@ jobs:
         run: |
           . ./tools/feed-lib.ps1
           $cfg = Get-FeedConfig -Path Clink/Assets/feed.json -Channel dev
+          $stableCfg = Get-FeedConfig -Path Clink/Assets/feed.json -Channel stable
           Write-Output "Expecting the built exes to embed the feed as: $($cfg.Mode)"
-          ./tools/check-published.ps1 -ScExe dist/sc/Clink.exe -FxExe dist/fx/Clink.exe -Version $env:VERSION -ExpectFeed $cfg.Mode -TimeoutSeconds 90
+          # The two bases (normalised) are what the exe's self-test compares with the bases it resolved; with the feed off both are empty and are not passed.
+          if ($cfg.Mode -eq 'on') {
+            ./tools/check-published.ps1 -ScExe dist/sc/Clink.exe -FxExe dist/fx/Clink.exe -Version $env:VERSION -ExpectFeed $cfg.Mode -ExpectFeedUrl $stableCfg.FeedUrl -ExpectDevFeedUrl $cfg.FeedUrl -TimeoutSeconds 90
+          } else {
+            ./tools/check-published.ps1 -ScExe dist/sc/Clink.exe -FxExe dist/fx/Clink.exe -Version $env:VERSION -ExpectFeed $cfg.Mode -TimeoutSeconds 90
+          }
 
       # Pinned Inno Setup 6.7.3 (>= 6.3 is needed for x64compatible). Official release asset of github.com/jrsoftware/issrc;
       # the SHA-256 below was computed from a scratch download and matches the digest GitHub shows for the asset.
@@ -223,32 +320,44 @@ jobs:
           Get-Content dist/package/Clink.exe.sha256, dist/package/Clink-framework.exe.sha256
 
       - name: Upload package artifact
+        id: upload
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: clink-package
           path: dist/package/
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 1
 
   publish:
     needs: build
     runs-on: windows-latest
-    environment: feed-dev
+    # No environment (not available on a private Free repo). First defence, evaluated before any step runs: the dev branch only, by push
+    # or a hand-started run on it. The first step ("Guard - dev branch only ...") checks the ref again before any secret is referenced.
+    if: github.ref == 'refs/heads/dev' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     # One publisher at a time, never cancelled half way.
     concurrency:
       group: feed-dev-publish
       cancel-in-progress: false
+    # contents: write ONLY. No actions: permission here: the build artifact is deleted by the separate cleanup job below, whose token has
+    # actions: write and nothing else, so no step or tool of this job can delete run logs, dispatch workflows or disable them.
     permissions:
       contents: write
+    # The write token is not put in the job-wide environment: only the steps that call gh name GH_TOKEN, so the aws, make-manifest and
+    # upload-feed steps do not get it in THEIR environment. That is hygiene, NOT isolation: the job's token exists for the whole job and
+    # any code that runs in the job (an action, a script) can obtain it. Real isolation needs a job split (a draft job, a feed job with
+    # the secrets, a publish job); docs/RELEASING.md lists it as a follow-up. The defence that exists today is the verification
+    # by release ID before and after publishing. The same goes for the repo secrets (docs/RELEASING.md, "Who can reach the secrets").
     env:
       VERSION: ${{ needs.build.outputs.version }}
-      GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
       # Guards run before any secret is referenced by a step.
       - name: Guard - dev branch only, release not yet there
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          if ($env:GITHUB_EVENT_NAME -cne 'push' -and $env:GITHUB_EVENT_NAME -cne 'workflow_dispatch') { throw "dev builds publish only for a push or a hand-started run on the dev branch (this run is a $env:GITHUB_EVENT_NAME event)" }
           if ($env:GITHUB_REF -ne 'refs/heads/dev') { throw "dev builds publish only from the dev branch (this run is on $env:GITHUB_REF)" }
           if ($env:VERSION -notmatch '^[0-9]+\.[0-9]+\.[0-9]+-dev\.[0-9]+$') { throw "'$env:VERSION' is not an X.Y.Z-dev.N version" }
           $eap = $ErrorActionPreference
@@ -258,11 +367,29 @@ jobs:
           $exists = $LASTEXITCODE -eq 0
           $global:LASTEXITCODE = 0                       # the runner appends an exit-code check; "not found" is handled below
           $ErrorActionPreference = $eap
-          if ($exists) { throw "A GitHub release v$env:VERSION already exists (published or draft); refusing to touch it." }
+          if ($exists) { throw "A GitHub release v$env:VERSION already exists (published or draft). A draft is what a failed earlier run leaves behind: check it, delete it (docs/RELEASING.md, 'Stale drafts') and re-run." }
           if ($probe -notmatch 'release not found|HTTP 404') { throw "Could not check whether release v$env:VERSION exists: $probe" }
 
+      # L2: the release must be tied to the commit that was built. A tag that already exists would make the release point at some
+      # other commit (or let a stale draft's tag be reused), so the tag ref must not exist yet; only HTTP 404 means "not there".
+      - name: Guard - the tag does not exist yet
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $eap = $ErrorActionPreference
+          $ErrorActionPreference = 'Continue'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $refOut = (& gh api "repos/$env:GITHUB_REPOSITORY/git/ref/tags/v$env:VERSION" 2>&1 | Out-String)
+          $refCode = $LASTEXITCODE
+          $global:LASTEXITCODE = 0                       # the runner appends an exit-code check; a 404 is handled below
+          $ErrorActionPreference = $eap
+          if ($refCode -eq 0) { throw "The tag v$env:VERSION already exists; a dev build creates its own tag at the built commit. Refusing to publish." }
+          if ($refOut -cnotmatch '\(HTTP 404\)') { throw "Could not check whether the tag v$env:VERSION exists (exit $refCode): $refOut" }
+          Write-Output "The tag v$env:VERSION does not exist yet (HTTP 404), as expected"
+
       - name: Check out
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
 
@@ -300,23 +427,36 @@ jobs:
           if ($setupLine -ne "$setup *Clink-Setup.exe") { throw "Clink-Setup.exe.sha256 does not describe Clink-Setup.exe: $setupLine" }
           Write-Output "Package verified (Clink.exe $exe, Clink-framework.exe $fx)"
 
-      # Trust anchors come from the committed Clink/Assets/feed.json (the same file that was embedded in Clink.exe).
+      # Trust anchors come from the committed Clink/Assets/feed.json (the same file that was embedded in Clink.exe). feed_url is the DEV
+      # channel's base: devFeedUrl, or feedUrl when devFeedUrl is empty (Get-FeedConfig -Channel dev).
       - name: Read feed configuration
         id: feed
         shell: pwsh
+        env:
+          CLINK_FEED_KEY_PREFIX: ${{ vars.CLINK_FEED_KEY_PREFIX }}
+          CLINK_IMMUTABLE_RELEASES: ${{ vars.CLINK_IMMUTABLE_RELEASES }}
         run: |
-          . ./tools/feed-lib.ps1
+          . ./tools/lib/feed-publish-lib.ps1
+          . ./tools/lib/release-mode-lib.ps1
           $cfg = Get-FeedConfig -Path Clink/Assets/feed.json -Channel dev
-          $enabled = $cfg.Enabled
-          if (-not $enabled) { Write-Output "::warning::Dev update feed is not enabled in Clink/Assets/feed.json ($($cfg.Reason)); publishing the GitHub release without manifest assets." }
-          Add-Content -Path $env:GITHUB_OUTPUT -Value ('enabled=' + $enabled.ToString().ToLowerInvariant())
+          # H1. A feed-less dev publish is REFUSED: nothing is signed, no draft exists, no secret was read. The build job still ran (it builds
+          # and runs the unit tests), only publishing is red until the feed-on commit lands (docs/RELEASING.md, "The feed-on change").
+          if (-not $cfg.Enabled) { throw "The dev update feed is not enabled in Clink/Assets/feed.json ($($cfg.Reason)); refusing to publish (a GitHub prerelease without the feed would reach nobody). Land the feed-on commit first (docs/RELEASING.md, 'The feed-on change')." }
+          # L-2. A mistyped CLINK_IMMUTABLE_RELEASES fails HERE, before the draft exists (the three release checks validate it again).
+          [void](Get-ImmutableReleasesMode -Value $env:CLINK_IMMUTABLE_RELEASES)
+          # The base path must be exactly /<prefix>/ (upload-feed.ps1 checks it again). Failing HERE means nothing was signed and no draft exists yet.
+          Assert-FeedBaseMatchesPrefix -BaseUrl $cfg.FeedUrl -Prefix (Get-FeedKeyPrefix -Value $env:CLINK_FEED_KEY_PREFIX)
+          Add-Content -Path $env:GITHUB_OUTPUT -Value 'enabled=true'
           Add-Content -Path $env:GITHUB_OUTPUT -Value "feed_url=$($cfg.FeedUrl)"
 
-      # The feed cannot be switched off once it was on (docs/RELEASING.md): refuse a feed-less publish when any earlier release (drafts
-      # included) of this repository carried dev.json. Read-only API calls (gh api GET, paginated) with the job token.
+      # Defence in depth: "Read feed configuration" above already refuses a feed-less publish, so this step is skipped today. It stays so that
+      # the rule "a feed that was on stays on" (docs/RELEASING.md) is still enforced if that refusal is ever relaxed: refuse a feed-less
+      # publish when any earlier release (drafts included) of this repository carried dev.json. Read-only API calls with the job token.
       - name: Guard - a feed that was on stays on
         if: steps.feed.outputs.enabled != 'true'
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           . ./tools/lib/feed-publish-lib.ps1
           $names = @(& gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" --paginate --jq '.[].assets[].name')
@@ -333,24 +473,44 @@ jobs:
           R2_ENDPOINT: ${{ secrets.R2_DEV_ENDPOINT }}
           R2_BUCKET: ${{ secrets.R2_DEV_BUCKET }}
         run: |
+          . ./tools/lib/feed-publish-lib.ps1
           $missing = 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_ENDPOINT', 'R2_BUCKET' |
             Where-Object { [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) }
-          if ($missing) { throw "The dev feed is enabled in feed.json but these secrets are missing from the feed-dev environment (R2_DEV_ACCESS_KEY_ID, R2_DEV_SECRET_ACCESS_KEY, R2_DEV_ENDPOINT, R2_DEV_BUCKET): $($missing -join ', ')" }
+          if ($missing) { throw "The dev feed is enabled in feed.json but these repo secrets are missing (R2_DEV_ACCESS_KEY_ID, R2_DEV_SECRET_ACCESS_KEY, R2_DEV_ENDPOINT, R2_DEV_BUCKET; repo > Settings > Secrets and variables > Actions): $($missing -join ', ')" }
+          # L7. The endpoint must have exactly the shape of an R2 account endpoint (the value is not printed).
+          Assert-FeedR2Endpoint -Value $env:R2_ENDPOINT -Name 'R2_DEV_ENDPOINT'
 
       # Security M1: the highest earlier PUBLISHED (non-draft) release of this repository that carried dev.json is a second downgrade
       # floor, so an emptied or rolled-back bucket cannot lower it (docs/RELEASING.md, "Recovering a stuck feed"). Read-only GET.
+      # L-4: only releases made by github-actions[bot] count, and the floor must equal the dev seed the build job embedded
+      # (BUILD_SEED): a dev release created, published or deleted while this run was building fails the run here, before anything is signed.
       - name: Find the GitHub history floor
         id: history
         if: steps.feed.outputs.enabled == 'true'
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_SEED: ${{ needs.build.outputs.min_dev }}
         run: |
           . ./tools/lib/feed-publish-lib.ps1
-          $listing = @(& gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" --paginate --jq '.[] | [.tag_name, (.draft | tostring), ([.assets[].name] | join(","))] | @tsv')
+          $listing = @(& gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" --paginate --jq '.[] | [.tag_name, (.draft | tostring), ([.assets[].name] | join(",")), (.author.login | tostring)] | @tsv')
           if ($LASTEXITCODE -ne 0) { throw 'Could not list the earlier releases.' }
           $floor = Get-FeedHistoryFloor -Channel dev -Listing $listing
-          Write-Output "GitHub history floor: $floor"
+          Write-Output "GitHub history floor: $floor (embedded dev seed: '$env:BUILD_SEED')"
+          Assert-FeedFloorMatchesSeed -Channel dev -Floor $floor -Seed $env:BUILD_SEED
           Add-Content -Path $env:GITHUB_OUTPUT -Value "floor=$floor"
-      # The signing key exists only in this step's environment.
+
+      # The release notes of a dev build are the fixed dev body (the same text as the release body below and the one the verify steps
+      # expect: Get-ExpectedDevReleaseBody; Get-FeedDevNotesText is kept equal by a script test), written as plain UTF-8 to dist/package/notes.txt. That file is NOT a GitHub release asset;
+      # the feed upload script publishes it write-once next to the binaries and the manifest's notesUrl points at it.
+      - name: Write the release notes (notes.txt)
+        shell: pwsh
+        run: |
+          . ./tools/lib/notes-lib.ps1
+          [void](Write-FeedNotesFile -Text (Get-FeedDevNotesText -Commit $env:GITHUB_SHA) -Path dist/package/notes.txt)
+          Get-Item dist/package/notes.txt | Select-Object Name, Length
+
+      # The signing key exists only in this step's environment. notesUrl is set by the manifest script itself (<base>dev/<tag>/notes.txt).
       - name: Make and sign the manifest
         if: steps.feed.outputs.enabled == 'true'
         shell: pwsh
@@ -358,10 +518,10 @@ jobs:
           CLINK_FEED_SIGNING_KEY: ${{ secrets.CLINK_FEED_DEV_SIGNING_KEY }}
           FEED_URL: ${{ steps.feed.outputs.feed_url }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:CLINK_FEED_SIGNING_KEY)) { throw 'The dev feed is enabled in feed.json but CLINK_FEED_DEV_SIGNING_KEY is missing from the feed-dev environment.' }
+          if ([string]::IsNullOrWhiteSpace($env:CLINK_FEED_SIGNING_KEY)) { throw 'The dev feed is enabled in feed.json but the repo secret CLINK_FEED_DEV_SIGNING_KEY is missing.' }
           $tag = "v$env:VERSION"
           ./tools/make-manifest.ps1 -Channel dev -Version $env:VERSION -Tag $tag -BaseUrl "$($env:FEED_URL)dev/$tag/" `
-            -NotesUrl "https://github.com/$env:GITHUB_REPOSITORY/releases/tag/$tag" -PackageDir dist/package -FeedJson Clink/Assets/feed.json
+            -PackageDir dist/package -FeedJson Clink/Assets/feed.json
           Get-ChildItem dist/package | Select-Object Name, Length
 
       - name: List release assets
@@ -375,7 +535,7 @@ jobs:
       # A DRAFT first: nothing is visible until the bucket upload succeeded.
       - name: Create GitHub release (draft)
         id: draft
-        uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631 # v2.2.2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: v${{ needs.build.outputs.version }}
           name: Clink v${{ needs.build.outputs.version }} (dev)
@@ -389,39 +549,22 @@ jobs:
           files: ${{ steps.assets.outputs.files }}
 
       # Refuse to publish a release that lacks any of the expected assets. Looked up by the draft's release ID (never by tag); the ID
-      # reaches the script only through env. Every required name must exist exactly once, uploaded, with the size of the local file and,
-      # when GitHub reports a digest, the SHA-256 of the local file (hash-checked against the build job before the upload).
+      # reaches the script only through env. tools/lib/release-verify-lib.ps1 requires: this ID is the ONLY release with the tag vX.Y.Z-dev.N
+      # (softprops v3 reuses an existing draft of the same tag, so another release must never be adopted: the "release not yet there"
+      # guard above is what keeps it out, this is the second lock), made by github-actions[bot] with the expected name and body, a draft
+      # prerelease, every required asset exactly once, uploaded, with the size and SHA-256 digest of the local file (hash-checked against
+      # the build job before the upload), nothing else. L2: the draft's target_commitish must be the commit that was built, and (the
+      # check is repeated here, before the feed upload) the tag must still not exist: a draft creates none.
       - name: Verify the release assets
         shell: pwsh
         env:
+          GH_TOKEN: ${{ github.token }}
           RELEASE_ID: ${{ steps.draft.outputs.id }}
+          CLINK_IMMUTABLE_RELEASES: ${{ vars.CLINK_IMMUTABLE_RELEASES }}
         run: |
-          if ($env:RELEASE_ID -cnotmatch '\A[0-9]+\z') { throw 'The draft release ID is missing or not numeric.' }
-          $json = (& gh api "repos/$env:GITHUB_REPOSITORY/releases/$env:RELEASE_ID" | Out-String)
-          if ($LASTEXITCODE -ne 0) { throw "Could not read release $env:RELEASE_ID." }
-          $release = $json | ConvertFrom-Json
-          if ($release.draft -ne $true) { throw "Release $env:RELEASE_ID is not a draft." }
-          if (-not ($release.tag_name -ceq "v$env:VERSION")) { throw "Release $env:RELEASE_ID has tag '$($release.tag_name)', expected v$env:VERSION." }
-          if ($release.prerelease -ne $true) { throw "Release $env:RELEASE_ID is not flagged as a prerelease; a dev build must never be a normal release." }
-          $required = @('Clink.exe', 'Clink.exe.sha256', 'Clink-framework.exe', 'Clink-framework.exe.sha256', 'Clink-Setup.exe', 'Clink-Setup.exe.sha256', 'THIRD-PARTY-NOTICES.txt')
-          # The channel manifest and its signature, when this build produced them (feed enabled): they were attached with the other assets.
-          if (Test-Path -LiteralPath dist/package/dev.json) { $required += 'dev.json', 'dev.json.sig' }
-          foreach ($name in $required) {
-            $found = @($release.assets | Where-Object { $_.name -ceq $name })
-            if ($found.Count -ne 1) { throw "Release v$env:VERSION lacks exactly one asset named $name (found $($found.Count); has: $((@($release.assets) | ForEach-Object { $_.name }) -join ', '))" }
-            $asset = $found[0]
-            if (-not ($asset.state -ceq 'uploaded')) { throw "Asset $name is in state '$($asset.state)', expected 'uploaded'." }
-            $local = Get-Item -LiteralPath (Join-Path 'dist/package' $name)
-            if ([int64]$asset.size -ne $local.Length) { throw "Asset $name has $($asset.size) bytes on GitHub, the local file has $($local.Length)." }
-            $digest = [string]$asset.digest
-            if ($digest) {
-              $expected = 'sha256:' + (Get-FileHash -LiteralPath $local.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-              if (-not ($digest -ceq $expected)) { throw "Asset $name has digest $digest on GitHub, expected $expected." }
-            } else {
-              Write-Output "::warning::GitHub reports no digest for $name; relying on its size and the hash check before the upload."
-            }
-          }
-          Write-Output "Release v$env:VERSION (id $env:RELEASE_ID) has all $($required.Count) required assets"
+          . ./tools/lib/release-verify-lib.ps1
+          Assert-ReleaseById -Repository $env:GITHUB_REPOSITORY -ReleaseId $env:RELEASE_ID -State draft -Channel dev -Version $env:VERSION -PackageDir dist/package -Commit $env:GITHUB_SHA -ImmutableMode $env:CLINK_IMMUTABLE_RELEASES
+          Assert-GitTagMissing -Repository $env:GITHUB_REPOSITORY -Tag "v$env:VERSION"
 
       - name: Publish to the update feed
         if: steps.feed.outputs.enabled == 'true'
@@ -439,29 +582,133 @@ jobs:
           CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
         run: ./tools/upload-feed.ps1 -Channel dev -Version $env:VERSION -PackageDir dist/package -FeedJson Clink/Assets/feed.json -HistoryFloor $env:HISTORY_FLOOR
 
+      # TOCTOU: the first check ran before the feed upload (minutes ago). Everything is checked AGAIN right before the draft is published:
+      # the same release checks, and the tag must still not exist (a tag created in the meantime would make the publish reuse it).
+      # A failure DELETES the draft and fails the run (docs/RELEASING.md, "Integrity incident").
+      - name: Re-verify the release before publishing
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ steps.draft.outputs.id }}
+          CLINK_IMMUTABLE_RELEASES: ${{ vars.CLINK_IMMUTABLE_RELEASES }}
+        run: |
+          . ./tools/lib/release-verify-lib.ps1
+          Invoke-ReleaseCheckOrDelete -Repository $env:GITHUB_REPOSITORY -ReleaseId $env:RELEASE_ID -What 'before publishing' -Check {
+            Assert-ReleaseById -Repository $env:GITHUB_REPOSITORY -ReleaseId $env:RELEASE_ID -State draft -Channel dev -Version $env:VERSION -PackageDir dist/package -Commit $env:GITHUB_SHA -ImmutableMode $env:CLINK_IMMUTABLE_RELEASES
+            Assert-GitTagMissing -Repository $env:GITHUB_REPOSITORY -Tag "v$env:VERSION"
+          }
+
       # Published by ID; a dev build is a prerelease and never becomes "latest".
       - name: Publish the GitHub release
         shell: pwsh
         env:
+          GH_TOKEN: ${{ github.token }}
           RELEASE_ID: ${{ steps.draft.outputs.id }}
         run: |
           if ($env:RELEASE_ID -cnotmatch '\A[0-9]+\z') { throw 'The draft release ID is missing or not numeric.' }
           gh api -X PATCH "repos/$env:GITHUB_REPOSITORY/releases/$env:RELEASE_ID" -F draft=false -f make_latest=false
           if ($LASTEXITCODE -ne 0) { throw 'Could not publish the draft release' }
 
-      # Housekeeping: a failure here must not fail a build that was already published.
+      # The published release is read back by ID: no longer a draft, IMMUTABLE, the same checks as before (exactly the required assets with
+      # their sizes and digests, the expected name and body, built commit, the only release of the tag). A failure DELETES the release
+      # (an immutable release keeps its tag) and fails the run loudly.
+      - name: Verify the published release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ steps.draft.outputs.id }}
+          CLINK_IMMUTABLE_RELEASES: ${{ vars.CLINK_IMMUTABLE_RELEASES }}
+        run: |
+          . ./tools/lib/release-verify-lib.ps1
+          Invoke-ReleaseCheckOrDelete -Repository $env:GITHUB_REPOSITORY -ReleaseId $env:RELEASE_ID -What 'after publishing' -Check {
+            Assert-ReleaseById -Repository $env:GITHUB_REPOSITORY -ReleaseId $env:RELEASE_ID -State published -Channel dev -Version $env:VERSION -PackageDir dist/package -Commit $env:GITHUB_SHA -ImmutableMode $env:CLINK_IMMUTABLE_RELEASES
+          }
+
+      # L2: publishing created the tag; it must be a plain (lightweight) tag at the commit that was built. The tag read is retried 3 times,
+      # 2 s apart (a new tag can take a moment to show). A failure DELETES the release and fails the run loudly.
+      - name: Verify the published tag
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ steps.draft.outputs.id }}
+        run: |
+          . ./tools/lib/release-verify-lib.ps1
+          Invoke-ReleaseCheckOrDelete -Repository $env:GITHUB_REPOSITORY -ReleaseId $env:RELEASE_ID -What 'the tag after publishing' -Check {
+            Assert-GitTagAtCommit -Repository $env:GITHUB_REPOSITORY -Tag "v$env:VERSION" -Commit $env:GITHUB_SHA -Attempts 3 -DelaySeconds 2
+          }
+
+      # Housekeeping: a failure here must not fail a build that was already published. Only after a fully successful run (a failed run
+      # must not prune). Keeps the 10 newest PUBLISHED dev PRERELEASES; drafts (left by failed runs) are neither counted nor deleted, and a
+      # release that is not flagged as a prerelease is never touched, whatever its tag looks like.
+      # The release is deleted first and its tag second: an immutable release keeps its tag (GitHub refuses to remove it), which is
+      # reported as a warning and does not stop the rest. A release that cannot be deleted is counted and fails the step at the end
+      # (continue-on-error: it shows as a warning annotation only).
       - name: Prune old dev builds
-        if: ${{ !cancelled() }}
+        if: success()
         continue-on-error: true
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tags = & gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" --jq '.[].tag_name'
+          $PSNativeCommandUseErrorActionPreference = $false     # a failed delete is counted below, not thrown on the spot
+          $lines = @(& gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" --paginate --jq '.[] | [.tag_name, (.draft | tostring), (.prerelease | tostring)] | @tsv')
           if ($LASTEXITCODE -ne 0) { throw 'Could not list the releases' }
-          $dev = @($tags | Where-Object { $_ -match '^v[0-9]+\.[0-9]+\.[0-9]+-dev\.([0-9]+)$' } |
-            Sort-Object { [int]([regex]::Match($_, '-dev\.([0-9]+)$').Groups[1].Value) } -Descending)
-          foreach ($t in ($dev | Select-Object -Skip 10)) {
-            Write-Output "Deleting $t"
-            & gh release delete $t --cleanup-tag --yes --repo $env:GITHUB_REPOSITORY
+          $published = foreach ($line in $lines) {
+            $parts = ([string]$line).TrimEnd("`r", "`n").Split("`t")
+            if ($parts.Count -eq 3 -and $parts[1] -ceq 'false' -and $parts[2] -ceq 'true' -and $parts[0] -cmatch '\Av[0-9]+\.[0-9]+\.[0-9]+-dev\.([0-9]+)\z') {
+              [pscustomobject]@{ Tag = $parts[0]; N = [int64]$Matches[1] }
+            }
           }
+          $failed = 0
+          foreach ($old in @($published | Sort-Object N -Descending | Select-Object -Skip 10)) {
+            $t = $old.Tag
+            Write-Output "Deleting release $t"
+            & gh release delete $t --yes --repo $env:GITHUB_REPOSITORY
+            if ($LASTEXITCODE -ne 0) { $failed++; Write-Output "::warning::Could not delete release $t"; continue }
+            $eap = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'          # gh's stderr must not abort the step before we look at it
+            $tagOut = (& gh api -X DELETE "repos/$env:GITHUB_REPOSITORY/git/refs/tags/$t" 2>&1 | Out-String)
+            $tagCode = $LASTEXITCODE
+            $ErrorActionPreference = $eap
+            if ($tagCode -ne 0) { Write-Output "::warning::The tag $t was not removed (an immutable release keeps its tag): $($tagOut.Trim())" }
+          }
+          $global:LASTEXITCODE = 0                       # handled failures above must not fail the step through the runner's exit-code check
+          if ($failed -gt 0) { throw "$failed old dev release(s) could not be deleted" }
+
+  # M3 / MF-2. The build artifact (about 150 MB) is deleted as soon as the run is done with it, instead of waiting for retention-days: 1, so the
+  # repository's artifact storage does not fill up. A job of its own, so that actions: write (the permission the delete needs) is held by
+  # NOTHING else: no checkout, no action, no secret, no tools/ code, one inline step. It runs after the publish job whatever its result (also
+  # when publish was skipped or failed), but only when the build job succeeded (otherwise there is no artifact id). It deletes only an
+  # artifact that the API reports as named clink-package AND made by THIS run (workflow_run.id = GITHUB_RUN_ID); anything else, or any
+  # error, is a warning and never fails the run.
+  cleanup:
+    needs: [build, publish]
+    if: always() && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Delete the build artifact
+        continue-on-error: true
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ needs.build.outputs.artifact_id }}
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $ErrorActionPreference = 'Continue'
+          $id = [string]$env:ARTIFACT_ID
+          if ($id -cnotmatch '\A[0-9]+\z' -or [string]$env:GITHUB_RUN_ID -cnotmatch '\A[0-9]+\z') { Write-Output '::warning::No valid build artifact id (or run id); nothing deleted (it expires after 1 day).'; $global:LASTEXITCODE = 0; return }
+          $info = (& gh api "repos/$env:GITHUB_REPOSITORY/actions/artifacts/$id" 2>&1 | Out-String)
+          if ($LASTEXITCODE -ne 0) { Write-Output "::warning::Could not read the build artifact $id; nothing deleted (it expires after 1 day): $($info.Trim())"; $global:LASTEXITCODE = 0; return }
+          $artifact = $null
+          try { $artifact = $info | ConvertFrom-Json } catch { $artifact = $null }
+          if ($null -eq $artifact -or [string]$artifact.name -cne 'clink-package' -or [string]$artifact.workflow_run.id -cne [string]$env:GITHUB_RUN_ID) {
+            Write-Output "::warning::Artifact $id is not this run's clink-package; nothing deleted."
+            $global:LASTEXITCODE = 0
+            return
+          }
+          $out = (& gh api -X DELETE "repos/$env:GITHUB_REPOSITORY/actions/artifacts/$id" 2>&1 | Out-String)
+          if ($LASTEXITCODE -ne 0) { Write-Output "::warning::Could not delete the build artifact $id (it expires after 1 day): $($out.Trim())" }
+          else { Write-Output "Deleted the build artifact $id (clink-package of run $env:GITHUB_RUN_ID)" }
+          $global:LASTEXITCODE = 0

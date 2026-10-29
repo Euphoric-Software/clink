@@ -1,13 +1,19 @@
 # Builds Clink.exe and publishes a GitHub release when a v*.*.* tag is pushed
 # (tools/release.ps1 does that); the tag must match <Version> in Clink/Clink.csproj.
-# There is NO manual-run trigger and no branch trigger: a stable release exists only because the owner created a
-# vX.Y.Z tag (the tag ruleset restricts who can), and the feed-stable environment's deployment rule allows only such tags.
+# There is NO manual-run trigger and no branch trigger: a stable release exists only because somebody with write access pushed a
+# vX.Y.Z tag whose commit is on origin/main (both checked in the publish job's first step, before any secret is referenced),
+# unless a writer changes this workflow or tools/ (the workflow that runs is the one in the tagged commit).
 #
-# Two jobs (contract v2, see docs/RELEASING.md):
-#   build   - no secrets, no environment, contents: read. Builds, packages and uploads the package as an artifact.
-#   publish - environment feed-stable (required reviewer, deployment rule: stable tags only). Guards (ref pattern, commit on
-#             main, release not yet there), re-checks the artifact, signs the manifest when Clink/Assets/feed.json enables the
-#             feed, creates a DRAFT release, uploads to the bucket, then publishes the draft.
+# Three jobs (contract v2, see docs/RELEASING.md):
+#   build   - no secrets, no environment, contents: read. Builds, packages and uploads the package as an artifact (kept 1 day).
+#   publish - NO environment (the plan has none on a private repo), contents: write only; the signing key, the R2 credentials and the
+#             purge token are REPO secrets, named only by the steps that need them. Guards (pushed tag vX.Y.Z, commit on main, release
+#             not yet there), re-checks the artifact, REFUSES to publish while Clink/Assets/feed.json does not enable the feed (a red job
+#             until the feed-on commit lands), writes notes.txt, signs the manifest, creates a
+#             DRAFT release, verifies it by ID, uploads to the bucket, verifies the draft AGAIN right before publishing it,
+#             publishes it, then verifies the published release and tag (a failed second or third check deletes the release:
+#             docs/RELEASING.md, "Integrity incident"). Every repo writer can reach the repo secrets (the owner accepts that).
+#   cleanup - actions: write and nothing else, no checkout, no action, no secret: deletes this run's own build artifact (always, after publish).
 #
 # The in-app updater downloads the assets named exactly "Clink.exe" (self-contained, portable) and "Clink-framework.exe" (framework-dependent,
 # the installer's exe) and checks each against the first 64-hex token of its ".sha256" file, so keep those names.
@@ -42,14 +48,29 @@ jobs:
       pkg_sha256: ${{ steps.package.outputs.pkg_sha256 }}
       setup_sha256: ${{ steps.package.outputs.setup_sha256 }}
       notices_sha256: ${{ steps.package.outputs.notices_sha256 }}
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      min_stable: ${{ steps.seeds.outputs.min_stable }}
+      min_dev: ${{ steps.seeds.outputs.min_dev }}
     steps:
       - name: Check out
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
 
+      # A fresh NuGet package folder and HTTP cache per run, under the runner temp folder: nothing a runner image or an earlier job left in
+      # ~/.nuget/packages is ever used, so every package is downloaded and its signature checked by this restore. No actions/cache here.
+      # The restore record is checked after the publish step below (tools/lib/nuget-restore-lib.ps1).
+      - name: Fresh NuGet folders
+        shell: pwsh
+        run: |
+          . ./tools/lib/nuget-restore-lib.ps1
+          $folders = New-FreshNuGetFolders -TempRoot $env:RUNNER_TEMP -RunId $env:GITHUB_RUN_ID -RunAttempt $env:GITHUB_RUN_ATTEMPT
+          Add-Content -Path $env:GITHUB_ENV -Value "NUGET_PACKAGES=$($folders.Packages)"
+          Add-Content -Path $env:GITHUB_ENV -Value "NUGET_HTTP_CACHE_PATH=$($folders.HttpCache)"
+          Write-Output "NuGet packages: $($folders.Packages)"
+
       - name: Set up .NET
-        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
           global-json-file: global.json
 
@@ -94,15 +115,45 @@ jobs:
           Add-Content -Path $env:GITHUB_OUTPUT -Value "version=$version"
           Write-Output "Building Clink $version"
 
+      # M1. The embedded floor seeds: the newest PUBLISHED stable and the newest PUBLISHED dev release that carried a manifest (the same
+      # Get-FeedHistoryFloor the publish job uses for its history floor), read with the job's read token (contents: read, GET only). They
+      # become -p:ClinkMinStable / -p:ClinkMinDev, so a build starts with a downgrade floor that an emptied bucket cannot lower. Each must be
+      # exactly X.Y.Z or X.Y.Z-dev.N (no ';' reaches MSBuild); empty = no seed (the first release). L-4: only releases made by
+      # github-actions[bot] count (the author column). The seeds are also job outputs: the publish job refuses when its history floor differs.
+      - name: Find the embedded floor seeds
+        id: seeds
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          . ./tools/lib/feed-publish-lib.ps1
+          $listing = @(& gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" --paginate --jq '.[] | [.tag_name, (.draft | tostring), ([.assets[].name] | join(",")), (.author.login | tostring)] | @tsv')
+          if ($LASTEXITCODE -ne 0) { throw 'Could not list the earlier releases.' }
+          $seeds = Get-FeedFloorSeeds -Listing $listing
+          Write-Output "Embedded floor seeds: stable '$($seeds.Stable)', dev '$($seeds.Dev)'"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "min_stable=$($seeds.Stable)"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "min_dev=$($seeds.Dev)"
+
       # Self-contained (dist/sc, the portable Clink.exe) and framework-dependent (dist/fx, the installer's exe), separate obj/bin.
       - name: Publish both flavours
         shell: pwsh
         env:
           VERSION: ${{ steps.version.outputs.version }}
           UPDATE_REPO: ${{ github.repository }}
+          MIN_STABLE: ${{ steps.seeds.outputs.min_stable }}
+          MIN_DEV: ${{ steps.seeds.outputs.min_dev }}
         run: |
-          ./tools/publish-flavours.ps1 -Version $env:VERSION -UpdateRepo $env:UPDATE_REPO
+          ./tools/publish-flavours.ps1 -Version $env:VERSION -UpdateRepo $env:UPDATE_REPO -MinStable $env:MIN_STABLE -MinDev $env:MIN_DEV
           Get-ChildItem dist/sc, dist/fx | Select-Object FullName, Length
+
+      # What NuGet itself recorded for the two restores: nuget.org is the only source, no fallback folder, the package folder is the fresh
+      # one, the repo nuget.config was read (a --configfile restore or an RestoreFallbackFolders property would show here), and every
+      # package's .nupkg.metadata names nuget.org.
+      - name: Verify the NuGet restore (nuget.org only, fresh package folder)
+        shell: pwsh
+        run: |
+          . ./tools/lib/nuget-restore-lib.ps1
+          Assert-NuGetRestoreTrusted -AssetsFile Clink/obj_sc/project.assets.json, Clink/obj_fx/project.assets.json
 
       # THIRD-PARTY-NOTICES.txt must match tools/notices/sources.json (hashes of every licence text) and the runtime packs / SDK
       # reference / CsWin32 this restore actually used. Fails when the file is stale or the assets file lacks the runtime packs.
@@ -151,8 +202,14 @@ jobs:
         run: |
           . ./tools/feed-lib.ps1
           $cfg = Get-FeedConfig -Path Clink/Assets/feed.json -Channel stable
+          $devCfg = Get-FeedConfig -Path Clink/Assets/feed.json -Channel dev
           Write-Output "Expecting the built exes to embed the feed as: $($cfg.Mode)"
-          ./tools/check-published.ps1 -ScExe dist/sc/Clink.exe -FxExe dist/fx/Clink.exe -Version $env:VERSION -ExpectFeed $cfg.Mode -TimeoutSeconds 90
+          # The two bases (normalised) are what the exe's self-test compares with the bases it resolved; with the feed off both are empty and are not passed.
+          if ($cfg.Mode -eq 'on') {
+            ./tools/check-published.ps1 -ScExe dist/sc/Clink.exe -FxExe dist/fx/Clink.exe -Version $env:VERSION -ExpectFeed $cfg.Mode -ExpectFeedUrl $cfg.FeedUrl -ExpectDevFeedUrl $devCfg.FeedUrl -TimeoutSeconds 90
+          } else {
+            ./tools/check-published.ps1 -ScExe dist/sc/Clink.exe -FxExe dist/fx/Clink.exe -Version $env:VERSION -ExpectFeed $cfg.Mode -TimeoutSeconds 90
+          }
 
       # Pinned Inno Setup 6.7.3 (>= 6.3 is needed for x64compatible). Official release asset of github.com/jrsoftware/issrc;
       # the SHA-256 below was computed from a scratch download and matches the digest GitHub shows for the asset.
@@ -189,31 +246,41 @@ jobs:
           Get-Content dist/package/Clink.exe.sha256, dist/package/Clink-framework.exe.sha256
 
       - name: Upload package artifact
+        id: upload
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: clink-package
           path: dist/package/
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 1
 
   publish:
     needs: build
     runs-on: windows-latest
-    environment: feed-stable
+    # No environment (not available on a private Free repo). First defence, evaluated before any step runs: only a pushed v* tag. The exact
+    # tag pattern and the commit-on-main check are the first step ("Guard - stable tag ..."), before any secret is referenced.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     # One publisher at a time, never cancelled half way (a cancelled run could leave a draft release or a half-written bucket).
     concurrency:
       group: feed-stable-publish
       cancel-in-progress: false
+    # contents: write ONLY. No actions: permission here: the build artifact is deleted by the separate cleanup job below, whose token has
+    # actions: write and nothing else, so no step or tool of this job can delete run logs, dispatch workflows or disable them.
     permissions:
       contents: write
+    # The write token is not put in the job-wide environment: only the steps that call gh name GH_TOKEN, so the aws, make-manifest and
+    # upload-feed steps do not get it in THEIR environment. That is hygiene, NOT isolation: the job's token exists for the whole job and
+    # any code that runs in the job (an action, a script) can obtain it. Real isolation needs a job split (a draft job, a feed job with
+    # the secrets, a publish job); docs/RELEASING.md lists it as a follow-up. The defence that exists today is the verification
+    # by release ID before and after publishing. The same goes for the repo secrets: only the steps that name them see them, but any code
+    # running in this job could read them (docs/RELEASING.md, "Who can reach the secrets").
     env:
       VERSION: ${{ needs.build.outputs.version }}
-      GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
-      # Guards run before any secret is referenced by a step. Environment secrets are only readable by steps that name them.
+      # Guards run before any secret is referenced by a step. Repo secrets are only readable by steps that name them.
       - name: Check out (full history)
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -221,15 +288,16 @@ jobs:
       - name: Guard - stable tag, commit on main, release not yet there
         shell: pwsh
         env:
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          $default = if ($env:DEFAULT_BRANCH) { $env:DEFAULT_BRANCH } else { 'main' }
-          if ($env:GITHUB_REF -cnotmatch '^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$') {
+          if ($env:GITHUB_EVENT_NAME -cne 'push') { throw "Stable releases publish only for a pushed tag (this run is a $env:GITHUB_EVENT_NAME event)." }
+          if ($env:GITHUB_REF -cnotmatch '\Arefs/tags/v[0-9]+\.[0-9]+\.[0-9]+\z') {
             throw "Stable releases publish only from tags vX.Y.Z (this run is on $env:GITHUB_REF)."
           }
-          # The commit being released must be reachable from main (a tag pushed on a side branch must not ship).
-          git merge-base --is-ancestor $env:GITHUB_SHA "origin/$default"
-          if ($LASTEXITCODE -ne 0) { throw "Commit $env:GITHUB_SHA is not on origin/$default; refusing to publish." }
+          # The commit being released must be reachable from main (a tag pushed on a side branch must not ship). `main` is written
+          # out on purpose: nothing a repository setting can change (the default branch) decides where stable releases may come from.
+          git merge-base --is-ancestor $env:GITHUB_SHA origin/main
+          if ($LASTEXITCODE -ne 0) { throw "Commit $env:GITHUB_SHA is not on origin/main; refusing to publish." }
           $expected = $env:GITHUB_REF_NAME.Substring(1)
           if ($expected -ne $env:VERSION) { throw "Version $env:VERSION from the build job does not match the ref ($expected)." }
           $eap = $ErrorActionPreference
@@ -276,23 +344,36 @@ jobs:
           if ($setupLine -ne "$setup *Clink-Setup.exe") { throw "Clink-Setup.exe.sha256 does not describe Clink-Setup.exe: $setupLine" }
           Write-Output "Package verified (Clink.exe $exe, Clink-framework.exe $fx)"
 
-      # Trust anchors come from the committed Clink/Assets/feed.json (the same file that was embedded in Clink.exe).
+      # Trust anchors come from the committed Clink/Assets/feed.json (the same file that was embedded in Clink.exe). feed_url is the
+      # STABLE channel's base, feedUrl (Get-FeedConfig -Channel stable).
       - name: Read feed configuration
         id: feed
         shell: pwsh
+        env:
+          CLINK_FEED_KEY_PREFIX: ${{ vars.CLINK_FEED_KEY_PREFIX }}
+          CLINK_IMMUTABLE_RELEASES: ${{ vars.CLINK_IMMUTABLE_RELEASES }}
         run: |
-          . ./tools/feed-lib.ps1
+          . ./tools/lib/feed-publish-lib.ps1
+          . ./tools/lib/release-mode-lib.ps1
           $cfg = Get-FeedConfig -Path Clink/Assets/feed.json -Channel stable
-          $enabled = $cfg.Enabled
-          if (-not $enabled) { Write-Output "::warning::Stable update feed is not enabled in Clink/Assets/feed.json ($($cfg.Reason)); publishing the GitHub release without manifest assets." }
-          Add-Content -Path $env:GITHUB_OUTPUT -Value ('enabled=' + $enabled.ToString().ToLowerInvariant())
+          # H1. A feed-less stable publish is REFUSED: nothing is signed, no draft exists, no secret was read. The build job still ran (it
+          # builds and tests), only publishing is red until the feed-on commit lands (docs/RELEASING.md, "The feed-on change").
+          if (-not $cfg.Enabled) { throw "The stable update feed is not enabled in Clink/Assets/feed.json ($($cfg.Reason)); refusing to publish (a GitHub release without the feed would leave every client without an update). Land the feed-on commit first (docs/RELEASING.md, 'The feed-on change')." }
+          # L-2. A mistyped CLINK_IMMUTABLE_RELEASES fails HERE, before the draft exists (the three release checks validate it again).
+          [void](Get-ImmutableReleasesMode -Value $env:CLINK_IMMUTABLE_RELEASES)
+          # The base path must be exactly /<prefix>/ (upload-feed.ps1 checks it again). Failing HERE means nothing was signed and no draft exists yet.
+          Assert-FeedBaseMatchesPrefix -BaseUrl $cfg.FeedUrl -Prefix (Get-FeedKeyPrefix -Value $env:CLINK_FEED_KEY_PREFIX)
+          Add-Content -Path $env:GITHUB_OUTPUT -Value 'enabled=true'
           Add-Content -Path $env:GITHUB_OUTPUT -Value "feed_url=$($cfg.FeedUrl)"
 
-      # The feed cannot be switched off once it was on (docs/RELEASING.md): refuse a feed-less publish when any earlier release (drafts
-      # included) of this repository carried stable.json. Read-only API calls (gh api GET, paginated) with the job token.
+      # Defence in depth: "Read feed configuration" above already refuses a feed-less publish, so this step is skipped today. It stays so that
+      # the rule "a feed that was on stays on" (docs/RELEASING.md) is still enforced if that refusal is ever relaxed: refuse a feed-less
+      # publish when any earlier release (drafts included) of this repository carried stable.json. Read-only API calls with the job token.
       - name: Guard - a feed that was on stays on
         if: steps.feed.outputs.enabled != 'true'
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           . ./tools/lib/feed-publish-lib.ps1
           $names = @(& gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" --paginate --jq '.[].assets[].name')
@@ -309,24 +390,64 @@ jobs:
           R2_ENDPOINT: ${{ secrets.R2_STABLE_ENDPOINT }}
           R2_BUCKET: ${{ secrets.R2_STABLE_BUCKET }}
         run: |
+          . ./tools/lib/feed-publish-lib.ps1
           $missing = 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_ENDPOINT', 'R2_BUCKET' |
             Where-Object { [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) }
-          if ($missing) { throw "The stable feed is enabled in feed.json but these secrets are missing from the feed-stable environment (R2_STABLE_ACCESS_KEY_ID, R2_STABLE_SECRET_ACCESS_KEY, R2_STABLE_ENDPOINT, R2_STABLE_BUCKET): $($missing -join ', ')" }
+          if ($missing) { throw "The stable feed is enabled in feed.json but these repo secrets are missing (R2_STABLE_ACCESS_KEY_ID, R2_STABLE_SECRET_ACCESS_KEY, R2_STABLE_ENDPOINT, R2_STABLE_BUCKET; repo > Settings > Secrets and variables > Actions): $($missing -join ', ')" }
+          # L7. The endpoint must have exactly the shape of an R2 account endpoint (the value is not printed).
+          Assert-FeedR2Endpoint -Value $env:R2_ENDPOINT -Name 'R2_STABLE_ENDPOINT'
 
       # Security M1: the highest earlier PUBLISHED (non-draft) release of this repository that carried stable.json is a second downgrade
       # floor, so an emptied or rolled-back bucket cannot lower it (docs/RELEASING.md, "Recovering a stuck feed"). Read-only GET.
+      # L-4: only releases made by github-actions[bot] count, and the floor must equal the stable seed the build job embedded
+      # (BUILD_SEED): a stable release created, published or deleted while this run was building fails the run here, before anything is signed.
       - name: Find the GitHub history floor
         id: history
         if: steps.feed.outputs.enabled == 'true'
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_SEED: ${{ needs.build.outputs.min_stable }}
         run: |
           . ./tools/lib/feed-publish-lib.ps1
-          $listing = @(& gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" --paginate --jq '.[] | [.tag_name, (.draft | tostring), ([.assets[].name] | join(","))] | @tsv')
+          $listing = @(& gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" --paginate --jq '.[] | [.tag_name, (.draft | tostring), ([.assets[].name] | join(",")), (.author.login | tostring)] | @tsv')
           if ($LASTEXITCODE -ne 0) { throw 'Could not list the earlier releases.' }
           $floor = Get-FeedHistoryFloor -Channel stable -Listing $listing
-          Write-Output "GitHub history floor: $floor"
+          Write-Output "GitHub history floor: $floor (embedded stable seed: '$env:BUILD_SEED')"
+          Assert-FeedFloorMatchesSeed -Channel stable -Floor $floor -Seed $env:BUILD_SEED
           Add-Content -Path $env:GITHUB_OUTPUT -Value "floor=$floor"
-      # The signing key exists only in this step's environment.
+
+      # The release notes: GitHub's generated notes for the tag (the same text becomes the release body below), cleaned into plain UTF-8
+      # (control characters other than LF and TAB removed, at most 64 KB, links to this private repository dropped) and written to
+      # dist/package/notes.txt. That file is NOT a GitHub release asset; the feed upload script publishes it write-once next to the binaries and the
+      # manifest's notesUrl points at it. generate-notes creates nothing (it only returns the text).
+      # MF-1: the notes are ALWAYS generated; nothing already in the bucket or at the public URL is ever read back or reused (anyone with
+      # bucket write could plant releases/<next tag>/notes.txt ahead of time). Order: generate, clean (control characters out first, so they
+      # cannot hide a link from the filter), drop the links, then the guard. If a notes.txt already exists for this tag, the write-once
+      # preflight of the feed upload decides: the same bytes are skipped, different bytes FAIL the run before anything is written (publish a newer version).
+      # M2: the gh output is read as UTF-8 and the text is refused when it holds U+FFFD or the "a-circumflex euro" mojibake.
+      # L3: every remaining link of this repository and every @mention is dropped before the text becomes public.
+      - name: Write the release notes (notes.txt)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          . ./tools/lib/notes-lib.ps1
+          $tag = "v$env:VERSION"
+          [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+          $raw = @(& gh api -X POST "repos/$env:GITHUB_REPOSITORY/releases/generate-notes" -f "tag_name=$tag" --jq .body)
+          if ($LASTEXITCODE -ne 0) { throw 'Could not generate the release notes (gh api releases/generate-notes failed).' }
+          $joined = $raw -join "`n"
+          Assert-FeedNotesNoMojibake -Text $joined
+          if ([string]::IsNullOrWhiteSpace($joined)) { $joined = "Clink $tag" }
+          $text = Remove-FeedNotesRepoLinks -Text (ConvertTo-FeedNotesText -Text $joined) -Repository $env:GITHUB_REPOSITORY
+          if ([string]::IsNullOrWhiteSpace($text)) { $text = "Clink $tag" }
+          Assert-FeedNotesNoMojibake -Text $text
+          [void](Write-FeedNotesFile -Text $text -Path dist/package/notes.txt)
+          Assert-FeedNotesFile -Path dist/package/notes.txt
+          Get-Item dist/package/notes.txt | Select-Object Name, Length
+
+      # The signing key exists only in this step's environment. notesUrl is set by the manifest script itself (<base>releases/<tag>/notes.txt).
       - name: Make and sign the manifest
         if: steps.feed.outputs.enabled == 'true'
         shell: pwsh
@@ -334,10 +455,10 @@ jobs:
           CLINK_FEED_SIGNING_KEY: ${{ secrets.CLINK_FEED_STABLE_SIGNING_KEY }}
           FEED_URL: ${{ steps.feed.outputs.feed_url }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:CLINK_FEED_SIGNING_KEY)) { throw 'The stable feed is enabled in feed.json but CLINK_FEED_STABLE_SIGNING_KEY is missing from the feed-stable environment.' }
+          if ([string]::IsNullOrWhiteSpace($env:CLINK_FEED_SIGNING_KEY)) { throw 'The stable feed is enabled in feed.json but the repo secret CLINK_FEED_STABLE_SIGNING_KEY is missing.' }
           $tag = "v$env:VERSION"
           ./tools/make-manifest.ps1 -Channel stable -Version $env:VERSION -Tag $tag -BaseUrl "$($env:FEED_URL)releases/$tag/" `
-            -NotesUrl "https://github.com/$env:GITHUB_REPOSITORY/releases/tag/$tag" -PackageDir dist/package -FeedJson Clink/Assets/feed.json
+            -PackageDir dist/package -FeedJson Clink/Assets/feed.json
           Get-ChildItem dist/package | Select-Object Name, Length
 
       - name: List release assets
@@ -348,55 +469,37 @@ jobs:
           if (Test-Path dist/package/stable.json) { $files += 'dist/package/stable.json', 'dist/package/stable.json.sig' }
           Add-Content -Path $env:GITHUB_OUTPUT -Value "files<<EOF`n$($files -join "`n")`nEOF"
 
-      # A DRAFT first: nothing is visible to users (or to the updater's GitHub fallback) until the bucket upload succeeded.
+      # A DRAFT first: nothing is recorded as a release until the bucket upload succeeded. The GitHub release is the private archive, the
+      # audit trail and the history floor; the app never contacts GitHub.
       - name: Create GitHub release (draft)
         id: draft
-        uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631 # v2.2.2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: v${{ needs.build.outputs.version }}
           name: Clink v${{ needs.build.outputs.version }}
           target_commitish: ${{ github.sha }}
           draft: true
           prerelease: false
-          generate_release_notes: true
+          generate_release_notes: false
+          body_path: dist/package/notes.txt
           fail_on_unmatched_files: true
           files: ${{ steps.assets.outputs.files }}
 
-      # The site links releases/latest/download/Clink-Setup.exe and Clink.exe: refuse to publish a release that lacks any asset.
-      # Looked up by the draft's release ID (never by tag), so a same-named release cannot stand in for it. The ID reaches the script only
-      # through env. Every required name must exist exactly once, uploaded, with the size of the local file and, when GitHub reports a
-      # digest, the SHA-256 of the local file (the local files were hash-checked against the build job before the upload).
+      # Refuse to publish a release that lacks any asset (the archive must be complete).
+      # Looked up by the draft's release ID (never by tag); the ID reaches the script only through env. tools/lib/release-verify-lib.ps1
+      # requires: this ID is the ONLY release with the tag vX.Y.Z (softprops v3 reuses an existing draft of the same tag, so another
+      # release must never be adopted: the "release not yet there" guard above is what keeps it out, this is the second lock), made by
+      # github-actions[bot] with the expected name, a draft, not a prerelease, and every required asset exactly once, uploaded, with the
+      # size and SHA-256 digest of the local file (hash-checked against the build job before the upload), nothing else.
       - name: Verify the release assets
         shell: pwsh
         env:
+          GH_TOKEN: ${{ github.token }}
           RELEASE_ID: ${{ steps.draft.outputs.id }}
+          CLINK_IMMUTABLE_RELEASES: ${{ vars.CLINK_IMMUTABLE_RELEASES }}
         run: |
-          if ($env:RELEASE_ID -cnotmatch '\A[0-9]+\z') { throw 'The draft release ID is missing or not numeric.' }
-          $json = (& gh api "repos/$env:GITHUB_REPOSITORY/releases/$env:RELEASE_ID" | Out-String)
-          if ($LASTEXITCODE -ne 0) { throw "Could not read release $env:RELEASE_ID." }
-          $release = $json | ConvertFrom-Json
-          if ($release.draft -ne $true) { throw "Release $env:RELEASE_ID is not a draft." }
-          if (-not ($release.tag_name -ceq "v$env:VERSION")) { throw "Release $env:RELEASE_ID has tag '$($release.tag_name)', expected v$env:VERSION." }
-          if ($release.prerelease -ne $false) { throw "Release $env:RELEASE_ID is flagged as a prerelease; the stable workflow must create a normal release." }
-          $required = @('Clink.exe', 'Clink.exe.sha256', 'Clink-framework.exe', 'Clink-framework.exe.sha256', 'Clink-Setup.exe', 'Clink-Setup.exe.sha256', 'THIRD-PARTY-NOTICES.txt')
-          # The channel manifest and its signature, when this build produced them (feed enabled): they were attached with the other assets.
-          if (Test-Path -LiteralPath dist/package/stable.json) { $required += 'stable.json', 'stable.json.sig' }
-          foreach ($name in $required) {
-            $found = @($release.assets | Where-Object { $_.name -ceq $name })
-            if ($found.Count -ne 1) { throw "Release v$env:VERSION lacks exactly one asset named $name (found $($found.Count); has: $((@($release.assets) | ForEach-Object { $_.name }) -join ', '))" }
-            $asset = $found[0]
-            if (-not ($asset.state -ceq 'uploaded')) { throw "Asset $name is in state '$($asset.state)', expected 'uploaded'." }
-            $local = Get-Item -LiteralPath (Join-Path 'dist/package' $name)
-            if ([int64]$asset.size -ne $local.Length) { throw "Asset $name has $($asset.size) bytes on GitHub, the local file has $($local.Length)." }
-            $digest = [string]$asset.digest
-            if ($digest) {
-              $expected = 'sha256:' + (Get-FileHash -LiteralPath $local.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-              if (-not ($digest -ceq $expected)) { throw "Asset $name has digest $digest on GitHub, expected $expected." }
-            } else {
-              Write-Output "::warning::GitHub reports no digest for $name; relying on its size and the hash check before the upload."
-            }
-          }
-          Write-Output "Release v$env:VERSION (id $env:RELEASE_ID) has all $($required.Count) required assets"
+          . ./tools/lib/release-verify-lib.ps1
+          Assert-ReleaseById -Repository $env:GITHUB_REPOSITORY -ReleaseId $env:RELEASE_ID -State draft -Channel stable -Version $env:VERSION -PackageDir dist/package -ImmutableMode $env:CLINK_IMMUTABLE_RELEASES
 
       # Computed BEFORE the feed upload so that a failure here stops the job while nothing is public yet. "latest" is set only when
       # this version is higher than the current latest stable release (a re-cut or backport of an older version must not take it).
@@ -404,6 +507,8 @@ jobs:
       - name: Decide whether this release becomes latest
         id: latest
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           . ./tools/lib/release-latest-lib.ps1
           if ($env:VERSION -cnotmatch '\A[0-9]+\.[0-9]+\.[0-9]+\z') { throw "'$env:VERSION' is not a valid version." }
@@ -423,8 +528,9 @@ jobs:
           if ($latestCode -eq 0) {
             if ([string]::IsNullOrWhiteSpace($latestOut)) { throw 'The latest release lookup succeeded but returned no tag.' }
             $latestTag = $latestOut
+            Write-Output "releases/latest answered with a release (200 path): $latestTag"
           }
-          elseif ($latestErr -cmatch '\(HTTP 404\)') { $latestTag = '' }
+          elseif ($latestErr -cmatch '\(HTTP 404\)') { $latestTag = ''; Write-Output 'releases/latest answered HTTP 404 (404 path): the repository has no latest release yet' }
           else { throw "Could not read the latest release (exit $latestCode): $latestErr $latestOut" }
           $makeLatest = Get-MakeLatestValue -Version $env:VERSION -LatestTag $latestTag
           if ($makeLatest -cnotmatch '\A(true|false)\z') { throw "Unexpected make_latest value '$makeLatest'." }
@@ -447,12 +553,29 @@ jobs:
           CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
         run: ./tools/upload-feed.ps1 -Channel stable -Version $env:VERSION -PackageDir dist/package -FeedJson Clink/Assets/feed.json -HistoryFloor $env:HISTORY_FLOOR
 
+      # TOCTOU: the first check ran before the feed upload (minutes ago). Everything is checked AGAIN right before the draft is published:
+      # the same release checks, and the owner's tag must still point at the built commit (annotated tags are dereferenced). A failure
+      # DELETES the draft and fails the run (docs/RELEASING.md, "Integrity incident").
+      - name: Re-verify the release before publishing
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ steps.draft.outputs.id }}
+          CLINK_IMMUTABLE_RELEASES: ${{ vars.CLINK_IMMUTABLE_RELEASES }}
+        run: |
+          . ./tools/lib/release-verify-lib.ps1
+          Invoke-ReleaseCheckOrDelete -Repository $env:GITHUB_REPOSITORY -ReleaseId $env:RELEASE_ID -What 'before publishing' -Check {
+            Assert-ReleaseById -Repository $env:GITHUB_REPOSITORY -ReleaseId $env:RELEASE_ID -State draft -Channel stable -Version $env:VERSION -PackageDir dist/package -ImmutableMode $env:CLINK_IMMUTABLE_RELEASES
+            Assert-GitTagAtCommit -Repository $env:GITHUB_REPOSITORY -Tag "v$env:VERSION" -Commit $env:GITHUB_SHA -AllowAnnotated -Attempts 1
+          }
+
       # Only now does the release become visible. With GitHub immutable releases enabled this also locks the assets and tag.
       # Published by ID, and "latest" is set explicitly: only a version higher than the current latest stable release takes it
-      # (a re-cut or backport of an older version must not become what releases/latest/download points at).
+      # (a re-cut or backport of an older version must not become the repository's "latest" release, which the dev version step reads).
       - name: Publish the GitHub release
         shell: pwsh
         env:
+          GH_TOKEN: ${{ github.token }}
           RELEASE_ID: ${{ steps.draft.outputs.id }}
           MAKE_LATEST: ${{ steps.latest.outputs.make_latest }}
         run: |
@@ -461,3 +584,57 @@ jobs:
           $makeLatest = $env:MAKE_LATEST
           gh api -X PATCH "repos/$env:GITHUB_REPOSITORY/releases/$env:RELEASE_ID" -F draft=false -f make_latest=$makeLatest
           if ($LASTEXITCODE -ne 0) { throw 'Could not publish the draft release' }
+
+      # The published release is read back by ID: no longer a draft, IMMUTABLE, the same checks as before (exactly the required assets with
+      # their sizes and digests, the only release of the tag), and the tag still points at the built commit (the tag read is retried
+      # 3 times, 2 s apart). A failure DELETES the release (an immutable release keeps its tag) and fails the run loudly.
+      - name: Verify the published release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ steps.draft.outputs.id }}
+          CLINK_IMMUTABLE_RELEASES: ${{ vars.CLINK_IMMUTABLE_RELEASES }}
+        run: |
+          . ./tools/lib/release-verify-lib.ps1
+          Invoke-ReleaseCheckOrDelete -Repository $env:GITHUB_REPOSITORY -ReleaseId $env:RELEASE_ID -What 'after publishing' -Check {
+            Assert-ReleaseById -Repository $env:GITHUB_REPOSITORY -ReleaseId $env:RELEASE_ID -State published -Channel stable -Version $env:VERSION -PackageDir dist/package -ImmutableMode $env:CLINK_IMMUTABLE_RELEASES
+            Assert-GitTagAtCommit -Repository $env:GITHUB_REPOSITORY -Tag "v$env:VERSION" -Commit $env:GITHUB_SHA -AllowAnnotated -Attempts 3 -DelaySeconds 2
+          }
+
+  # M3 / MF-2. The build artifact (about 150 MB) is deleted as soon as the run is done with it, instead of waiting for retention-days: 1, so the
+  # repository's artifact storage does not fill up. A job of its own, so that actions: write (the permission the delete needs) is held by
+  # NOTHING else: no checkout, no action, no secret, no tools/ code, one inline step. It runs after the publish job whatever its result (also
+  # when publish was skipped or failed), but only when the build job succeeded (otherwise there is no artifact id). It deletes only an
+  # artifact that the API reports as named clink-package AND made by THIS run (workflow_run.id = GITHUB_RUN_ID); anything else, or any
+  # error, is a warning and never fails the run.
+  cleanup:
+    needs: [build, publish]
+    if: always() && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Delete the build artifact
+        continue-on-error: true
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ needs.build.outputs.artifact_id }}
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $ErrorActionPreference = 'Continue'
+          $id = [string]$env:ARTIFACT_ID
+          if ($id -cnotmatch '\A[0-9]+\z' -or [string]$env:GITHUB_RUN_ID -cnotmatch '\A[0-9]+\z') { Write-Output '::warning::No valid build artifact id (or run id); nothing deleted (it expires after 1 day).'; $global:LASTEXITCODE = 0; return }
+          $info = (& gh api "repos/$env:GITHUB_REPOSITORY/actions/artifacts/$id" 2>&1 | Out-String)
+          if ($LASTEXITCODE -ne 0) { Write-Output "::warning::Could not read the build artifact $id; nothing deleted (it expires after 1 day): $($info.Trim())"; $global:LASTEXITCODE = 0; return }
+          $artifact = $null
+          try { $artifact = $info | ConvertFrom-Json } catch { $artifact = $null }
+          if ($null -eq $artifact -or [string]$artifact.name -cne 'clink-package' -or [string]$artifact.workflow_run.id -cne [string]$env:GITHUB_RUN_ID) {
+            Write-Output "::warning::Artifact $id is not this run's clink-package; nothing deleted."
+            $global:LASTEXITCODE = 0
+            return
+          }
+          $out = (& gh api -X DELETE "repos/$env:GITHUB_REPOSITORY/actions/artifacts/$id" 2>&1 | Out-String)
+          if ($LASTEXITCODE -ne 0) { Write-Output "::warning::Could not delete the build artifact $id (it expires after 1 day): $($out.Trim())" }
+          else { Write-Output "Deleted the build artifact $id (clink-package of run $env:GITHUB_RUN_ID)" }
+          $global:LASTEXITCODE = 0

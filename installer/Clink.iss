@@ -115,7 +115,7 @@ Name: "{autodesktop}\Clink"; Filename: "{app}\Clink.exe"; Tasks: desktopicon
 
 [Run]
 ; Offered only when the runtime is present (it may have just been installed by the task above).
-Filename: "{app}\Clink.exe"; Description: "{cm:LaunchProgram,Clink}"; Flags: nowait postinstall skipifsilent unchecked; Check: HasDesktopRuntime10
+Filename: "{app}\Clink.exe"; Description: "{cm:LaunchProgram,Clink}"; Flags: nowait postinstall skipifsilent; Check: HasDesktopRuntime10
 
 [UninstallDelete]
 Type: files; Name: "{app}\Clink.exe.bak"

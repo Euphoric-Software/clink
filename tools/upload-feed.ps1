@@ -1,17 +1,23 @@
 #requires -Version 7
 # Uploads a package (tools/package.ps1 output) and its signed manifest to an S3-compatible bucket (Cloudflare R2), contract v2.
 #
+# The bucket and the base URL are per channel (docs/RELEASING.md, "Two buckets"): stable writes to the R2_STABLE_* bucket served at
+# feedUrl, dev to the R2_DEV_* bucket served at devFeedUrl (or feedUrl when devFeedUrl is empty). The path of that base URL must be
+# exactly "/<prefix>/"; this is checked before anything is written (and earlier still by the workflows' "Read feed configuration" step).
+#
 # Bucket layout under <prefix> (must match ^clink(-staging)?$; CLINK_FEED_KEY_PREFIX, default "clink"):
-#   releases/vX.Y.Z/{Clink.exe, Clink.exe.sha256, Clink-framework.exe, Clink-framework.exe.sha256, Clink-Setup.exe}   write-once
+#   releases/vX.Y.Z/{Clink.exe, Clink.exe.sha256, Clink-framework.exe, Clink-framework.exe.sha256, Clink-Setup.exe, notes.txt}   write-once
 #   dev/vX.Y.Z-dev.N/{same}                                                   write-once
 #   stable.json(.sig), dev.json(.sig)                                         replaced on every publish
 # Order: refuse a downgrade (the bucket's current manifest counts only after its signature verified against feed.json), versioned assets
-# (write-once, compared by their real downloaded bytes), GET-and-hash their PUBLIC URLs, manifest, then signature.
+# (write-once, compared by their real downloaded bytes; every key is checked before the first one is written), GET-and-hash their PUBLIC
+# URLs, manifest, then signature.
 # The decisions live in tools/lib/feed-publish-lib.ps1 (testable with a fake aws); this script only wires the real aws CLI and web client.
 #
 # The manifest and .sig must already be in -PackageDir (tools/make-manifest.ps1, run with the signing key in its own step).
-# With -Sign this script runs make-manifest.ps1 itself (needs -NotesUrl and CLINK_FEED_SIGNING_KEY) and drops the key from
-# the environment as soon as signing is done.
+# With -Sign this script runs make-manifest.ps1 itself (needs CLINK_FEED_SIGNING_KEY) and drops the key from
+# the environment as soon as signing is done. <PackageDir>\notes.txt (tools/lib/notes-lib.ps1) must exist: it is uploaded write-once
+# next to the binaries and byte-compared at its public URL like them; the manifest's notesUrl must be that URL.
 # -HistoryFloor: the highest published GitHub release of this channel that carried <channel>.json (the workflow computes it; empty = none).
 # Env: R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ENDPOINT, R2_BUCKET. Optional purge: CLOUDFLARE_API_TOKEN + CLOUDFLARE_ZONE_ID.
 #      Owner-only, temporary: CLINK_FEED_BUCKET_RESET_VERSION (see Resolve-FeedEffectiveFloor).
@@ -20,7 +26,6 @@ param(
     [Parameter(Mandatory)] [string]$Version,
     [Parameter(Mandatory)] [string]$PackageDir,
     [Parameter(Mandatory)] [string]$FeedJson,
-    [string]$NotesUrl,
     [string]$HistoryFloor,
     [switch]$Sign
 )
@@ -28,6 +33,7 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 . (Join-Path $PSScriptRoot 'feed-lib.ps1')
 . (Join-Path $PSScriptRoot 'lib\feed-publish-lib.ps1')
+. (Join-Path $PSScriptRoot 'lib\notes-lib.ps1')
 
 $PackageDir = (Resolve-Path -LiteralPath $PackageDir).Path
 $FeedJson = (Resolve-Path -LiteralPath $FeedJson).Path
@@ -36,13 +42,18 @@ $folder = if ($Channel -eq 'stable') { "releases/$tag" } else { "dev/$tag" }
 
 $cfg = Get-FeedConfig -Path $FeedJson -Channel $Channel
 if (-not $cfg.Enabled) { throw "The feed is not enabled for the $Channel channel in feed.json ($($cfg.Reason))." }
+# The channel's own base: stable uses feedUrl, dev uses devFeedUrl (or feedUrl when that is empty). The bucket this run writes to
+# (R2_STABLE_* or R2_DEV_*) is the one served at this base.
 $feed = $cfg.FeedUrl
 
 foreach ($n in 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_ENDPOINT', 'R2_BUCKET') {
     if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($n))) { throw "Env var $n is not set (required because the feed is enabled for $Channel)." }
 }
-$prefix = if ($env:CLINK_FEED_KEY_PREFIX) { $env:CLINK_FEED_KEY_PREFIX.Trim('/') } else { 'clink' }
-if ($prefix -cnotmatch '^clink(-staging)?$') { throw "Key prefix '$prefix' is not allowed (must be 'clink' or 'clink-staging')." }
+$prefix = Get-FeedKeyPrefix -Value $env:CLINK_FEED_KEY_PREFIX
+# Guard before ANY bucket access or manifest work: the key is <prefix>/<folder>/<file> but the public URL is base+<folder>/<file>, so the
+# base's path must be exactly /<prefix>/ (otherwise the mismatch would only show at the public-URL check, after write-once objects were
+# written). The workflow already ran the same check in "Read feed configuration", before anything was signed or drafted.
+Assert-FeedBaseMatchesPrefix -BaseUrl $feed -Prefix $prefix
 $bucket = $env:R2_BUCKET
 $endpoint = $env:R2_ENDPOINT
 
@@ -54,10 +65,9 @@ $env:AWS_RESPONSE_CHECKSUM_VALIDATION = 'when_required'
 
 # 1. Manifest: make it (-Sign) or take the one already in the package, then verify it against feed.json and the package files.
 if ($Sign) {
-    if (-not $NotesUrl) { throw '-NotesUrl is required with -Sign.' }
     try {
         & (Join-Path $PSScriptRoot 'make-manifest.ps1') -Channel $Channel -Version $Version -Tag $tag -BaseUrl "$feed$folder/" `
-            -NotesUrl $NotesUrl -PackageDir $PackageDir -FeedJson $FeedJson
+            -PackageDir $PackageDir -FeedJson $FeedJson
     } finally { Remove-Item Env:\CLINK_FEED_SIGNING_KEY -ErrorAction SilentlyContinue }
 }
 $manifestPath = Join-Path $PackageDir "$Channel.json"
@@ -76,7 +86,11 @@ $assets = @(
     [pscustomobject]@{ Name = 'Clink-framework.exe'; Type = 'application/vnd.microsoft.portable-executable' }
     [pscustomobject]@{ Name = 'Clink-framework.exe.sha256'; Type = 'text/plain' }
     [pscustomobject]@{ Name = $setup; Type = 'application/vnd.microsoft.portable-executable' }
+    [pscustomobject]@{ Name = 'notes.txt'; Type = 'text/plain; charset=utf-8' }
 )
+# notes.txt: the manifest's notesUrl must be exactly the public URL this script publishes it at, and the file must be a valid notes file.
+Assert-FeedNotesFile -Path (Join-Path $PackageDir 'notes.txt')
+if (-not ([string]$manifest.notesUrl -ceq "$feed$folder/notes.txt")) { throw "The manifest's notesUrl '$($manifest.notesUrl)' is not $feed$folder/notes.txt." }
 foreach ($a in $assets) {
     $local = Join-Path $PackageDir $a.Name
     if (-not (Test-Path -LiteralPath $local -PathType Leaf)) { throw "Missing $local." }
@@ -108,11 +122,10 @@ $immutable = 'public, max-age=31536000, immutable'
 $short = 'public, max-age=60'
 
 # 3. Versioned assets are write-once: the object in the bucket is downloaded and hashed; same bytes = skip, different = fail.
-#    Conditional create (If-None-Match: *); an aws cli without it fails closed (no fallback). The real write-once guarantee is
-#    still the R2 Bucket Lock rule on releases/ (docs/RELEASING.md).
-foreach ($a in $assets) {
-    [void](Publish-FeedVersionedAsset -Aws $awsInvoker -Bucket $bucket -Endpoint $endpoint -Asset $a -CacheControl $immutable)
-}
+#    L-5: a PREFLIGHT checks every versioned key (binaries, .sha256 files, notes.txt) before the first write, so a conflict on any of
+#    them fails with nothing written. Conditional create (If-None-Match: *); an aws cli without it fails closed (no fallback). The real
+#    write-once guarantee is still the R2 Bucket Lock rule on releases/ (docs/RELEASING.md).
+[void](Publish-FeedVersionedAssets -Aws $awsInvoker -Bucket $bucket -Endpoint $endpoint -Assets $assets -CacheControl $immutable)
 
 # 4. The assets must be reachable at their PUBLIC URLs with the right bytes (downloaded and hashed) before the manifest points at them.
 foreach ($a in $assets) { Assert-FeedPublicAsset -Http $httpInvoker -Asset $a }
@@ -133,19 +146,22 @@ if ($env:CLOUDFLARE_API_TOKEN -and $env:CLOUDFLARE_ZONE_ID) {
     } catch { Write-Host "::warning::Cloudflare cache purge failed: $($_.Exception.Message)" }
 }
 
-# 7. Dev only: keep the 10 newest dev folders, deleting strictly under <prefix>/dev/<vX.Y.Z-dev.N>/.
+# 7. Dev only: keep the 10 newest dev folders, deleting strictly under <prefix>/dev/<vX.Y.Z-dev.N>/. Housekeeping: nothing in here may
+#    fail a publish that already succeeded (dev.json is live), so every error, a parse error included, is only a warning.
 if ($Channel -eq 'dev') {
-    $r = Invoke-FeedAws -Aws $awsInvoker -Arguments @('s3', 'ls', "s3://$bucket/$prefix/dev/", '--endpoint-url', $endpoint)
-    if ($r.Code -ne 0) { Write-Host "::warning::Could not list old dev folders: $($r.Text.Trim())" }
-    else {
-        $dirs = @($r.Text -split "`r?`n" | ForEach-Object { if ($_ -match '^\s*PRE (v[0-9]+\.[0-9]+\.[0-9]+-dev\.([0-9]+))/\s*$') { [pscustomobject]@{ Name = $Matches[1]; N = [int]$Matches[2] } } } |
-            Where-Object { $_.Name -ne $tag } | Sort-Object N -Descending)
-        foreach ($d in ($dirs | Select-Object -Skip 9)) {   # 9 + the one just published = 10
-            "pruning $($d.Name)"
-            $r = Invoke-FeedAws -Aws $awsInvoker -Arguments @('s3', 'rm', "s3://$bucket/$prefix/dev/$($d.Name)/", '--recursive', '--endpoint-url', $endpoint, '--only-show-errors')
-            if ($r.Code -ne 0) { Write-Host "::warning::Pruning $($d.Name) failed: $($r.Text.Trim())" }
+    try {
+        $r = Invoke-FeedAws -Aws $awsInvoker -Arguments @('s3', 'ls', "s3://$bucket/$prefix/dev/", '--endpoint-url', $endpoint)
+        if ($r.Code -ne 0) { Write-Host "::warning::Could not list old dev folders: $($r.Text.Trim())" }
+        else {
+            $dirs = @($r.Text -split "`r?`n" | ForEach-Object { if ($_ -cmatch '\A\s*PRE (v[0-9]+\.[0-9]+\.[0-9]+-dev\.([0-9]+))/\s*\z') { [pscustomobject]@{ Name = $Matches[1]; N = [int64]$Matches[2] } } } |
+                Where-Object { $_.Name -ne $tag } | Sort-Object N -Descending)
+            foreach ($d in ($dirs | Select-Object -Skip 9)) {   # 9 + the one just published = 10
+                "pruning $($d.Name)"
+                $r = Invoke-FeedAws -Aws $awsInvoker -Arguments @('s3', 'rm', "s3://$bucket/$prefix/dev/$($d.Name)/", '--recursive', '--endpoint-url', $endpoint, '--only-show-errors')
+                if ($r.Code -ne 0) { Write-Host "::warning::Pruning $($d.Name) failed: $($r.Text.Trim())" }
+            }
         }
-    }
+    } catch { Write-Host "::warning::Pruning old dev folders stopped: $($_.Exception.Message)" }
 }
 # Prune failures above are only warnings, but the failed aws calls leave a non-zero $LASTEXITCODE. The runner appends an exit-code check
 # to the step, which must not fail a publish that already succeeded (dev.json is live).

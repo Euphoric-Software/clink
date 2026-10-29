@@ -22,12 +22,12 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Check out
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
 
       - name: Set up .NET
-        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
           global-json-file: global.json
 
@@ -39,13 +39,14 @@ jobs:
           . ./tools/lib/dotnet-sdk-lib.ps1
           Assert-DotNetSdk -GlobalJsonPath global.json
 
+      # The key covers nuget.config and there is NO fallback key list (no partial match): a change of the package pins, the source or the trusted signers starts from an
+      # empty folder instead of a stale one (a cache hit skips the signature checks, so the cache must never outlive the rules it was built
+      # under). The release workflows do not use a cache at all.
       - name: Cache NuGet packages
-        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: ~/.nuget/packages
-          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'global.json') }}
-          restore-keys: |
-            nuget-${{ runner.os }}-
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'global.json', 'nuget.config') }}
 
       - name: Build
         shell: pwsh
@@ -60,7 +61,7 @@ jobs:
         run: |
           $cv = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
           "OS: $([Environment]::OSVersion.VersionString); $($cv.ProductName) $($cv.DisplayVersion), build $($cv.CurrentBuild).$($cv.UBR)"
-          foreach ($dll in 'mfplat.dll', 'mfmp4srcsnk.dll', 'msauddecmft.dll') {
+          foreach ($dll in 'mfplat.dll', 'mfmp4srcsnk.dll', 'msauddecmft.dll', 'mfh264enc.dll', 'msmpeg2vdec.dll') {
             $file = Join-Path $env:windir "System32\$dll"
             if (Test-Path $file) { "$dll $((Get-Item $file).VersionInfo.FileVersionRaw)" } else { "$dll not found" }
           }
@@ -83,6 +84,7 @@ jobs:
 
   # Packaging dry run: both flavours are published, checked and packaged exactly like the release workflows do, including the
   # real installer compile (pinned Inno Setup, dry-run runtime inputs), minus everything that publishes. No environment, no secrets, contents: read only.
+  # Nothing in this file may name a secret (a test enforces it); any artifact it uploaded would be kept 1 day (retention-days: 1).
   package-dry-run:
     name: Package dry run
     runs-on: windows-latest
@@ -90,12 +92,12 @@ jobs:
       contents: read
     steps:
       - name: Check out
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
 
       - name: Set up .NET
-        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
           global-json-file: global.json
 
@@ -108,12 +110,10 @@ jobs:
           Assert-DotNetSdk -GlobalJsonPath global.json
 
       - name: Cache NuGet packages
-        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: ~/.nuget/packages
-          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'global.json') }}
-          restore-keys: |
-            nuget-${{ runner.os }}-
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'global.json', 'nuget.config') }}
 
       - name: Publish both flavours
         shell: pwsh
@@ -121,10 +121,18 @@ jobs:
           $match = Select-String -Path Clink/Clink.csproj -Pattern '<Version>([^<]+)</Version>' | Select-Object -First 1
           if (-not $match) { throw 'No <Version> element in Clink/Clink.csproj' }
           $version = $match.Matches[0].Groups[1].Value.Trim()
-          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "Clink.csproj Version '$version' is not X.Y.Z" }
+          if ($version -cnotmatch '\A[0-9]+\.[0-9]+\.[0-9]+\z') { throw "Clink.csproj Version '$version' is not X.Y.Z" }
           Add-Content -Path $env:GITHUB_ENV -Value "CLINK_DRY_RUN_VERSION=$version"
           ./tools/publish-flavours.ps1 -Version $version
           Get-ChildItem dist/sc, dist/fx | Select-Object FullName, Length
+
+      # What NuGet itself recorded for the two restores: nuget.org is the only source, no fallback folder, the package folder is the default
+      # one, the repo nuget.config was read, and every package's .nupkg.metadata names nuget.org (tools/lib/nuget-restore-lib.ps1).
+      - name: Verify the NuGet restore (nuget.org only)
+        shell: pwsh
+        run: |
+          . ./tools/lib/nuget-restore-lib.ps1
+          Assert-NuGetRestoreTrusted -AssetsFile Clink/obj_sc/project.assets.json, Clink/obj_fx/project.assets.json
 
       # Same notices gate as the release workflows. The runtime freshness check is NOT run here: it needs the latest runtime version,
       # which only tools/resolve-dotnet-runtime.ps1 fetches (a network call plus a 60 MB download), and this job does not run the
@@ -135,10 +143,19 @@ jobs:
           ./tools/notices/make-notices.ps1 -Check -AssetsFile Clink/obj_sc/project.assets.json
           if ($LASTEXITCODE -ne 0) { throw 'THIRD-PARTY-NOTICES.txt is out of date (see the output above).' }
 
+      # I-3. The client-source guard runs STRICT (CLINK_GUARD_STRICT=1) as soon as the legacy GitHub update path is gone, i.e. no client
+      # source DEFINES VerifyGitHubReleaseAsync any more (slice S6 removes it); until then the guard reports its GitHub checks as skipped.
+      # The decision is the guard's own function (Test-ClientLegacyUpdatePath, tools/lib/client-guard-lib.ps1), so CI and the guard agree.
+      # TODO once S6 is merged: replace the condition with a plain `CLINK_GUARD_STRICT: '1'` env entry, so that re-adding a definition of
+      # that name cannot make the guard lenient again (private-ci.tests.ps1 accepts either form).
       - name: Script tests (PowerShell 7)
         shell: pwsh
         timeout-minutes: 10
-        run: pwsh -NoProfile -File ./tools/tests/run-script-tests.ps1
+        run: |
+          . ./tools/lib/client-guard-lib.ps1
+          if (-not (Test-ClientLegacyUpdatePath -Root .)) { $env:CLINK_GUARD_STRICT = '1'; Write-Output 'CLINK_GUARD_STRICT=1: the legacy GitHub update path is gone, so the client-source guard is strict.' }
+          else { Write-Output 'The legacy GitHub update path (VerifyGitHubReleaseAsync) is still defined: the client-source guard reports its GitHub checks as skipped.' }
+          pwsh -NoProfile -File ./tools/tests/run-script-tests.ps1
 
       - name: Check the published exes
         shell: pwsh
@@ -146,7 +163,13 @@ jobs:
         run: |
           . ./tools/feed-lib.ps1
           $cfg = Get-FeedConfig -Path Clink/Assets/feed.json -Channel stable
-          ./tools/check-published.ps1 -ScExe dist/sc/Clink.exe -FxExe dist/fx/Clink.exe -Version $env:CLINK_DRY_RUN_VERSION -ExpectFeed $cfg.Mode -TimeoutSeconds 90
+          $devCfg = Get-FeedConfig -Path Clink/Assets/feed.json -Channel dev
+          # The two bases (normalised) are what the exe's self-test compares with the bases it resolved; with the feed off both are empty and are not passed.
+          if ($cfg.Mode -eq 'on') {
+            ./tools/check-published.ps1 -ScExe dist/sc/Clink.exe -FxExe dist/fx/Clink.exe -Version $env:CLINK_DRY_RUN_VERSION -ExpectFeed $cfg.Mode -ExpectFeedUrl $cfg.FeedUrl -ExpectDevFeedUrl $devCfg.FeedUrl -TimeoutSeconds 90
+          } else {
+            ./tools/check-published.ps1 -ScExe dist/sc/Clink.exe -FxExe dist/fx/Clink.exe -Version $env:CLINK_DRY_RUN_VERSION -ExpectFeed $cfg.Mode -TimeoutSeconds 90
+          }
 
       # Same pinned, hash-verified Inno Setup as release.yml (6.7.3, >= 6.3 is needed for x64compatible): the dry run compiles the REAL
       # installer script so a broken installer\Clink.iss fails a pull request, not a release. The setup exe is not uploaded anywhere.

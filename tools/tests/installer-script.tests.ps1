@@ -126,6 +126,17 @@ if (Test-Path -LiteralPath $realIss) {
     }
 }
 
+# The "Launch Clink" checkbox on the last page is CHECKED by default (no "unchecked" flag on the [Run] entry that starts Clink.exe);
+# it stays a postinstall entry that is skipped for a silent install and offered only when the runtime is present.
+if (Test-Path -LiteralPath $realIss) {
+    $runLines = @($real -split "`r?`n" | Where-Object { $_ -match '^\s*Filename:\s*"\{app\}\\Clink\.exe"' -and $_ -match 'postinstall' })
+    if ($runLines.Count -ne 1) { $failures.Add("expected exactly one postinstall [Run] entry for Clink.exe, found $($runLines.Count)") }
+    else {
+        if ($runLines[0] -match '(?i)\bunchecked\b') { $failures.Add('the "Launch Clink" [Run] entry has the unchecked flag: it must be checked by default') }
+        foreach ($flag in 'nowait', 'skipifsilent') { if ($runLines[0] -notmatch "\b$flag\b") { $failures.Add("the Launch Clink [Run] entry lost the $flag flag") } }
+    }
+}
+
 if ($failures.Count -gt 0) {
     $failures | ForEach-Object { Write-Host "FAIL $_" }
     Write-Host "Failed: $($failures.Count)"

@@ -433,6 +433,7 @@ try {
         # make-manifest needs an installer entry: add a fixture setup exe.
         $setupName = 'Clink-Setup.exe'
         New-FixtureFile -Path (Join-Path $pkgDir $setupName) -Length 3000
+        [System.IO.File]::WriteAllBytes((Join-Path $pkgDir 'notes.txt'), $utf8.GetBytes("Notes for the script tests.`n"))
         $pkgFile = Join-Path $pkgDir 'package.json'
         $pkg = Get-Content -Raw -LiteralPath $pkgFile | ConvertFrom-Json
         $pkg.files | Add-Member -NotePropertyName installer -NotePropertyValue ([pscustomobject]@{
@@ -441,7 +442,7 @@ try {
 
         $manifestScript = Join-Path $toolsDir 'make-manifest.ps1'
         $base = 'https://downloads.example/clink/releases/v0.4.2/'
-        $manifestArgs = @('-Channel', 'stable', '-Version', '0.4.2', '-Tag', 'v0.4.2', '-BaseUrl', $base, '-NotesUrl', 'https://example.org/notes', '-PackageDir', $pkgDir, '-FeedJson', $feedJson)
+        $manifestArgs = @('-Channel', 'stable', '-Version', '0.4.2', '-Tag', 'v0.4.2', '-BaseUrl', $base, '-PackageDir', $pkgDir, '-FeedJson', $feedJson)
         $r = Invoke-ScriptChild $manifestScript $manifestArgs @{ CLINK_FEED_SIGNING_KEY = $keys[0].Private }
         Assert-True ($r.Code -eq 0) "make-manifest.ps1 failed: $($r.Out) $($r.Err)"
         Assert-True (Test-Path -LiteralPath (Join-Path $pkgDir 'stable.json.sig')) 'stable.json.sig is missing'
@@ -452,6 +453,7 @@ try {
         Assert-True ($manifest.assets.exeFramework.sha256 -eq $pkg.files.exeFramework.sha256) 'exeFramework sha256'
         Assert-True ($manifest.assets.exe.url -eq ($base + 'Clink.exe') -and $manifest.assets.exe.size -eq 5000) 'exe entry'
         Assert-True ($manifest.assets.installer.url -eq ($base + $setupName)) 'installer entry'
+        Assert-True ($manifest.notesUrl -ceq ($base + 'notes.txt')) "notesUrl is '$($manifest.notesUrl)'"
 
         # A package.json whose minRuntime is not X.Y.Z must not produce a manifest.
         $bad = Get-Content -Raw -LiteralPath $pkgFile | ConvertFrom-Json
@@ -732,8 +734,13 @@ try {
 
     # ------------------------------------------------------------------ publish-flavours.ps1 (validation only; nothing is published)
     $publishScript = Join-Path $toolsDir 'publish-flavours.ps1'
+    # A folder that is TRULY outside the repo: under the root of the repo's drive (the repo itself is never the drive root). It is never created.
+    # $scratch must not be used for this: TEMP may well be inside the repo (a checkout on a Dev Drive with TEMP redirected into it, a CI folder),
+    # and then "outside the repo" would be false.
+    $outsideRepo = Join-Path ([System.IO.Path]::GetPathRoot($repo)) 'clink-pkgtests-outside-the-repo'
+    Assert-True (-not $outsideRepo.StartsWith($repo.TrimEnd('\') + '\', [System.StringComparison]::OrdinalIgnoreCase)) "the 'outside the repo' folder $outsideRepo is inside $repo"
     Invoke-Test 'publish-flavours.ps1 refuses an -OutRoot outside the repo and a bad -Configuration' {
-        $outside = Join-Path $scratch 'outside-root'
+        $outside = Join-Path $outsideRepo 'outside-root'
         $r = Invoke-ScriptChild $publishScript @('-OutRoot', $outside)
         Assert-True ($r.Code -ne 0) 'accepted an -OutRoot outside the repo'
         Assert-True (($r.Out + $r.Err) -match 'inside the repo') "no 'inside the repo' message: $($r.Out) $($r.Err)"
@@ -744,7 +751,7 @@ try {
     Invoke-Test 'publish-flavours.ps1 Resolve-OutRoot accepts only paths strictly inside the repo' {
         . ([scriptblock]::Create((Import-ScriptFunction $publishScript @('Resolve-OutRoot'))))
         Assert-True ((Resolve-OutRoot -Path (Join-Path $repo 'dist') -RepoRoot $repo) -eq (Join-Path $repo 'dist')) 'rejected <repo>\dist'
-        foreach ($bad in $repo, (Join-Path $repo '..\elsewhere'), (Join-Path $repo 'dist\..\..\x'), $scratch, ($repo + '-sibling')) {
+        foreach ($bad in $repo, (Join-Path $repo '..\elsewhere'), (Join-Path $repo 'dist\..\..\x'), $outsideRepo, (Join-Path $outsideRepo 'dist'), ($repo + '-sibling')) {
             $threw = $false
             try { Resolve-OutRoot -Path $bad -RepoRoot $repo | Out-Null } catch { $threw = $true }
             Assert-True $threw "accepted '$bad'"
@@ -953,20 +960,29 @@ try {
             $publishFeed = $text.IndexOf('- name: Publish to the update feed')
             $publishRelease = $text.IndexOf('- name: Publish the GitHub release')
             Assert-True ($create -gt 0 -and $start -gt $create -and $start -lt $publishFeed -and $start -lt $publishRelease) "${name}: the asset check is not between the draft upload and the publishing steps"
-            $step = $text.Substring($start, $publishFeed - $start)
-            Assert-True ($step.Contains("'Clink.exe', 'Clink.exe.sha256', 'Clink-framework.exe', 'Clink-framework.exe.sha256', 'Clink-Setup.exe', 'Clink-Setup.exe.sha256', 'THIRD-PARTY-NOTICES.txt'")) "${name}: the asset check lacks one of the seven names"
-            Assert-True ($step.Contains('-ceq "v$env:VERSION"') -and $step.Contains('-ceq $name') -and $step.Contains("-ceq 'uploaded'")) "${name}: the asset check is not case-sensitive"
-            Assert-True ($step.Contains('throw "Release v$env:VERSION lacks')) "${name}: the asset check does not fail on a missing asset"
-            # By release ID, not by tag: draft flag, tag, state, size and digest are all compared.
-            foreach ($needle in 'releases/$env:RELEASE_ID', 'ConvertFrom-Json', '$release.draft -ne $true', '$asset.state', '$asset.size', '$local.Length', '$asset.digest', "'sha256:'", '-ceq $expected', '::warning::') {
-                Assert-True ($step.Contains($needle)) "${name}: the asset check lacks '$needle'"
+            # The step ends at the next step (not at the feed upload: the latest-release decision lies between them in release.yml).
+            $nextStep = $text.IndexOf("`n      - name:", $start + 10)
+            Assert-True ($nextStep -gt $start -and $nextStep -lt $publishFeed) "${name}: cannot delimit the asset check step"
+            $step = $text.Substring($start, $nextStep - $start)
+            # The checks themselves live in tools/lib/release-verify-lib.ps1 (and are run against a fake gh by release-verify.tests.ps1).
+            $lib = [System.IO.File]::ReadAllText((Join-Path $toolsDir 'lib\release-verify-lib.ps1'))
+            Assert-True ($lib.Contains("'Clink.exe', 'Clink.exe.sha256', 'Clink-framework.exe', 'Clink-framework.exe.sha256', 'Clink-Setup.exe', 'Clink-Setup.exe.sha256', 'THIRD-PARTY-NOTICES.txt'")) "${name}: the lib lacks one of the seven names"
+            Assert-True ($lib.Contains('-ceq $tag') -and $lib.Contains('-ceq $name') -and $lib.Contains("-ceq 'uploaded'")) "${name}: the asset check is not case-sensitive"
+            Assert-True ($lib.Contains('throw "Release $tag lacks exactly one asset named $name')) "${name}: the asset check does not fail on a missing asset"
+            # By release ID, not by tag: draft flag, tag, state, size and digest are all compared, and a missing digest is a FAILURE (no warning).
+            foreach ($needle in 'releases/$ReleaseId', 'ConvertFrom-Json', '$Release.draft -ne $true', '$asset.state', '$asset.size', '$local.Length', '$asset.digest', "'sha256:'", '-ceq $expected', 'throw "GitHub reports no digest') {
+                Assert-True (($lib + $step).Contains($needle)) "${name}: the asset check lacks '$needle'"
             }
-            Assert-True (-not $step.Contains('--paginate') -and -not $step.Contains('.Split(')) "${name}: the asset check still joins/splits asset names"
+            # (The only warnings are the two inside the explicit CLINK_IMMUTABLE_RELEASES=unavailable branch of the lib; the step itself has none.)
+            Assert-True ($step -notmatch '::warning::') "${name}: the asset check step downgrades something to a warning"
+            Assert-True (@($lib -split "`r?`n" | Where-Object { $_ -match '::warning::' -and -not $_.Contains("`$mode -ceq 'unavailable'") }).Count -eq 0) "${name}: the lib warns outside the unavailable branch"
+            Assert-True (-not $step.Contains('--paginate') -and -not $step.Contains('.Split(')) "${name}: the asset check step still joins/splits asset names"
+            Assert-True ($step.Contains('Assert-ReleaseById -Repository $env:GITHUB_REPOSITORY -ReleaseId $env:RELEASE_ID -State draft')) "${name}: the step does not call the by-ID check"
             # The expression ${{ ... }} appears only in env:, never inside the script.
             $runAt = $step.IndexOf('run: |')
             Assert-True ($runAt -gt 0) "${name}: no run block in the asset check"
             Assert-True (-not $step.Substring($runAt).Contains('${{')) "${name}: the asset check interpolates an expression into the script"
-            Assert-True ($step.Contains('RELEASE_ID: ${{ steps.draft.outputs.id }}') -and $step.Contains("-cnotmatch '\A[0-9]+\z'")) "${name}: RELEASE_ID is not passed via env and validated as digits"
+            Assert-True ($step.Contains('RELEASE_ID: ${{ steps.draft.outputs.id }}') -and $lib.Contains("-cnotmatch '\A[0-9]+\z'")) "${name}: RELEASE_ID is not passed via env and validated as digits"
         }
     }
 
@@ -977,7 +993,9 @@ try {
             Assert-True ($create -gt 0 -and $text.Substring($create, 120).Contains('id: draft')) "${name}: the draft step has no 'id: draft'"
             # steps.draft.outputs.id is only ever the value of an env entry.
             $uses = [regex]::Matches($text, '[^\r\n]*steps\.draft\.outputs\.id[^\r\n]*')
-            Assert-True ($uses.Count -eq 2) "${name}: expected 2 uses of steps.draft.outputs.id (verify and publish), found $($uses.Count)"
+            # The first check, the re-check before the PATCH, the PATCH itself and the post-publish check (dev: and its separate tag check).
+            $expectedUses = if ($name -ceq 'release-dev.yml') { 5 } else { 4 }
+            Assert-True ($uses.Count -eq $expectedUses) "${name}: expected $expectedUses uses of steps.draft.outputs.id, found $($uses.Count)"
             foreach ($u in $uses) { Assert-True ($u.Value.Trim() -ceq 'RELEASE_ID: ${{ steps.draft.outputs.id }}') "${name}: steps.draft.outputs.id used outside an env entry: $($u.Value.Trim())" }
             $publishAt = $text.IndexOf('- name: Publish the GitHub release')
             $nextAt = $text.IndexOf("`n      - name:", $publishAt + 10)
@@ -1005,10 +1023,21 @@ try {
         Assert-True ($stablePublish.Contains('MAKE_LATEST: ${{ steps.latest.outputs.make_latest }}') -and $stablePublish.Contains("`$env:MAKE_LATEST -cnotmatch '\A(true|false)\z'") -and $stablePublish.Contains('$makeLatest = $env:MAKE_LATEST')) 'release.yml: the publish step does not take make_latest from a validated env'
         Assert-True ($stablePublish -notmatch 'Get-MakeLatestValue' -and $stablePublish -notmatch 'releases/latest"') 'release.yml: the publish step still computes make_latest'
         Assert-True ([regex]::Matches($stable, 'steps\.latest\.outputs\.make_latest').Count -eq 1) 'release.yml: steps.latest.outputs.make_latest is used more than once'
-        Assert-True ($stable.Contains('$release.prerelease -ne $false') -and $dev.Contains('$release.prerelease -ne $true')) 'the asset checks do not assert the prerelease flag per channel'
-        Assert-True ($stable.Contains("'stable.json', 'stable.json.sig'") -and $stable.Contains('Test-Path -LiteralPath dist/package/stable.json')) 'release.yml: the asset check does not require the channel manifest'
-        Assert-True ($dev.Contains("'dev.json', 'dev.json.sig'") -and $dev.Contains('Test-Path -LiteralPath dist/package/dev.json')) 'release-dev.yml: the asset check does not require the channel manifest'
-        Assert-True ($stable -notmatch 'target_commitish\s*[-=]' -and $dev -notmatch 'target_commitish\s*[-=]') 'a target_commitish check was added'
+        # The checks live in the lib; each workflow names its channel (-Channel stable / dev), so the prerelease flag and the manifest names are per channel.
+        $verifyLib = [System.IO.File]::ReadAllText((Join-Path $toolsDir 'lib\release-verify-lib.ps1'))
+        Assert-True ($verifyLib.Contains('$Release.prerelease -ne $false') -and $verifyLib.Contains('$Release.prerelease -ne $true')) 'the lib does not assert the prerelease flag per channel'
+        Assert-True ($stable.Contains('-State draft -Channel stable') -and $dev.Contains('-State draft -Channel dev')) 'a workflow does not name its channel in the asset check'
+        Assert-True ($verifyLib.Contains('"$Channel.json", "$Channel.json.sig"') -and $verifyLib.Contains('Test-Path -LiteralPath (Join-Path $PackageDir "$Channel.json")')) 'the asset check does not require the channel manifest when the build made it'
+        # Positive checks of the built commit: dev compares target_commitish with GITHUB_SHA (-Commit $env:GITHUB_SHA, compared with -ceq in the lib);
+        # stable has neither (its commit is the owner's tag: Assert-GitTagAtCommit ... -Commit $env:GITHUB_SHA, never target_commitish).
+        $devVerifyStep = $dev.Substring($dev.IndexOf('- name: Verify the release assets'))
+        $devVerifyStep = $devVerifyStep.Substring(0, $devVerifyStep.IndexOf("`n      - name:", 10))
+        Assert-True ($devVerifyStep.Contains('-Commit $env:GITHUB_SHA')) 'release-dev.yml: the asset check does not pass the built commit'
+        Assert-True ($verifyLib.Contains('$builtCommit = [string]$Release.target_commitish') -and $verifyLib.Contains('$builtCommit -ceq $Commit')) 'the lib does not compare $Release.target_commitish with the built commit using -ceq'
+        $stableVerifyStep = $stable.Substring($stable.IndexOf('- name: Verify the release assets'))
+        $stableVerifyStep = $stableVerifyStep.Substring(0, $stableVerifyStep.IndexOf("`n      - name:", 10))
+        Assert-True ($stableVerifyStep -notmatch 'target_commitish|-Commit ') 'release.yml: the asset check compares a commit (stable has none to compare)'
+        Assert-True ($stable -notmatch 'target_commitish\s*[-=]' -and $dev -notmatch 'target_commitish\s*[-=]') 'a target_commitish assignment or comparison was added to a workflow'
         $devPublish = $dev.Substring($dev.IndexOf('- name: Publish the GitHub release'))
         $devPublish = $devPublish.Substring(0, $devPublish.IndexOf('- name: Prune'))
         Assert-True ($devPublish.Contains('-f make_latest=false') -and $devPublish -notmatch 'make_latest=\$') 'release-dev.yml: the dev publish must pass make_latest=false'

@@ -1,9 +1,13 @@
 # Generates an update-feed signing key pair (ECDSA P-256) for one channel. Works on Windows PowerShell 5.1 and PowerShell 7.
-# The private key (PKCS#8 PEM) is written to -PrivateKeyPath, which must NOT be inside any git work tree.
-# Prints the public key (Base64 SPKI) to add to Clink/Assets/feed.json.
+# The private key (PKCS#8 PEM) is written to -PrivateKeyPath, which must NOT be inside any git work tree. It is never printed: the
+# only place it goes is that file. The script prints the public key (Base64 SPKI) and a short summary of what to do with each value.
+#   -Channel stable|dev   which channel the key is for
+#   -Next                 a "next" key for that channel (rotation, see docs/RELEASING.md): its public key goes into feed.json now, its
+#                         private key goes into NO repo secret and stays on the USB drive until a rotation. Works for both channels.
 param(
     [Parameter(Mandatory)] [ValidateSet('stable', 'dev')] [string]$Channel,
-    [Parameter(Mandatory)] [string]$PrivateKeyPath
+    [Parameter(Mandatory)] [string]$PrivateKeyPath,
+    [switch]$Next
 )
 $ErrorActionPreference = 'Stop'
 
@@ -49,28 +53,42 @@ if ($PSVersionTable.PSVersion.Major -ge 7) {
     $pub = [Convert]::ToBase64String($spki)
 }
 [System.IO.File]::WriteAllText($target, $pem, [System.Text.UTF8Encoding]::new($false))
+$pem = $null
 
-"Private key written to: $target (keep it secret, back it up offline, never commit it; *.pem is git-ignored as a backstop)"
+$keysProp = if ($Channel -eq 'stable') { 'stableKeys' } else { 'devKeys' }
+$secretName = if ($Channel -eq 'stable') { 'CLINK_FEED_STABLE_SIGNING_KEY' } else { 'CLINK_FEED_DEV_SIGNING_KEY' }
+$what = if ($Next) { "NEXT $Channel key (for a later rotation)" } else { "$Channel key" }
+
+"Private key written to: $target"
+"  (this file is the only place the private key goes; it is never printed. *.pem is git-ignored as a backstop)"
 ''
-"Public key for the $Channel channel (Base64 SPKI):"
+"Public key for the $what (Base64 SPKI):"
 $pub
 ''
-$keysProp = if ($Channel -eq 'stable') { 'stableKeys' } else { 'devKeys' }
-$envName = if ($Channel -eq 'stable') { 'feed-stable' } else { 'feed-dev' }
-$secretName = if ($Channel -eq 'stable') { 'CLINK_FEED_STABLE_SIGNING_KEY' } else { 'CLINK_FEED_DEV_SIGNING_KEY' }
-"Next:"
-"  1. Add the public key to the '$keysProp' list in Clink/Assets/feed.json in a reviewed commit (pull request). Clink builds"
-"     made from that commit trust it; the feed is off while feed.json is completely empty and a build error while it is only partly filled in."
-"  2. GitHub repo > Settings > Environments > $envName > Environment secrets: add $secretName (environment secret,"
-"     not a repo-level secret). Recommended value, one line without newlines (make-manifest.ps1 accepts it or the plain PEM):"
-"       [Convert]::ToBase64String([IO.File]::ReadAllBytes('$target'))"
-"     Both channels must be enabled together: feed.json needs feedUrl plus at least one key in BOTH stableKeys and devKeys,"
-"     and no key may appear in both lists."
-"  3. Keep an offline backup of the private key (encrypted, off this PC). Then delete the working copy."
-"     Until then restrict the file to your own account, e.g.:"
-"       icacls `"$target`" /inheritance:r /grant:r `"`${env:USERNAME}:(R,D)`""
-if ($Channel -eq 'stable') {
-    "  4. Also generate an offline 'next' stable key now (run this script again, store it offline, do NOT put it in an environment"
-    "     secret) and add its public key to stableKeys so that a rotation never needs an update that old clients cannot verify."
+"WHAT TO DO WITH IT"
+"  1. PUBLIC value -> Clink/Assets/feed.json, in the '$keysProp' list (a reviewed commit). Both channels are enabled together: feed.json"
+"     needs feedUrl plus at least one key in BOTH stableKeys and devKeys, and no key may appear in both lists."
+if ($Next) {
+    "  2. PRIVATE value -> NO repo secret. A next key is not used for signing yet: it stays on the USB drive until you rotate"
+    "     (docs/RELEASING.md, Rotation). Clients that ship its public key then keep updating after the switch."
+} else {
+    "  2. PRIVATE value -> GitHub repo secret $secretName (repo > Settings > Secrets and variables > Actions > New repository secret)."
+    "     Set it straight from the file, without the clipboard and without showing it (make-manifest.ps1 accepts the plain PEM or one line of Base64):"
+    "       Get-Content -Raw '$target' | gh secret set $secretName"
+    "     (add --repo <owner>/<repo> when you are not inside the repo's folder). Do not paste the key anywhere else: a clipboard and its history keep it."
 }
-"See docs/RELEASING.md (key rotation)."
+# icacls only works on NTFS (and ReFS): a USB drive formatted exFAT or FAT32 has no ACLs at all.
+$format = ''
+try { $format = [string](New-Object System.IO.DriveInfo ([System.IO.Path]::GetPathRoot($target))).DriveFormat } catch { $format = '' }
+if ($format -ieq 'NTFS' -or $format -ieq 'ReFS') {
+    "  3. Back up the .pem files to the USB drive. Then delete the working copy. Until then restrict the file to your own account:"
+    "       icacls `"$target`" /inheritance:r /grant:r `"`${env:USERNAME}:(R,D)`""
+} else {
+    "  3. Back up the .pem files to the USB drive. Then delete the working copy. This drive's file system is '$format' (not NTFS): it has no"
+    "     file permissions, so icacls cannot protect the file here. Keep the drive with you, and delete the file as soon as it is backed up."
+}
+if (-not $Next) {
+    "  4. Also make a NEXT key for this channel now (run this script again with -Next, a different file name) so that a later rotation never"
+    "     needs an update that old clients cannot verify."
+}
+"See docs/RELEASING.md."

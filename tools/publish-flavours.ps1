@@ -8,6 +8,8 @@ param(
     [ValidateSet('Debug', 'Release')] [string]$Configuration = 'Release',
     [string]$Version,      # -p:Version=<Version> when given (CI)
     [string]$UpdateRepo,   # -p:UpdateRepo=<owner/repo> when given (CI)
+    [string]$MinStable,    # -p:ClinkMinStable=<X.Y.Z>: the embedded stable floor seed (CI: newest published stable). Empty = no seed (local builds, dry run)
+    [string]$MinDev,       # -p:ClinkMinDev=<X.Y.Z or X.Y.Z-dev.N>: the embedded dev floor seed. Empty = no seed
     [string]$OutRoot,      # default <repo>\dist; must be inside the repo (its sc and fx subfolders are deleted first)
     [string]$DotNet        # default: dotnet on PATH if it satisfies global.json, else %USERPROFILE%\.dotnet\dotnet.exe
 )
@@ -74,6 +76,12 @@ $OutRoot = Resolve-OutRoot -Path $OutRoot -RepoRoot $root
 if ($Version -and $Version -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$') { throw "'$Version' is not a valid version" }
 if ($UpdateRepo -and $UpdateRepo -notmatch '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$') { throw "'$UpdateRepo' is not an owner/repo" }
 
+# The seeds become MSBuild property values: exactly a version and nothing else (a ';' would add a property). \A..\z, not ^..$.
+foreach ($seed in @(@('MinStable', $MinStable, $false), @('MinDev', $MinDev, $true))) {
+    if ($seed[1] -and $seed[1] -cnotmatch '\A[0-9]+\.[0-9]+\.[0-9]+(-dev\.[0-9]+)?\z') { throw "-$($seed[0]) is not a version (X.Y.Z or X.Y.Z-dev.N)." }
+    if ($seed[1] -and -not $seed[2] -and $seed[1].Contains('-dev.')) { throw "-$($seed[0]) must be a stable version (X.Y.Z)." }
+}
+
 if (-not $DotNet) {
     $DotNet = 'dotnet'
     if (-not (Get-Command dotnet -ErrorAction SilentlyContinue) -or -not (Test-DotNetSdk -Exe 'dotnet' -WorkingDirectory $root)) {
@@ -105,6 +113,8 @@ foreach ($f in $flavours) {
     if ($f.SelfContained -eq 'true') { $arguments += '-p:EnableCompressionInSingleFile=true' }
     if ($Version) { $arguments += "-p:Version=$Version" }
     if ($UpdateRepo) { $arguments += "-p:UpdateRepo=$UpdateRepo" }
+    if ($MinStable) { $arguments += "-p:ClinkMinStable=$MinStable" }
+    if ($MinDev) { $arguments += "-p:ClinkMinDev=$MinDev" }
     Write-Host "== publish $($f.Name) (SelfContained=$($f.SelfContained)) -> $out"
     & $DotNet @arguments
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish ($($f.Name)) failed with exit code $LASTEXITCODE" }

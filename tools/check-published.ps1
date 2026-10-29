@@ -1,7 +1,8 @@
 # Checks the two published flavours (tools/publish-flavours.ps1): size guards, then on each exe
 #   --packaging-check <SelfContained|Framework>   (stdout has "packaging=<X>" and "result=ok")
 #   --preflight
-#   --unittest Embedded_feed_trust_matches_ci_expectation   (with CLINK_EXPECT_FEED when -ExpectFeed is given)
+#   --unittest Embedded_feed_trust_matches_ci_expectation   (with CLINK_EXPECT_FEED when -ExpectFeed is given; with -ExpectFeed on also
+#                                                             CLINK_EXPECT_FEED_URL and CLINK_EXPECT_DEV_FEED_URL from -ExpectFeedUrl / -ExpectDevFeedUrl)
 #   --unittest ThirdPartyNotices   (CLINK_TESTS_NO_SKIP=1 for that run only; "N passed, 0 failed, 0 skipped" with N > 0)
 # then the N-1 regression on the framework exe (copied beside a garbage hostfxr.dll, DOTNET_ROOT at an empty folder: --packaging-check
 # Framework and --preflight must still pass) and, when -Version is given, ProductVersion == Version. Clink.exe is a GUI-subsystem exe: Start-Process -PassThru
@@ -13,11 +14,19 @@ param(
     [Parameter(Mandatory)] [string]$FxExe,
     [string]$Version,
     [ValidateSet('on', 'off')] [string]$ExpectFeed,   # CLINK_EXPECT_FEED for the feed self-test; omitted = the test only checks for problems
+    # CLINK_EXPECT_FEED_URL / CLINK_EXPECT_DEV_FEED_URL for the feed self-test: the normalised bases Get-FeedConfig gives for the stable and the
+    # dev channel. Both are REQUIRED with -ExpectFeed on (the C# test requires both when on) and must be empty with -ExpectFeed off; with
+    # no -ExpectFeed they are refused (Get-FeedSelfTestEnvironment in feed-lib.ps1). Unset in the exe's environment whenever the feed is off.
+    [string]$ExpectFeedUrl,
+    [string]$ExpectDevFeedUrl,
     [ValidateRange(1, 3600)] [int]$TimeoutSeconds = 300,   # per child process; the workflows pass 90
     [switch]$SkipRun   # only the size guards (used by the script tests)
 )
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'feed-lib.ps1')
 $MiB = 1MB
+# Fail on a wrong combination before anything is run.
+$feedSelfTestEnv = Get-FeedSelfTestEnvironment -ExpectFeed $ExpectFeed -ExpectFeedUrl $ExpectFeedUrl -ExpectDevFeedUrl $ExpectDevFeedUrl
 
 foreach ($p in $ScExe, $FxExe) { if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { throw "Not found: $p" } }
 $ScExe = (Resolve-Path -LiteralPath $ScExe).Path
@@ -271,13 +280,13 @@ foreach ($t in $targets) {
     Assert-Run "$($t.Label) --preflight" (Invoke-PublishedExe $t.Exe @('--preflight') $TimeoutSeconds) @()
     # CLINK_EXPECT_FEED / CLINK_TESTS_NO_SKIP only for the feed self-test run.
     $feedEnv = @{ CLINK_TESTS_NO_SKIP = '1' }
-    if ($ExpectFeed) { $feedEnv['CLINK_EXPECT_FEED'] = $ExpectFeed } else { $feedEnv['CLINK_EXPECT_FEED'] = $null }
+    foreach ($name in $feedSelfTestEnv.Keys) { $feedEnv[$name] = $feedSelfTestEnv[$name] }   # on: all three; off: only CLINK_EXPECT_FEED; omitted: none (unset)
     $feed = Invoke-PublishedExe $t.Exe @('--unittest', 'Embedded_feed_trust_matches_ci_expectation') $TimeoutSeconds $feedEnv
     Assert-Run "$($t.Label) feed self-test" $feed @()
     if ($feed.Out -notmatch '1 passed, 0 failed') { throw "$($t.Label) feed self-test did not report '1 passed, 0 failed'. stdout: $($feed.Out.Trim())" }
     # The third-party notices tests: the embedded THIRD-PARTY-NOTICES.txt resource and its parser, run on the published exe.
     # CLINK_TESTS_NO_SKIP only for this run (a skipped test must fail); the summary must say N passed (N > 0), 0 failed, 0 skipped.
-    $notices = Invoke-PublishedExe $t.Exe @('--unittest', 'ThirdPartyNotices') $TimeoutSeconds @{ CLINK_TESTS_NO_SKIP = '1'; CLINK_EXPECT_FEED = $null }
+    $notices = Invoke-PublishedExe $t.Exe @('--unittest', 'ThirdPartyNotices') $TimeoutSeconds @{ CLINK_TESTS_NO_SKIP = '1'; CLINK_EXPECT_FEED = $null; CLINK_EXPECT_FEED_URL = $null; CLINK_EXPECT_DEV_FEED_URL = $null }
     Assert-Run "$($t.Label) notices self-test" $notices @()
     $summary = [regex]::Match($notices.Out, '(?<![0-9])([0-9]+) passed, 0 failed, 0 skipped')
     if (-not $summary.Success -or [int]$summary.Groups[1].Value -lt 1) { throw "$($t.Label) notices self-test did not report 'N passed, 0 failed, 0 skipped' with N > 0. stdout: $($notices.Out.Trim())" }
