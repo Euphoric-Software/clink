@@ -1,6 +1,10 @@
 #requires -Version 7
 # Uploads a package (tools/package.ps1 output) and its signed manifest to an S3-compatible bucket (Cloudflare R2), contract v2.
 #
+# The bucket and the base URL are per channel (docs/RELEASING.md, "Two buckets"): stable writes to the R2_STABLE_* bucket served at
+# feedUrl, dev to the R2_DEV_* bucket served at devFeedUrl (or feedUrl when devFeedUrl is empty). The path of that base URL must end in
+# "/<prefix>/"; this is checked before anything is written.
+#
 # Bucket layout under <prefix> (must match ^clink(-staging)?$; CLINK_FEED_KEY_PREFIX, default "clink"):
 #   releases/vX.Y.Z/{Clink.exe, Clink.exe.sha256, Clink-framework.exe, Clink-framework.exe.sha256, Clink-Setup.exe}   write-once
 #   dev/vX.Y.Z-dev.N/{same}                                                   write-once
@@ -36,13 +40,18 @@ $folder = if ($Channel -eq 'stable') { "releases/$tag" } else { "dev/$tag" }
 
 $cfg = Get-FeedConfig -Path $FeedJson -Channel $Channel
 if (-not $cfg.Enabled) { throw "The feed is not enabled for the $Channel channel in feed.json ($($cfg.Reason))." }
+# The channel's own base: stable uses feedUrl, dev uses devFeedUrl (or feedUrl when that is empty). The bucket this run writes to
+# (R2_STABLE_* or R2_DEV_*) is the one served at this base.
 $feed = $cfg.FeedUrl
 
 foreach ($n in 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_ENDPOINT', 'R2_BUCKET') {
     if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($n))) { throw "Env var $n is not set (required because the feed is enabled for $Channel)." }
 }
 $prefix = if ($env:CLINK_FEED_KEY_PREFIX) { $env:CLINK_FEED_KEY_PREFIX.Trim('/') } else { 'clink' }
-if ($prefix -cnotmatch '^clink(-staging)?$') { throw "Key prefix '$prefix' is not allowed (must be 'clink' or 'clink-staging')." }
+if ($prefix -cnotmatch '\Aclink(-staging)?\z') { throw "Key prefix '$prefix' is not allowed (must be 'clink' or 'clink-staging')." }
+# Guard before ANY bucket access or manifest work: the key is <prefix>/<folder>/<file> but the public URL is base+<folder>/<file>, so the
+# base's path must end in /<prefix>/ (otherwise the mismatch would only show at the public-URL check, after write-once objects were written).
+Assert-FeedBaseMatchesPrefix -BaseUrl $feed -Prefix $prefix
 $bucket = $env:R2_BUCKET
 $endpoint = $env:R2_ENDPOINT
 
@@ -138,7 +147,7 @@ if ($Channel -eq 'dev') {
     $r = Invoke-FeedAws -Aws $awsInvoker -Arguments @('s3', 'ls', "s3://$bucket/$prefix/dev/", '--endpoint-url', $endpoint)
     if ($r.Code -ne 0) { Write-Host "::warning::Could not list old dev folders: $($r.Text.Trim())" }
     else {
-        $dirs = @($r.Text -split "`r?`n" | ForEach-Object { if ($_ -match '^\s*PRE (v[0-9]+\.[0-9]+\.[0-9]+-dev\.([0-9]+))/\s*$') { [pscustomobject]@{ Name = $Matches[1]; N = [int]$Matches[2] } } } |
+        $dirs = @($r.Text -split "`r?`n" | ForEach-Object { if ($_ -cmatch '\A\s*PRE (v[0-9]+\.[0-9]+\.[0-9]+-dev\.([0-9]+))/\s*\z') { [pscustomobject]@{ Name = $Matches[1]; N = [int]$Matches[2] } } } |
             Where-Object { $_.Name -ne $tag } | Sort-Object N -Descending)
         foreach ($d in ($dirs | Select-Object -Skip 9)) {   # 9 + the one just published = 10
             "pruning $($d.Name)"

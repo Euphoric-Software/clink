@@ -563,14 +563,16 @@ try {
         $dir
     }
     function Invoke-MakeManifest {
-        param([string]$Dir)
-        $all = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $manifestScript, '-Channel', 'stable', '-Version', '0.4.2', '-Tag', 'v0.4.2',
-            '-BaseUrl', 'https://downloads.example/clink/releases/v0.4.2/', '-NotesUrl', 'https://example.org/notes', '-PackageDir', $Dir, '-FeedJson', $feedJson)
+        # Defaults: the stable manifest of 0.4.2 under feedUrl. Channel/Version/BaseUrl/Feed/KeyIndex override them (the dev key is $keyPem[1]).
+        param([string]$Dir, [string]$Channel = 'stable', [string]$Version = '0.4.2', [string]$BaseUrl = 'https://downloads.example/clink/releases/v0.4.2/',
+            [string]$Feed = $feedJson, [int]$KeyIndex = 0)
+        $all = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $manifestScript, '-Channel', $Channel, '-Version', $Version, '-Tag', "v$Version",
+            '-BaseUrl', $BaseUrl, '-NotesUrl', 'https://example.org/notes', '-PackageDir', $Dir, '-FeedJson', $Feed)
         $quoted = $all | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }
         $id = [guid]::NewGuid().ToString('N')
         $outFile = Join-Path $scratch "out-$id.txt"
         $errFile = Join-Path $scratch "err-$id.txt"
-        [Environment]::SetEnvironmentVariable('CLINK_FEED_SIGNING_KEY', $keyPem[0].Private)
+        [Environment]::SetEnvironmentVariable('CLINK_FEED_SIGNING_KEY', $keyPem[$KeyIndex].Private)
         try {
             $run = Start-Process -FilePath $hostExe -ArgumentList $quoted -Wait -PassThru -NoNewWindow -RedirectStandardOutput $outFile -RedirectStandardError $errFile
         } finally { [Environment]::SetEnvironmentVariable('CLINK_FEED_SIGNING_KEY', $null) }
@@ -619,6 +621,194 @@ try {
     Invoke-Test 'make-manifest: a missing installer entry and a file that differs from package.json are still refused' {
         Assert-ManifestRefused 'no-installer' { param($p) $p.files.PSObject.Properties.Remove('installer') } "no 'installer' entry"
         Assert-ManifestRefused 'hash-differs' { param($p, $dir) [System.IO.File]::WriteAllBytes((Join-Path $dir 'Clink.exe'), (New-RandomBytes 5001)) } 'does not match package.json'
+    }
+
+    # ------------------------------------------------------------------ devFeedUrl (B2): Get-FeedConfig, make-manifest and the base/prefix guard
+    function New-FeedJsonFile {
+        # A feed.json in the scratch folder. $Extra is raw JSON spliced in before the key lists (for example '"devFeedUrl":"https://x/clink/",').
+        param([string]$Name, [string]$Extra = '', [string]$FeedUrl = 'https://dl.example/clink/', [string[]]$Stable = @($keyPem[0].Public), [string[]]$Dev = @($keyPem[1].Public))
+        $path = Join-Path $scratch "$Name.json"
+        $sk = (@($Stable) | ForEach-Object { '"' + $_ + '"' }) -join ','
+        $dk = (@($Dev) | ForEach-Object { '"' + $_ + '"' }) -join ','
+        [System.IO.File]::WriteAllText($path, ('{"schema":1,"feedUrl":"' + $FeedUrl + '",' + $Extra + '"stableKeys":[' + $sk + '],"devKeys":[' + $dk + ']}'), $utf8)
+        $path
+    }
+    $stableBase = 'https://dl.example/clink/'
+    $devBase = 'https://dl-dev.example/clink/'
+
+    Invoke-Test 'devFeedUrl: absent or "" means the dev channel uses feedUrl; stable always uses feedUrl' {
+        foreach ($extra in '', '"devFeedUrl":"",', '"devFeedUrl":"   ",') {
+            $f = New-FeedJsonFile 'cfg-nodev' -Extra $extra
+            $d = Get-FeedConfig -Path $f -Channel dev
+            $s = Get-FeedConfig -Path $f -Channel stable
+            Assert-True ($d.Enabled -and $d.Mode -eq 'on' -and $d.FeedUrl -ceq $stableBase) "dev base was '$($d.FeedUrl)' for [$extra]"
+            Assert-True ($s.FeedUrl -ceq $stableBase) "stable base was '$($s.FeedUrl)' for [$extra]"
+            Assert-True ($d.DevFeedUrl -ceq '' -and $d.ConfiguredFeedUrl -ceq $stableBase) 'the as-written properties are wrong'
+            Assert-True ($d.Keys.Count -eq 1 -and $d.Keys[0] -ceq $keyPem[1].Public -and $s.Keys[0] -ceq $keyPem[0].Public) 'keys are not per channel'
+        }
+    }
+    Invoke-Test 'devFeedUrl: a non-empty devFeedUrl is the dev base; stable stays on feedUrl; keys stay per channel; it may equal feedUrl; it is trimmed' {
+        $f = New-FeedJsonFile 'cfg-dev' -Extra ('"devFeedUrl":"' + $devBase + '",')
+        $d = Get-FeedConfig -Path $f -Channel dev
+        $s = Get-FeedConfig -Path $f -Channel stable
+        Assert-True ($d.FeedUrl -ceq $devBase -and $d.DevFeedUrl -ceq $devBase -and $d.ConfiguredFeedUrl -ceq $stableBase) "dev: base '$($d.FeedUrl)'"
+        Assert-True ($s.FeedUrl -ceq $stableBase -and $s.DevFeedUrl -ceq $devBase) "stable: base '$($s.FeedUrl)'"
+        Assert-True ($d.Keys[0] -ceq $keyPem[1].Public -and $s.Keys[0] -ceq $keyPem[0].Public) 'keys crossed'
+        $same = Get-FeedConfig -Path (New-FeedJsonFile 'cfg-same' -Extra ('"devFeedUrl":"' + $stableBase + '",')) -Channel dev
+        Assert-True ($same.FeedUrl -ceq $stableBase) 'devFeedUrl equal to feedUrl was refused or changed'
+        $trim = Get-FeedConfig -Path (New-FeedJsonFile 'cfg-trim' -Extra ('"devFeedUrl":"  ' + $devBase + '  ",')) -Channel dev
+        Assert-True ($trim.FeedUrl -ceq $devBase) 'devFeedUrl was not trimmed'
+    }
+    Invoke-Test 'devFeedUrl: it follows exactly the feedUrl rules (the same bad URLs are refused for both, the same good ones accepted)' {
+        $bad = 'http://h.example/clink/', 'https://h.example/clink', 'https://u@h.example/clink/', 'https://h.example/clink/?x=1', 'https://h.example/clink/#f', 'https://h.example\clink/',
+            'h.example/clink/', 'https:///clink/', 'https://h.example/cl ink/', 'ftp://h.example/clink/'
+        foreach ($u in $bad) {
+            $j = $u.Replace('\', '\\')   # JSON text of the URL
+            Assert-Throws { [void](Get-FeedConfig -Path (New-FeedJsonFile 'cfg-badf' -FeedUrl $j) -Channel stable) } 'feedUrl must be https' "feedUrl $u"
+            Assert-Throws { [void](Get-FeedConfig -Path (New-FeedJsonFile 'cfg-badd' -Extra ('"devFeedUrl":"' + $j + '",')) -Channel dev) } 'devFeedUrl must be empty or follow' "devFeedUrl $u (dev)"
+            Assert-Throws { [void](Get-FeedConfig -Path (New-FeedJsonFile 'cfg-badd' -Extra ('"devFeedUrl":"' + $j + '",')) -Channel stable) } 'devFeedUrl must be empty or follow' "devFeedUrl $u (stable)"
+        }
+        foreach ($u in 'https://h.example/', 'https://h.example/a/b/', 'https://h.example:8443/clink/', 'https://pub-1.r2.dev/clink-staging/') {
+            $a = Get-FeedConfig -Path (New-FeedJsonFile 'cfg-goodf' -FeedUrl $u) -Channel stable
+            $b = Get-FeedConfig -Path (New-FeedJsonFile 'cfg-goodd' -Extra ('"devFeedUrl":"' + $u + '",')) -Channel dev
+            Assert-True ($a.FeedUrl -ceq $u -and $b.FeedUrl -ceq $u) "a good URL was refused: $u"
+        }
+    }
+    Invoke-Test 'devFeedUrl: a non-string devFeedUrl, a devFeedUrl without feedUrl, or one beside an otherwise empty file is misconfigured (fail closed); an empty file stays off' {
+        foreach ($raw in '5', 'true', '["https://h.example/clink/"]', '{"a":1}') {
+            Assert-Throws { [void](Get-FeedConfig -Path (New-FeedJsonFile 'cfg-type' -Extra ('"devFeedUrl":' + $raw + ',')) -Channel dev) } 'devFeedUrl must be a string' "devFeedUrl $raw"
+        }
+        # feedUrl empty but devFeedUrl set: misconfigured, with or without keys.
+        Assert-Throws { [void](Get-FeedConfig -Path (New-FeedJsonFile 'cfg-nofeed' -FeedUrl '' -Extra ('"devFeedUrl":"' + $devBase + '",')) -Channel dev) } 'feedUrl is empty' 'devFeedUrl with keys but no feedUrl'
+        Assert-Throws { [void](Get-FeedConfig -Path (New-FeedJsonFile 'cfg-nofeed2' -FeedUrl '' -Stable @() -Dev @() -Extra ('"devFeedUrl":"' + $devBase + '",')) -Channel stable) } 'feedUrl is empty' 'devFeedUrl alone'
+        # The previous rules still hold.
+        Assert-Throws { [void](Get-FeedConfig -Path (New-FeedJsonFile 'cfg-nodevkeys' -Dev @() -Extra ('"devFeedUrl":"' + $devBase + '",')) -Channel dev) } 'devKeys is empty' 'devFeedUrl with empty devKeys'
+        # Fully empty is off, with or without an empty devFeedUrl.
+        foreach ($extra in '', '"devFeedUrl":"",') {
+            $off = Get-FeedConfig -Path (New-FeedJsonFile 'cfg-off' -FeedUrl '' -Stable @() -Dev @() -Extra $extra) -Channel dev
+            Assert-True ((-not $off.Enabled) -and $off.Mode -eq 'off' -and $off.FeedUrl -ceq '') "an empty file is not off (extra [$extra])"
+        }
+        # The committed file must keep parsing (it is empty today: off).
+        $committed = Get-FeedConfig -Path (Join-Path $repo 'Clink\Assets\feed.json') -Channel dev
+        Assert-True ($committed.Mode -eq 'off' -or $committed.Mode -eq 'on') 'the committed feed.json does not parse'
+    }
+
+    Invoke-Test 'devFeedUrl: make-manifest binds a manifest to its OWN channel base (dev under devFeedUrl, stable under feedUrl)' {
+        $split = New-FeedJsonFile 'mm-split' -Extra ('"devFeedUrl":"' + $devBase + '",')
+        $devDir = New-PackageDir 'dev-ok' { param($p) $p.version = '0.4.2-dev.1' }
+        $r = Invoke-MakeManifest $devDir -Channel dev -Version '0.4.2-dev.1' -BaseUrl ($devBase + 'dev/v0.4.2-dev.1/') -Feed $split -KeyIndex 1
+        Assert-True ($r.Code -eq 0) "a dev manifest under devFeedUrl was refused: $($r.Text)"
+        $manifest = [System.IO.File]::ReadAllText((Join-Path $devDir 'dev.json')) | ConvertFrom-Json
+        Assert-True ($manifest.assets.exe.url -ceq ($devBase + 'dev/v0.4.2-dev.1/Clink.exe')) "the binary URL is $($manifest.assets.exe.url)"
+        Assert-True (Test-Path -LiteralPath (Join-Path $devDir 'dev.json.sig')) 'no dev signature'
+
+        $d2 = New-PackageDir 'dev-wrongbase' { param($p) $p.version = '0.4.2-dev.1' }
+        $r = Invoke-MakeManifest $d2 -Channel dev -Version '0.4.2-dev.1' -BaseUrl ($stableBase + 'dev/v0.4.2-dev.1/') -Feed $split -KeyIndex 1
+        Assert-True ($r.Code -ne 0 -and $r.Text -match 'is not under the dev feed base') "a dev manifest under feedUrl was accepted: $($r.Text)"
+        Assert-True (-not (Test-Path -LiteralPath (Join-Path $d2 'dev.json'))) 'a manifest was written for the wrong base'
+
+        $s1 = New-PackageDir 'stable-ok'
+        $r = Invoke-MakeManifest $s1 -Channel stable -BaseUrl ($stableBase + 'releases/v0.4.2/') -Feed $split
+        Assert-True ($r.Code -eq 0) "a stable manifest under feedUrl was refused: $($r.Text)"
+        $s2 = New-PackageDir 'stable-wrongbase'
+        $r = Invoke-MakeManifest $s2 -Channel stable -BaseUrl ($devBase + 'releases/v0.4.2/') -Feed $split
+        Assert-True ($r.Code -ne 0 -and $r.Text -match 'is not under the stable feed base') "a stable manifest under devFeedUrl was accepted: $($r.Text)"
+
+        # Without devFeedUrl the dev channel uses feedUrl.
+        $d3 = New-PackageDir 'dev-nodev' { param($p) $p.version = '0.4.2-dev.1' }
+        $r = Invoke-MakeManifest $d3 -Channel dev -Version '0.4.2-dev.1' -BaseUrl 'https://downloads.example/clink/dev/v0.4.2-dev.1/' -KeyIndex 1
+        Assert-True ($r.Code -eq 0) "a dev manifest under feedUrl (no devFeedUrl) was refused: $($r.Text)"
+    }
+
+    Invoke-Test 'N6: make-manifest anchors versions at both ends (case-sensitive) and ASCII digits only' {
+        $dir = New-PackageDir 'n6'
+        foreach ($v in '0.4.2', 'x0.4.2-dev.1', '0.4.2-dev.1x', '0.4.2-DEV.1', '0.4.2-dev.', '0.4.2-dev') {
+            $r = Invoke-MakeManifest $dir -Channel dev -Version $v -BaseUrl 'https://downloads.example/clink/dev/x/' -KeyIndex 1
+            Assert-True ($r.Code -ne 0 -and $r.Text -match 'needs a version like X\.Y\.Z-dev\.N') "dev version '$v' was not refused as a dev version: $($r.Text)"
+        }
+        foreach ($v in '0.4.2-dev.1', 'x0.4.2', '0.4.2x', '0.4') {
+            $r = Invoke-MakeManifest $dir -Channel stable -Version $v
+            Assert-True ($r.Code -ne 0 -and $r.Text -match 'needs a version like X\.Y\.Z\.') "stable version '$v' was not refused: $($r.Text)"
+        }
+        Assert-ManifestRefused 'rt-prefix' { param($p) $p.minRuntime = 'x10.0.14' } "minRuntime 'x10\.0\.14' is not X\.Y\.Z"
+        Assert-ManifestRefused 'rt-suffix' { param($p) $p.minRuntime = '10.0.14-preview' } "minRuntime '10\.0\.14-preview' is not X\.Y\.Z"
+        Assert-True (-not ([System.IO.File]::ReadAllText((Join-Path $toolsDir 'make-manifest.ps1')) -match '\\d')) 'make-manifest.ps1 still uses \d'
+    }
+
+    Invoke-Test 'guard: the channel base path must end in /<prefix>/ (accepts the matching layouts, refuses every mismatch before any write)' {
+        Assert-FeedBaseMatchesPrefix -BaseUrl 'https://dl.example/clink/' -Prefix 'clink'
+        Assert-FeedBaseMatchesPrefix -BaseUrl 'https://dl-dev.example/clink/' -Prefix 'clink'
+        Assert-FeedBaseMatchesPrefix -BaseUrl 'https://dl.example/some/clink/' -Prefix 'clink'
+        Assert-FeedBaseMatchesPrefix -BaseUrl 'https://pub-1.r2.dev/clink-staging/' -Prefix 'clink-staging'
+        foreach ($case in @(
+                @('https://dl.example/', 'clink'), @('https://dl.example', 'clink'), @('https://dl.example/clink-staging/', 'clink'), @('https://dl.example/xclink/', 'clink'),
+                @('https://dl.example/Clink/', 'clink'), @('https://dl.example/clink/dev/', 'clink'), @('https://dl.example/clink/', 'clink-staging'), @('https://dl.example/other/', 'clink'),
+                @('http://dl.example/clink/', 'clink'), @('https://dl.example/clink/?x=1', 'clink'), @('https://dl.example/clink//', 'clink'))) {
+            Assert-Throws { Assert-FeedBaseMatchesPrefix -BaseUrl $case[0] -Prefix $case[1] } '(does not end in|not an https URL)' "base $($case[0]) prefix $($case[1])"
+        }
+        Assert-Throws { Assert-FeedBaseMatchesPrefix -BaseUrl 'https://dl.example/clink/' -Prefix 'clink/x' } 'not a plain name' 'prefix with a slash'
+        Assert-Throws { Assert-FeedBaseMatchesPrefix -BaseUrl 'https://dl.example/clink/' -Prefix '..' } 'not a plain name' 'prefix ..'
+        Assert-Throws { Assert-FeedBaseMatchesPrefix -BaseUrl 'https://dl.example/' -Prefix 'clink' } 'Nothing was written' 'the message says nothing was written'
+        # Both channels of a B2 feed.json pass with the normal prefix.
+        $split = New-FeedJsonFile 'guard-split' -Extra ('"devFeedUrl":"' + $devBase + '",')
+        foreach ($ch in 'stable', 'dev') { Assert-FeedBaseMatchesPrefix -BaseUrl (Get-FeedConfig -Path $split -Channel $ch).FeedUrl -Prefix 'clink' }
+    }
+    Invoke-Test 'guard: upload-feed.ps1 runs it right after the prefix check, before the signing, any aws invoker and every bucket call; the channel base feeds the URLs' {
+        $text = [System.IO.File]::ReadAllText((Join-Path $toolsDir 'upload-feed.ps1'))
+        $guard = $text.IndexOf('Assert-FeedBaseMatchesPrefix -BaseUrl $feed -Prefix $prefix')
+        Assert-True ($guard -gt 0) 'upload-feed.ps1 does not call the guard with the channel base and the prefix'
+        Assert-True ($text.IndexOf('$prefix -cnotmatch') -lt $guard) 'the guard runs before the prefix is validated'
+        foreach ($later in "Join-Path `$PSScriptRoot 'make-manifest.ps1'", 'New-FeedAwsInvoker', 'Get-FeedBucketFloor', 'Publish-FeedVersionedAsset', "'s3'", 'Invoke-FeedAws') {
+            $at = $text.IndexOf($later)
+            Assert-True ($at -gt $guard) "'$later' appears before the base/prefix guard"
+        }
+        Assert-True ($text.Contains('$feed = $cfg.FeedUrl') -and -not $text.Contains('ConfiguredFeedUrl') -and -not $text.Contains('.DevFeedUrl')) 'upload-feed.ps1 does not take the channel base from Get-FeedConfig'
+        Assert-True ($text.Contains('"$feed$Channel.json"') -and $text.Contains('"$feed$folder/$($a.Name)"') -and $text.Contains('-BaseUrl "$feed$folder/"')) 'the purge, the public URLs or the manifest base do not use the channel base'
+        $mm = [System.IO.File]::ReadAllText((Join-Path $toolsDir 'make-manifest.ps1'))
+        Assert-True ($mm.Contains('$BaseUrl.StartsWith($cfg.FeedUrl') -and -not $mm.Contains('ConfiguredFeedUrl')) 'make-manifest.ps1 does not bind to the channel base'
+        # Each workflow reads the base of ITS channel.
+        foreach ($pair in @(@('release.yml', 'stable'), @('release-dev.yml', 'dev'))) {
+            $wf = [System.IO.File]::ReadAllText((Join-Path $workflowDir $pair[0]))
+            Assert-True ($wf.Contains("Get-FeedConfig -Path Clink/Assets/feed.json -Channel $($pair[1])") -and $wf.Contains('feed_url=$($cfg.FeedUrl)')) "$($pair[0]): feed_url is not the $($pair[1]) channel's base"
+            Assert-True ($wf -notmatch 'ConfiguredFeedUrl|\.DevFeedUrl') "$($pair[0]) reads a feed URL other than the channel's base"
+        }
+    }
+    Invoke-Test 'guard: running upload-feed.ps1 with a base whose path does not end in /<prefix>/ fails before any bucket call (pwsh 7 only; a fake aws on PATH records every call)' {
+        if ($PSVersionTable.PSVersion.Major -lt 7) { Write-Host '      (skipped: upload-feed.ps1 needs PowerShell 7; CI runs it)'; return }
+        $bin = Get-ScratchFolder 'guard-bin'
+        $awsLog = Join-Path $scratch 'guard-aws.log'
+        Remove-Item -LiteralPath $awsLog -ErrorAction SilentlyContinue
+        [System.IO.File]::WriteAllText((Join-Path $bin 'aws.cmd'), "@echo off`r`necho %* >> `"$awsLog`"`r`nexit /b 1`r`n", [System.Text.Encoding]::ASCII)
+        $pkg = Get-ScratchFolder 'guard-pkg'
+        $savedPath = $env:PATH
+        $env:PATH = "$bin;$savedPath"
+        foreach ($n in 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_ENDPOINT', 'R2_BUCKET') { [Environment]::SetEnvironmentVariable($n, 'x-' + $n) }
+        [Environment]::SetEnvironmentVariable('R2_ENDPOINT', 'https://example.invalid')
+        [Environment]::SetEnvironmentVariable('CLINK_FEED_KEY_PREFIX', $null)
+        try {
+            $upload = Join-Path $toolsDir 'upload-feed.ps1'
+            $run = {
+                param([string]$FeedFile, [string]$Channel, [string]$Version)
+                $all = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $upload, '-Channel', $Channel, '-Version', $Version, '-PackageDir', $pkg, '-FeedJson', $FeedFile, '-HistoryFloor', '')
+                $quoted = $all | ForEach-Object { if ($_ -match '\s' -or $_ -eq '') { '"' + $_ + '"' } else { $_ } }
+                $id = [guid]::NewGuid().ToString('N')
+                $o = Join-Path $scratch "g-out-$id.txt"; $e = Join-Path $scratch "g-err-$id.txt"
+                $p = Start-Process -FilePath $hostExe -ArgumentList $quoted -Wait -PassThru -NoNewWindow -RedirectStandardOutput $o -RedirectStandardError $e
+                [pscustomobject]@{ Code = $p.ExitCode; Text = [System.IO.File]::ReadAllText($o) + [System.IO.File]::ReadAllText($e) }
+            }
+            # Wrong path for the default prefix 'clink': refused by the guard, aws never called.
+            $bad = & $run (New-FeedJsonFile 'guard-bad' -FeedUrl 'https://dl.example/other/') 'stable' '0.4.2'
+            Assert-True ($bad.Code -ne 0 -and $bad.Text -match "does not end in '/clink/'" -and $bad.Text -match 'Nothing was written') "the wrong stable base was not refused by the guard: $($bad.Text)"
+            $devBad = & $run (New-FeedJsonFile 'guard-bad-dev' -Extra '"devFeedUrl":"https://dl-dev.example/clinkx/",') 'dev' '0.4.2-dev.1'
+            Assert-True ($devBad.Code -ne 0 -and $devBad.Text -match "does not end in '/clink/'") "the wrong dev base was not refused by the guard: $($devBad.Text)"
+            # A good base gets past the guard (and then stops at the missing manifest, still without a bucket call).
+            $ok = & $run (New-FeedJsonFile 'guard-ok' -Extra '"devFeedUrl":"https://dl-dev.example/clink/",') 'dev' '0.4.2-dev.1'
+            Assert-True ($ok.Code -ne 0 -and $ok.Text -notmatch 'does not end in' -and $ok.Text -match 'Missing') "the good dev base did not get past the guard: $($ok.Text)"
+            Assert-True (-not (Test-Path -LiteralPath $awsLog)) "aws was called: $([System.IO.File]::ReadAllText($awsLog))"
+        } finally {
+            $env:PATH = $savedPath
+            foreach ($n in 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_ENDPOINT', 'R2_BUCKET') { [Environment]::SetEnvironmentVariable($n, $null) }
+        }
     }
 
     # ------------------------------------------------------------------ L5: SDK identity
@@ -892,13 +1082,279 @@ try {
         Assert-True ((Get-ChildItem -LiteralPath $workflowDir -Filter '*.yml').Count -eq 3) 'a workflow was added: extend this test'
     }
 
+    # ------------------------------------------------------------------ release workflow hardening (L2, L3, L4, prune, Node 24, NITs)
+    function Get-Steps {
+        # The steps of a job text: each starts at a "      - name:" line and runs to the next one (comments between steps stay at the tail of the previous step).
+        param([string]$JobText)
+        @([regex]::Split($JobText, '(?m)^(?=      - name: )') | Where-Object { $_.StartsWith('      - name: ') })
+    }
+    function Get-Step {
+        param([string]$JobText, [string]$Name)
+        $found = @(Get-Steps $JobText | Where-Object { $_.StartsWith("      - name: $Name") })
+        Assert-True ($found.Count -eq 1) "expected exactly one step starting with '$Name', found $($found.Count)"
+        $found[0]
+    }
+    function Get-StepRun {
+        param([string]$StepText)
+        $blocks = @(Get-RunBlock $StepText)
+        Assert-True ($blocks.Count -eq 1) "expected one run: block in the step, found $($blocks.Count)"
+        $blocks[0]
+    }
+    function Test-StepCallsGh {
+        param([string]$StepText)
+        [bool](@(Get-RunBlock $StepText) | Where-Object { $_ -match '(?<![\w.-])gh\s+(api|release)\b' })
+    }
+    $tokenLine = 'GH_TOKEN: ${{ github.token }}'
+
+    Invoke-Test 'L4: the write token is step-scoped in both publish jobs: only steps that call gh name GH_TOKEN, the secret/aws/upload steps never do' {
+        foreach ($name in 'release.yml', 'release-dev.yml') {
+            $jobs = Split-Jobs (Read-Workflow $name)
+            $firstStep = $jobs.Publish.IndexOf('      - name: ')
+            $header = (($jobs.Publish.Substring(0, $firstStep) -split "`r?`n") | Where-Object { $_.TrimStart() -notmatch '^#' }) -join "`n"
+            Assert-True ($header -notmatch 'GH_TOKEN' -and $header -notmatch 'github\.token') "$name : the publish job header still has a job-wide token"
+            Assert-True ($header.Contains('GH_REPO: ${{ github.repository }}') -and $header.Contains('contents: write')) "$name : the publish header lost GH_REPO or the permission"
+            $withToken = 0
+            foreach ($step in (Get-Steps $jobs.Publish)) {
+                $title = ($step -split "`n")[0].Trim()
+                $callsGh = Test-StepCallsGh $step
+                $hasToken = $step.Contains($tokenLine)
+                if ($callsGh) { Assert-True $hasToken "$name : '$title' calls gh without naming GH_TOKEN" }
+                if ($hasToken) { Assert-True $callsGh "$name : '$title' names GH_TOKEN but calls no gh"; $withToken++ }
+                if ($step -match 'secrets\.' -or $step -match 'upload-feed\.ps1|make-manifest\.ps1|aws ') {
+                    Assert-True ((-not $hasToken) -and ($step -notmatch 'github\.token|GH_TOKEN')) "$name : '$title' holds secrets or runs aws/upload-feed and also sees the write token"
+                }
+            }
+            Assert-True ($withToken -ge 5) "$name : only $withToken steps name the token (parser broken?)"
+            foreach ($secretStep in 'Check bucket secrets', 'Make and sign the manifest', 'Publish to the update feed') {
+                $s = Get-Step $jobs.Publish $secretStep
+                Assert-True ($s -notmatch 'GH_TOKEN|github\.token') "$name : '$secretStep' sees the write token"
+            }
+        }
+    }
+
+    Invoke-Test 'L2: release-dev.yml refuses an existing tag (HTTP 404 only), ties the draft to GITHUB_SHA and checks the tag after publishing' {
+        $dev = Read-Workflow 'release-dev.yml'
+        $pub = (Split-Jobs $dev).Publish
+        $guard = Get-Step $pub 'Guard - the tag does not exist yet'
+        $run = Get-StepRun $guard
+        foreach ($needle in 'git/ref/tags/v$env:VERSION', '$refCode -eq 0) { throw', "-cnotmatch '\(HTTP 404\)'", '$global:LASTEXITCODE = 0') { Assert-True ($run.Contains($needle)) "the tag guard lacks $needle" }
+        Assert-True ($pub.IndexOf('Guard - the tag does not exist yet') -lt $pub.IndexOf('Create GitHub release (draft)') -and $pub.IndexOf('Guard - the tag does not exist yet') -lt $pub.IndexOf('Download package artifact')) 'the tag guard runs late'
+        Assert-True ($run.IndexOf('$global:LASTEXITCODE = 0') -gt $run.LastIndexOf('& gh api')) 'a gh call follows the LASTEXITCODE reset in the tag guard'
+        foreach ($sample in @('gh: Not Found (HTTP 404)', "x`n(HTTP 404)`n")) { Assert-True ($sample -cmatch '\(HTTP 404\)') '404 text is not recognised' }
+        foreach ($sample in @('gh: Forbidden (HTTP 403)', 'HTTP 500', '')) { Assert-True ($sample -cnotmatch '\(HTTP 404\)') "'$sample' is taken for a 404" }
+        $verify = Get-StepRun (Get-Step $pub 'Verify the release assets')
+        Assert-True ($verify.Contains('$builtCommit = [string]$release.target_commitish') -and $verify.Contains('-ceq $env:GITHUB_SHA')) 'the verify step does not compare target_commitish with GITHUB_SHA'
+        Assert-True ($dev -match 'target_commitish: \$\{\{ github\.sha \}\}') 'the draft is no longer created at github.sha'
+        $order = @('Create GitHub release (draft)', 'Verify the release assets', 'Publish to the update feed', 'Publish the GitHub release', 'Verify the published tag', 'Prune old dev builds') | ForEach-Object { $pub.IndexOf("- name: $_") }
+        Assert-True (($order | Where-Object { $_ -lt 0 }).Count -eq 0) 'a publish step is missing'
+        for ($i = 1; $i -lt $order.Count; $i++) { Assert-True ($order[$i] -gt $order[$i - 1]) 'the publish steps are out of order' }
+        $after = Get-StepRun (Get-Step $pub 'Verify the published tag')
+        foreach ($needle in 'git/ref/tags/v$env:VERSION', "-ceq 'commit'", '$ref.object.sha -ceq $env:GITHUB_SHA') { Assert-True ($after.Contains($needle)) "the post-publish tag check lacks $needle" }
+        Assert-True (-not (Read-Workflow 'release.yml').Contains('the tag does not exist yet')) 'release.yml (the tag is made by the owner) got the dev tag guard'
+    }
+
+    Invoke-Test 'L3: both verify steps fail on a missing digest and on any asset outside the required list (run against a fake gh)' {
+        $savedEnv = @{}
+        foreach ($n in 'GITHUB_REPOSITORY', 'RELEASE_ID', 'VERSION', 'GITHUB_SHA') { $savedEnv[$n] = [Environment]::GetEnvironmentVariable($n) }
+        $work = Get-ScratchFolder 'verify-work'
+        $pkgDir = Join-Path $work 'dist\package'
+        New-Item -ItemType Directory -Force -Path $pkgDir | Out-Null
+        $names = 'Clink.exe', 'Clink.exe.sha256', 'Clink-framework.exe', 'Clink-framework.exe.sha256', 'Clink-Setup.exe', 'Clink-Setup.exe.sha256', 'THIRD-PARTY-NOTICES.txt'
+        foreach ($n in $names) { [System.IO.File]::WriteAllBytes((Join-Path $pkgDir $n), (New-RandomBytes 300)) }
+        $sha = 'a' * 40
+        function New-ReleaseJson {
+            param([string]$Version, [bool]$Prerelease, [string]$Commit, [scriptblock]$Mutate)
+            $assets = foreach ($n in $names) {
+                $f = Join-Path $pkgDir $n
+                [pscustomobject]@{ name = $n; state = 'uploaded'; size = (Get-Item -LiteralPath $f).Length; digest = 'sha256:' + (Get-FileHash -LiteralPath $f -Algorithm SHA256).Hash.ToLowerInvariant() }
+            }
+            $rel = [pscustomobject]@{ draft = $true; tag_name = "v$Version"; prerelease = $Prerelease; target_commitish = $Commit; assets = @($assets) }
+            if ($Mutate) { & $Mutate $rel }
+            $rel | ConvertTo-Json -Depth 5
+        }
+        try {
+            [Environment]::SetEnvironmentVariable('GITHUB_REPOSITORY', 'o/r'); [Environment]::SetEnvironmentVariable('RELEASE_ID', '123'); [Environment]::SetEnvironmentVariable('GITHUB_SHA', $sha)
+            Push-Location $work
+            foreach ($case in @(@('release.yml', '0.4.2', $false), @('release-dev.yml', '0.4.2-dev.1', $true))) {
+                $wfName = $case[0]; $version = $case[1]; $pre = $case[2]
+                [Environment]::SetEnvironmentVariable('VERSION', $version)
+                $block = Get-StepRun (Get-Step (Split-Jobs (Read-Workflow $wfName)).Publish 'Verify the release assets')
+                $script:fakeJson = ''
+                function gh { $global:LASTEXITCODE = 0; $script:fakeJson }
+                $runIt = { . ([scriptblock]::Create($block)) 6>$null | Out-Null }
+                $script:fakeJson = New-ReleaseJson $version $pre $sha
+                & $runIt   # the control: a complete, correct release passes
+                $script:fakeJson = New-ReleaseJson $version $pre $sha { param($r) $r.assets[2].digest = $null }
+                Assert-Throws $runIt 'no digest for asset Clink-framework\.exe' "$wfName : a missing digest"
+                $script:fakeJson = New-ReleaseJson $version $pre $sha { param($r) $r.assets[0].digest = 'sha256:' + ('0' * 64) }
+                Assert-Throws $runIt 'has digest sha256:0+ on GitHub' "$wfName : a wrong digest"
+                $script:fakeJson = New-ReleaseJson $version $pre $sha { param($r) $r.assets = @($r.assets) + [pscustomobject]@{ name = 'evil.dll'; state = 'uploaded'; size = 1; digest = 'sha256:' + ('1' * 64) } }
+                Assert-Throws $runIt 'unexpected assets: evil\.dll' "$wfName : an extra asset"
+                $script:fakeJson = New-ReleaseJson $version $pre $sha { param($r) $r.assets = @($r.assets) + [pscustomobject]@{ name = 'clink.exe'; state = 'uploaded'; size = 1; digest = 'sha256:' + ('1' * 64) } }
+                Assert-Throws $runIt 'unexpected assets: clink\.exe' "$wfName : a case variant of a required name"
+                $script:fakeJson = New-ReleaseJson $version $pre $sha { param($r) $r.assets = @($r.assets | Select-Object -First 6) }
+                Assert-Throws $runIt 'lacks exactly one asset named THIRD-PARTY-NOTICES\.txt' "$wfName : a missing asset"
+                if ($wfName -eq 'release-dev.yml') {
+                    $script:fakeJson = New-ReleaseJson $version $pre ('b' * 40)
+                    Assert-Throws $runIt 'not at the built commit' "$wfName : a draft at another commit"
+                    $script:fakeJson = New-ReleaseJson $version $pre 'dev'
+                    Assert-Throws $runIt 'not at the built commit' "$wfName : a draft whose target is a branch name"
+                }
+            }
+        } finally {
+            Pop-Location
+            foreach ($n in $savedEnv.Keys) { [Environment]::SetEnvironmentVariable($n, $savedEnv[$n]) }
+        }
+        foreach ($name in 'release.yml', 'release-dev.yml') {
+            $step = Get-Step (Split-Jobs (Read-Workflow $name)).Publish 'Verify the release assets'
+            Assert-True ($step -notmatch '::warning::') "$name : the verify step still downgrades a missing digest to a warning"
+        }
+    }
+
+    Invoke-Test 'prune (a)(b): the dev prune keeps the 10 newest PUBLISHED dev releases, pages through all releases, skips drafts and look-alikes, and handles immutable tags (run against a fake gh)' {
+        $dev = Read-Workflow 'release-dev.yml'
+        $step = Get-Step (Split-Jobs $dev).Publish 'Prune old dev builds'
+        Assert-True ($step.Contains('if: success()') -and $step.Contains('continue-on-error: true') -and $step -notmatch '!cancelled') 'the prune step is not "if: success()" with continue-on-error'
+        $block = Get-StepRun $step
+        Assert-True ($block.Contains('--paginate') -and -not $block.Contains('--cleanup-tag') -and $block.Contains("-cmatch '\Av[0-9]+\.[0-9]+\.[0-9]+-dev\.([0-9]+)\z'")) 'the prune script lacks pagination or the anchored case-sensitive match, or still uses --cleanup-tag'
+        $savedRepo = $env:GITHUB_REPOSITORY
+        $env:GITHUB_REPOSITORY = 'o/r'
+        $lines = New-Object System.Collections.ArrayList
+        foreach ($n in 1..13) { [void]$lines.Add("v0.4.2-dev.$n`tfalse") }            # 13 published dev releases: dev.1-3 are to go
+        [void]$lines.Add("v0.4.2-dev.40`ttrue")                                        # a draft from a failed run: not counted, not deleted
+        [void]$lines.Add("v0.4.1`tfalse"); [void]$lines.Add("v0.4.2-dev.5x`tfalse"); [void]$lines.Add("V0.4.2-dev.1`tfalse"); [void]$lines.Add("v0.4.2-dev.1`tmaybe")
+        $script:ghCalls = New-Object System.Collections.ArrayList
+        $script:ghListing = $lines.ToArray()
+        $script:ghFailRelease = @(); $script:ghFailTag = @()
+        function gh {
+            [void]$script:ghCalls.Add(($args -join ' '))
+            $global:LASTEXITCODE = 0
+            if ($args[0] -eq 'api' -and $args -contains '--paginate') { return $script:ghListing }
+            if ($args[0] -eq 'release' -and $args[1] -eq 'delete') { if ($script:ghFailRelease -contains $args[2]) { $global:LASTEXITCODE = 1 }; return }
+            if ($args[0] -eq 'api' -and $args[1] -eq '-X' -and $args[2] -eq 'DELETE') {
+                $tag = ([string]$args[3]).Split('/')[-1]
+                if ($script:ghFailTag -contains $tag) { $global:LASTEXITCODE = 1; return "gh: Tag is protected by an immutable release (HTTP 422)" }
+                return
+            }
+            $global:LASTEXITCODE = 99
+        }
+        $runIt = { $out = . ([scriptblock]::Create($block)); $out }
+        try {
+            # Normal run: the three oldest published releases are deleted (release first, then the tag), nothing else.
+            $global:LASTEXITCODE = 0
+            [void](& $runIt)
+            $deleted = @($script:ghCalls | Where-Object { $_ -like 'release delete *' })
+            Assert-True ($deleted.Count -eq 3) "expected 3 release deletions, got $($deleted.Count): $($deleted -join ' | ')"
+            foreach ($n in 1..3) { Assert-True ($deleted -contains "release delete v0.4.2-dev.$n --yes --repo o/r") "dev.$n was not deleted: $($deleted -join ' | ')" }
+            Assert-True ($script:ghCalls[0] -like 'api repos/o/r/releases?per_page=100 --paginate*') "the listing call is $($script:ghCalls[0])"
+            $tagCalls = @($script:ghCalls | Where-Object { $_ -like 'api -X DELETE *' })
+            Assert-True ($tagCalls.Count -eq 3 -and $tagCalls[0] -eq 'api -X DELETE repos/o/r/git/refs/tags/v0.4.2-dev.3') "tag deletions: $($tagCalls -join ' | ')"
+            Assert-True ($global:LASTEXITCODE -eq 0) "LASTEXITCODE is $($global:LASTEXITCODE) after a clean prune"
+            # Immutable releases: the tag cannot be removed. A warning, the loop goes on, the step still succeeds.
+            $script:ghCalls.Clear(); $script:ghFailTag = @('v0.4.2-dev.2'); $global:LASTEXITCODE = 0
+            $out = (& $runIt) -join "`n"
+            Assert-True (@($script:ghCalls | Where-Object { $_ -like 'release delete *' }).Count -eq 3) 'a protected tag stopped the prune'
+            Assert-True ($out -match '::warning::The tag v0\.4\.2-dev\.2 was not removed') "no warning for the protected tag: $out"
+            Assert-True ($global:LASTEXITCODE -eq 0) 'a protected tag left a non-zero LASTEXITCODE'
+            # A release that cannot be deleted: counted, the others still go, its tag is left alone, the step fails at the end.
+            $script:ghCalls.Clear(); $script:ghFailTag = @(); $script:ghFailRelease = @('v0.4.2-dev.2'); $global:LASTEXITCODE = 0
+            Assert-Throws { [void](& $runIt) } '1 old dev release\(s\) could not be deleted' 'a failed release delete'
+            Assert-True (@($script:ghCalls | Where-Object { $_ -like 'release delete *' }).Count -eq 3) 'a failed delete stopped the prune'
+            Assert-True (-not ($script:ghCalls -contains 'api -X DELETE repos/o/r/git/refs/tags/v0.4.2-dev.2')) 'the tag of a release that was not deleted was removed'
+            # Ten or fewer published dev releases: nothing happens (13 listed, but only drafts/look-alikes beyond the 10 newest published ones).
+            $script:ghCalls.Clear(); $script:ghFailRelease = @(); $script:ghListing = @(1..10 | ForEach-Object { "v0.4.2-dev.$_`tfalse" }) + @("v0.4.2-dev.77`ttrue", "v0.4.2-dev.78`ttrue")
+            [void](& $runIt)
+            Assert-True (@($script:ghCalls | Where-Object { $_ -like 'release delete *' }).Count -eq 0) 'drafts were counted among the 10 kept (or deleted)'
+            # A failed listing fails the step.
+            function gh { $global:LASTEXITCODE = 1 }
+            Assert-Throws { [void](& $runIt) } 'Could not list the releases' 'a failed listing'
+        } finally { $env:GITHUB_REPOSITORY = $savedRepo }
+    }
+
+    Invoke-Test 'main hard-code: release.yml checks origin/main literally, with no default-branch lookup' {
+        $text = Read-Workflow 'release.yml'
+        Assert-True ($text -notmatch '(?i)default_branch|DEFAULT_BRANCH|\$default\b') 'release.yml still reads the default branch'
+        $guard = Get-Step (Split-Jobs $text).Publish 'Guard - stable tag, commit on main, release not yet there'
+        Assert-True ($guard.Contains('git merge-base --is-ancestor $env:GITHUB_SHA origin/main') -and $guard.Contains('is not on origin/main')) 'the guard does not test origin/main literally'
+    }
+
+    Invoke-Test '(iv): the stable latest-release step and the dev version step log which releases/latest path they took (200 or 404)' {
+        $decide = Get-StepRun (Get-Step (Split-Jobs (Read-Workflow 'release.yml')).Publish 'Decide whether this release becomes latest')
+        $version = Get-StepRun (Get-Step (Split-Jobs (Read-Workflow 'release-dev.yml')).Build 'Determine version')
+        foreach ($run in $decide, $version) {
+            Assert-True ($run.Contains('(200 path)') -and $run.Contains('(404 path)')) 'a releases/latest step does not log its path'
+        }
+    }
+
+    Invoke-Test 'Node 24: every action is pinned to a release line whose action.yml says node24 (no Node 20 pin left), pinned by 40-hex SHA with a version comment' {
+        $minMajor = @{ 'actions/checkout' = 5; 'actions/setup-dotnet' = 5; 'softprops/action-gh-release' = 3; 'actions/cache' = 5; 'actions/upload-artifact' = 6; 'actions/download-artifact' = 6 }
+        $nodeTwenty = '11bd71901bbe5b1630ceea73d27597364c9af683', '67a3573c9a986a3f9c594539f4ab511d57bb3ce9', 'da05d552573ad5aba039eaac05058a918a7bf631', '5a3ec84eff668545956fd18022155c47e93e2684'
+        $seen = 0
+        foreach ($wf in $allWorkflows) {
+            foreach ($line in ([System.IO.File]::ReadAllText($wf.FullName) -split "`r?`n")) {
+                if ($line -match '^\s*(?:- )?uses:\s*(\S+)@([0-9a-f]{40})\s+#\s*v(\d+)\.(\d+)\.(\d+)\s*$') {
+                    $seen++
+                    $repoName = $Matches[1]
+                    Assert-True ($minMajor.ContainsKey($repoName)) "$($wf.Name): unknown action $repoName (add it to this test with its first node24 major)"
+                    Assert-True ([int]$Matches[3] -ge $minMajor[$repoName]) "$($wf.Name): $repoName v$($Matches[3]) predates its node24 line"
+                    Assert-True ($nodeTwenty -cnotcontains $Matches[2]) "$($wf.Name): $repoName is pinned to a Node 20 commit"
+                } elseif ($line -match '^\s*(?:- )?uses:') { throw "$($wf.Name): a uses: line without a SHA pin and a '# vX.Y.Z' comment: $($line.Trim())" }
+            }
+        }
+        Assert-True ($seen -ge 12) "only $seen pinned actions found"
+    }
+
+    Invoke-Test 'NITs: the dev build logs the same Media Foundation files as build.yml (mfh264enc, msmpeg2vdec); the release workflows never carry a test-only switch or the dummy runtime hash' {
+        foreach ($name in 'build.yml', 'release-dev.yml') {
+            $text = Read-Workflow $name
+            Assert-True ($text.Contains("'mfplat.dll', 'mfmp4srcsnk.dll', 'msauddecmft.dll', 'mfh264enc.dll', 'msmpeg2vdec.dll'")) "$name does not log the five Media Foundation files"
+        }
+        $dev = Read-Workflow 'release-dev.yml'
+        Assert-True ($dev.IndexOf('- name: Windows and Media Foundation versions') -lt $dev.IndexOf('- name: Unit tests')) 'the version log runs after the unit tests'
+        foreach ($name in 'release.yml', 'release-dev.yml') {
+            $text = Read-Workflow $name
+            foreach ($bad in '-SkipSetupSizeCheck', '-SkipVersionCheck', '-AllowMissingRuntimePacks', '-SkipInstaller', "'0' * 64", ('0' * 64)) { Assert-True (-not $text.Contains($bad)) "$name contains $bad (test-only / dry-run switch)" }
+        }
+        $build = Read-Workflow 'build.yml'
+        Assert-True ($build -notmatch '\\d') 'build.yml still uses \d'
+        Assert-True ($build.Contains("-cnotmatch '\A[0-9]+\.[0-9]+\.[0-9]+\z'")) 'build.yml dry-run version check is not anchored'
+    }
+
+    Invoke-Test 'N4: the history floor takes only whole tags (a trailing newline or a prefix does not pass)' {
+        Assert-Throws { Get-FeedHistoryFloor -Channel dev -Listing @("v0.4.2-dev.1`n`tfalse`tdev.json") } 'not a feed version' 'trailing newline inside the tag field'
+        Assert-Throws { Get-FeedHistoryFloor -Channel dev -Listing @("xv0.4.2-dev.1`tfalse`tdev.json") } 'not a feed version' 'prefix'
+        Assert-Throws { Get-FeedHistoryFloor -Channel dev -Listing @("v0.4.2-dev.1x`tfalse`tdev.json") } 'not a feed version' 'suffix'
+        Assert-Throws { Get-FeedHistoryFloor -Channel dev -Listing @("v0.4.2-DEV.1`tfalse`tdev.json") } 'not a feed version' 'upper case'
+        Assert-True ((Get-FeedHistoryFloor -Channel dev -Listing @("v0.4.2-dev.1`tfalse`tdev.json")) -ceq '0.4.2-dev.1') 'a good tag is refused'
+        $lib = [System.IO.File]::ReadAllText((Join-Path $toolsDir 'lib\feed-publish-lib.ps1'))
+        Assert-True ($lib.Contains("'\Av[0-9]+\.[0-9]+\.[0-9]+(-dev\.[0-9]+)?\z'")) 'the lib history regex is not \A..\z'
+        $up = [System.IO.File]::ReadAllText((Join-Path $toolsDir 'upload-feed.ps1'))
+        Assert-True ($up.Contains("-cmatch '\A\s*PRE (v[0-9]+\.[0-9]+\.[0-9]+-dev\.([0-9]+))/\s*\z'")) 'the bucket prune pattern is not anchored and case-sensitive'
+    }
+
     Invoke-Test 'RELEASING.md documents the allow-list, the secret names, the one-way feed and the new checks' {
         $doc = [System.IO.File]::ReadAllText((Join-Path $repo 'docs\RELEASING.md'))
         foreach ($needle in 'v[0-9].[0-9].[0-9]', 'v[0-9].[0-9].[0-9][0-9]', 'v[0-9].[0-9][0-9].[0-9]', 'v[0-9].[0-9][0-9].[0-9][0-9]', 'CLINK_FEED_STABLE_SIGNING_KEY', 'CLINK_FEED_DEV_SIGNING_KEY',
             'R2_STABLE_BUCKET', 'R2_DEV_BUCKET', 'The feed cannot be switched off', 'pkg_sha256', 'feed.tests.ps1', 'dotnet-sdk-lib.ps1', '--if-none-match',
-            'feed-publish-lib.ps1', 'Recovering a stuck feed', 'CLINK_FEED_BUCKET_RESET_VERSION', 'OWNER DECISION', 'dotnet host (muxer', 'Tag-type rules', 'branch ruleset', 'download-and-hash') {
+            'feed-publish-lib.ps1', 'Recovering a stuck feed', 'CLINK_FEED_BUCKET_RESET_VERSION', 'dotnet host (muxer', 'Tag-type rules', 'branch ruleset', 'download-and-hash') {
             Assert-True ($doc.Contains($needle)) "RELEASING.md lacks '$needle'"
         }
+        # B2 (two buckets): the layout, hosts, tokens, locks, CORS, no-transform rule, purge token and the staging dry run are described.
+        foreach ($needle in 'devFeedUrl', '`clink-stable`', '`clink-dev`', 'dl.euphoric.software', 'dl-dev.euphoric.software', 'Assert-FeedBaseMatchesPrefix', 'Bucket Lock',
+            'INDEFINITE', '30 days', 'CORS on `clink-stable` ONLY', 'https://euphoric.software', 'No-transform rule', 'Zone Cache Purge', 'CLOUDFLARE_API_TOKEN', 'PUBLIC fork', 'personal account',
+            'Stale drafts', 'main-dev-safety', 'stable-tags', 'dev-tags', 'no-v-branches', 'Node 24', 'runs.using') {
+            Assert-True ($doc.Contains($needle)) "RELEASING.md lacks '$needle'"
+        }
+        # The contradictions the B2 decision removed.
+        Assert-True ($doc -cnotmatch 'dedicated Clink bucket') 'RELEASING.md still says "a dedicated Clink bucket"'
+        Assert-True ($doc -cnotmatch 'contract stays single') 'RELEASING.md still says the feedUrl contract stays single'
+        Assert-True ($doc -cnotmatch 'https://www\.euphoric\.software') 'RELEASING.md still lists the unneeded www CORS origin'
+        Assert-True ($doc -cnotmatch '"devKeys":\s*\[\s*\]') 'RELEASING.md still has the example with empty devKeys (misconfigured by its own rule)'
+        Assert-True ($doc -cnotmatch 'OWNER DECISION') 'RELEASING.md still has the open bucket-layout owner decision'
+        Assert-True ($doc -cnotmatch 'Branch protection on `main` and `dev` \(pull request') 'RELEASING.md still asks for pull-request branch protection (solo flow)'
+        # The example feed.json in the contract section must itself be a valid ON configuration with devFeedUrl.
+        $exampleAt = $doc.IndexOf('"devFeedUrl": "https://dl-dev.example/clink/"')
+        Assert-True ($exampleAt -gt 0) 'RELEASING.md lacks the devFeedUrl example'
         Assert-True ($doc -notmatch 'manual run on ``?main') 'RELEASING.md still describes a manual stable run on main'
         Assert-True ($doc -cnotmatch '\\n(?=\s|$)') 'RELEASING.md contains a literal \n where a line break was meant'
         Assert-True ($doc -cnotmatch 'tools/lib/feed-lib\.ps1') 'RELEASING.md still names the old tools/lib/feed-lib.ps1'

@@ -45,6 +45,21 @@ function Invoke-FeedAws {
     @{ Code = [int]$answer.Code; Text = [string]$answer.Text }
 }
 
+function Assert-FeedBaseMatchesPrefix {
+    # upload-feed writes the key <Prefix>/<folder>/<file> but checks the public URL <BaseUrl><folder>/<file> (and the manifests'
+    # URLs are built the same way), so the path of the channel's base URL must end in "/<Prefix>/" (the host is mapped to the bucket
+    # root). A mismatch would otherwise show up only at the public-URL check, after the write-once objects were already written.
+    # Called before the first bucket access. Case-sensitive. BaseUrl is the channel's base from Get-FeedConfig (validated, ends with '/').
+    param([Parameter(Mandatory)] [string]$BaseUrl, [Parameter(Mandatory)] [string]$Prefix)
+    if ($Prefix -cnotmatch '\A[A-Za-z0-9-]+\z') { throw "Key prefix '$Prefix' is not a plain name." }
+    $m = [regex]::Match($BaseUrl, '\Ahttps://[^/?#@\\\s]+(?<path>/[^?#@\\\s]*)?\z')
+    if (-not $m.Success) { throw "Feed base URL '$BaseUrl' is not an https URL with a host." }
+    $path = if ($m.Groups['path'].Success) { $m.Groups['path'].Value } else { '/' }
+    if (-not $path.EndsWith("/$Prefix/", [System.StringComparison]::Ordinal)) {
+        throw "The path of the feed base URL '$BaseUrl' is '$path', which does not end in '/$Prefix/'. Objects are written under the key prefix '$Prefix' but read back at the public URL, so the feedUrl/devFeedUrl path must end in '/$Prefix/' on a host mapped to the bucket root (docs/RELEASING.md). Nothing was written."
+    }
+}
+
 function Get-FeedFileFacts {
     # SHA-256 (lower case hex) and size of the bytes that are really in the file.
     param([Parameter(Mandatory)] [string]$Path)
@@ -130,7 +145,7 @@ function Get-FeedHistoryFloor {
         if ($parts[1] -cne 'false') { throw "Unexpected draft flag '$($parts[1])' in the release listing." }
         if (-not ($parts[2].Split(',') -ccontains "$Channel.json")) { continue }
         $tag = $parts[0]
-        if ($tag -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+(-dev\.[0-9]+)?$') { throw "Release '$tag' carried $Channel.json but its tag is not a feed version (vX.Y.Z or vX.Y.Z-dev.N); investigate before publishing." }
+        if ($tag -cnotmatch '\Av[0-9]+\.[0-9]+\.[0-9]+(-dev\.[0-9]+)?\z') { throw "Release '$tag' carried $Channel.json but its tag is not a feed version (vX.Y.Z or vX.Y.Z-dev.N); investigate before publishing." }
         $candidate = $tag.Substring(1)
         if ($null -eq $best -or (Compare-FeedVersion $candidate $best) -gt 0) { $best = $candidate }
     }

@@ -4,8 +4,8 @@
 # The manifest bytes are signed exactly as written (UTF-8, no BOM): ECDSA P-256 / SHA-256, IEEE P1363 r||s, Base64 on one line.
 # Before anything is written the signature is verified against the channel's keys in -FeedJson (Clink/Assets/feed.json); a key
 # that is not listed there (wrong key, rotated key, empty list) fails the run.
-# BaseUrl is the folder URL holding the assets (ends with '/') and must be under feedUrl,
-# e.g. https://cdn.example/clink/releases/v0.4.2/
+# BaseUrl is the folder URL holding the assets (ends with '/') and must be under the channel's base: feedUrl for stable,
+# devFeedUrl (or feedUrl when devFeedUrl is empty) for dev, e.g. https://cdn.example/clink/releases/v0.4.2/
 param(
     [Parameter(Mandatory)] [ValidateSet('stable', 'dev')] [string]$Channel,
     [Parameter(Mandatory)] [string]$Version,
@@ -23,8 +23,8 @@ Remove-Item Env:\CLINK_FEED_SIGNING_KEY -ErrorAction SilentlyContinue
 
 if ($Version -match '^v') { throw 'Version must not start with "v".' }
 if ($Tag -ne "v$Version") { throw "Tag '$Tag' must be 'v$Version'." }
-if ($Channel -eq 'dev' -and $Version -notmatch '-dev\.\d+$') { throw 'A dev manifest needs a version like X.Y.Z-dev.N.' }
-if ($Channel -eq 'stable' -and $Version -notmatch '^\d+\.\d+\.\d+$') { throw 'A stable manifest needs a version like X.Y.Z.' }
+if ($Channel -eq 'dev' -and $Version -cnotmatch '\A[0-9]+\.[0-9]+\.[0-9]+-dev\.[0-9]+\z') { throw 'A dev manifest needs a version like X.Y.Z-dev.N.' }
+if ($Channel -eq 'stable' -and $Version -cnotmatch '\A[0-9]+\.[0-9]+\.[0-9]+\z') { throw 'A stable manifest needs a version like X.Y.Z.' }
 foreach ($u in $BaseUrl, $NotesUrl) { if ($u -notmatch '^https://') { throw "URL must be https: $u" } }
 if (-not $BaseUrl.EndsWith('/')) { $BaseUrl += '/' }
 
@@ -32,7 +32,9 @@ $PackageDir = (Resolve-Path -LiteralPath $PackageDir).Path
 $FeedJson = (Resolve-Path -LiteralPath $FeedJson).Path
 $cfg = Get-FeedConfig -Path $FeedJson -Channel $Channel
 if (-not $cfg.Enabled) { throw "The feed is not enabled for the $Channel channel in feed.json ($($cfg.Reason)); refusing to sign." }
-if (-not $BaseUrl.StartsWith($cfg.FeedUrl, [System.StringComparison]::Ordinal)) { throw "BaseUrl $BaseUrl is not under feedUrl $($cfg.FeedUrl)." }
+# $cfg.FeedUrl is this channel's base (feedUrl for stable; devFeedUrl, or feedUrl when that is empty, for dev): the binaries of a
+# manifest must sit under the base that serves the manifest itself.
+if (-not $BaseUrl.StartsWith($cfg.FeedUrl, [System.StringComparison]::Ordinal)) { throw "BaseUrl $BaseUrl is not under the $Channel feed base $($cfg.FeedUrl) (feedUrl for stable; devFeedUrl, or feedUrl when it is empty, for dev)." }
 
 if ([string]::IsNullOrWhiteSpace($pem)) { throw 'Env var CLINK_FEED_SIGNING_KEY is empty or not set.' }
 if ($pem -notmatch 'BEGIN PRIVATE KEY') {
@@ -49,7 +51,7 @@ if ($pkg.version -ne $Version) { throw "package.json is for version $($pkg.versi
 
 # Update clients parse minRuntime as a version (X.Y.Z); it comes from package.json (read from the framework build's runtimeconfig).
 $minRuntime = [string]$pkg.minRuntime
-if ($minRuntime -notmatch '^\d+\.\d+\.\d+$') { throw "package.json minRuntime '$minRuntime' is not X.Y.Z (run tools/package.ps1 from this version)." }
+if ($minRuntime -cnotmatch '\A[0-9]+\.[0-9]+\.[0-9]+\z') { throw "package.json minRuntime '$minRuntime' is not X.Y.Z (run tools/package.ps1 from this version)." }
 
 # Bind package.json to what the manifest advertises (the publish job also verifies package.json's hash against the build job's output).
 # The names are compared case-sensitively and exactly: they become URLs and file paths. Runtime major: the app targets
@@ -66,7 +68,7 @@ if ([int]($minRuntime.Split('.')[0]) -ne $expectedRuntimeMajor) { throw "package
 
 function New-AssetEntry($info, [string]$what) {
     if (-not $info) { throw "package.json has no '$what' entry (installer not built?)." }
-    if ($info.sha256 -cnotmatch '^[0-9a-f]{64}$') { throw "Bad sha256 for $what." }
+    if ($info.sha256 -cnotmatch '\A[0-9a-f]{64}\z') { throw "Bad sha256 for $what." }
     $path = Join-Path $PackageDir $info.file
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "$($info.file) is missing from $PackageDir." }
     $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()

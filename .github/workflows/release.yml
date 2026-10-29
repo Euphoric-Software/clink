@@ -44,12 +44,12 @@ jobs:
       notices_sha256: ${{ steps.package.outputs.notices_sha256 }}
     steps:
       - name: Check out
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
 
       - name: Set up .NET
-        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
           global-json-file: global.json
 
@@ -206,14 +206,14 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: write
+    # The write token is NOT job-wide: only the steps that call gh name GH_TOKEN, so aws, make-manifest and upload-feed never see it.
     env:
       VERSION: ${{ needs.build.outputs.version }}
-      GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
       # Guards run before any secret is referenced by a step. Environment secrets are only readable by steps that name them.
       - name: Check out (full history)
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -221,15 +221,15 @@ jobs:
       - name: Guard - stable tag, commit on main, release not yet there
         shell: pwsh
         env:
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          $default = if ($env:DEFAULT_BRANCH) { $env:DEFAULT_BRANCH } else { 'main' }
           if ($env:GITHUB_REF -cnotmatch '^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$') {
             throw "Stable releases publish only from tags vX.Y.Z (this run is on $env:GITHUB_REF)."
           }
-          # The commit being released must be reachable from main (a tag pushed on a side branch must not ship).
-          git merge-base --is-ancestor $env:GITHUB_SHA "origin/$default"
-          if ($LASTEXITCODE -ne 0) { throw "Commit $env:GITHUB_SHA is not on origin/$default; refusing to publish." }
+          # The commit being released must be reachable from main (a tag pushed on a side branch must not ship). `main` is written
+          # out on purpose: nothing a repository setting can change (the default branch) decides where stable releases may come from.
+          git merge-base --is-ancestor $env:GITHUB_SHA origin/main
+          if ($LASTEXITCODE -ne 0) { throw "Commit $env:GITHUB_SHA is not on origin/main; refusing to publish." }
           $expected = $env:GITHUB_REF_NAME.Substring(1)
           if ($expected -ne $env:VERSION) { throw "Version $env:VERSION from the build job does not match the ref ($expected)." }
           $eap = $ErrorActionPreference
@@ -276,7 +276,8 @@ jobs:
           if ($setupLine -ne "$setup *Clink-Setup.exe") { throw "Clink-Setup.exe.sha256 does not describe Clink-Setup.exe: $setupLine" }
           Write-Output "Package verified (Clink.exe $exe, Clink-framework.exe $fx)"
 
-      # Trust anchors come from the committed Clink/Assets/feed.json (the same file that was embedded in Clink.exe).
+      # Trust anchors come from the committed Clink/Assets/feed.json (the same file that was embedded in Clink.exe). feed_url is the
+      # STABLE channel's base, feedUrl (Get-FeedConfig -Channel stable).
       - name: Read feed configuration
         id: feed
         shell: pwsh
@@ -293,6 +294,8 @@ jobs:
       - name: Guard - a feed that was on stays on
         if: steps.feed.outputs.enabled != 'true'
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           . ./tools/lib/feed-publish-lib.ps1
           $names = @(& gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" --paginate --jq '.[].assets[].name')
@@ -319,6 +322,8 @@ jobs:
         id: history
         if: steps.feed.outputs.enabled == 'true'
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           . ./tools/lib/feed-publish-lib.ps1
           $listing = @(& gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" --paginate --jq '.[] | [.tag_name, (.draft | tostring), ([.assets[].name] | join(","))] | @tsv')
@@ -351,7 +356,7 @@ jobs:
       # A DRAFT first: nothing is visible to users (or to the updater's GitHub fallback) until the bucket upload succeeded.
       - name: Create GitHub release (draft)
         id: draft
-        uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631 # v2.2.2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: v${{ needs.build.outputs.version }}
           name: Clink v${{ needs.build.outputs.version }}
@@ -364,15 +369,16 @@ jobs:
 
       # The site links releases/latest/download/Clink-Setup.exe and Clink.exe: refuse to publish a release that lacks any asset.
       # Looked up by the draft's release ID (never by tag), so a same-named release cannot stand in for it. The ID reaches the script only
-      # through env. Every required name must exist exactly once, uploaded, with the size of the local file and, when GitHub reports a
-      # digest, the SHA-256 of the local file (the local files were hash-checked against the build job before the upload).
+      # through env. Every required name must exist exactly once, uploaded, with the size and the SHA-256 digest of the local file (the
+      # local files were hash-checked against the build job before the upload); a missing digest or an asset that is not on the list fails.
       - name: Verify the release assets
         shell: pwsh
         env:
+          GH_TOKEN: ${{ github.token }}
           RELEASE_ID: ${{ steps.draft.outputs.id }}
         run: |
           if ($env:RELEASE_ID -cnotmatch '\A[0-9]+\z') { throw 'The draft release ID is missing or not numeric.' }
-          $json = (& gh api "repos/$env:GITHUB_REPOSITORY/releases/$env:RELEASE_ID" | Out-String)
+          $json =(& gh api "repos/$env:GITHUB_REPOSITORY/releases/$env:RELEASE_ID" | Out-String)
           if ($LASTEXITCODE -ne 0) { throw "Could not read release $env:RELEASE_ID." }
           $release = $json | ConvertFrom-Json
           if ($release.draft -ne $true) { throw "Release $env:RELEASE_ID is not a draft." }
@@ -388,15 +394,16 @@ jobs:
             if (-not ($asset.state -ceq 'uploaded')) { throw "Asset $name is in state '$($asset.state)', expected 'uploaded'." }
             $local = Get-Item -LiteralPath (Join-Path 'dist/package' $name)
             if ([int64]$asset.size -ne $local.Length) { throw "Asset $name has $($asset.size) bytes on GitHub, the local file has $($local.Length)." }
+            # GitHub reports a digest for every asset (confirmed by the first real run); a missing one is a failure, not a warning.
             $digest = [string]$asset.digest
-            if ($digest) {
-              $expected = 'sha256:' + (Get-FileHash -LiteralPath $local.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-              if (-not ($digest -ceq $expected)) { throw "Asset $name has digest $digest on GitHub, expected $expected." }
-            } else {
-              Write-Output "::warning::GitHub reports no digest for $name; relying on its size and the hash check before the upload."
-            }
+            if (-not $digest) { throw "GitHub reports no digest for asset $name; refusing to publish a release whose upload cannot be checked." }
+            $expected = 'sha256:' + (Get-FileHash -LiteralPath $local.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            if (-not ($digest -ceq $expected)) { throw "Asset $name has digest $digest on GitHub, expected $expected." }
           }
-          Write-Output "Release v$env:VERSION (id $env:RELEASE_ID) has all $($required.Count) required assets"
+          # Nothing else may ride along: every asset on the draft must be one of the required names.
+          $unexpected = @($release.assets | Where-Object { $required -cnotcontains $_.name } | ForEach-Object { $_.name })
+          if ($unexpected.Count -gt 0) { throw "Release v$env:VERSION has unexpected assets: $($unexpected -join ', ')" }
+          Write-Output "Release v$env:VERSION (id $env:RELEASE_ID) has exactly the $($required.Count) required assets"
 
       # Computed BEFORE the feed upload so that a failure here stops the job while nothing is public yet. "latest" is set only when
       # this version is higher than the current latest stable release (a re-cut or backport of an older version must not take it).
@@ -404,6 +411,8 @@ jobs:
       - name: Decide whether this release becomes latest
         id: latest
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           . ./tools/lib/release-latest-lib.ps1
           if ($env:VERSION -cnotmatch '\A[0-9]+\.[0-9]+\.[0-9]+\z') { throw "'$env:VERSION' is not a valid version." }
@@ -423,8 +432,9 @@ jobs:
           if ($latestCode -eq 0) {
             if ([string]::IsNullOrWhiteSpace($latestOut)) { throw 'The latest release lookup succeeded but returned no tag.' }
             $latestTag = $latestOut
+            Write-Output "releases/latest answered with a release (200 path): $latestTag"
           }
-          elseif ($latestErr -cmatch '\(HTTP 404\)') { $latestTag = '' }
+          elseif ($latestErr -cmatch '\(HTTP 404\)') { $latestTag = ''; Write-Output 'releases/latest answered HTTP 404 (404 path): the repository has no latest release yet' }
           else { throw "Could not read the latest release (exit $latestCode): $latestErr $latestOut" }
           $makeLatest = Get-MakeLatestValue -Version $env:VERSION -LatestTag $latestTag
           if ($makeLatest -cnotmatch '\A(true|false)\z') { throw "Unexpected make_latest value '$makeLatest'." }
@@ -453,6 +463,7 @@ jobs:
       - name: Publish the GitHub release
         shell: pwsh
         env:
+          GH_TOKEN: ${{ github.token }}
           RELEASE_ID: ${{ steps.draft.outputs.id }}
           MAKE_LATEST: ${{ steps.latest.outputs.make_latest }}
         run: |

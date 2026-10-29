@@ -1,18 +1,35 @@
 # Shared helpers for the update feed scripts (dot-source this file). Works on Windows PowerShell 5.1 and PowerShell 7.
 # Trust anchors live in Clink/Assets/feed.json (embedded in Clink.exe):
-#   {"schema":1,"feedUrl":"https://.../clink/" or "","stableKeys":["<Base64 DER SPKI P-256>",...],"devKeys":[...]}
+#   {"schema":1,"feedUrl":"https://.../clink/" or "","devFeedUrl":"https://.../clink/" (optional),"stableKeys":["<Base64 DER SPKI P-256>",...],"devKeys":[...]}
+# feedUrl is the base of the stable channel (stable.json, its .sig and the stable binaries). devFeedUrl is the optional base of the dev
+# channel (dev.json, its .sig and the dev binaries); absent or "" means the dev channel uses feedUrl.
+
+# One validator for both URLs: https, a host, no user info (@), no query (?) or fragment (#), no backslash or whitespace, ends with '/'.
+function Test-FeedUrlShape {
+    param([AllowEmptyString()] [string]$Url)
+    ($Url -match '^https://[^/?#@\\\s]+(/[^?#@\\\s]*)?$') -and $Url.EndsWith('/')
+}
 
 # Reads feed.json and validates it exactly like the client (contract v2):
-#   - fully empty (feedUrl "" and both key lists empty)  -> feed OFF (Enabled = $false, Mode = 'off')
-#   - feedUrl valid AND stableKeys and devKeys both non-empty, every key a valid P-256 SPKI, lists disjoint -> ON
+#   - fully empty (feedUrl "" and devFeedUrl "" or absent and both key lists empty)  -> feed OFF (Enabled = $false, Mode = 'off')
+#   - feedUrl valid AND stableKeys and devKeys both non-empty, every key a valid P-256 SPKI, lists disjoint -> ON;
+#     a non-empty devFeedUrl must pass the same URL validation as feedUrl (and feedUrl must be non-empty)
 #   - anything else that names a URL or a key (partial, malformed, overlapping)  -> THROWS (the client would be Misconfigured)
-# Both channels are therefore enabled together. Returns the data for -Channel plus Mode.
+# Both channels are therefore enabled together. Returns the data for -Channel plus Mode:
+#   FeedUrl = the BASE URL OF -Channel (stable: feedUrl; dev: devFeedUrl, or feedUrl when devFeedUrl is empty). Every script that
+#   builds, checks or purges URLs uses this one.
+#   ConfiguredFeedUrl = feedUrl as written; DevFeedUrl = devFeedUrl as written ('' when absent).
 function Get-FeedConfig {
     param([Parameter(Mandatory)] [string]$Path, [Parameter(Mandatory)] [ValidateSet('stable', 'dev')] [string]$Channel)
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "feed.json not found: $Path" }
     $cfg = Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json
     if ($cfg.schema -ne 1) { throw "feed.json: unsupported schema '$($cfg.schema)' (expected 1)." }
     $url = ([string]$cfg.feedUrl).Trim()
+    $devUrl = ''
+    if ($null -ne $cfg.devFeedUrl) {
+        if ($cfg.devFeedUrl -isnot [string]) { throw 'feed.json: devFeedUrl must be a string.' }
+        $devUrl = $cfg.devFeedUrl.Trim()
+    }
     $lists = @{}
     foreach ($prop in 'stableKeys', 'devKeys') {
         $items = @()
@@ -24,13 +41,16 @@ function Get-FeedConfig {
         }
         $lists[$prop] = $items
     }
-    if ($url -eq '' -and $lists['stableKeys'].Count -eq 0 -and $lists['devKeys'].Count -eq 0) {
-        return [pscustomobject]@{ Enabled = $false; Mode = 'off'; Reason = 'feed.json is empty (feed off)'; FeedUrl = ''; Keys = @() }
+    if ($url -eq '' -and $devUrl -eq '' -and $lists['stableKeys'].Count -eq 0 -and $lists['devKeys'].Count -eq 0) {
+        return [pscustomobject]@{ Enabled = $false; Mode = 'off'; Reason = 'feed.json is empty (feed off)'; FeedUrl = ''; ConfiguredFeedUrl = ''; DevFeedUrl = ''; Keys = @() }
     }
     # From here something is configured: all of it must be valid.
-    if ($url -eq '') { throw 'feed.json: keys are listed but feedUrl is empty. Set feedUrl or empty both key lists.' }
-    if ($url -notmatch '^https://[^/?#@\\\s]+(/[^?#@\\\s]*)?$' -or -not $url.EndsWith('/')) {
+    if ($url -eq '') { throw 'feed.json: keys or devFeedUrl are set but feedUrl is empty. Set feedUrl or empty devFeedUrl and both key lists.' }
+    if (-not (Test-FeedUrlShape $url)) {
         throw "feed.json: feedUrl must be https, have a host, no user info (@), no query (?) or fragment (#), and end with '/': $url"
+    }
+    if ($devUrl -ne '' -and -not (Test-FeedUrlShape $devUrl)) {
+        throw "feed.json: devFeedUrl must be empty or follow the feedUrl rules (https, a host, no user info (@), no query (?) or fragment (#), ends with '/'): $devUrl"
     }
     foreach ($prop in 'stableKeys', 'devKeys') {
         if ($lists[$prop].Count -eq 0) { throw "feed.json: feedUrl is set but $prop is empty. Both channels are enabled together." }
@@ -42,7 +62,8 @@ function Get-FeedConfig {
         if ($lists['devKeys'] -contains $k) { throw 'feed.json: a key is listed in both stableKeys and devKeys; the channels must use different keys.' }
     }
     $own = if ($Channel -eq 'stable') { $lists['stableKeys'] } else { $lists['devKeys'] }
-    [pscustomobject]@{ Enabled = $true; Mode = 'on'; Reason = ''; FeedUrl = $url; Keys = @($own) }
+    $base = if ($Channel -eq 'dev' -and $devUrl -ne '') { $devUrl } else { $url }
+    [pscustomobject]@{ Enabled = $true; Mode = 'on'; Reason = ''; FeedUrl = $base; ConfiguredFeedUrl = $url; DevFeedUrl = $devUrl; Keys = @($own) }
 }
 
 # Base64 DER SubjectPublicKeyInfo (ECDSA P-256) -> ECDsa public key. Parsed by hand: ImportSubjectPublicKeyInfo does not
