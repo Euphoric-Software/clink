@@ -6,15 +6,20 @@
 
 $script:FeedNotesMaxBytes = 65536
 $script:FeedNotesTruncationMark = "`n[Notes cut at 64 KB.]`n"
+# Invisible characters: soft hyphen, combining grapheme joiner, Arabic letter mark, Mongolian vowel separator, zero-width and bidi controls,
+# invisible math operators, deprecated format controls.
+$script:FeedNotesInvisibleClass = '[@00AD@034F@061C@180E@200B-@200F@202A-@202E@2060-@2064@2066-@2069@206A-@206F]'.Replace('@', '\u')   # "@" stands for the escape "\u" (this file stays ASCII)
 
 function ConvertTo-FeedNotesText {
     # Cleans any text into the notes form: control characters other than LF and TAB are removed (CR, NUL, ESC, DEL and the C1 range, BOM
-    # and lone surrogates too), a CRLF becomes LF, trailing white space is trimmed, and exactly one final LF is added. Over 64 KB of UTF-8
+    # and lone surrogates too, plus zero-width U+200B-U+200F, U+2060 and bidi controls U+202A-U+202E, U+2066-U+2069), a CRLF becomes LF, trailing white space is trimmed, and exactly one final LF is added. Over 64 KB of UTF-8
     # the text is cut at a character boundary and a one-line mark is appended; the result is never over the limit. Throws when nothing is left.
     param([AllowNull()] [AllowEmptyString()] [string]$Text)
     $t = [string]$Text
     $t = $t -replace "`r`n", "`n"
     $t = [regex]::Replace($t, '[\u0000-\u0008\u000B-\u001F\u007F-\u009F\uFEFF]', '')
+    $t = [regex]::Replace($t, $script:FeedNotesInvisibleClass, '')   # zero-width, bidi and other invisible characters (they could hide a link)
+    $t = [regex]::Replace($t, '\uDB40[\uDC00-\uDC7F]', '')   # Unicode tag characters (U+E0000-U+E007F, a surrogate pair)
     $t = [regex]::Replace($t, '[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]', '')
     $t = $t.TrimEnd(" `t`n").TrimStart("`n")
     if ($t.Length -eq 0) { throw 'The release notes are empty after cleaning.' }
@@ -98,6 +103,7 @@ function Test-FeedNotesBytes {
     $strict = New-Object System.Text.UTF8Encoding($false, $true)
     try { $text = $strict.GetString($Bytes) } catch { return 'the notes file is not valid UTF-8' }
     if ($text -cmatch '[\u0000-\u0008\u000B-\u001F\u007F-\u009F\uFEFF]') { return 'the notes file holds a control character other than LF and TAB (CR included)' }
+    if ($text -cmatch $script:FeedNotesInvisibleClass -or $text -cmatch '\uDB40[\uDC00-\uDC7F]') { return 'the notes file holds a zero-width, bidi or other invisible character' }
     if ($text[$text.Length - 1] -ne "`n") { return 'the notes file does not end with a line feed' }
     ''
 }

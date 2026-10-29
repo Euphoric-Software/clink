@@ -220,6 +220,33 @@ try {
         Assert-True ($over.Contains('cut') -and $utf8.GetByteCount($over) -le 65536) 'a file one byte over was not cut'
     }
 
+    Invoke-Test 'notes: zero-width and bidi control characters are removed, so a link split by one is still removed' {
+        $zw = [string][char]0x200B; $rlo = [string][char]0x202E
+        $raw = "Fixed a bug in https://git${zw}hub.com/Euphoric-Software/clink/pull/1`nSafe${rlo}text`nA$([char]0x2060)B$([char]0x200F)C$([char]0x2066)D$([char]0x2069)E"
+        $clean = ConvertTo-FeedNotesText -Text $raw
+        Assert-True ($clean -cnotmatch '[\u200B-\u200F\u202A-\u202E\u2060\u2066-\u2069]') 'an invisible character survived'
+        Assert-True ($clean.Contains("`nSafetext`n") -and $clean.Contains('ABCDE')) "the text around the invisible characters changed: $clean"
+        $out = Remove-FeedNotesRepoLinks -Text $clean -Repository 'Euphoric-Software/clink'
+        Assert-True ($out -cnotmatch 'github\.com' -and $out -cnotmatch 'pull/1') "the link survived: $out"
+        $bare = ConvertTo-FeedNotesText -Text "git${zw}hub.com/Euphoric-Software/clink/pull/1`nkeep"
+        Assert-True ((Remove-FeedNotesRepoLinks -Text $bare -Repository 'Euphoric-Software/clink') -cnotmatch 'github\.com') 'the scheme-less split link survived'
+    }
+
+    Invoke-Test 'notes: soft hyphen, U+061C, other invisible characters and Unicode tag characters are removed; Test-FeedNotesBytes refuses them' {
+        $shy = [string][char]0x00AD; $alm = [string][char]0x061C
+        $tag = [char]::ConvertFromUtf32(0xE0041)   # TAG LATIN CAPITAL LETTER A (a surrogate pair)
+        $raw = "see git${shy}hub.com/Euphoric-Software/clink/pull/2`nA${alm}B${tag}C$([char]0x034F)D$([char]0x180E)E$([char]0x2063)F$([char]0x206A)G"
+        $clean = ConvertTo-FeedNotesText -Text $raw
+        Assert-True ($clean.Contains('ABCDEFG') -and $clean.Contains('github.com/')) "invisible characters survived or text changed: $clean"
+        Assert-True ($clean -cnotmatch $script:FeedNotesInvisibleClass -and $clean -cnotmatch '\uDB40') 'an invisible character survived'
+        $out = Remove-FeedNotesRepoLinks -Text $clean -Repository 'Euphoric-Software/clink'
+        Assert-True ($out -cnotmatch 'github\.com') "the soft-hyphen split link survived: $out"
+        $bad = Test-FeedNotesBytes -Bytes $utf8.GetBytes("a$([char]0x200B)b`n")
+        Assert-True ($bad -match 'invisible') "U+200B was not refused: '$bad'"
+        Assert-True ((Test-FeedNotesBytes -Bytes $utf8.GetBytes("a${tag}b`n")) -match 'invisible') 'a tag character was not refused'
+        Assert-True ((Test-FeedNotesBytes -Bytes $utf8.GetBytes("a${alm}b`n")) -match 'invisible') 'U+061C was not refused'
+    }
+
     Invoke-Test 'notes: Test-FeedNotesBytes / Assert-FeedNotesFile refuse empty, oversized, BOM, CR, NUL, invalid UTF-8 and a missing final LF' {
         Assert-True ('' -eq (Test-FeedNotesBytes -Bytes $utf8.GetBytes("ok`n"))) 'a good file was refused'
         $cases = [ordered]@{
@@ -645,6 +672,23 @@ try {
             Assert-True ($jq.Count -eq 2) "$name : expected 2 tag/draft listings (seeds, history floor), found $($jq.Count)"
             foreach ($m in $jq) { Assert-True ($m.Value.Contains('(.author.login | tostring)] | @tsv')) "$name : a listing lacks the author column: $($m.Value)" }
         }
+    }
+
+    Invoke-Test 'M1: the seed of the channel being built must be strictly lower than the version (Assert-FeedSeedBelowVersion, wired in both release workflows)' {
+        Assert-FeedSeedBelowVersion -Channel stable -Seed '0.4.1' -Version '0.4.2'
+        Assert-FeedSeedBelowVersion -Channel dev -Seed '0.4.2-dev.3' -Version '0.4.2-dev.4'
+        Assert-FeedSeedBelowVersion -Channel dev -Seed '0.4.1' -Version '0.4.2-dev.1'
+        Assert-FeedSeedBelowVersion -Channel stable -Seed '' -Version '0.4.2'
+        Assert-FeedSeedBelowVersion -Channel dev -Seed $null -Version '0.4.2-dev.1'
+        Assert-Throws { Assert-FeedSeedBelowVersion -Channel stable -Seed '0.4.2' -Version '0.4.2' } 'not lower than the version being built' 'an equal stable seed'
+        Assert-Throws { Assert-FeedSeedBelowVersion -Channel stable -Seed '0.4.3' -Version '0.4.2' } 'not lower than the version being built' 'a higher stable seed'
+        Assert-Throws { Assert-FeedSeedBelowVersion -Channel dev -Seed '0.4.2-dev.4' -Version '0.4.2-dev.4' } 'not lower than the version being built' 'an equal dev seed'
+        Assert-Throws { Assert-FeedSeedBelowVersion -Channel dev -Seed '0.4.2-dev.9' -Version '0.4.2-dev.4' } 'not lower than the version being built' 'a higher dev seed'
+        $stable = Get-StepRunText (Get-BuildStep 'release.yml' 'Find the embedded floor seeds')
+        Assert-True ($stable.Contains('Assert-FeedSeedBelowVersion -Channel stable -Seed $seeds.Stable -Version $env:VERSION')) 'release.yml: the stable seed is not checked against the version'
+        Assert-True ((Get-BuildStep 'release.yml' 'Find the embedded floor seeds').Contains('VERSION: ${{ steps.version.outputs.version }}')) 'release.yml: the seeds step has no VERSION'
+        $dev = Get-BuildStep 'release-dev.yml' 'Check the dev floor seed is below the version'
+        Assert-True ((Get-StepRunText $dev).Contains('Assert-FeedSeedBelowVersion -Channel dev -Seed $env:MIN_DEV -Version $env:VERSION') -and $dev.Contains('MIN_DEV: ${{ steps.seeds.outputs.min_dev }}') -and $dev.Contains('VERSION: ${{ steps.version.outputs.version }}')) 'release-dev.yml: the dev seed is not checked against the version'
     }
 
     Invoke-Test 'L-4: the publish job refuses when its history floor differs from the seed the build job embedded (seeds are build outputs; run against a fake gh)' {
@@ -1116,18 +1160,16 @@ try {
         Assert-True (($rels -join ',') -ceq 'binder\B.cs,MainWindow.xaml.cs,Services\Updater.cs,Tests2\T.cs') "the scanned set is wrong: $($rels -join ',')"
     }
 
-    Invoke-Test 'I-3: build.yml turns CLINK_GUARD_STRICT=1 on by itself once no client source defines VerifyGitHubReleaseAsync (the guard''s own function decides)' {
+    Invoke-Test 'I-3: build.yml always sets CLINK_GUARD_STRICT=1 as a plain env entry in the script-test step' {
         $build = Read-Workflow 'build.yml'
         $at = $build.IndexOf('      - name: Script tests (PowerShell 7)')
         Assert-True ($at -gt 0) 'build.yml has no script-test step'
         $next = $build.IndexOf("`n      - name:", $at + 10)
         $step = if ($next -gt 0) { $build.Substring($at, $next - $at) } else { $build.Substring($at) }
         $run = Get-StepRunText $step
-        # Either the automatic switch (today) or, after the TODO in build.yml is done, a plain env entry.
-        $conditional = $run.Contains('. ./tools/lib/client-guard-lib.ps1') -and $run.Contains("if (-not (Test-ClientLegacyUpdatePath -Root .)) { `$env:CLINK_GUARD_STRICT = '1'")
-        $plain = $step -match "(?m)^          CLINK_GUARD_STRICT: '1'\s*$"
-        Assert-True ($conditional -or $plain) 'the script-test step does not make the guard strict once the legacy definition is gone'
-        if ($conditional) { Assert-True ($run.IndexOf('CLINK_GUARD_STRICT') -lt $run.IndexOf('run-script-tests.ps1')) 'strict mode is set after the tests ran' }
+        # Only a plain env entry is accepted: no condition can make the guard lenient.
+        Assert-True ($step -match "(?m)^          CLINK_GUARD_STRICT: '1'\s*$") 'the script-test step does not set the plain env entry CLINK_GUARD_STRICT: ''1'''
+        Assert-True (-not $run.Contains('CLINK_GUARD_STRICT') -and -not $run.Contains('Test-ClientLegacyUpdatePath')) 'the script-test run text still makes the strict switch conditional'
         $guardText = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot 'client-source-guard.tests.ps1'))
         Assert-True ($guardText.Contains("lib\client-guard-lib.ps1") -and $guardText.Contains('Test-ClientLegacyDefinition') -and $guardText.Contains("`$env:CLINK_GUARD_STRICT -ceq '1'")) 'the guard does not use the shared rules or ignores CLINK_GUARD_STRICT'
         # The switch evaluated on this tree: strict exactly when no definition is left (the guard decides the same way).
@@ -1135,7 +1177,7 @@ try {
         $legacyHere = Test-ClientLegacyUpdatePath -Root $repo
         $defined = @(Get-ClientGuardSourceFiles -Root $repo | Where-Object { [System.IO.File]::ReadAllText($_) -match 'Task<[^>]*>\s+VerifyGitHubReleaseAsync\s*\(' }).Count -gt 0
         Assert-True ($legacyHere -eq $defined) "Test-ClientLegacyUpdatePath says $legacyHere for this tree, a plain search says $defined"
-        Write-Host "      (this tree: legacy GitHub update path $(if ($legacyHere) { 'still defined: CI runs the guard lenient' } else { 'gone: CI runs the guard strict' }))"
+        Write-Host "      (this tree: legacy GitHub update path $(if ($legacyHere) { 'still defined' } else { 'gone' }); CI always runs the guard strict)"
     }
 
     Invoke-Test 'docs: RELEASING.md carries the repair-round rules (feed-off red job, immutable variable, nosniff rule, lock list, keys without the clipboard, fork settings, stable-only first run, PR titles, actions budget)' {

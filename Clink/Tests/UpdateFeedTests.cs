@@ -872,6 +872,31 @@ internal static class UpdateFeedTests
     }
 
     [UnitTest]
+    public static void Manual_check_catch_all_marks_the_check_as_failed()
+    {
+        var (stablePub, stableKey) = NewKey();
+        var (devPub, devKey) = NewKey();
+        using var a = stableKey;
+        using var b = devKey;
+        var trust = TwoBases(new[] { stablePub }, new[] { devPub });
+        byte[] s = Bytes(Manifest("0.4.9"));
+        var net = new FakeNet();
+        net.Feed("stable", s, Sign(stableKey, s));
+        net.AllowOnly(trust);
+        Updater.HttpOverride = net.Send;
+        Updater.FeedOverride = trust;
+        using var up = new Updater(new Settings { AutoUpdate = false }, V("0.4.1"));
+
+        // The check itself works (CheckAsync clears CheckFailed); the UpdateAvailable handler then throws, which only the manual catch-all sees.
+        up.UpdateAvailable += _ => throw new InvalidOperationException("handler failed");
+        var info = OffUi(() => up.CheckNowAsync());
+        net.AssertNoStray();
+        Check.Null(info, "the manual check never throws and returns nothing after the catch-all");
+        Check.True(up.CheckFailed, "the card says 'Last check failed'");
+        Check.Equal("the update check failed (details in the log)", up.LastError);
+    }
+
+    [UnitTest]
     public static void Feed_leaving_a_dev_build_still_needs_a_manual_check()
     {
         var (pub, key) = NewKey();
@@ -1729,6 +1754,14 @@ internal static class UpdateFeedTests
         Check.Equal(new[] { "SomethingNewer" }, legacy.Unknown?.Keys.ToArray(), "only a key a newer Clink may know is kept");
         foreach (string retired in new[] { "FeedFloorStableUpToDate", "FeedFloorDevGitHubConfirm", "FeedFloorStableSoftSince", "FeedFloorDevSoftGrace", "PendingUpdateSigned\"", "PendingUpdateFxSigned\"" })
             Check.DoesNotContain(legacy.ToJson(), retired, "not written back");
+        // a live key is NOT dropped (IsRetiredKey itself, and a file that carries it), nor is a key with anything after the retired name (\z, not $)
+        foreach (string live in new[] { "FeedFloorFailingSince", "FeedFloorStable", "FeedFloorDev", "FeedFloorStableUpToDate\n", "FeedFloorStableUpToDateX", "FeedFloorStableConfirm", "PendingUpdateSignedSha256", "PendingUpdateSigned\n" })
+            Check.False(Settings.IsRetiredKey(live), $"'{live.Replace("\n", "\\n")}' is not a retired key");
+        foreach (string retired in new[] { "FeedFloorStableUpToDate", "feedfloordevsoftgrace", "PendingUpdateFxSigned" })
+            Check.True(Settings.IsRetiredKey(retired), retired);
+        var keptLive = Settings.FromJson($$"""{"FeedFloorFailingSince":"{{stamp}}","FeedFloorStable":"0.4.2","SomethingNewer":1}""");
+        Check.Equal(stamp, keptLive.FeedFloorFailingSince, "a live FeedFloor key is read, not dropped");
+        Check.Equal("0.4.2", keptLive.FeedFloorStable);
 
         // The stamp is only good for the version that wrote it, never from the future, and never unreadable.
         var now = new DateTime(2026, 10, 28, 12, 0, 0, DateTimeKind.Utc);

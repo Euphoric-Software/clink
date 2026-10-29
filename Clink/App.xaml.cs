@@ -191,7 +191,7 @@ public partial class App : System.Windows.Application
             // A plain start (no command to forward, not --dev) that finds an OLDER Clink running from another exe: most likely v0.4.1 or
             // earlier, which can no longer update itself (users of it upgrade by hand). It was asked to show itself; say how to get the new one.
             if (dev == null && AppController.OlderRunningCopy(AppController.RunningClinks(), Environment.ProcessPath, AppController.OwnFileVersion(),
-                    Environment.ProcessId, AppController.CurrentSessionId, AppController.CommandFromArgs(args), dev: false) is { } older)
+                    Environment.ProcessId, AppController.CurrentSessionId, AppController.CommandFromArgs(args), dev: false, restart: previous != null) is { } older)
             {
                 try { MessageBox.Show(older, "Clink", MessageBoxButton.OK, MessageBoxImage.Information); } catch { }
             }

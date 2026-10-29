@@ -351,6 +351,21 @@ function Get-FeedFloorSeeds {
     @{ Stable = (Assert-FeedFloorSeed -Value $stable -Channel stable); Dev = (Assert-FeedFloorSeed -Value $dev -Channel dev) }
 }
 
+function Assert-FeedSeedBelowVersion {
+    # The seed of the channel being built must be STRICTLY lower than the version being built (Compare-FeedVersion). An equal or higher seed
+    # means the binary would treat its own version as a downgrade (a stale tag, a hand-made release, a wrong <Version>): fail with a clear
+    # message before anything is built. '' and $null mean "no seed" and pass.
+    param(
+        [Parameter(Mandatory)] [ValidateSet('stable', 'dev')] [string]$Channel,
+        [AllowNull()] [AllowEmptyString()] [string]$Seed, [Parameter(Mandatory)] [string]$Version
+    )
+    $s = [string]$Seed
+    if ($s.Length -eq 0) { return }
+    if ((Compare-FeedVersion $s $Version) -ge 0) {
+        throw "The embedded $Channel floor seed '$s' is not lower than the version being built, '$Version'. A binary would treat its own version as a downgrade. Check <Version> in Clink/Clink.csproj and the releases of the $Channel channel (a hand-made or newer release exists)."
+    }
+}
+
 function Assert-FeedFloorMatchesSeed {
     # L-4. The publish job's history floor for the channel must equal the seed the build job embedded for that channel (both come from
     # Get-FeedHistoryFloor over the release listing, minutes apart). A difference means a release of the channel was created, published or

@@ -427,7 +427,7 @@ Plain UTF-8 text, no BOM, at most 64 KB, no control character except LF and TAB 
 `dist/package/notes.txt` in both publish jobs:
 
 - Stable: ALWAYS GitHub's generated release notes for the tag (`gh api -X POST repos/<repo>/releases/generate-notes`, which only returns text
-  and creates nothing), in this order: generated, cleaned (`ConvertTo-FeedNotesText`: control characters out first, so none can hide a link from
+  and creates nothing), in this order: generated, cleaned (`ConvertTo-FeedNotesText`: control, zero-width and bidi characters out first, so none can hide a link from
   the filter), the links to this private repository dropped (`Remove-FeedNotesRepoLinks`: the `in <url>` tails and the "Full Changelog" line, then
   a final pass over the whole text for ANY remaining link of the repository, in every spelling: `https://`, `http://` or no scheme, `www.`,
   `github.com/<owner>/<repo>` with or without `.git`, any path, a sentence-final `.` kept outside the link; every `@handle` mention and the "New
@@ -482,7 +482,11 @@ CI note: the runner appends `if ((Test-Path -LiteralPath variable:\LASTEXITCODE)
    The seeds are also build-job outputs (`min_stable`, `min_dev`): the publish job's `Find the GitHub history floor` REFUSES when the floor it computes for its
    channel differs from the seed the build job embedded for that channel (`Assert-FeedFloorMatchesSeed`), so a release created, published or deleted
    between the two steps cannot ship binaries with a wrong seed. That refusal comes before anything is signed or drafted: "Re-run all jobs" once no other
-   release of the channel is in progress.
+   release of the channel is in progress. Push stable tags one at a time and wait for the previous run to finish: a waiting publish can be cancelled by a newer
+   one, and a seed/floor mismatch needs "Re-run all jobs".
+   A build's own-channel floor seed must be strictly lower than the version being built (`Assert-FeedSeedBelowVersion`); an equal seed means the version is already used.
+   Only each channel's own seed is checked against its floor, deliberately: checking the other channel's seed would make stable runs fail on every dev push.
+   The cross-channel seed in a binary can be slightly stale, which only weakens that floor.
    **The client honours the seeds only once slice S6 lands:** S6 defines the optional MSBuild properties `ClinkMinStable` and `ClinkMinDev`, which become
    `AssemblyMetadata` that the updater reads; then it uses the higher of its settings floor and the embedded seed. Until S6 is merged, the properties are
    passed but nothing in the client reads them. `check-published.ps1` does not assert the embedded values yet (the exe's self-test cannot
@@ -704,7 +708,10 @@ immutable, a tag that moved or appeared. Treat it as an incident, not as a flaky
    delete it by hand NOW"). If it could not be deleted, delete it first (`gh api -X DELETE repos/<repo>/releases/<id>`).
 2. The bucket may already carry the new version (the feed upload runs before the second check): a deleted release leaves the feed's
    manifest pointing at binaries whose GitHub copy is gone. Compare the bucket's `<channel>.json` and the versioned objects with the
-   build artifact. If they match the artifact, the next publish of a NEWER version replaces them; if not, follow "Recovering a stuck feed"
+   hashes in the run log (the cleanup job always deletes the build artifact, so it cannot be used): the build job's `Package` step prints the
+   `.sha256` lines, and the publish job logs `Package verified (...)`; both cover `Clink.exe` and `Clink-framework.exe` only. The setup's hash is in the env
+   header of the step `Verify the package matches the build job` (`SETUP_SHA256`). For `notes.txt` and the rest, compare against the sha256 fields of the signed manifest
+   after checking its signature. If they match those hashes, the next publish of a NEWER version replaces them; if not, follow "Recovering a stuck feed"
    and treat the bucket token as leaked (rotate it).
 3. An immutable release keeps its tag for good (GitHub refuses to remove it), so that version number is used up: the next publish needs a newer
    version. A dev run picks a higher N by itself (it counts tags too).
@@ -768,6 +775,11 @@ notices describe). The procedure is the one list under "Runtime freshness gate" 
 re-pin and regenerate the notices, raise `MinimumRuntimeVersion` when the runtime moved, then run `tools\tests\run-script-tests.ps1` and
 the unit tests, and commit together). Check that the version exists for the runner image (`actions/setup-dotnet` downloads it); the
 next workflow run proves it.
+
+Dependabot's `dotnet-sdk` entry (`.github/dependabot.yml`) opens a PR when a newer SDK exists in the same major version (major bumps are ignored).
+Treat such a PR as a REMINDER, not as something to merge: it is expected to FAIL the notices gate (`make-notices.ps1 -Check`, the
+ThirdPartyNotices check), because a new SDK bundles a newer runtime pack than the one the notices describe. The maintainer then either follows
+the "Runtime freshness gate" procedure on that branch (notices `-Update`, `MinimumRuntimeVersion`, and so on) or closes the PR and does the bump by hand.
 
 `build.ps1` and `tools/publish-flavours.ps1` probe `dotnet --version` run in the repo root (which honours `global.json`): the
 `dotnet` on PATH is used when it satisfies the pin, otherwise `%USERPROFILE%\.dotnet\dotnet.exe` is tried, and when neither does
@@ -908,9 +920,8 @@ name's artifact is never deleted), the client-source guard on scratch trees, and
 (`bin*`, `obj*`), `Clink\MainWindow.xaml.cs` included, as text and asserts that none mentions "github" and that `Updater.cs` creates at most one
 `HttpClient` and one `SocketsHttpHandler` (`new HttpClient(` and the target-typed `HttpClient x = new(` both count). While a client source still
 DEFINES the legacy GitHub update method (`Task<...> VerifyGitHubReleaseAsync(`; a comment, call or `cref` that only names it does not count) both
-checks are reported as skipped, and `CLINK_GUARD_STRICT=1` enforces them at once. `build.yml`'s script-test step sets `CLINK_GUARD_STRICT=1` by itself
-as soon as no such definition is left (slice S6 removes it), using the same function; once S6 is merged that condition becomes a plain env entry (a
-TODO in `build.yml`). `run-script-tests.ps1` picks up every `*.tests.ps1` in `tools\tests` by itself. Under Windows PowerShell 5.1 (the
+checks are reported as skipped, and `CLINK_GUARD_STRICT=1` enforces them at once. `build.yml`'s script-test step always sets `CLINK_GUARD_STRICT: '1'`
+as a plain env entry, so CI runs the guard strict. `run-script-tests.ps1` picks up every `*.tests.ps1` in `tools\tests` by itself. Under Windows PowerShell 5.1 (the
 developer PC) one test skips: `upload-feed.ps1 needs PowerShell 7` in `feed.tests.ps1` (the run of `upload-feed.ps1` with a fake `aws` on PATH); CI runs it
 under pwsh 7. The packaging tests build their "outside the repo" folder under the root of the repo's drive, never under TEMP (TEMP may be inside the repo).
 

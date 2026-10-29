@@ -143,18 +143,14 @@ jobs:
           ./tools/notices/make-notices.ps1 -Check -AssetsFile Clink/obj_sc/project.assets.json
           if ($LASTEXITCODE -ne 0) { throw 'THIRD-PARTY-NOTICES.txt is out of date (see the output above).' }
 
-      # I-3. The client-source guard runs STRICT (CLINK_GUARD_STRICT=1) as soon as the legacy GitHub update path is gone, i.e. no client
-      # source DEFINES VerifyGitHubReleaseAsync any more (slice S6 removes it); until then the guard reports its GitHub checks as skipped.
-      # The decision is the guard's own function (Test-ClientLegacyUpdatePath, tools/lib/client-guard-lib.ps1), so CI and the guard agree.
-      # TODO once S6 is merged: replace the condition with a plain `CLINK_GUARD_STRICT: '1'` env entry, so that re-adding a definition of
-      # that name cannot make the guard lenient again (private-ci.tests.ps1 accepts either form).
+      # I-3. The client-source guard always runs STRICT (CLINK_GUARD_STRICT=1): the legacy update path is gone, and a plain env entry
+      # means re-adding it cannot make the guard lenient again (private-ci.tests.ps1 accepts only this form).
       - name: Script tests (PowerShell 7)
         shell: pwsh
         timeout-minutes: 10
+        env:
+          CLINK_GUARD_STRICT: '1'
         run: |
-          . ./tools/lib/client-guard-lib.ps1
-          if (-not (Test-ClientLegacyUpdatePath -Root .)) { $env:CLINK_GUARD_STRICT = '1'; Write-Output 'CLINK_GUARD_STRICT=1: the legacy GitHub update path is gone, so the client-source guard is strict.' }
-          else { Write-Output 'The legacy GitHub update path (VerifyGitHubReleaseAsync) is still defined: the client-source guard reports its GitHub checks as skipped.' }
           pwsh -NoProfile -File ./tools/tests/run-script-tests.ps1
 
       - name: Check the published exes

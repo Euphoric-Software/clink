@@ -208,6 +208,17 @@ jobs:
           Add-Content -Path $env:GITHUB_OUTPUT -Value "version=$version"
           Write-Output "Building Clink $version (csproj $csproj, latest release $latest)"
 
+      # The dev version is only known after the step above (it needs the release and tag listings), which runs after the seeds step, so the
+      # check "the dev floor seed is strictly lower than the version" lives here, with the seed the seeds step found.
+      - name: Check the dev floor seed is below the version
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          MIN_DEV: ${{ steps.seeds.outputs.min_dev }}
+        run: |
+          . ./tools/lib/feed-publish-lib.ps1
+          Assert-FeedSeedBelowVersion -Channel dev -Seed $env:MIN_DEV -Version $env:VERSION
+
       # Self-contained (dist/sc, the portable Clink.exe) and framework-dependent (dist/fx, the installer's exe), separate obj/bin.
       - name: Publish both flavours
         shell: pwsh

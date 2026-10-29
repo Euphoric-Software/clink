@@ -334,5 +334,17 @@ internal static class UpdaterChannelTests
         Check.Null(Ask(new[] { new AppController.RunningClink(200, Session, null, "0.4.1") }), "an unreadable path");
         Check.Null(Ask(Array.Empty<AppController.RunningClink>()), "nothing else running");
         Check.Null(AppController.OlderRunningCopy(new[] { Other(Old, "0.4.1") }, Own, null, Pid, Session, null, false), "this exe's own version unreadable");
+
+        // the lock holder is probably not the old copy
+        Check.Null(Ask(new[] { Other(Old, "0.4.1"), Other(Own, "0.4.2", pid: 300) }), "an older copy plus a copy running from this very exe path");
+        Check.Null(Ask(new[] { Other(Own, "0.4.2", pid: 300), Other(Old, "0.4.1") }), "same-path copy listed first");
+        Check.Null(Ask(new[] { Other(Old, "0.4.1"), Other(@"C:\Other\Clink.exe", "0.4.2", pid: 300) }), "an older copy plus an equal-version copy");
+        Check.Null(Ask(new[] { Other(Old, "0.4.1"), Other(@"C:\Other\Clink.exe", "0.5.0", pid: 300) }), "an older copy plus a newer copy");
+        Check.NotNull(Ask(new[] { Other(Old, "0.4.1"), Other(@"C:\Other\Clink.exe", "0.4.2", pid: 300, session: 2) }), "an equal copy in another session does not count");
+        Check.NotNull(Ask(new[] { Other(Old, "0.4.1"), Other(@"C:\Other\Clink.exe", "0.3.0", pid: 300) }), "two older copies still name one");
+
+        // a restart (--after-pid) never names an older copy
+        Check.Null(AppController.OlderRunningCopy(new[] { Other(Old, "0.4.1") }, Own, own, Pid, Session, null, false, restart: true), "an --after-pid restart");
+        Check.NotNull(AppController.OlderRunningCopy(new[] { Other(Old, "0.4.1") }, Own, own, Pid, Session, null, false, restart: false), "not a restart");
     }
 }
