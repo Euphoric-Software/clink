@@ -403,3 +403,5 @@ SHCNE_ID
 SHCNF_FLAGS
 SHGetKnownFolderPath
 KNOWN_FOLDER_FLAG
+FindFirstFile
+FindClose

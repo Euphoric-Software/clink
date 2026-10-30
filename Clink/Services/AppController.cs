@@ -165,6 +165,9 @@ internal sealed partial class AppController : IDisposable
     private DateTime _clipRefusedAt = DateTime.MinValue;   // a clip turned down before any save started (not recording, --clip at startup)
     // Copium uploads in flight (UI thread); Announced: started by ShareLast, which reports a failure itself.
     private readonly Dictionary<ClipEntry, (Task<bool> Task, bool Announced)> _uploads = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>The clip is being uploaded to Copium now (from the clip list, the share hotkey, the tray or a toast: all go through the same upload record). UI thread.</summary>
+    internal bool IsUploading(ClipEntry entry) => _uploads.Keys.Any(e => ReferenceEquals(e, entry) || string.Equals(e.Path, entry.Path, StringComparison.OrdinalIgnoreCase));
     private readonly List<CancellationTokenSource> _uploadCancels = new();   // one per running clip upload (UI thread): the cloud kill switch cancels them
     private DateTime _lastClipAt = DateTime.MinValue;
     private int _startGen;
@@ -1341,10 +1344,17 @@ internal sealed partial class AppController : IDisposable
         catch (Exception ex) { Log.Warn("Could not open " + uri + ": " + ex.Message); }
     }
 
+    /// <summary>The "Don't show again" flags that Reset clears: the border notice and the delete clip question.</summary>
+    internal static void ClearDismissedFlags(Settings s)
+    {
+        s.CaptureBorderNoticeDismissed = false;
+        s.ClipDeleteConfirmDismissed = false;
+    }
+
     /// <summary>Brings back every notice the user dismissed with "Don't show again"; the border notice shows right away if it applies.</summary>
     public void ResetDismissedNotices()
     {
-        Settings.CaptureBorderNoticeDismissed = false;
+        ClearDismissedFlags(Settings);
         _borderNoticeShownThisRun = false;
         Settings.Save();
         Toasts.CloseKind("border");

@@ -163,6 +163,8 @@ internal sealed class Settings
     public bool AudioSetupSeen { get; set; }
     /// <summary>The user pressed "Don't show again" on the "yellow border" notice (the border could not be hidden). Until then it shows once per app launch; Reset in the settings clears it.</summary>
     public bool CaptureBorderNoticeDismissed { get; set; }
+    /// <summary>The user ticked "Do not ask again" in the delete-clip pop-up: a clip's Delete button goes straight to the Recycle Bin. Reset in the settings (Alerts) brings the pop-up back.</summary>
+    public bool ClipDeleteConfirmDismissed { get; set; }
     /// <summary>Archive (NAS / share / second drive): clips move there in the background after N days and/or when the local folder exceeds N GB (whichever first).</summary>
     public bool ArchiveEnabled { get; set; }
     public string? ArchivePath { get; set; }

@@ -487,6 +487,7 @@ internal static class SettingsImport
         || key.Equals(nameof(Settings.SeededHotkeyDefaults), StringComparison.OrdinalIgnoreCase)
         || key.Equals(nameof(Settings.ScreenshotEditor), StringComparison.OrdinalIgnoreCase)   // the editor's last-used colour and width
         || key.Equals(nameof(Settings.CaptureBorderNoticeDismissed), StringComparison.OrdinalIgnoreCase)
+        || key.Equals(nameof(Settings.ClipDeleteConfirmDismissed), StringComparison.OrdinalIgnoreCase)
         || key.Equals(nameof(Settings.CopiumTokenProtected), StringComparison.OrdinalIgnoreCase)
         // the account name and "linked by Sign in" follow the token, which is compared decrypted and labelled on its own
         || key.Equals(nameof(Settings.CopiumAccountName), StringComparison.OrdinalIgnoreCase)
