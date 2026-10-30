@@ -202,6 +202,7 @@ internal sealed partial class AppController : IDisposable
         Settings = settings;
         _ui = Dispatcher.CurrentDispatcher;
         Instance = this;
+        CopiumClient.UploadTooLarge += OnUploadTooLarge;
         Updater = updater;
         Toasts = new Toasts(settings, () => SelectedMonitor);
         Archive = new ArchiveService(settings, Library);
@@ -588,6 +589,7 @@ internal sealed partial class AppController : IDisposable
         else if (GameOnly) { Log.Info("Recording mode: only while a game or custom app runs"); PollGame(); }
         else StartEngine();
         Archive.Start();
+        ScheduleAccountRefresh();   // Copium account name / Copium+ read once, a few seconds from now, in the background
         ApplyStatusDot();
         if (!IsDev) Updater.StartBackgroundChecks();   // a --dev instance never contacts the update feed (and a build without one never contacts anything)
         // A downloaded update was skipped at startup (install failed earlier, read-only folder, elevated): tell the user, once per start.
@@ -2128,6 +2130,7 @@ internal sealed partial class AppController : IDisposable
         _cts.Cancel();
         try { _signIn?.Shutdown(); } catch (Exception ex) { Log.Warn("Exit: sign-in: " + ex.Message); }   // no network wait: a late approval is simply never stored
         _timer?.Stop();
+        CopiumClient.UploadTooLarge -= OnUploadTooLarge;
         SettingsImport.PendingChanged -= OnImportPending;
         SystemEvents.DisplaySettingsChanged -= OnDisplayChanged;
         SystemEvents.PowerModeChanged -= OnPowerModeChanged;

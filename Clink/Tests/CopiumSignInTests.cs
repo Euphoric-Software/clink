@@ -1567,6 +1567,366 @@ internal static class CopiumSignInTests
         Check.False(Enum.GetNames<ConsentContext>().Contains("Linked"), "the unused Linked context is gone (the welcome applies consent itself)");
     }
 
+    // ------------------------------------------------------------------ the startup account refresh (slice D)
+
+    [UnitTest]
+    public static void The_startup_refresh_updates_name_plus_and_verified_and_keeps_the_token()
+    {
+        using var r = Linked(viaConnect: true);
+        r.S.CopiumPlus = false;
+        r.Me = () => Json(HttpStatusCode.OK, MeJson(plus: true, name: "Renamed"));
+        Check.False(r.Session.Current.Verified);
+        Check.True(r.Session.RefreshAccountAsync(CancellationToken.None).Wait(Limit));
+        Check.Equal(1, r.Count("GET", "/api/me"));
+        Check.Equal(Token, r.Last("GET", "/api/me").Bearer);
+        Check.Equal("Renamed", r.S.CopiumAccountName);
+        Check.True(r.S.CopiumPlus);
+        Check.True(r.Session.Current.Verified);
+        Check.False(r.Session.Current.AccountCheckFailed);
+        Check.Equal("Renamed", r.Session.Current.Username);
+        Check.Equal(Token, r.S.CopiumToken);
+        Check.True(r.S.CopiumLinkedViaConnect);
+        Check.True(r.Saves > 0, "saved");
+    }
+
+    [UnitTest]
+    public static void A_failed_startup_refresh_only_sets_the_check_note_and_never_touches_the_token()
+    {
+        foreach (var code in new[] { HttpStatusCode.Unauthorized, HttpStatusCode.Forbidden, HttpStatusCode.InternalServerError, HttpStatusCode.TooManyRequests, HttpStatusCode.OK })
+        {
+            using var r = Linked(viaConnect: true);
+            r.S.CopiumPlus = true;
+            r.Me = () => Json(code, code == HttpStatusCode.OK ? "not json" : "{}");
+            string? protectedBefore = r.S.CopiumTokenProtected;
+            Check.False(r.Session.RefreshAccountAsync(CancellationToken.None).Result, code.ToString());
+            Check.True(r.Session.Current.AccountCheckFailed, code + ": the note");
+            Check.False(r.Session.Current.Verified);
+            Check.Equal(Token, r.S.CopiumToken, code + ": the token stays");
+            Check.Equal(protectedBefore, r.S.CopiumTokenProtected);
+            Check.True(r.S.CopiumLinkedViaConnect);
+            Check.Equal("Jason", r.S.CopiumAccountName);
+            Check.True(r.S.CopiumPlus, "Copium+ unchanged on a failure");
+            Check.Equal(0, r.Deletes, "nothing is revoked");
+        }
+        using var net = Linked(viaConnect: true);
+        net.Me = () => throw new HttpRequestException("offline");
+        Check.False(net.Session.RefreshAccountAsync(CancellationToken.None).Result);
+        Check.True(net.Session.Current.AccountCheckFailed);
+        Check.Equal(Token, net.S.CopiumToken);
+    }
+
+    [UnitTest]
+    public static void The_startup_refresh_sends_nothing_without_a_connect_token_or_with_sharing_off_or_in_a_dev_instance()
+    {
+        using (var pasted = Linked(viaConnect: false))
+        {
+            Check.False(pasted.Session.RefreshAccountAsync(CancellationToken.None).Result);
+            Check.Equal(0, pasted.Total, "a pasted token is not refreshed");
+        }
+        using (var none = new Rig())
+        {
+            Check.False(none.Session.RefreshAccountAsync(CancellationToken.None).Result);
+            Check.Equal(0, none.Total);
+        }
+        using (var off = Linked(viaConnect: true))
+        {
+            off.S.CloudSharingEnabled = false;
+            Check.False(off.Session.RefreshAccountAsync(CancellationToken.None).Result);
+            Check.Equal(0, off.Total, "no request when sharing is off");
+        }
+        using (var dev = Linked(viaConnect: true))
+        {
+            dev.Session.IsDevInstance = () => true;
+            dev.Session.DevKeepsToken = () => false;
+            Check.False(dev.Session.RefreshAccountAsync(CancellationToken.None).Result);
+            Check.Equal(0, dev.Total, "a dev instance without --dev-token");
+            dev.Session.DevKeepsToken = () => true;
+            Check.True(dev.Session.RefreshAccountAsync(CancellationToken.None).Result);
+            Check.Equal(1, dev.Total, "with --dev-token it reads");
+        }
+    }
+
+    [UnitTest]
+    public static void The_startup_refresh_is_cancelled_by_the_kill_switch_exit_and_sign_out_without_changing_anything()
+    {
+        foreach (int how in new[] { 0, 1, 2 })
+        {
+            using var r = Linked(viaConnect: true);
+            r.S.CopiumPlus = false;
+            r.HoldMe();
+            var task = Task.Run(() => r.Session.RefreshAccountAsync(CancellationToken.None));   // (as in production: off the test thread's context)
+            r.WaitFor(() => r.MeEntered.IsSet, "the /api/me request");
+            if (how == 0) { r.S.CloudSharingEnabled = false; r.Session.StopForCloudSharingOff(); }
+            else if (how == 1) r.Session.Shutdown();
+            else r.Session.SignOutAsync().Wait(Limit);
+            Check.True(task.Wait(Limit), "the refresh ended");
+            Check.False(task.Result);
+            Check.True(r.MeCancelled, "the request was cancelled");
+            Check.False(r.S.CopiumPlus, "nothing from the late answer was applied");
+            Check.False(r.Session.Current.AccountCheckFailed, "a cancel is not a failed check");
+            if (how != 2) Check.Equal(Token, r.S.CopiumToken, "the token stays");
+        }
+        using var caller = Linked(viaConnect: true);
+        caller.HoldMe();
+        using var cts = new CancellationTokenSource();
+        var t = Task.Run(() => caller.Session.RefreshAccountAsync(cts.Token));
+        caller.WaitFor(() => caller.MeEntered.IsSet, "the /api/me request");
+        cts.Cancel();
+        Check.True(t.Wait(Limit));
+        Check.False(t.Result);
+        Check.False(caller.Session.Current.AccountCheckFailed);
+    }
+
+    [UnitTest]
+    public static void A_startup_refresh_answer_for_a_token_replaced_meanwhile_is_dropped()
+    {
+        using var r = Linked(viaConnect: true);
+        r.HoldMe();
+        var task = Task.Run(() => r.Session.RefreshAccountAsync(CancellationToken.None));   // (as in production: off the test thread's context)
+        r.WaitFor(() => r.MeEntered.IsSet, "the /api/me request");
+        r.Session.SaveManualToken(Manual);
+        Check.True(task.Wait(Limit));
+        Check.False(task.Result);
+        Check.Equal(Manual, r.S.CopiumToken);
+        Check.False(r.S.CopiumLinkedViaConnect);
+        Check.False(r.Session.Current.Verified);
+    }
+
+    [UnitTest]
+    public static void The_controller_schedules_the_startup_refresh_only_for_a_connect_token_with_sharing_on()
+    {
+        Settings Prepared(Action<Settings> tweak) { var s = Settings.FromJson("{}"); s.SetCopiumToken(Token, "Old", viaConnect: true); tweak(s); return s; }
+
+        using (var a = new AppRig(load: _ => Prepared(s => s.CopiumPlus = false), setup: app => app.StartupAccountRefreshDelay = TimeSpan.FromMilliseconds(20)))
+        {
+            a.App.ScheduleAccountRefresh();
+            Check.NotNull(a.App.StartupAccountRefresh);
+            var task = a.App.StartupAccountRefresh!;
+            AppRig.Pump(() => task.IsCompleted, "the startup refresh");
+            a.Settle();
+            Check.Equal(1, a.Count("GET", "/api/me"));
+            Check.Equal("Jason", a.S.CopiumAccountName);
+            Check.True(a.S.CopiumPlus);
+            Check.True(a.App.SignIn.Current.Verified);
+            a.App.ScheduleAccountRefresh();
+            Check.True(ReferenceEquals(task, a.App.StartupAccountRefresh), "once per launch");
+        }
+        using (var off = new AppRig(load: _ => Prepared(s => s.CloudSharingEnabled = false)))
+        {
+            off.App.ScheduleAccountRefresh();
+            Check.Null(off.App.StartupAccountRefresh);
+            Check.Equal(0, off.Total);
+        }
+        using (var pasted = new AppRig(load: _ => { var s = Settings.FromJson("{}"); s.SetCopiumToken(Manual); return s; }))
+        {
+            pasted.App.ScheduleAccountRefresh();
+            Check.Null(pasted.App.StartupAccountRefresh);
+        }
+        using (var exiting = new AppRig(load: _ => Prepared(_ => { }), setup: app => app.StartupAccountRefreshDelay = TimeSpan.FromMinutes(5)))
+        {
+            exiting.App.ScheduleAccountRefresh();
+            var task = exiting.App.StartupAccountRefresh!;
+            exiting.App.Dispose();   // exit during the wait: cancelled, no request
+            AppRig.Pump(() => task.IsCompleted, "the refresh to end at exit");
+            Check.Equal(0, exiting.Total);
+        }
+    }
+
+    [UnitTest]
+    public static void A_refresh_raises_no_completed_or_welcome_and_keeps_a_shown_failure()
+    {
+        using var r = Linked(viaConnect: true);
+        r.Session.Start("PC");   // signed in via Connect already: refused, shown as Failed
+        var failed = r.Session.Current;
+        Check.Equal(SignInStatus.Failed, failed.Status);
+        Check.True(failed.Failure != null);
+        r.Idle();
+        Check.True(r.Session.RefreshAccountAsync(CancellationToken.None).Wait(Limit));
+        var after = r.Session.Current;
+        Check.Equal(SignInStatus.Failed, after.Status);
+        Check.Equal(failed.Failure, after.Failure);
+        Check.Equal(failed.Message, after.Message);
+        Check.True(after.Verified);
+        Check.Equal(0, r.CompletedCount);
+        Check.Equal(0, r.Welcomes);
+
+        using var plain = Linked(viaConnect: true);
+        Check.True(plain.Session.RefreshAccountAsync(CancellationToken.None).Wait(Limit));
+        Check.Equal(SignInStatus.SignedIn, plain.Session.Current.Status);
+        Check.Equal(0, plain.CompletedCount, "a refresh is not a sign-in");
+        Check.Equal(0, plain.Welcomes);
+    }
+
+    [UnitTest]
+    public static void A_refresh_that_runs_over_its_limit_is_a_failed_check_and_keeps_the_token()
+    {
+        using var r = Linked(viaConnect: true);
+        r.Session.RefreshLimitOverride = TimeSpan.FromMilliseconds(80);
+        r.HoldMe();
+        r.S.CopiumPlus = true;
+        string? protectedBefore = r.S.CopiumTokenProtected;
+        var task = Task.Run(() => r.Session.RefreshAccountAsync(CancellationToken.None));
+        Check.True(task.Wait(Limit), "the refresh ended by its own limit");
+        Check.False(task.Result);
+        Check.True(r.MeCancelled, "the request was cancelled");
+        Check.True(r.Session.Current.AccountCheckFailed, "our own limit is a failed check");
+        Check.Equal(Token, r.S.CopiumToken);
+        Check.Equal(protectedBefore, r.S.CopiumTokenProtected);
+        Check.True(r.S.CopiumLinkedViaConnect);
+        Check.True(r.S.CopiumPlus);
+        Check.Equal(0, r.Deletes, "nothing is revoked");
+    }
+
+    [UnitTest]
+    public static void A_refresh_sends_nothing_while_a_sign_in_run_is_active()
+    {
+        using var r = Linked(viaConnect: false);
+        r.Session.Start("PC");   // a pasted token does not block a sign-in
+        r.WaitWaiting();
+        r.S.CopiumLinkedViaConnect = true;   // the other gates now pass: only the active run holds the refresh back
+        int before = r.Count("GET", "/api/me");
+        Check.False(r.Session.RefreshAccountAsync(CancellationToken.None).Result);
+        Check.Equal(before, r.Count("GET", "/api/me"), "no /api/me request during a run");
+        r.Session.Cancel();
+        r.Idle();
+    }
+
+    private static Settings LinkedSettings() { var s = Settings.FromJson("{}"); s.SetCopiumToken(Token, "Old", viaConnect: true); return s; }
+
+    [UnitTest]
+    public static void The_account_is_read_again_every_day_and_not_with_sharing_off_or_after_exit()
+    {
+        using var gate = new SemaphoreSlim(0);
+        int calls = 0;
+        using var a = new AppRig(load: _ => LinkedSettings(), setup: app =>
+        {
+            app.StartupAccountRefreshDelay = TimeSpan.Zero;
+            app.RefreshDelay = async (_, ct) => { if (Interlocked.Increment(ref calls) > 1) await gate.WaitAsync(ct); };   // the first wait is the startup one
+        });
+        a.App.ScheduleAccountRefresh();
+        var startup = a.App.StartupAccountRefresh!;
+        AppRig.Pump(() => startup.IsCompleted, "the startup refresh");
+        Check.Equal(1, a.Count("GET", "/api/me"));
+        Check.Equal(0, Volatile.Read(ref a.App.DailyRefreshes));
+        gate.Release();
+        AppRig.Pump(() => a.Count("GET", "/api/me") == 2, "the first daily refresh");
+        gate.Release();
+        AppRig.Pump(() => a.Count("GET", "/api/me") == 3, "the second daily refresh");
+        a.S.CloudSharingEnabled = false;   // the kill switch: the next turn sends nothing
+        gate.Release();
+        AppRig.Pump(() => Volatile.Read(ref a.App.DailyRefreshes) == 3, "the turn with sharing off");
+        Check.Equal(3, a.Count("GET", "/api/me"), "nothing is sent with sharing off");
+        var loop = a.App.DailyAccountRefresh!;
+        a.App.Dispose();   // exit: the loop ends and no further request goes out
+        AppRig.Pump(() => loop.IsCompleted, "the daily loop to end at exit");
+        gate.Release();
+        Check.Equal(3, a.Count("GET", "/api/me"));
+    }
+
+    [UnitTest]
+    public static void The_daily_loop_exists_without_a_token_and_serves_a_later_sign_in()
+    {
+        using var gate = new SemaphoreSlim(0);
+        using var a = new AppRig(load: _ => Settings.FromJson("{}"), setup: app =>
+        {
+            app.StartupAccountRefreshDelay = TimeSpan.Zero;
+            app.RefreshDelay = async (_, ct) => await gate.WaitAsync(ct);
+        });
+        a.App.ScheduleAccountRefresh();
+        Check.Null(a.App.StartupAccountRefresh);   // the one-shot keeps its launch gate
+        var loop = a.App.DailyAccountRefresh;
+        Check.NotNull(loop);
+        gate.Release();
+        AppRig.Pump(() => Volatile.Read(ref a.App.DailyRefreshes) == 1, "the turn without a token");
+        Check.Equal(0, a.Total);
+        a.S.SetCopiumToken(Token, "Old", viaConnect: true);   // signed in after launch
+        gate.Release();
+        AppRig.Pump(() => a.Count("GET", "/api/me") == 1, "the turn after the sign-in");
+        Check.Equal(1, a.Count("GET", "/api/me"));
+        a.S.CloudSharingEnabled = false;
+        gate.Release();
+        AppRig.Pump(() => Volatile.Read(ref a.App.DailyRefreshes) == 3, "the turn with sharing off");
+        Check.Equal(1, a.Count("GET", "/api/me"), "nothing is sent with sharing off");
+        a.App.Dispose();
+        AppRig.Pump(() => loop!.IsCompleted, "the daily loop to end at exit");
+        gate.Release();
+        Check.Equal(1, a.Count("GET", "/api/me"));
+    }
+
+    [UnitTest]
+    public static void A_too_large_answer_triggers_one_refresh_per_ten_minutes()
+    {
+        var now = new DateTime(2026, 10, 30, 12, 0, 0, DateTimeKind.Utc);
+        using var a = new AppRig(load: _ => LinkedSettings(), setup: app => app.UtcNowForRefresh = () => now);
+        void Fire() { a.App.OnUploadTooLarge(); a.Settle(); }
+        Fire();
+        var first = a.App.TooLargeRefresh;
+        Check.NotNull(first);
+        AppRig.Pump(() => first!.IsCompleted, "the refresh after a 413");
+        Check.Equal(1, a.Count("GET", "/api/me"));
+        Check.Equal("Jason", a.S.CopiumAccountName);
+        now = now.AddMinutes(9);
+        Fire(); Fire();
+        Check.True(ReferenceEquals(first, a.App.TooLargeRefresh), "inside the window: no second refresh");
+        Check.Equal(1, a.Count("GET", "/api/me"));
+        now = now.AddMinutes(2);
+        Fire();
+        var second = a.App.TooLargeRefresh!;
+        Check.False(ReferenceEquals(first, second));
+        AppRig.Pump(() => second.IsCompleted, "the next refresh");
+        Check.Equal(2, a.Count("GET", "/api/me"));
+        Check.Equal(Token, a.S.CopiumToken);
+    }
+
+    [UnitTest]
+    public static void The_client_raises_the_too_large_event_for_a_413_only_and_the_upload_still_fails()
+    {
+        using var dir = new TempDir();
+        string file = Path.Combine(dir.Path, "shot.png");
+        File.WriteAllBytes(file, new byte[] { 1, 2, 3 });
+        int raised = 0;
+        Action handler = () => Interlocked.Increment(ref raised);
+        var old = CopiumClient.HttpOverride;
+        CopiumClient.UploadTooLarge += handler;
+        try
+        {
+            // (only the 413 counts: the total stays 1 after the other two)
+            foreach (var (code, expected) in new[] { (HttpStatusCode.RequestEntityTooLarge, 1), (HttpStatusCode.TooManyRequests, 1), (HttpStatusCode.InternalServerError, 1) })
+            {
+                CopiumClient.HttpOverride = new HttpClient(new FuncHandler(_ => Json(code, "{}")));
+                var t = CopiumClient.UploadAsync(Token, file, "t", null, CancellationToken.None);
+                Check.True(((IAsyncResult)t).AsyncWaitHandle.WaitOne(Limit));
+                Check.True(t.IsFaulted, code + " fails the upload as before");
+                Check.Equal(expected, raised, code.ToString());
+            }
+        }
+        finally { CopiumClient.UploadTooLarge -= handler; CopiumClient.HttpOverride = old; }
+    }
+
+    [UnitTest]
+    public static void An_upload_names_clink_in_the_client_field_and_the_user_agent()
+    {
+        using var dir = new TempDir();
+        string file = Path.Combine(dir.Path, "shot.png");
+        File.WriteAllBytes(file, new byte[] { 1, 2, 3 });
+        string? body = null, agent = null;
+        var handler = new FuncHandler(req =>
+        {
+            body = req.Content!.ReadAsStringAsync().Result;
+            agent = req.Headers.UserAgent.ToString();
+            return Json(HttpStatusCode.OK, """{"id":"a1","link":"https://copium.pics/a1","url":"https://copium.pics/a1.png"}""");
+        });
+        var old = CopiumClient.HttpOverride;
+        CopiumClient.HttpOverride = new HttpClient(handler);
+        try { CopiumClient.UploadAsync(Token, file, "t", null, CancellationToken.None).Wait(Limit); }
+        finally { CopiumClient.HttpOverride = old; }
+        Check.Contains(body!, "name=client");
+        Check.Contains(body!, "\r\n\r\nclink\r\n");
+        Check.Contains(body!, "name=title");
+        Check.True(System.Text.RegularExpressions.Regex.IsMatch(agent!, @"^Clink/\d+\.\d+\.\d+$"), "User-Agent: " + agent);
+        Check.Equal("Clink/" + CopiumConnect.AppVersion(), agent);
+    }
+
     private sealed class FuncHandler : HttpMessageHandler
     {
         private readonly Func<HttpRequestMessage, HttpResponseMessage> _f;

@@ -94,6 +94,114 @@ internal sealed partial class AppController
     /// </summary>
     internal void SaveManualCopiumToken(string? token) => SignIn.SaveManualToken(token);
 
+    // ------------------------------------------------------------------ the startup account refresh
+
+    /// <summary>How long after startup the account is read once (test seam).</summary>
+    internal TimeSpan StartupAccountRefreshDelay { get; set; } = TimeSpan.FromSeconds(8);
+
+    /// <summary>The scheduled startup refresh (test seam: await it).</summary>
+    internal Task? StartupAccountRefresh { get; private set; }
+
+    /// <summary>
+    /// Once per launch, a few seconds after startup: refreshes the account name, Copium+ and verified from /api/me for a token that came from
+    /// "Sign in with Copium". Nothing is scheduled with cloud sharing off, with no Connect token, or in a --dev instance without --dev-token.
+    /// Runs in the background, cancelled by exit. A failure only sets the card's "couldn't check" note; the token is never removed. UI thread.
+    /// </summary>
+    internal void ScheduleAccountRefresh()
+    {
+        if (DailyAccountRefresh != null || IsShuttingDown) return;
+        var session = SignIn;   // created here, on the UI thread
+        var ct = _cts.Token;
+        var delay = StartupAccountRefreshDelay;
+        var wait = RefreshDelay;
+        var daily = DailyAccountRefreshInterval;
+        var startup = StartupAccountRefresh;
+        if (startup == null && CanRefreshAccount())   // the one-shot keeps its launch gate
+        {
+            startup = StartupAccountRefresh = Task.Run(async () =>
+            {
+                try
+                {
+                    await wait(delay, ct).ConfigureAwait(false);
+                    if (!IsShuttingDown) await session.RefreshAccountAsync(ct).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) { }
+                catch (Exception ex) { Log.Warn("startup account check: " + ex.GetType().Name); }
+            });
+        }
+        // Then once a day while Clink runs, started at every launch: a user who signs in later is covered too. The gates (sharing on,
+        // a Connect token, not a --dev instance without --dev-token) are checked on each turn and the turn is skipped when they fail;
+        // RefreshAccountAsync also skips while a sign-in runs. A failed check is tried again at the next turn.
+        DailyAccountRefresh = Task.Run(async () =>
+        {
+            try
+            {
+                if (startup != null) await startup.ConfigureAwait(false);
+                while (!IsShuttingDown)
+                {
+                    await wait(daily, ct).ConfigureAwait(false);
+                    if (IsShuttingDown) break;
+                    Interlocked.Increment(ref DailyRefreshes);
+                    if (!CanRefreshAccount()) continue;
+                    await session.RefreshAccountAsync(ct).ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex) { Log.Warn("daily account check: " + ex.GetType().Name); }
+        });
+    }
+
+    /// <summary>The loop of the daily refreshes (test seam: it ends at exit / restart).</summary>
+    internal Task? DailyAccountRefresh { get; private set; }
+
+    /// <summary>Test seam: the wait between refreshes (the real clock in production).</summary>
+    internal Func<TimeSpan, CancellationToken, Task> RefreshDelay { get; set; } = (d, ct) => Task.Delay(d, ct);
+
+    /// <summary>How long after a refresh the next one goes out while Clink runs (test seam).</summary>
+    internal TimeSpan DailyAccountRefreshInterval { get; set; } = TimeSpan.FromHours(24);
+
+    /// <summary>How many daily turns started (test seam).</summary>
+    internal int DailyRefreshes;   // (Interlocked)
+
+    /// <summary>Not before this long after the last 413-triggered refresh (test seam).</summary>
+    internal TimeSpan TooLargeRefreshDebounce { get; set; } = TimeSpan.FromMinutes(10);
+
+    /// <summary>Test seam: the clock of the 413 debounce.</summary>
+    internal Func<DateTime> UtcNowForRefresh { get; set; } = () => DateTime.UtcNow;
+
+    private DateTime _lastTooLargeRefresh = DateTime.MinValue;
+
+    /// <summary>The last 413-triggered refresh (test seam: await it).</summary>
+    internal Task? TooLargeRefresh { get; private set; }
+
+    /// <summary>Same gates as the startup refresh: a Connect token, sharing on, not a --dev instance without --dev-token.</summary>
+    private bool CanRefreshAccount() =>
+        Settings.CopiumLinkedViaConnect && !string.IsNullOrWhiteSpace(Settings.CopiumToken) && Settings.CloudSharingEnabled && (!IsDev || DevToken);
+
+    /// <summary>
+    /// Copium answered an upload with 413 (raised on any thread): the plan may have changed, so the account is read once, at most once per
+    /// 10 minutes. Never blocks or retries the upload; a failure only sets the card's note (the token is kept).
+    /// </summary>
+    internal void OnUploadTooLarge()
+    {
+        if (IsShuttingDown || _ui.HasShutdownStarted) return;
+        _ui.BeginInvoke(() =>
+        {
+            if (IsShuttingDown || !CanRefreshAccount()) return;
+            var now = UtcNowForRefresh();
+            if (now - _lastTooLargeRefresh < TooLargeRefreshDebounce) return;
+            _lastTooLargeRefresh = now;
+            var session = SignIn;
+            var ct = _cts.Token;
+            TooLargeRefresh = Task.Run(async () =>
+            {
+                try { await session.RefreshAccountAsync(ct).ConfigureAwait(false); }
+                catch (OperationCanceledException) { }
+                catch (Exception ex) { Log.Warn("account check after 413: " + ex.GetType().Name); }
+            });
+        });
+    }
+
     // ------------------------------------------------------------------ the welcome
 
     /// <summary>The welcome's box when it opens (D1: ticked until sharing was agreed to).</summary>

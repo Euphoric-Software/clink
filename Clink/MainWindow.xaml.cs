@@ -89,6 +89,7 @@ public partial class MainWindow : Window
         _app.ClipSaved += _ => Dispatcher.BeginInvoke(() => Clips.Refresh());
         _app.ShowRequested += () => Dispatcher.BeginInvoke(ShowFromTray);
         _app.CopiumSetupRequested += () => Dispatcher.BeginInvoke(FocusTokenBox);   // after ShowRequested (it is raised first): the window is up by then
+        _app.CopiumWelcomeNeeded += ShowCopiumWelcome;   // the UI thread: the first sign-in finished
         _app.CloudSharingChanged += () => Dispatcher.BeginInvoke(UpdateCloudUi);
         _app.SignInChanged += state => RenderCopiumCard(state);   // the UI thread, the latest state
         _app.Consent.ConsentChanged += () => Dispatcher.BeginInvoke(SyncScreenshotChecks);
@@ -1167,6 +1168,14 @@ public partial class MainWindow : Window
     {
         // A click on the version while the popup is open closes it (on mouse-down); the mouse-up must not open it again.
         if (DateTime.UtcNow - _versionPopupClosed < TimeSpan.FromMilliseconds(200)) return;
+        OpenVersionPopup();
+    }
+
+    /// <summary>UI Automation / a screen reader invoked the version number: the same popup.</summary>
+    private void Version_Invoked(object? sender, EventArgs e) { if (!VersionPopup.IsOpen) OpenVersionPopup(); }
+
+    private void OpenVersionPopup()
+    {
         var up = _app.Updater;
         VersionPopupText.Text = $"Clink v{up.VersionDisplay}" + (up.Current.IsDevBuild ? " · dev build" : "");
         bool wasLoading = _loading;
@@ -1180,7 +1189,77 @@ public partial class MainWindow : Window
             ? "Use the latest build from the dev branch instead of the latest release. Dev builds may be unstable; untick to go back to the latest release."
             : NoUpdatesText;
         VersionCheckButton.ToolTip = canCheck ? null : NoUpdatesText;
+        RefreshCopiumPopup();
         VersionPopup.IsOpen = true;
+    }
+
+    // ------------------------------------------------------------------ the version popup's Copium section
+
+    private bool _syncingPopupCopium;   // the popup's box is being set from the Screenshots tab's: not a user choice
+
+    /// <summary>Fills the popup's Copium section from <see cref="CopiumPopupModel"/>; the toggle mirrors the Screenshots tab's box.</summary>
+    private void RefreshCopiumPopup()
+    {
+        var s = _app.Settings;
+        var m = CopiumPopupModel.From(_copiumShown ?? _app.SignIn.Current, s.CloudSharingEnabled, ScreenshotUploadCheck.IsChecked == true);
+        _syncingPopupCopium = true;
+        try
+        {
+            CopiumPopupLine.Visibility = Vis(m.Line != null);
+            CopiumPopupLine.Text = m.Line ?? "";
+            CopiumPopupToggle.Visibility = Vis(m.ToggleVisible);
+            CopiumPopupToggle.Content = CopiumPopupModel.ToggleLabel;
+            CopiumPopupToggle.IsEnabled = m.ToggleEnabled && ScreenshotUploadCheck.IsEnabled;
+            CopiumPopupToggle.IsChecked = m.ToggleChecked;
+            CopiumPopupLink.Visibility = Vis(m.LinkVisible);
+            CopiumPopupLink.Content = CopiumPopupModel.SignInLink;
+        }
+        finally { _syncingPopupCopium = false; }
+    }
+
+    /// <summary>The popup's box = the Screenshots tab's box: ticking it goes through that box's handler (consent pop-up, kill switch, setting, Save).</summary>
+    private void CopiumPopupToggle_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_loading || _syncingPopupCopium || !CopiumPopupToggle.IsEnabled) return;
+        bool on = CopiumPopupToggle.IsChecked == true;
+        if (on) VersionPopup.IsOpen = false;   // the consent pop-up may come up
+        if (ScreenshotUploadCheck.IsChecked != on) ScreenshotUploadCheck.IsChecked = on;   // raises ScreenshotOptionChanged
+        else RefreshCopiumPopup();
+    }
+
+    /// <summary>"Sign in with Copium" in the popup only shows the App tab's card (it never starts a sign-in).</summary>
+    private void CopiumPopupLink_Click(object sender, RoutedEventArgs e)
+    {
+        VersionPopup.IsOpen = false;
+        FocusTokenBox();
+    }
+
+    // ------------------------------------------------------------------ the welcome
+
+    private CopiumWelcomeWindow? _welcome;
+
+    /// <summary>The controller's CopiumWelcomeNeeded: the main window forward first (best effort), then the welcome. Its answer reaches ApplyWelcome once.</summary>
+    private void ShowCopiumWelcome()
+    {
+        if (_welcome != null || _app.IsShuttingDown || _app.Settings.CopiumWelcomeShown) return;
+        try { ShowFromTray(); }
+        catch (Exception ex) { Log.Warn("welcome: main window: " + ex.Message); }
+        var model = new CopiumWelcomeModel(_app.WelcomeInitialAutoUpload, _app.ApplyWelcome);
+        try
+        {
+            var w = new CopiumWelcomeWindow(model, _app.SignIn.Current.Username, () => _app.IsShuttingDown);
+            if (IsVisible) { w.Owner = this; w.WindowStartupLocation = WindowStartupLocation.CenterOwner; }
+            else w.ShowInTaskbar = true;   // no visible owner: it must not be buried without a taskbar button
+            w.Closed += (_, _) => { if (ReferenceEquals(_welcome, w)) _welcome = null; };
+            _welcome = w;
+            w.Show();
+        }
+        catch (Exception ex)
+        {
+            _welcome = null;
+            Log.Error("welcome window", ex);
+            model.NotNow();   // never left unanswered
+        }
     }
 
     private void VersionPopup_Closed(object? sender, EventArgs e) => _versionPopupClosed = DateTime.UtcNow;
@@ -1556,7 +1635,7 @@ public partial class MainWindow : Window
     {
         if (tb.Text == text) return;
         tb.Text = text;
-        if (text.Length == 0) return;
+        if (text.Length == 0 || !tb.IsVisible || !AutomationPeer.ListenerExists(AutomationEvents.LiveRegionChanged)) return;   // nobody listening / not shown: no peer to build
         try { (UIElementAutomationPeer.FromElement(tb) ?? UIElementAutomationPeer.CreatePeerForElement(tb))?.RaiseAutomationEvent(AutomationEvents.LiveRegionChanged); }
         catch (Exception ex) { Log.Warn("live region: " + ex.Message); }
     }
@@ -1749,6 +1828,7 @@ public partial class MainWindow : Window
         ScreenshotUploadCheck.IsEnabled = linked && cloud;
         ScreenshotTokenHint.Visibility = linked || !cloud ? Visibility.Collapsed : Visibility.Visible;
         ScreenshotCopyLinkCheck.IsEnabled = linked && cloud && ScreenshotUploadCheck.IsChecked == true;
+        if (VersionPopup.IsOpen) RefreshCopiumPopup();   // the popup's box follows this tab's
         ScreenshotHotkeyHint.Text = (keys != null ? $"Hotkey: {keys} takes a screenshot. " : "No hotkey is set for screenshots. ")
             + (editKeys != null ? $"{editKeys} edits the last one. " : "No hotkey is set for editing the last one. ")
             + "The defaults are PrintScreen and Shift+PrintScreen. Change them under Capture → Hotkeys. "

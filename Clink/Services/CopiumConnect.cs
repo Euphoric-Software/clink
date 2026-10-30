@@ -143,7 +143,8 @@ internal static class CopiumConnect
         return Clean(sb.ToString(), MaxDeviceLength);
     }
 
-    private static string AppVersion()
+    /// <summary>The three-part version for the <c>Clink/x.y.z</c> User-Agent (Connect requests and uploads).</summary>
+    internal static string AppVersion()
     {
         var v = typeof(CopiumConnect).Assembly.GetName().Version;
         return v == null ? "0" : v.ToString(3);

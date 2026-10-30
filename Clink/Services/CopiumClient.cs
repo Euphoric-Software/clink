@@ -162,8 +162,10 @@ internal static class CopiumClient
         fileContent.Headers.ContentType = new MediaTypeHeaderValue(ContentTypeFor(path));
         content.Add(fileContent, "file", Path.GetFileName(path));
         if (!string.IsNullOrWhiteSpace(title)) content.Add(new StringContent(title), "title");
+        content.Add(new StringContent("clink"), "client");   // Copium's upload-source.js reads the multipart field "client" (an analytics label only)
 
         using var req = new HttpRequestMessage(HttpMethod.Post, endpoint);
+        req.Headers.UserAgent.Add(new ProductInfoHeaderValue("Clink", CopiumConnect.AppVersion()));   // the ^Clink/ rule of the same file
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Trim());
         req.Content = content;
 
@@ -191,6 +193,7 @@ internal static class CopiumClient
         }
         // Redirects are never followed (the token would go with them): a 3xx is an error.
         if (code >= 300 && code <= 399) throw new InvalidOperationException($"Copium sent an unexpected redirect (HTTP {code})");
+        if (code == 413) RaiseTooLarge();
         if (code < 200 || code > 299) throw new CopiumHttpException(code, ErrorMessage(code, body, noun), TryError(body));
         JsonDocument doc;
         try { doc = JsonDocument.Parse(body); }
@@ -223,6 +226,18 @@ internal static class CopiumClient
             string Safe(string value) => IsHttpsUrl(value, out _) ? value : "";
             return new CopiumUpload(Get("id"), link, Safe(Get("url")), Safe(Get("pageUrl")), Safe(Get("thumbUrl")) is { Length: > 0 } th ? th : null, size);
         }
+    }
+
+    /// <summary>
+    /// Copium answered an upload with 413 "too large" (any thread): the plan may have changed, so the controller re-reads the account.
+    /// Fire and forget; a handler that throws never affects the upload, which fails with its own message as before.
+    /// </summary>
+    internal static event Action? UploadTooLarge;
+
+    private static void RaiseTooLarge()
+    {
+        try { UploadTooLarge?.Invoke(); }
+        catch (Exception ex) { Log.Warn("copium: 413 handler failed: " + ex.GetType().Name); }
     }
 
     /// <summary>One sentence for a failed upload: what the status means, with Copium's own error text (or the status code) in brackets.</summary>

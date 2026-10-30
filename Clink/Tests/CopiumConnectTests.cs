@@ -595,6 +595,27 @@ internal static class CopiumConnectTests
     }
 
     [UnitTest]
+    public static void An_import_that_keeps_our_token_keeps_our_copium_plus_with_it()
+    {
+        string theirs = """{ "CopiumTokenProtected": "THEIRS", "CopiumPlus": true, "Fps": 120 }""";
+        string ours = """{ "CopiumTokenProtected": "OURS", "CopiumPlus": false }""";
+        using (var doc = JsonDocument.Parse(SettingsImport.KeepOurOwn(theirs, ours, keepOurToken: true)))
+        {
+            Check.Equal("OURS", doc.RootElement.GetProperty("CopiumTokenProtected").GetString());
+            Check.False(doc.RootElement.GetProperty("CopiumPlus").GetBoolean(), "their Copium+ does not ride in on our token");
+            Check.Equal(120, doc.RootElement.GetProperty("Fps").GetInt32());
+        }
+        using (var doc = JsonDocument.Parse(SettingsImport.KeepOurOwn("""{ "CopiumPlus": false }""", """{ "CopiumTokenProtected": "OURS", "CopiumPlus": true }""", keepOurToken: true)))
+            Check.True(doc.RootElement.GetProperty("CopiumPlus").GetBoolean(), "ours stays");
+        // their token is taken: their flag comes with it
+        using (var doc = JsonDocument.Parse(SettingsImport.KeepOurOwn(theirs, ours, keepOurToken: false)))
+            Check.True(doc.RootElement.GetProperty("CopiumPlus").GetBoolean());
+        // we have no flag of our own: theirs is not left behind
+        using (var doc = JsonDocument.Parse(SettingsImport.KeepOurOwn(theirs, """{ "CopiumTokenProtected": "OURS" }""", keepOurToken: true)))
+            Check.False(doc.RootElement.TryGetProperty("CopiumPlus", out _));
+    }
+
+    [UnitTest]
     public static void A_difference_only_in_the_new_keys_is_no_difference_to_offer()
     {
         var a = Settings.FromJson("{}");
@@ -610,6 +631,25 @@ internal static class CopiumConnectTests
         Check.Equal(0, SettingsImport.Differences(a.ToJson(), b.ToJson()).Count, "same token: the display cache alone offers nothing");
         b.CopiumToken = Token + "X";
         Check.Equal(new[] { "Copium token" }, SettingsImport.Differences(a.ToJson(), b.ToJson()).ToArray());
+    }
+
+    [UnitTest]
+    public static void An_unusable_incoming_token_keeps_our_copium_plus_so_it_is_no_difference_to_offer()
+    {
+        var ours = Settings.FromJson("{}");
+        ours.CopiumToken = Token;
+        ours.CopiumLinkedViaConnect = true;
+        ours.CopiumPlus = true;
+        var theirs = Settings.FromJson("{}");
+        theirs.CopiumTokenProtected = Convert.ToBase64String(new byte[] { 1, 2, 3 });   // protected for somebody else
+        theirs.CopiumPlus = false;
+        Check.True(SettingsImport.IsTokenUnusable(theirs));
+        Check.Equal(0, SettingsImport.Differences(ours.ToJson(), theirs.ToJson()).Count, "our token stays, so does its Copium+ flag");
+        // a real difference elsewhere is offered, without a Copium+ line
+        theirs.Codec = ours.Codec == "hevc" ? "h264" : "hevc";
+        var labels = SettingsImport.Differences(ours.ToJson(), theirs.ToJson());
+        Check.False(labels.Contains("Copium+"));
+        Check.True(labels.Count > 0);
     }
 
     // ------------------------------------------------------------------ secrets in ToString, token follows account

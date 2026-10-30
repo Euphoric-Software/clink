@@ -47,7 +47,7 @@ internal sealed class CopiumCardModel
     internal const string CleanupUrl = "https://copium.pics/sharex";
 
     private const string IsolateStart = "\u2068", IsolateEnd = "\u2069";
-    private static string Iso(string s) => IsolateStart + s + IsolateEnd;
+    internal static string Iso(string s) => IsolateStart + s + IsolateEnd;
 
     // ---- the panel
     public CopiumPanel Panel { get; init; }

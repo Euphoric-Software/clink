@@ -516,6 +516,8 @@ internal static class SettingsImport
         // The consent is ours (IsOwnKey): the automatic upload is judged against it, not against the other copy's yes.
         theirs.CopiumConsent = ours.CopiumConsent;
         if (!theirs.CopiumConsent) theirs.ScreenshotUpload = false;
+        // As an import would (KeepOurOwn with keepOurToken): their token is unusable here, so our linked token stays and so does its Copium+ flag.
+        if (IsTokenUnusable(theirs)) theirs.CopiumPlus = ours.CopiumPlus;
         KeepOurNetworkPaths(ours, theirs);   // as an import would: a network folder is not taken over, so it is no difference to offer
         var a = ours.ToElement().EnumerateObject().ToDictionary(p => p.Name, p => p.Value, StringComparer.OrdinalIgnoreCase);
         var b = theirs.ToElement().EnumerateObject().ToDictionary(p => p.Name, p => p.Value, StringComparer.OrdinalIgnoreCase);
@@ -771,8 +773,8 @@ internal static class SettingsImport
 
         if (keepOurToken)
         {
-            // the token and what describes it (the account name, whether Sign in made it) stay ours together
-            foreach (string token in new[] { nameof(Settings.CopiumTokenProtected), nameof(Settings.CopiumAccountName), nameof(Settings.CopiumLinkedViaConnect) })
+            // the token and what describes it (the account name, whether Sign in made it, its Copium+ flag) stay ours together
+            foreach (string token in new[] { nameof(Settings.CopiumTokenProtected), nameof(Settings.CopiumAccountName), nameof(Settings.CopiumLinkedViaConnect), nameof(Settings.CopiumPlus) })
             {
                 foreach (string key in t.Select(p => p.Key).Where(k => k.Equals(token, StringComparison.OrdinalIgnoreCase)).ToList()) t.Remove(key);
                 if (Find(o, token) is { Value: not null } mine) t[mine.Key] = mine.Value!.DeepClone();

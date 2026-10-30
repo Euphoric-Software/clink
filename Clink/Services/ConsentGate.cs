@@ -35,7 +35,7 @@ internal readonly record struct ConsentAnswer(ConsentChoice Choice, bool AutoUpl
 internal sealed class ConsentGate
 {
     public const string CloudOffTitle = "Cloud sharing is off";
-    public const string CloudOffText = "Cloud sharing is turned off — Settings → App → Cloud sharing";
+    public const string CloudOffText = "Cloud sharing is off — enable it under App → Cloud sharing";
 
     private readonly Settings _settings;
     private TaskCompletionSource<bool>? _asking;

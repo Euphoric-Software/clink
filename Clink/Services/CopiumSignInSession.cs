@@ -567,6 +567,93 @@ internal sealed class CopiumSignInSession
         Raise(now);
     }
 
+    // ------------------------------------------------------------------ the account refresh at startup
+
+    private CancellationTokenSource? _refresh;   // the running startup refresh (guarded by _gate)
+    private static readonly TimeSpan RefreshLimit = TimeSpan.FromSeconds(30);
+
+    /// <summary>Test seam: the bound of one account read (30 s in production).</summary>
+    internal TimeSpan RefreshLimitOverride { get; set; } = RefreshLimit;
+
+    private void CancelRefresh()
+    {
+        CancellationTokenSource? cts;
+        lock (_gate) { cts = _refresh; _refresh = null; }
+        try { cts?.Cancel(); } catch (ObjectDisposedException) { }
+    }
+
+    /// <summary>
+    /// Reads /api/me once with the stored Connect token (the startup refresh: a stale name or a changed Copium+ plan). Nothing is sent unless
+    /// the token came from "Sign in with Copium", cloud sharing is on, no sign-in is running and this is not a --dev instance without
+    /// --dev-token. Bounded (30 s) and cancelled by exit, the kill switch, sign out and a token saved by hand. On success the account name,
+    /// Copium+ and verified are written on the UI thread (<c>onUi</c>, no lock across the await); on any failure only
+    /// <see cref="SignInState.AccountCheckFailed"/> is set. The token is NEVER removed or changed here, whatever the answer (a 401 included). Returns true when the account was read and applied.
+    /// </summary>
+    public async Task<bool> RefreshAccountAsync(CancellationToken ct)
+    {
+        string? token;
+        CancellationTokenSource cts;
+        lock (_gate)
+        {
+            if (_run != null || _refresh != null || !LinkedLocked() || !_settings.CloudSharingEnabled) return false;
+            if (IsDevInstance() && !DevKeepsToken()) return false;
+            token = _settings.CopiumToken!;
+            cts = _refresh = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        }
+        bool checkFailed = false;
+        CopiumAccount? account = null;
+        try
+        {
+            cts.CancelAfter(RefreshLimitOverride);
+            account = await CopiumConnect.GetAccountAsync(token, cts.Token).ConfigureAwait(false);
+        }
+        // Cancelled by exit / the kill switch / sign out (whoever did that set the state): stop quietly. Cancelled by our own 30 s limit: a failed check.
+        catch (ConnectException ex) when (ex.Failure == ConnectFailure.Cancelled && (ct.IsCancellationRequested || RefreshTaken(cts))) { return Finish(cts); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested || RefreshTaken(cts)) { return Finish(cts); }
+        catch (ConnectException) { checkFailed = true; Log.Warn("copium: the startup account check failed; token kept"); }
+        catch (Exception ex) { checkFailed = true; Log.Warn("copium: the startup account check failed (" + ex.GetType().Name + "); token kept"); }
+
+        bool applied = false;
+        try
+        {
+            await _onUi(() =>
+            {
+                SignInState now;
+                lock (_gate)
+                {
+                    if (_refresh != cts) return;   // taken meanwhile (sign out, kill switch, a token by hand, exit)
+                    _refresh = null;
+                    if (_run != null || !LinkedLocked() || !_settings.CloudSharingEnabled || !string.Equals(_settings.CopiumToken, token, StringComparison.Ordinal)) return;
+                    if (account != null)
+                    {
+                        _settings.CopiumAccountName = account.Username;
+                        _settings.CopiumPlus = account.Plus;
+                        _verified = true;
+                        _checkFailed = false;
+                        applied = true;
+                    }
+                    else if (checkFailed) _checkFailed = true;
+                    // A shown failure (e.g. AlreadySignedIn) keeps its reason and message: a refresh only updates the account part.
+                    var rest = _state.Status == SignInStatus.Failed ? MakeLocked(SignInStatus.Failed, failure: _state.Failure, message: _state.Message) : RestingLocked();
+                    now = PublishLocked(rest with { RunId = _state.RunId });
+                }
+                Save();
+                Raise(now);
+            }).ConfigureAwait(false);
+        }
+        catch (Exception ex) { Log.Warn("copium: the startup account check could not be applied (" + ex.GetType().Name + ")"); }
+        return Finish(cts, applied);
+    }
+
+    private bool RefreshTaken(CancellationTokenSource cts) { lock (_gate) return _refresh != cts; }
+
+    private bool Finish(CancellationTokenSource cts, bool applied = false)
+    {
+        lock (_gate) { if (_refresh == cts) _refresh = null; }
+        cts.Dispose();
+        return applied;
+    }
+
     // ------------------------------------------------------------------ cancel and the other stops
 
     /// <summary>
@@ -604,6 +691,7 @@ internal sealed class CopiumSignInSession
             now = PublishLocked(RestingLocked());
         }
         CancelRun(run);
+        CancelRefresh();
         Raise(now);
     }
 
@@ -632,6 +720,7 @@ internal sealed class CopiumSignInSession
             now = PublishLocked(RestingLocked());
         }
         CancelRun(run);
+        CancelRefresh();
         Save();
         Raise(now);
         if (oldConnect && !string.Equals(oldToken, token, StringComparison.Ordinal))
@@ -652,6 +741,7 @@ internal sealed class CopiumSignInSession
             if (run != null) now = PublishLocked(RestingLocked());   // (a failed restart must not show a stale code)
         }
         CancelRun(run);
+        CancelRefresh();
         if (now != null) Raise(now);
     }
 
@@ -716,6 +806,7 @@ internal sealed class CopiumSignInSession
             now = PublishLocked(RestingLocked());
         }
         CancelRun(run);
+        CancelRefresh();
         Save();
         Raise(now);
         if (string.IsNullOrWhiteSpace(token)) return SignOutResult.NotSignedIn;

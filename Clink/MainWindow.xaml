@@ -47,7 +47,7 @@
                     <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="8,0,0,0">
                         <Button x:Name="UpdateButton" Style="{StaticResource LinkButton}" Content="Update" Click="Update_Click" FontSize="12" FontWeight="SemiBold"
                                 Visibility="Collapsed" Margin="0,0,4,0" ToolTip="Restart Clink to install the downloaded update" />
-                        <TextBlock x:Name="VersionText" Style="{StaticResource MutedText}" Text="" VerticalAlignment="Center" TextWrapping="NoWrap" Cursor="Hand"
+                        <ui:InvokableTextBlock x:Name="VersionText" Style="{StaticResource MutedText}" Text="" VerticalAlignment="Center" TextWrapping="NoWrap" Cursor="Hand" Invoked="Version_Invoked"
                                    Margin="4,0,8,0" MouseLeftButtonUp="Version_Click" ToolTip="Click for update options" />
                         <Popup x:Name="VersionPopup" PlacementTarget="{Binding ElementName=VersionText}" Placement="Top" StaysOpen="False" AllowsTransparency="True" PopupAnimation="Fade" Closed="VersionPopup_Closed">
                             <Border Background="{DynamicResource Panel2}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="6" Padding="10" Margin="0,0,0,2">
@@ -56,6 +56,13 @@
                                     <CheckBox x:Name="DevBuildCheck" Content="Dev Build" Checked="DevBuildChanged" Unchecked="DevBuildChanged" Margin="0,0,0,8" ToolTipService.ShowOnDisabled="True"
                                               ToolTip="Use the latest build from the dev branch instead of the latest release. Dev builds may be unstable; untick to go back to the latest release." />
                                     <Button x:Name="VersionCheckButton" Style="{StaticResource LinkButton}" Content="Check for updates" Click="CheckUpdate_Click" HorizontalAlignment="Left" ToolTipService.ShowOnDisabled="True" />
+                                    <!-- Copium: the account line and the automatic-upload box (the Screenshots tab's box in a second place), or the sign-in link. Set from CopiumPopupModel. -->
+                                    <StackPanel x:Name="CopiumPopupSection" Margin="0,8,0,0" MaxWidth="300">
+                                        <Border BorderBrush="{DynamicResource Border}" BorderThickness="0,1,0,0" Margin="0,0,0,8" />
+                                        <TextBlock x:Name="CopiumPopupLine" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,0,0,6" />
+                                        <CheckBox x:Name="CopiumPopupToggle" Checked="CopiumPopupToggle_Changed" Unchecked="CopiumPopupToggle_Changed" />
+                                        <Button x:Name="CopiumPopupLink" Style="{StaticResource LinkButton}" Click="CopiumPopupLink_Click" HorizontalAlignment="Left" />
+                                    </StackPanel>
                                 </StackPanel>
                             </Border>
                         </Popup>
