@@ -414,6 +414,8 @@ internal static class SettingsImport
         || key.Equals(nameof(Settings.CloudSharingEnabled), StringComparison.OrdinalIgnoreCase)
         || key.StartsWith("CopiumConsent", StringComparison.OrdinalIgnoreCase)
         || key.StartsWith("CopiumNudge", StringComparison.OrdinalIgnoreCase)
+        || key.Equals(nameof(Settings.CopiumWelcomeShown), StringComparison.OrdinalIgnoreCase)   // Sign in with Copium: the one-time welcome and the last token name are this installation's
+        || key.Equals(nameof(Settings.CopiumTokenName), StringComparison.OrdinalIgnoreCase)
         || key.Equals("CopiumAutoUploadNoticeShown", StringComparison.OrdinalIgnoreCase)   // S6's one-time notice: gone, but a settings.json written by S6 still carries it
         || key.Equals(nameof(Settings.ScreenshotEditorExcludeFromCapture), StringComparison.OrdinalIgnoreCase);
 
@@ -485,7 +487,10 @@ internal static class SettingsImport
         || key.Equals(nameof(Settings.SeededHotkeyDefaults), StringComparison.OrdinalIgnoreCase)
         || key.Equals(nameof(Settings.ScreenshotEditor), StringComparison.OrdinalIgnoreCase)   // the editor's last-used colour and width
         || key.Equals(nameof(Settings.CaptureBorderNoticeDismissed), StringComparison.OrdinalIgnoreCase)
-        || key.Equals(nameof(Settings.CopiumTokenProtected), StringComparison.OrdinalIgnoreCase);
+        || key.Equals(nameof(Settings.CopiumTokenProtected), StringComparison.OrdinalIgnoreCase)
+        // the account name and "linked by Sign in" follow the token, which is compared decrypted and labelled on its own
+        || key.Equals(nameof(Settings.CopiumAccountName), StringComparison.OrdinalIgnoreCase)
+        || key.Equals(nameof(Settings.CopiumLinkedViaConnect), StringComparison.OrdinalIgnoreCase);
 
     /// <summary>A settings key that an import offer names in the user's words or ignores: anything else would be listed as "other settings".</summary>
     internal static bool HasLabelOrIsVolatile(string key) =>
@@ -766,9 +771,12 @@ internal static class SettingsImport
 
         if (keepOurToken)
         {
-            const string token = nameof(Settings.CopiumTokenProtected);
-            foreach (string key in t.Select(p => p.Key).Where(k => k.Equals(token, StringComparison.OrdinalIgnoreCase)).ToList()) t.Remove(key);
-            if (Find(o, token) is { Value: not null } mine) t[mine.Key] = mine.Value!.DeepClone();
+            // the token and what describes it (the account name, whether Sign in made it) stay ours together
+            foreach (string token in new[] { nameof(Settings.CopiumTokenProtected), nameof(Settings.CopiumAccountName), nameof(Settings.CopiumLinkedViaConnect) })
+            {
+                foreach (string key in t.Select(p => p.Key).Where(k => k.Equals(token, StringComparison.OrdinalIgnoreCase)).ToList()) t.Remove(key);
+                if (Find(o, token) is { Value: not null } mine) t[mine.Key] = mine.Value!.DeepClone();
+            }
         }
         string after = t.ToJsonString();
         return after == before ? theirs : t.ToJsonString(new JsonSerializerOptions { WriteIndented = true });

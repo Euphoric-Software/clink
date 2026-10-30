@@ -366,7 +366,7 @@ internal sealed record DevOptions(string Folder, bool BindHotkeys)
             s.ArchiveEnabled = false;
             s.ArchivePath = null;
         }
-        if (!AllowToken && s.CopiumTokenProtected != null) { s.CopiumTokenProtected = null; changed.Add("no Copium token (--dev-token keeps it)"); }
+        if (!AllowToken && s.CopiumTokenProtected != null) { s.SetCopiumToken(null); changed.Add("no Copium token (--dev-token keeps it)"); }
         if (freshStore && s.ToastRecording.Enabled) { s.ToastRecording.Enabled = false; changed.Add("\"Recording started\" toast off"); }
         return changed;
     }

@@ -1432,7 +1432,7 @@ public partial class MainWindow : Window
     private async void TokenSave_Click(object sender, RoutedEventArgs e)
     {
         string t = TokenBox.Password.Trim();
-        _app.Settings.CopiumToken = string.IsNullOrEmpty(t) ? null : t;
+        _app.Settings.SetCopiumToken(string.IsNullOrEmpty(t) ? null : t);   // a pasted token: no account name, not via Connect
         _app.Settings.Save();
         TokenSaveButton.IsEnabled = false;
         if (string.IsNullOrEmpty(t)) { CopiumStatus.Text = "Not connected"; CopiumStatus.SetResourceReference(TextBlock.ForegroundProperty, "Muted"); }
