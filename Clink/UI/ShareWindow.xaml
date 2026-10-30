@@ -63,7 +63,7 @@
                     <Button x:Name="CopyButton" Style="{StaticResource AccentButton}" Content="Copy file" Click="CopyFile_Click" Margin="0,0,8,0"
                             ToolTip="Copy the file, then paste it into Discord or a folder with Ctrl+V (Ctrl+C in this window does the same)" />
                     <Button x:Name="FolderButton" Content="Open folder" Click="OpenFolder_Click" Margin="0,0,8,0" ToolTip="Show the file in its folder" />
-                    <Button x:Name="SetUpCopiumButton" Content="Set up Copium…" Click="SetUpCopium_Click" ToolTip="Add a Copium token under App → Copium: Share then uploads the clip and copies the link (after you agree once)" />
+                    <Button x:Name="SetUpCopiumButton" Content="Set up Copium…" Click="SetUpCopium_Click" ToolTip="Sign in with Copium under App → Copium: Share then uploads the clip and copies the link (after you agree once)" />
                 </StackPanel>
                 <Button Content="Close" Click="Close_Click" HorizontalAlignment="Right" />
             </Grid>

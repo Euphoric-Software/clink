@@ -94,7 +94,7 @@ internal static class ConsentTests
         Check.Equal(0, asked.Count, "no pop-up");
         Check.False(s.CopiumConsent);
         Check.Equal(Enum.GetValues<ConsentContext>().Length, notices.Count);
-        Check.Equal("Cloud sharing is off: Cloud sharing is turned off — Settings → App → Cloud sharing", notices[0]);
+        Check.Equal("Cloud sharing is off: Cloud sharing is off — enable it under App → Cloud sharing", notices[0]);
         // even with the user's yes on file
         s.CopiumConsent = true;
         Check.False(Wait(Gate(s, asked: asked).EnsureAsync(ConsentContext.ShareLast)), "the kill switch outranks the consent");
@@ -594,7 +594,7 @@ internal static class ConsentTests
             Check.Equal(AppController.CloudOffText, app.ShareError);
             Check.Equal(AppController.CloudOffText, app.LastNotice);
             Check.Equal(ShareOutcome.Declined, app.LastShareOutcome);
-            Check.Equal("Cloud sharing is turned off — Settings → App → Cloud sharing", AppController.CloudOffText);
+            Check.Equal("Cloud sharing is off — enable it under App → Cloud sharing", AppController.CloudOffText);
             // the hotkey, the tray item and the pipe all end in ShareLast
             app.Say("something else");
             app.RunCommand("share");

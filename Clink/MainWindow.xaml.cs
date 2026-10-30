@@ -3,6 +3,8 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Windows;
+using System.Windows.Automation;
+using System.Windows.Automation.Peers;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -87,7 +89,9 @@ public partial class MainWindow : Window
         _app.ClipSaved += _ => Dispatcher.BeginInvoke(() => Clips.Refresh());
         _app.ShowRequested += () => Dispatcher.BeginInvoke(ShowFromTray);
         _app.CopiumSetupRequested += () => Dispatcher.BeginInvoke(FocusTokenBox);   // after ShowRequested (it is raised first): the window is up by then
+        _app.CopiumWelcomeNeeded += ShowCopiumWelcome;   // the UI thread: the first sign-in finished
         _app.CloudSharingChanged += () => Dispatcher.BeginInvoke(UpdateCloudUi);
+        _app.SignInChanged += state => RenderCopiumCard(state);   // the UI thread, the latest state
         _app.Consent.ConsentChanged += () => Dispatcher.BeginInvoke(SyncScreenshotChecks);
         _app.FeaturesChanged += () => Dispatcher.BeginInvoke(SyncFeatureUi);
         _app.TrimLastRequested += () => Dispatcher.BeginInvoke(async () =>
@@ -428,6 +432,7 @@ public partial class MainWindow : Window
         finally { _syncingUi = false; }
         CopiumCard.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
         CopiumCloudOffCard.Visibility = on ? Visibility.Collapsed : Visibility.Visible;
+        if (_copiumReady) RenderCopiumCard(_app.SignIn.Current);
         ScreenshotCloudOffHint.Visibility = on ? Visibility.Collapsed : Visibility.Visible;
         UpdateScreenshotTab();
         Clips.RefreshShareButtons();
@@ -484,9 +489,11 @@ public partial class MainWindow : Window
         UpdateAudioEnabled();
         AudioSetupBanner.Visibility = s.AudioSetupSeen ? Visibility.Collapsed : Visibility.Visible;
 
-        if (!string.IsNullOrEmpty(s.CopiumToken)) { TokenBox.Password = s.CopiumToken; CopiumStatus.Text = "Token saved"; CopiumStatus.SetResourceReference(TextBlock.ForegroundProperty, "Good"); }
-        TokenSaveButton.IsEnabled = false;
+        // The Copium card: read the session's state once now, then render only from SignInChanged (the token box is filled for a pasted token only).
         CopiumPlusCheck.IsChecked = s.CopiumPlus;
+        _copiumReady = true;
+        RenderCopiumCard(_app.SignIn.Current);
+        TokenSaveButton.IsEnabled = false;
 
         ClipsFolderBox.Text = QuietMode.Shown(AppController.DocShots, s.ClipsFolder, QuietMode.DocClipsFolder);   // display only: the handler returns at once in doc-shot mode
         ArchiveCheck.IsChecked = s.ArchiveEnabled;
@@ -648,7 +655,7 @@ public partial class MainWindow : Window
         // Picking the Copium Plus target says the account has Copium+, so Share checks Plus's limits: "I have Copium+" is ticked for
         // the user, but only for a pick from the open list. Stepping onto it with the arrow keys on the closed box (on the way to
         // another target) must not change the account setting: SizeTargetCombo_FocusWithinChanged ticks it if the user stops there.
-        if (_copiumPlusTick.Selected(s.SizeTarget, _pickingSizeTarget, s.CopiumPlus)) TickCopiumPlus();
+        if (_copiumPlusTick.Selected(s.SizeTarget, _pickingSizeTarget, s.CopiumPlus || PlusIsTheAccounts())) TickCopiumPlus();
         s.Save();
         UpdateEstimates();
         ScheduleRestart();
@@ -665,10 +672,13 @@ public partial class MainWindow : Window
     {
         if (e.NewValue is not false || _loading) return;
         var s = _app.Settings;
-        if (!_copiumPlusTick.FocusLeft(s.SizeTarget, s.CopiumPlus)) return;
+        if (!_copiumPlusTick.FocusLeft(s.SizeTarget, s.CopiumPlus || PlusIsTheAccounts())) return;
         TickCopiumPlus();
         s.Save();
     }
+
+    /// <summary>Signed in with Copium: the account decides "I have Copium+"; the size target leaves it alone.</summary>
+    private bool PlusIsTheAccounts() => CopiumPlusTick.AccountOwnsPlus(_app.Settings.CopiumLinkedViaConnect, !string.IsNullOrEmpty(_app.Settings.CopiumToken));
 
     /// <summary>Ticks "I have Copium+" for the Copium Plus size target, without CopiumPlusChanged running for it, and says so in the footer. The caller saves.</summary>
     private void TickCopiumPlus()
@@ -1158,6 +1168,14 @@ public partial class MainWindow : Window
     {
         // A click on the version while the popup is open closes it (on mouse-down); the mouse-up must not open it again.
         if (DateTime.UtcNow - _versionPopupClosed < TimeSpan.FromMilliseconds(200)) return;
+        OpenVersionPopup();
+    }
+
+    /// <summary>UI Automation / a screen reader invoked the version number: the same popup.</summary>
+    private void Version_Invoked(object? sender, EventArgs e) { if (!VersionPopup.IsOpen) OpenVersionPopup(); }
+
+    private void OpenVersionPopup()
+    {
         var up = _app.Updater;
         VersionPopupText.Text = $"Clink v{up.VersionDisplay}" + (up.Current.IsDevBuild ? " · dev build" : "");
         bool wasLoading = _loading;
@@ -1171,7 +1189,77 @@ public partial class MainWindow : Window
             ? "Use the latest build from the dev branch instead of the latest release. Dev builds may be unstable; untick to go back to the latest release."
             : NoUpdatesText;
         VersionCheckButton.ToolTip = canCheck ? null : NoUpdatesText;
+        RefreshCopiumPopup();
         VersionPopup.IsOpen = true;
+    }
+
+    // ------------------------------------------------------------------ the version popup's Copium section
+
+    private bool _syncingPopupCopium;   // the popup's box is being set from the Screenshots tab's: not a user choice
+
+    /// <summary>Fills the popup's Copium section from <see cref="CopiumPopupModel"/>; the toggle mirrors the Screenshots tab's box.</summary>
+    private void RefreshCopiumPopup()
+    {
+        var s = _app.Settings;
+        var m = CopiumPopupModel.From(_copiumShown ?? _app.SignIn.Current, s.CloudSharingEnabled, ScreenshotUploadCheck.IsChecked == true);
+        _syncingPopupCopium = true;
+        try
+        {
+            CopiumPopupLine.Visibility = Vis(m.Line != null);
+            CopiumPopupLine.Text = m.Line ?? "";
+            CopiumPopupToggle.Visibility = Vis(m.ToggleVisible);
+            CopiumPopupToggle.Content = CopiumPopupModel.ToggleLabel;
+            CopiumPopupToggle.IsEnabled = m.ToggleEnabled && ScreenshotUploadCheck.IsEnabled;
+            CopiumPopupToggle.IsChecked = m.ToggleChecked;
+            CopiumPopupLink.Visibility = Vis(m.LinkVisible);
+            CopiumPopupLink.Content = CopiumPopupModel.SignInLink;
+        }
+        finally { _syncingPopupCopium = false; }
+    }
+
+    /// <summary>The popup's box = the Screenshots tab's box: ticking it goes through that box's handler (consent pop-up, kill switch, setting, Save).</summary>
+    private void CopiumPopupToggle_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_loading || _syncingPopupCopium || !CopiumPopupToggle.IsEnabled) return;
+        bool on = CopiumPopupToggle.IsChecked == true;
+        if (on) VersionPopup.IsOpen = false;   // the consent pop-up may come up
+        if (ScreenshotUploadCheck.IsChecked != on) ScreenshotUploadCheck.IsChecked = on;   // raises ScreenshotOptionChanged
+        else RefreshCopiumPopup();
+    }
+
+    /// <summary>"Sign in with Copium" in the popup only shows the App tab's card (it never starts a sign-in).</summary>
+    private void CopiumPopupLink_Click(object sender, RoutedEventArgs e)
+    {
+        VersionPopup.IsOpen = false;
+        FocusTokenBox();
+    }
+
+    // ------------------------------------------------------------------ the welcome
+
+    private CopiumWelcomeWindow? _welcome;
+
+    /// <summary>The controller's CopiumWelcomeNeeded: the main window forward first (best effort), then the welcome. Its answer reaches ApplyWelcome once.</summary>
+    private void ShowCopiumWelcome()
+    {
+        if (_welcome != null || _app.IsShuttingDown || _app.Settings.CopiumWelcomeShown) return;
+        try { ShowFromTray(); }
+        catch (Exception ex) { Log.Warn("welcome: main window: " + ex.Message); }
+        var model = new CopiumWelcomeModel(_app.WelcomeInitialAutoUpload, _app.ApplyWelcome);
+        try
+        {
+            var w = new CopiumWelcomeWindow(model, _app.SignIn.Current.Username, () => _app.IsShuttingDown);
+            if (IsVisible) { w.Owner = this; w.WindowStartupLocation = WindowStartupLocation.CenterOwner; }
+            else w.ShowInTaskbar = true;   // no visible owner: it must not be buried without a taskbar button
+            w.Closed += (_, _) => { if (ReferenceEquals(_welcome, w)) _welcome = null; };
+            _welcome = w;
+            w.Show();
+        }
+        catch (Exception ex)
+        {
+            _welcome = null;
+            Log.Error("welcome window", ex);
+            model.NotNow();   // never left unanswered
+        }
     }
 
     private void VersionPopup_Closed(object? sender, EventArgs e) => _versionPopupClosed = DateTime.UtcNow;
@@ -1425,19 +1513,19 @@ public partial class MainWindow : Window
 
     private void Token_Changed(object sender, RoutedEventArgs e)
     {
-        if (_loading) return;
+        if (_loading || _renderingCopium) return;
         TokenSaveButton.IsEnabled = true;
     }
 
     private async void TokenSave_Click(object sender, RoutedEventArgs e)
     {
+        if (_app.IsShuttingDown) return;
         string t = TokenBox.Password.Trim();
-        _app.Settings.CopiumToken = string.IsNullOrEmpty(t) ? null : t;
-        _app.Settings.Save();
+        // A pasted token (no account name, not via Connect), stored, saved and published by the sign-in session in one step: it stops any
+        // sign-in first, so a late approval can never overwrite what the user just saved.
+        _app.SaveManualCopiumToken(string.IsNullOrEmpty(t) ? null : t);
         TokenSaveButton.IsEnabled = false;
-        if (string.IsNullOrEmpty(t)) { CopiumStatus.Text = "Not connected"; CopiumStatus.SetResourceReference(TextBlock.ForegroundProperty, "Muted"); }
-        else if (!t.StartsWith("eup_")) { CopiumStatus.Text = "Saved (tokens usually start with eup_)"; CopiumStatus.SetResourceReference(TextBlock.ForegroundProperty, "Warn"); }
-        else { CopiumStatus.Text = "Token saved"; CopiumStatus.SetResourceReference(TextBlock.ForegroundProperty, "Good"); }
+        UpdateTokenStatus(t);
         UpdateScreenshotTab();   // the upload options follow the token
         // A token was just saved but sharing is not agreed to yet: ask once, now, instead of at the first Share. (A cleared token asks nothing.)
         if (!string.IsNullOrEmpty(t) && _app.Settings.CloudSharingEnabled && !_app.Settings.CopiumConsent)
@@ -1447,6 +1535,181 @@ public partial class MainWindow : Window
         }
     }
 
+    // ------------------------------------------------------------------ the Copium card ("Sign in with Copium")
+
+    private bool _copiumReady;                 // Populate ran: the card may render
+    private bool _renderingCopium;             // the card is being set from its model: no control event is a user choice
+    private bool _tokenExpanded;               // "Use an API token instead" was used (or Copium said Sign in is not available yet)
+    private bool _signOutBusy;                 // Sign out is waiting for Copium (up to ~10 s)
+    private string? _copiumResultText;         // what the last Sign out said
+    private CopiumPanel? _copiumPanel;         // the panel shown last
+    private SignInState? _copiumShown;         // the state shown last
+
+    /// <summary>Shows <paramref name="st"/> (the latest state from the session). Everything comes from <see cref="CopiumCardModel"/>; texts are plain text.</summary>
+    private void RenderCopiumCard(SignInState st)
+    {
+        if (!_copiumReady) return;
+        _copiumShown = st;
+        var s = _app.Settings;
+        var m = CopiumCardModel.From(st, s.CloudSharingEnabled, AppController.IsDev, AppController.DevToken, CopiumConnect.DefaultTokenName(), s.CopiumTokenName);
+        bool changed = _copiumPanel != m.Panel;
+        var before = _copiumPanel;
+        _copiumPanel = m.Panel;
+        if (m.AutoExpandToken) _tokenExpanded = true;
+        if (m.Panel is CopiumPanel.Waiting or CopiumPanel.Finishing) _copiumResultText = null;   // a new sign-in: the old sign-out line is stale
+        bool busy = _signOutBusy;
+
+        _renderingCopium = true;
+        try
+        {
+            // The labels come from the model (one source, covered by its tests); a button's Content is its accessible name unless set apart in XAML.
+            CopiumSignInButton.Content = CopiumCardModel.SignInLabel;
+            CopiumNameLabel.Text = CopiumCardModel.NameLabel;
+            AutomationProperties.SetName(CopiumNameBox, CopiumCardModel.NameLabel);
+            CopiumUseTokenLink.Content = CopiumCardModel.UseTokenLink;
+            CopiumOpenAgainButton.Content = CopiumCardModel.OpenAgainLabel;
+            CopiumCancelButton.Content = CopiumCardModel.CancelLabel;
+            CopiumSignOutButton.Content = CopiumCardModel.SignOutLabel;
+            CopiumCleanupOpenButton.Content = CopiumCardModel.CleanupOpenLabel;
+            CopiumCleanupDismissButton.Content = CopiumCardModel.CleanupDismissLabel;
+            CopiumNoTokenHint.Visibility = Vis(m.NoTokenHintVisible);
+            CopiumNoTokenHint.Text = m.NoTokenHintVisible ? CopiumCardModel.NoTokenShareHint : "";
+
+            CopiumSignedInPanel.Visibility = Vis(m.SignedInVisible);
+            SetLive(CopiumSignedInText, m.SignedInText ?? "");
+            CopiumUnverifiedNote.Visibility = Vis(m.UnverifiedNoteVisible);
+            SetLive(CopiumUnverifiedNote, m.UnverifiedNoteVisible ? CopiumCardModel.UnverifiedNote : "");
+            CopiumSignOutButton.IsEnabled = m.SignOutEnabled && !busy;
+
+            CopiumWaitingPanel.Visibility = Vis(m.Panel is CopiumPanel.Waiting or CopiumPanel.Finishing);
+            CopiumCodeBox.Visibility = Vis(m.CodeVisible);
+            CopiumCodeBox.Text = m.CodeText ?? "";
+            CopiumCodeHint.Visibility = Vis(m.CodeHintVisible);
+            CopiumCodeHint.Text = m.CodeHintVisible ? CopiumCardModel.CodeCheckHint : "";
+            SetLive(CopiumProgressText, m.StatusText ?? "");
+            CopiumOpenAgainButton.Visibility = Vis(m.OpenAgainVisible);
+            CopiumCancelButton.Visibility = Vis(m.CancelVisible);
+            CopiumCancelButton.IsEnabled = m.CancelEnabled && !busy;
+
+            CopiumStartPanel.Visibility = Vis(m.SignInVisible);
+            CopiumSignInButton.IsEnabled = m.SignInEnabled && !busy;
+            CopiumSignInButton.ToolTip = m.SignInDisabledReason;
+            CopiumSignInHint.Visibility = Vis(m.SignInVisible);
+            CopiumSignInHint.Text = m.SignInDisabledReason ?? (m.SignInHintVisible ? m.SignInHintText : "");
+            CopiumNameLabel.Visibility = Vis(m.NameBoxVisible);
+            CopiumNameBox.Visibility = Vis(m.NameBoxVisible);
+            CopiumNameBox.IsEnabled = m.NameBoxEnabled && !busy;
+            if (m.NameBoxVisible && (changed || string.IsNullOrEmpty(CopiumNameBox.Text)) && !CopiumNameBox.IsKeyboardFocusWithin) CopiumNameBox.Text = m.NameBoxText;
+            bool tokenSection = m.TokenSectionVisible || (m.Panel == CopiumPanel.SignedOut && _tokenExpanded);
+            CopiumTokenSection.Visibility = Vis(tokenSection);
+            CopiumUseTokenLink.Visibility = Vis(m.UseTokenLinkVisible && !tokenSection);
+
+            // The token box holds a pasted token only; a Connect token is never put in it.
+            if (changed)
+            {
+                if (m.TokenBoxPrefill) TokenBox.Password = s.CopiumToken ?? "";
+                else if (before is CopiumPanel.PastedToken || m.Panel is CopiumPanel.SignedIn or CopiumPanel.Finishing) TokenBox.Password = "";
+                TokenSaveButton.IsEnabled = false;
+            }
+            UpdateTokenStatus(null);
+
+            CopiumPlusCheck.IsEnabled = m.PlusCheckEnabled;
+            CopiumPlusCheck.IsChecked = m.PlusCheckValueFromAccount ? m.PlusCheckValue : s.CopiumPlus;
+            CopiumPlusNote.Visibility = Vis(m.PlusNote != null);
+            CopiumPlusNote.Text = m.PlusNote ?? "";
+
+            string? message = busy ? CopiumCardModel.SignOutBusyStatus : m.FailureText ?? _copiumResultText;
+            CopiumMessageText.Visibility = Vis(!string.IsNullOrEmpty(message));
+            SetLive(CopiumMessageText, message ?? "");
+
+            CopiumCleanupPanel.Visibility = Vis(m.CleanupVisible);
+            SetLive(CopiumCleanupText, m.CleanupText ?? "");
+            CopiumCleanupOpenButton.IsEnabled = CopiumCleanupDismissButton.IsEnabled = !busy;
+        }
+        finally { _renderingCopium = false; }
+        UpdateScreenshotTab();   // the upload options follow the token
+    }
+
+    /// <summary>Sets a live-region TextBlock's text; when it changed, screen readers are told (the text is the accessible name).</summary>
+    private static void SetLive(TextBlock tb, string text)
+    {
+        if (tb.Text == text) return;
+        tb.Text = text;
+        if (text.Length == 0 || !tb.IsVisible || !AutomationPeer.ListenerExists(AutomationEvents.LiveRegionChanged)) return;   // nobody listening / not shown: no peer to build
+        try { (UIElementAutomationPeer.FromElement(tb) ?? UIElementAutomationPeer.CreatePeerForElement(tb))?.RaiseAutomationEvent(AutomationEvents.LiveRegionChanged); }
+        catch (Exception ex) { Log.Warn("live region: " + ex.Message); }
+    }
+
+    private static Visibility Vis(bool on) => on ? Visibility.Visible : Visibility.Collapsed;
+
+    /// <summary>The token section's status line, from the stored token (<paramref name="justSaved"/>: the text the user just saved, to check its look).</summary>
+    private void UpdateTokenStatus(string? justSaved)
+    {
+        string? t = justSaved ?? _app.Settings.CopiumToken;
+        if (string.IsNullOrEmpty(t)) { CopiumStatus.Text = "Not connected"; CopiumStatus.SetResourceReference(TextBlock.ForegroundProperty, "Muted"); }
+        else if (!t.StartsWith("eup_")) { CopiumStatus.Text = "Saved (tokens usually start with eup_)"; CopiumStatus.SetResourceReference(TextBlock.ForegroundProperty, "Warn"); }
+        else { CopiumStatus.Text = "Token saved"; CopiumStatus.SetResourceReference(TextBlock.ForegroundProperty, "Good"); }
+    }
+
+    /// <summary>Re-draws the card from the session's latest state (after a local change such as the busy flag).</summary>
+    private void RefreshCopiumCard() => RenderCopiumCard(_app.SignIn.Current);
+
+    private void CopiumSignIn_Click(object sender, RoutedEventArgs e)
+    {
+        if (_app.IsShuttingDown || _signOutBusy) return;
+        _copiumResultText = null;
+        _app.SignIn.Start(CopiumNameBox.Text);   // only here, from the click
+    }
+
+    private void CopiumCancel_Click(object sender, RoutedEventArgs e)
+    {
+        if (_app.IsShuttingDown || _signOutBusy) return;
+        _app.SignIn.Cancel();
+    }
+
+    private void CopiumOpenAgain_Click(object sender, RoutedEventArgs e)
+    {
+        if (_app.IsShuttingDown || _signOutBusy) return;
+        _app.SignIn.OpenApprovePageAgain();
+    }
+
+    private async void CopiumSignOut_Click(object sender, RoutedEventArgs e)
+    {
+        if (_app.IsShuttingDown || _signOutBusy) return;
+        _signOutBusy = true;
+        _copiumResultText = null;
+        RefreshCopiumCard();
+        try
+        {
+            var result = await _app.SignIn.SignOutAsync();   // on the UI thread; Copium is given ~10 s at most
+            _copiumResultText = CopiumCardModel.SignOutText(result);
+        }
+        catch (Exception ex) { Log.Warn("copium sign out: " + ex.Message); }
+        finally { _signOutBusy = false; }
+        if (_app.IsShuttingDown) return;
+        RefreshCopiumCard();
+    }
+
+    private void CopiumUseToken_Click(object sender, RoutedEventArgs e)
+    {
+        if (_app.IsShuttingDown) return;
+        _tokenExpanded = true;
+        RefreshCopiumCard();
+        Dispatcher.BeginInvoke(DispatcherPriority.Input, () => TokenBox.Focus());
+    }
+
+    private void CopiumCleanupOpen_Click(object sender, RoutedEventArgs e)
+    {
+        try { Process.Start(new ProcessStartInfo(CopiumCardModel.CleanupUrl) { UseShellExecute = true })?.Dispose(); }
+        catch (Exception ex) { Log.Warn("copium cleanup page: " + ex.Message); }
+    }
+
+    private void CopiumCleanupDismiss_Click(object sender, RoutedEventArgs e)
+    {
+        if (_app.IsShuttingDown) return;
+        _app.SignIn.DismissRemoteCleanup();   // only on this click
+    }
+
     private void CopiumSite_Click(object sender, RoutedEventArgs e)
     {
         try { Process.Start(new ProcessStartInfo("https://copium.pics/") { UseShellExecute = true }); } catch { }
@@ -1454,7 +1717,7 @@ public partial class MainWindow : Window
 
     private void CopiumPlusChanged(object sender, RoutedEventArgs e)
     {
-        if (_loading || _filling) return;   // _filling: the Copium Plus size target ticked the box (SizeTargetChanged saves)
+        if (_loading || _filling || _renderingCopium) return;   // _filling: the Copium Plus size target ticked the box (SizeTargetChanged saves); _renderingCopium: set from the account
         _app.Settings.CopiumPlus = CopiumPlusCheck.IsChecked == true;
         _app.Settings.Save();
     }
@@ -1565,6 +1828,7 @@ public partial class MainWindow : Window
         ScreenshotUploadCheck.IsEnabled = linked && cloud;
         ScreenshotTokenHint.Visibility = linked || !cloud ? Visibility.Collapsed : Visibility.Visible;
         ScreenshotCopyLinkCheck.IsEnabled = linked && cloud && ScreenshotUploadCheck.IsChecked == true;
+        if (VersionPopup.IsOpen) RefreshCopiumPopup();   // the popup's box follows this tab's
         ScreenshotHotkeyHint.Text = (keys != null ? $"Hotkey: {keys} takes a screenshot. " : "No hotkey is set for screenshots. ")
             + (editKeys != null ? $"{editKeys} edits the last one. " : "No hotkey is set for editing the last one. ")
             + "The defaults are PrintScreen and Shift+PrintScreen. Change them under Capture → Hotkeys. "
@@ -1633,7 +1897,12 @@ public partial class MainWindow : Window
     private void FocusTokenBox()
     {
         Tabs.SelectedItem = AppTab;
-        Dispatcher.BeginInvoke(DispatcherPriority.Input, () => TokenBox.Focus());
+        // Sign in with Copium is the way in; the token box only when that is not offered here (or a pasted token is shown).
+        Dispatcher.BeginInvoke(DispatcherPriority.Input, () =>
+        {
+            if (CopiumTokenSection.Visibility == Visibility.Visible) TokenBox.Focus();
+            else if (CopiumSignInButton.IsVisible && CopiumSignInButton.IsEnabled) CopiumSignInButton.Focus();
+        });
     }
 
     private void ScreenshotFolderBox_LostFocus(object sender, RoutedEventArgs e)

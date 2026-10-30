@@ -110,6 +110,9 @@ internal sealed partial class AppController
                 try { one.Cancel(); } catch (ObjectDisposedException) { }
             }
             _screenshots?.CancelRunningUpload();
+            // Any sign-in stops, even one that is reading the account after the approval: no /api/me, no "signed in" toast or welcome. A stored
+            // token is kept (unverified); an approval that still arrives is revoked, not stored.
+            _signIn?.StopForCloudSharingOff();
         }
         UpdateTrayHotkey();
         CloudSharingChanged?.Invoke();

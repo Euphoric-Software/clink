@@ -114,6 +114,14 @@ internal sealed class Settings
     public double ClickVolume { get; set; } = 0.5;
     public string ClipsFolder { get; set; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "Clink");
     public string? CopiumTokenProtected { get; set; }
+    /// <summary>The Copium username shown beside the linked account (a display cache of what "Sign in with Copium" or /api/me said). Follows the token: cleared without one, taken over with it by an import.</summary>
+    public string? CopiumAccountName { get; set; }
+    /// <summary>The token came from "Sign in with Copium" (not pasted by hand). Follows the token like <see cref="CopiumAccountName"/>.</summary>
+    public bool CopiumLinkedViaConnect { get; set; }
+    /// <summary>The one-time welcome after a sign-in was shown. Per installation: never imported.</summary>
+    public bool CopiumWelcomeShown { get; set; }
+    /// <summary>The name the user last gave the token on copium.pics, offered again next time. Per installation: never imported.</summary>
+    public string? CopiumTokenName { get; set; }
     public bool StartMinimized { get; set; }
     public bool RunAtStartup { get; set; }
     public bool ShowToast { get; set; } = true;                // v1; a file with ShowToast=false and no ToastClip key turns the clip toast off on load
@@ -266,6 +274,24 @@ internal sealed class Settings
     {
         get => Unprotect(CopiumTokenProtected);
         set => CopiumTokenProtected = Protect(value);
+    }
+
+    /// <summary>
+    /// The one way to change the Copium token: stores it (DPAPI) together with the account name and the "signed in via Connect" flag
+    /// that describe it. A null / empty token clears all three; a pasted token passes no name and viaConnect false.
+    /// </summary>
+    public void SetCopiumToken(string? token, string? accountName = null, bool viaConnect = false)
+    {
+        if (string.IsNullOrEmpty(token))
+        {
+            CopiumTokenProtected = null;
+            CopiumAccountName = null;
+            CopiumLinkedViaConnect = false;
+            return;
+        }
+        CopiumToken = token;
+        CopiumAccountName = string.IsNullOrWhiteSpace(accountName) ? null : accountName.Trim();
+        CopiumLinkedViaConnect = viaConnect;
     }
 
     /// <summary>
@@ -601,6 +627,14 @@ internal sealed class Settings
         ScreenshotEditor.Normalize();
         ToastScreenshot ??= new ToastSetting { Enabled = true, Seconds = 6 };
         if (string.IsNullOrWhiteSpace(CopiumImageUploadUrl)) CopiumImageUploadUrl = null;
+        if (string.IsNullOrWhiteSpace(CopiumAccountName)) CopiumAccountName = null;
+        if (string.IsNullOrWhiteSpace(CopiumTokenName)) CopiumTokenName = null;
+        // The account name and "linked by Sign in" describe the token: without one they mean nothing.
+        if (string.IsNullOrEmpty(CopiumTokenProtected))
+        {
+            CopiumAccountName = null;
+            CopiumLinkedViaConnect = false;
+        }
         if (CopiumConsentPromptCount < 0) CopiumConsentPromptCount = 0;
         if (CopiumConsentScreenshots < 0) CopiumConsentScreenshots = 0;
         // The automatic upload never exists without the user's yes (an S6-era or imported "true" cannot pre-arm it).

@@ -205,6 +205,7 @@ internal sealed partial class AppController : IDisposable
         Settings = settings;
         _ui = Dispatcher.CurrentDispatcher;
         Instance = this;
+        CopiumClient.UploadTooLarge += OnUploadTooLarge;
         Updater = updater;
         Toasts = new Toasts(settings, () => SelectedMonitor);
         Archive = new ArchiveService(settings, Library);
@@ -591,6 +592,7 @@ internal sealed partial class AppController : IDisposable
         else if (GameOnly) { Log.Info("Recording mode: only while a game or custom app runs"); PollGame(); }
         else StartEngine();
         Archive.Start();
+        ScheduleAccountRefresh();   // Copium account name / Copium+ read once, a few seconds from now, in the background
         ApplyStatusDot();
         if (!IsDev) Updater.StartBackgroundChecks();   // a --dev instance never contacts the update feed (and a build without one never contacts anything)
         // A downloaded update was skipped at startup (install failed earlier, read-only folder, elevated): tell the user, once per start.
@@ -1020,6 +1022,8 @@ internal sealed partial class AppController : IDisposable
         Library.FreezeSaves();
         Interlocked.Increment(ref _startGen);   // a recorder start that has not begun is cancelled
         _starting = false;
+        // A sign-in stops too: its token could not be saved any more (saves are frozen), so a late approval is revoked, not stored.
+        try { _signIn?.Shutdown(); } catch (Exception ex) { Log.Warn("restart: sign-in: " + ex.Message); }
         try
         {
             if (_engineGate.Wait(RecorderStopLimit)) { try { Engine.Stop(); } finally { _engineGate.Release(); } }
@@ -1854,16 +1858,16 @@ internal sealed partial class AppController : IDisposable
 
     private static bool ToastIsActive => System.Windows.Application.Current?.Windows.OfType<ToastWindow>().Any(t => t.IsActive) == true;
 
-    /// <summary>The share window's "Set up Copium…": brings the main window forward and says where the token goes.</summary>
+    /// <summary>The share window's "Set up Copium…": brings the main window forward and says where to sign in.</summary>
     public void ShowCopiumSetup()
     {
         if (!Settings.CloudSharingEnabled) { Say(CloudOffText); ShowRequested?.Invoke(); return; }   // there is no token box while sharing is off
-        Say("Add your token under App → Copium");
+        Say("Sign in with Copium under App → Copium");
         ShowRequested?.Invoke();
         CopiumSetupRequested?.Invoke();
     }
 
-    /// <summary>Raised after <see cref="ShowRequested"/> by <see cref="ShowCopiumSetup"/>: the window selects the App tab and focuses the token box.</summary>
+    /// <summary>Raised after <see cref="ShowRequested"/> by <see cref="ShowCopiumSetup"/>: the window selects the App tab and focuses the Copium card's sign-in button (or its token box).</summary>
     public event Action? CopiumSetupRequested;
 
     /// <summary>Asks the window to open the trim editor on a clip. False when no window has subscribed to <see cref="TrimRequested"/>.</summary>
@@ -2134,7 +2138,9 @@ internal sealed partial class AppController : IDisposable
         _disposed = true;
         Log.Info("Quitting");
         _cts.Cancel();
+        try { _signIn?.Shutdown(); } catch (Exception ex) { Log.Warn("Exit: sign-in: " + ex.Message); }   // no network wait: a late approval is simply never stored
         _timer?.Stop();
+        CopiumClient.UploadTooLarge -= OnUploadTooLarge;
         SettingsImport.PendingChanged -= OnImportPending;
         SystemEvents.DisplaySettingsChanged -= OnDisplayChanged;
         SystemEvents.PowerModeChanged -= OnPowerModeChanged;

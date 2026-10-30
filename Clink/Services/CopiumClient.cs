@@ -22,11 +22,18 @@ internal enum MediaKind { Video, Image }
 internal static class CopiumClient
 {
     // No redirects: the bearer token must never follow a 3xx to another address (a 3xx is an error instead).
-    private static readonly HttpClient s_http = new(new SocketsHttpHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromMinutes(30) };
+    private static readonly SocketsHttpHandler s_handler = new() { AllowAutoRedirect = false };
+    private static readonly HttpClient s_http = new(s_handler) { Timeout = TimeSpan.FromMinutes(30) };
+
+    /// <summary>Whether the real shared client follows redirects (it must not: the bearer token would go along).</summary>
+    internal static bool FollowsRedirects => s_handler.AllowAutoRedirect;
     public const string UploadEndpoint = "https://v.copium.pics/api/upload";
 
     /// <summary>Test seam: sends the request through this client instead of the shared one (a mock handler).</summary>
     internal static HttpClient? HttpOverride { get; set; }
+
+    /// <summary>The one client for everything sent to Copium (no redirects), or the test override.</summary>
+    internal static HttpClient Http => HttpOverride ?? s_http;
 
     /// <summary>The MIME type of the file part: by extension (.mp4 video/mp4, .png image/png, .jpg/.jpeg image/jpeg, .gif, .webp), anything else application/octet-stream.</summary>
     internal static string ContentTypeFor(string path) => System.IO.Path.GetExtension(path ?? "").ToLowerInvariant() switch
@@ -91,7 +98,7 @@ internal static class CopiumClient
     internal static TimeSpan BodyTimeout { get; set; } = TimeSpan.FromSeconds(30);
 
     /// <summary>Reads at most <see cref="MaxBodyBytes"/> of the answer within <see cref="BodyTimeout"/> (a server that sends headers and then stalls must not hold the upload queue).</summary>
-    private static async Task<string> ReadBodyAsync(HttpContent content, CancellationToken ct)
+    internal static async Task<string> ReadBodyAsync(HttpContent content, CancellationToken ct)
     {
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(BodyTimeout);
@@ -146,7 +153,7 @@ internal static class CopiumClient
         string endpoint = EndpointFor(kind, imageEndpoint);
         if (!string.Equals(endpoint, UploadEndpoint, StringComparison.Ordinal))
             Log.Info("copium: uploading the picture to " + new Uri(endpoint).Host + " (CopiumImageUploadUrl)");   // the host only: no path, no token
-        var http = HttpOverride ?? s_http;
+        var http = Http;
 
         using var content = new MultipartFormDataContent();
         var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16, useAsync: true);
@@ -155,8 +162,10 @@ internal static class CopiumClient
         fileContent.Headers.ContentType = new MediaTypeHeaderValue(ContentTypeFor(path));
         content.Add(fileContent, "file", Path.GetFileName(path));
         if (!string.IsNullOrWhiteSpace(title)) content.Add(new StringContent(title), "title");
+        content.Add(new StringContent("clink"), "client");   // Copium's upload-source.js reads the multipart field "client" (an analytics label only)
 
         using var req = new HttpRequestMessage(HttpMethod.Post, endpoint);
+        req.Headers.UserAgent.Add(new ProductInfoHeaderValue("Clink", CopiumConnect.AppVersion()));   // the ^Clink/ rule of the same file
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Trim());
         req.Content = content;
 
@@ -184,6 +193,7 @@ internal static class CopiumClient
         }
         // Redirects are never followed (the token would go with them): a 3xx is an error.
         if (code >= 300 && code <= 399) throw new InvalidOperationException($"Copium sent an unexpected redirect (HTTP {code})");
+        if (code == 413) RaiseTooLarge();
         if (code < 200 || code > 299) throw new CopiumHttpException(code, ErrorMessage(code, body, noun), TryError(body));
         JsonDocument doc;
         try { doc = JsonDocument.Parse(body); }
@@ -216,6 +226,18 @@ internal static class CopiumClient
             string Safe(string value) => IsHttpsUrl(value, out _) ? value : "";
             return new CopiumUpload(Get("id"), link, Safe(Get("url")), Safe(Get("pageUrl")), Safe(Get("thumbUrl")) is { Length: > 0 } th ? th : null, size);
         }
+    }
+
+    /// <summary>
+    /// Copium answered an upload with 413 "too large" (any thread): the plan may have changed, so the controller re-reads the account.
+    /// Fire and forget; a handler that throws never affects the upload, which fails with its own message as before.
+    /// </summary>
+    internal static event Action? UploadTooLarge;
+
+    private static void RaiseTooLarge()
+    {
+        try { UploadTooLarge?.Invoke(); }
+        catch (Exception ex) { Log.Warn("copium: 413 handler failed: " + ex.GetType().Name); }
     }
 
     /// <summary>One sentence for a failed upload: what the status means, with Copium's own error text (or the status code) in brackets.</summary>

@@ -1,0 +1,44 @@
+<Window x:Class="Clink.UI.CopiumWelcomeWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="You're connected to Copium" Width="480" SizeToContent="Height"
+        WindowStyle="None" ResizeMode="NoResize" AllowsTransparency="True" Background="Transparent"
+        WindowStartupLocation="CenterScreen" ShowInTaskbar="False" FontFamily="{StaticResource UiFont}" TextOptions.TextFormattingMode="Display"
+        PreviewKeyDown="Window_PreviewKeyDown" Loaded="Window_Loaded">
+    <!-- Every colour here is a DynamicResource, so the window follows the theme when it changes. All texts are set from CopiumWelcomeModel as plain text. -->
+    <Border Background="{DynamicResource Bg}" CornerRadius="10" BorderBrush="{DynamicResource Border}" BorderThickness="1">
+        <DockPanel>
+            <Grid DockPanel.Dock="Top" Height="44" MouseLeftButtonDown="Header_MouseLeftButtonDown" Background="Transparent">
+                <TextBlock x:Name="TitleText" Style="{StaticResource Display}" Margin="16,0,48,0" VerticalAlignment="Center" />
+                <Button x:Name="CloseButton" Style="{StaticResource LinkButton}" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,12,0"
+                        Click="Close_Click" AutomationProperties.Name="Close">
+                    <TextBlock Style="{StaticResource Glyph}" Text="&#xE711;" FontSize="12" />
+                </Button>
+            </Grid>
+
+            <Border DockPanel.Dock="Bottom" Padding="16,10,16,14" BorderBrush="{DynamicResource Border}" BorderThickness="0,1,0,0">
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button x:Name="NotNowButton" MinWidth="84" Margin="0,0,8,0" Click="NotNow_Click" IsCancel="True" IsDefault="True" />
+                    <Button x:Name="StartButton" Style="{StaticResource AccentButton}" Padding="14,5" Click="Start_Click" />
+                </StackPanel>
+            </Border>
+
+            <StackPanel Margin="16,4,16,16">
+                <TextBlock x:Name="SignedInText" TextWrapping="Wrap" Margin="2,4,2,0" Style="{StaticResource MutedText}" />
+
+                <!-- the headline: the automatic upload, ticked at first (the first focus) -->
+                <Border Margin="0,14,0,0" Padding="12,10" CornerRadius="8" BorderThickness="1" BorderBrush="{DynamicResource Border}" Background="{DynamicResource Panel2}">
+                    <StackPanel>
+                        <CheckBox x:Name="AutoUploadCheck" FontSize="15" FontWeight="SemiBold" KeyboardNavigation.AcceptsReturn="False">
+                            <TextBlock x:Name="AutoUploadLabel" TextWrapping="Wrap" />
+                        </CheckBox>
+                        <TextBlock x:Name="AutoUploadDetail" TextWrapping="Wrap" Margin="24,6,0,0" Style="{StaticResource MutedText}" />
+                    </StackPanel>
+                </Border>
+
+                <TextBlock x:Name="ClipsText" TextWrapping="Wrap" Margin="2,12,2,0" Style="{StaticResource MutedText}" />
+                <TextBlock x:Name="ChangeLaterText" TextWrapping="Wrap" Margin="2,6,2,0" Style="{StaticResource MutedText}" />
+            </StackPanel>
+        </DockPanel>
+    </Border>
+</Window>
