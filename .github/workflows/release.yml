@@ -53,7 +53,7 @@ jobs:
       min_dev: ${{ steps.seeds.outputs.min_dev }}
     steps:
       - name: Check out
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -282,7 +282,7 @@ jobs:
     steps:
       # Guards run before any secret is referenced by a step. Repo secrets are only readable by steps that name them.
       - name: Check out (full history)
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
