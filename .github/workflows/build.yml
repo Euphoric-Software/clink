@@ -43,7 +43,7 @@ jobs:
       # empty folder instead of a stale one (a cache hit skips the signature checks, so the cache must never outlive the rules it was built
       # under). The release workflows do not use a cache at all.
       - name: Cache NuGet packages
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.nuget/packages
           key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'global.json', 'nuget.config') }}
@@ -110,7 +110,7 @@ jobs:
           Assert-DotNetSdk -GlobalJsonPath global.json
 
       - name: Cache NuGet packages
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.nuget/packages
           key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'global.json', 'nuget.config') }}
