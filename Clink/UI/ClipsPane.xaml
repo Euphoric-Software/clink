@@ -117,7 +117,8 @@
                     <ControlTemplate TargetType="ToggleButton">
                         <Border x:Name="B" Background="Transparent" CornerRadius="4" Padding="6,2">
                             <StackPanel Orientation="Horizontal">
-                                <TextBlock Text="{Binding TrimsLabel}" Foreground="{TemplateBinding Foreground}" VerticalAlignment="Center" />
+                                <!-- just the count (the word would squeeze the title at the narrowest window); the tooltip and UIA name say "N trims of <title>" -->
+                                <TextBlock Text="{Binding ChildCount}" Foreground="{TemplateBinding Foreground}" VerticalAlignment="Center" />
                                 <TextBlock x:Name="Chevron" Style="{StaticResource Glyph}" Text="&#xE76C;" FontSize="10" Margin="6,1,0,0" Foreground="{TemplateBinding Foreground}" />
                             </StackPanel>
                         </Border>
@@ -135,7 +136,7 @@
             </Setter>
         </Style>
 
-        <!-- Local / Trimmed row: thumbnail · title + icons · meta · Trim / Share / folder -->
+        <!-- Local / Trimmed row: thumbnail · title + icons · meta · Trim / Share / folder / Delete -->
         <DataTemplate x:Key="LocalRow">
             <Grid>
             <!-- a trim listed under its clip: indented, with a quiet guide line down the left (the full height of the row, gap included, so a run of trims reads as one block) -->
@@ -167,11 +168,14 @@
                         <ProgressBar Value="{Binding Progress}" Maximum="1" Style="{StaticResource UploadBar}" />
                     </StackPanel>
                     <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-                        <Button Content="Trim" Click="Trim_Click" Padding="10,5" Margin="0,0,6,0" />
+                        <Button Content="Trim" Click="Trim_Click" Padding="9,5" Margin="0,0,4,0" />
                         <!-- MinWidth = the "Copy link" width: Trim and the folder button stay in fixed columns down the list -->
-                        <Button Content="{Binding ShareLabel}" Click="Share_Click" Padding="10,5" Margin="0,0,6,0" MinWidth="82" Style="{StaticResource AccentButton}"
+                        <Button Content="{Binding ShareLabel}" Click="Share_Click" Padding="9,5" Margin="0,0,4,0" MinWidth="76" Style="{StaticResource AccentButton}"
                                 Visibility="{Binding ShareVisible, Converter={StaticResource Vis}}" />
-                        <Button Style="{StaticResource GlyphButton}" Content="&#xE8B7;" Click="Folder_Click" Padding="8,5" ToolTip="Show in folder" />
+                        <Button Style="{StaticResource GlyphButton}" Content="&#xE8B7;" Click="Folder_Click" Padding="7,5" Margin="0,0,4,0" ToolTip="Show in folder" />
+                        <!-- grey like Trim and the folder button, red under the pointer; off only while the clip is being deleted -->
+                        <Button Style="{StaticResource DangerGlyphButton}" Content="&#xE74D;" Click="ClipDelete_Click" Padding="7,5" ToolTip="Delete" AutomationProperties.Name="Delete clip"
+                                IsEnabled="{Binding CanDelete}" />
                     </StackPanel>
                 </Grid>
             </Border>

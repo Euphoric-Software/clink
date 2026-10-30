@@ -622,62 +622,13 @@ internal sealed class ScreenshotService
     /// needs a second, explicit confirmation from Windows (declining it leaves the file); otherwise no shell dialog of its own.
     /// The call has no timeout (the shell may be waiting on that dialog); one shell call runs at a time.
     /// </summary>
-    internal Action<string, nint> Recycler { get; set; } = RecycleViaShell;
+    internal Action<string, nint> Recycler { get; set; } = RecycleBin.Recycle;
 
     /// <summary>Test seam: the window the Recycle Bin call belongs to (the main window), 0 for none. Read on the UI thread.</summary>
-    internal static Func<nint> OwnerHandle { get; set; } = () =>
-    {
-        try
-        {
-            var app = System.Windows.Application.Current;
-            if (app == null) return 0;
-            return app.Dispatcher.Invoke(() => app.MainWindow is { } w ? new System.Windows.Interop.WindowInteropHelper(w).Handle : 0);
-        }
-        catch { return 0; }
-    };
+    internal static Func<nint> OwnerHandle { get => RecycleBin.OwnerHandle; set => RecycleBin.OwnerHandle = value; }
 
-    private const uint FO_DELETE = 3;
-    private const ushort FOF_SILENT = 0x4, FOF_NOCONFIRMATION = 0x10, FOF_ALLOWUNDO = 0x40, FOF_NOERRORUI = 0x400, FOF_WANTNUKEWARNING = 0x4000;
-
-    /// <summary>The shell wants an STA thread (as for opening an archived file): a dedicated one, never the pool's or the UI's.</summary>
-    internal static readonly object s_recycleLock = new();   // internal: the first-run setup's old-copy cleanup takes the same lock
-
-    private static void RecycleViaShell(string path, nint owner)
-    {
-        string full = System.IO.Path.GetFullPath(path);
-        if (owner == 0) owner = OwnerHandle();
-        lock (s_recycleLock)   // never two shell operations at once
-        {
-            Exception? error = null;
-            var t = new Thread(() =>
-            {
-                try { RecycleCore(full, owner); }
-                catch (Exception ex) { error = ex; }
-            }) { IsBackground = true, Name = "Clink.RecycleScreenshot" };
-            t.SetApartmentState(ApartmentState.STA);
-            t.Start();
-            t.Join();   // no timeout: the caller is a pool thread the UI awaits, and the row stays "deleting" until the shell is done
-            if (error != null) throw new IOException(error.Message, error);
-        }
-    }
-
-    private static unsafe void RecycleCore(string path, nint owner)
-    {
-        string from = path + "\0\0";   // a double-null terminated list of one
-        fixed (char* pFrom = from)
-        {
-            var op = new Windows.Win32.UI.Shell.SHFILEOPSTRUCTW
-            {
-                hwnd = new Windows.Win32.Foundation.HWND(owner),
-                wFunc = FO_DELETE,
-                pFrom = pFrom,
-                fFlags = (ushort)(FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT | FOF_WANTNUKEWARNING),
-            };
-            int rc = Windows.Win32.PInvoke.SHFileOperation(ref op);
-            if (rc != 0 || op.fAnyOperationsAborted) throw new IOException("The file could not be moved to the Recycle Bin (code 0x" + rc.ToString("X") + ")");
-        }
-        if (File.Exists(path)) throw new IOException("The file is still there after the move to the Recycle Bin");
-    }
+    /// <summary>One shell Recycle Bin operation at a time (internal: the first-run setup's old-copy cleanup takes the same lock).</summary>
+    internal static object s_recycleLock => RecycleBin.Lock;
 
     private const uint DriveFixed = 3;
 

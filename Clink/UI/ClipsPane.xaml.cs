@@ -448,7 +448,7 @@ public partial class ClipsPane : UserControl
 
     internal async Task ShareAsync(ClipRow row)
     {
-        if (row.IsUploading) return;
+        if (row.IsUploading || row.IsDeleting) return;
         row.Status = null;
         row.IsProblem = false;   // a retry after a failure is progress again, not amber
         row.Progress = 0;
@@ -493,7 +493,7 @@ public partial class ClipsPane : UserControl
     private async void Trim_Click(object sender, RoutedEventArgs e)
     {
         var row = RowOf(sender);
-        if (row == null) return;
+        if (row == null || row.IsDeleting) return;
         if (!await EnsureFileAsync(row)) { SayCannot(row, "trim"); return; }
         TrimRequested?.Invoke(row.Entry);
     }
@@ -505,6 +505,51 @@ public partial class ClipsPane : UserControl
         if (!await EnsureFileAsync(row)) { SayCannot(row, "open its folder"); return; }
         try { Process.Start("explorer.exe", $"/select,\"{row.Entry.Path}\""); }
         catch (Exception ex) { App.Say("Could not open folder: " + ex.Message); }
+    }
+
+    private ClipDeleter NewDeleter() => new(App.Library, () => App.Settings.ClipsFolder, () => App.Settings.ArchivePath) { IsTrimOpen = e => TrimWindow.Find(e) != null, IsUploading = App.IsUploading };
+
+    /// <summary>
+    /// The Delete button: refuses first what cannot be deleted (a clip whose trim window is open, a file outside the clips / archive
+    /// folder), then asks (unless "Do not ask again" was ticked), then sends the file to the Recycle Bin off the UI thread. A shared
+    /// clip stays in the Shared list with its link; the trims of a deleted clip stay and become top-level rows.
+    /// </summary>
+    private async void ClipDelete_Click(object sender, RoutedEventArgs e)
+    {
+        var row = RowOf(sender);
+        if (row == null) return;
+        await DeleteClipAsync(row);
+    }
+
+    internal async Task DeleteClipAsync(ClipRow row)
+    {
+        if (!row.CanDelete) return;
+        if (row.IsUploading) { row.SetProblem(ClipDeleter.ProblemText(ClipDeleteResult.Uploading)); return; }
+        var deleter = NewDeleter();
+        if (deleter.Precheck(row.Entry) is { } refused) { row.SetProblem(ClipDeleter.ProblemText(refused)); return; }
+        var owner = Window.GetWindow(this) ?? Application.Current?.MainWindow;
+        if (ClipDeleter.ConfirmNeeded(App.Settings))
+        {
+            string body = ClipDeleter.ConfirmBody(row.Title, ClipDeleter.HasTrims(App.Library.Entries, row.Entry), row.IsShared);
+            var dialog = new ClipDeleteConfirmWindow(body, owner);
+            bool confirmed = dialog.ShowDialog() == true && dialog.Confirmed;
+            if (!confirmed) return;
+            if (ClipDeleter.Remember(confirmed, dialog.DoNotAskAgain))
+            {
+                App.Settings.ClipDeleteConfirmDismissed = true;
+                try { App.Settings.Save(); } catch (Exception ex) { Log.Warn("settings: " + ex.Message); }
+            }
+        }
+        nint ownerHandle = 0;
+        try { if (owner != null) ownerHandle = new System.Windows.Interop.WindowInteropHelper(owner).Handle; }
+        catch { }
+        row.IsDeleting = true;
+        var result = ClipDeleteResult.Failed;
+        try { result = await deleter.DeleteAsync(row.Entry, ownerHandle); }   // IsDeleting stays set until the shell call returns
+        catch (Exception ex) { Log.Warn("library: clip delete: " + ex.Message); }
+        finally { row.IsDeleting = false; }
+        if (result == ClipDeleteResult.Deleted) Refresh();   // (the library says so too, via Changed)
+        else row.SetProblem(ClipDeleter.ProblemText(result));
     }
 
     private object? _pressed;   // the row (clip or screenshot) the left button went down on: a click that began elsewhere must not open this one
@@ -532,6 +577,7 @@ public partial class ClipsPane : UserControl
     {
         var row = RowOf(sender);
         if (row == null || e.Handled || !ClickedOn(row)) return;
+        if (row.IsDeleting) { e.Handled = true; return; }   // a click on the disabled Delete button reaches the row: it must not play the file being recycled
         if (OnButton(e, sender)) return;
         if (!row.HasLocalFile && !row.Entry.IsArchived) return;   // a shared clip whose file is gone has nothing to play
         e.Handled = true;
@@ -542,13 +588,14 @@ public partial class ClipsPane : UserControl
     {
         e.Handled = true;   // the row around the thumbnail would play the clip a second time
         var row = RowOf(sender);
-        if (row == null || !ClickedOn(row)) return;
+        if (row == null || !ClickedOn(row) || row.IsDeleting) return;
         await PlayAsync(row);
     }
 
     /// <summary>Plays a clip: the window opens its player; with nobody listening the system's own player does.</summary>
     private async Task PlayAsync(ClipRow row)
     {
+        if (row.IsDeleting) return;
         if (!await EnsureFileAsync(row)) { SayCannot(row, "play it"); return; }
         if (PlayRequested is { } play) { play(row.Entry); return; }
         string path = row.Entry.Path;
@@ -820,7 +867,7 @@ internal sealed class ClipRow : INotifyPropertyChanged
 
     public ClipEntry Entry { get; }
     private BitmapSource? _thumb;
-    private bool _uploading, _problem, _hasLocal = true, _gone;
+    private bool _uploading, _problem, _hasLocal = true, _gone, _deleting;
     private double _progress;
     private string? _status;
 
@@ -870,6 +917,10 @@ internal sealed class ClipRow : INotifyPropertyChanged
     public bool Looking { get; set; }
     public BitmapSource? Thumbnail { get => _thumb; set { _thumb = value; Raise(); } }
     public bool IsUploading { get => _uploading; set { _uploading = value; Raise(); } }
+    /// <summary>The Recycle Bin call for this clip is under way.</summary>
+    public bool IsDeleting { get => _deleting; set { _deleting = value; Raise(); Raise(nameof(CanDelete)); } }
+    /// <summary>The Delete button is on unless a delete is under way (while it uploads a click says so, instead of falling through to the row and playing the clip).</summary>
+    public bool CanDelete => !_deleting;
     public double Progress { get => _progress; set { _progress = value; Raise(); } }
     public string? Status { get => _status; set { _status = value; Raise(); } }
     /// <summary>The status line is a problem (amber) rather than progress (accent).</summary>

@@ -1,0 +1,37 @@
+<Window x:Class="Clink.UI.ClipDeleteConfirmWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Delete clip?" Width="400" SizeToContent="Height"
+        WindowStyle="None" ResizeMode="NoResize" AllowsTransparency="True" Background="Transparent"
+        WindowStartupLocation="CenterScreen" ShowInTaskbar="False" FontFamily="{StaticResource UiFont}" TextOptions.TextFormattingMode="Display"
+        PreviewKeyDown="Window_PreviewKeyDown" Loaded="Window_Loaded">
+    <Window.Resources>
+        <!-- the confirming button: the primary look in the Danger colour (every brush a DynamicResource, so it follows the theme; Bg for the text, which is per theme where OnAccent is per accent) -->
+        <Style x:Key="DeleteConfirmButton" TargetType="Button" BasedOn="{StaticResource AccentButton}">
+            <Setter Property="Background" Value="{DynamicResource Danger}" />
+            <Setter Property="Foreground" Value="{DynamicResource Bg}" />
+        </Style>
+    </Window.Resources>
+    <Border Background="{DynamicResource Bg}" CornerRadius="10" BorderBrush="{DynamicResource Border}" BorderThickness="1">
+        <DockPanel>
+            <Grid DockPanel.Dock="Top" Height="44" MouseLeftButtonDown="Header_MouseLeftButtonDown" Background="Transparent">
+                <TextBlock Style="{StaticResource Display}" Text="Delete clip?" Margin="16,0,0,0" VerticalAlignment="Center" />
+            </Grid>
+
+            <Border DockPanel.Dock="Bottom" Padding="16,10,16,14" BorderBrush="{DynamicResource Border}" BorderThickness="0,1,0,0">
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <!-- Cancel is the default and the Esc button: Enter must never delete (Delete is a deliberate click) -->
+                    <Button x:Name="CancelButton" Content="Cancel" MinWidth="84" Margin="0,0,8,0" Click="Cancel_Click" IsCancel="True" IsDefault="True" />
+                    <Button x:Name="DeleteButton" Style="{StaticResource DeleteConfirmButton}" Content="Delete" MinWidth="84" Padding="14,5" Click="Delete_Click"
+                            AutomationProperties.Name="Delete clip" />
+                </StackPanel>
+            </Border>
+
+            <StackPanel Margin="16,4,16,16">
+                <TextBlock x:Name="BodyText" TextWrapping="Wrap" Margin="2,4,2,0" />
+                <CheckBox x:Name="DoNotAskCheck" Margin="2,14,0,0" IsChecked="False" Content="Do not ask again"
+                          ToolTip="Delete goes straight to the Recycle Bin from now on. Settings, Alerts, Reset &quot;Don't show again&quot; brings this question back" />
+            </StackPanel>
+        </DockPanel>
+    </Border>
+</Window>
