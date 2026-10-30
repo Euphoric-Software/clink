@@ -35,11 +35,19 @@ client secret. After the profile exists, grant only **Artifact Signing Certifica
 scope. Use a separate Entra application from Kithnote so each repository can sign only through its own profile.
 
 Federation uses GitHub issuer `https://token.actions.githubusercontent.com`, audience `api://AzureADTokenExchange`,
-repository `Euphoric-Software/clink`. The dev subject is exactly `repo:Euphoric-Software/clink:ref:refs/heads/dev`;
-stable uses `repo:Euphoric-Software/clink:ref:refs/tags/vX.Y.Z` for the actual release tag. Standard credentials do not
-accept a `v*` subject wildcard. Add exact-tag credentials for releases, or separately review Microsoft's flexible
+repository `Euphoric-Software/clink`. This repository uses GitHub's immutable subject format (verified through
+`GET /repos/Euphoric-Software/clink/actions/oidc/customization/sub`), with organization ID `347167921` and repository
+ID `1427759131`. The dev subject is exactly:
+
+```text
+repo:Euphoric-Software@347167921/clink@1427759131:ref:refs/heads/dev
+```
+
+For a stable release, replace the final `refs/heads/dev` with its exact `refs/tags/vX.Y.Z`. Standard credentials do
+not accept a `v*` subject wildcard. Add exact-tag credentials for releases, or separately review Microsoft's flexible
 federated credentials before adopting a tag expression. Do not authorize pull requests. This works without GitHub
-environments on a private Free repository.
+environments on a private Free repository. Recheck the actual `sub_claim_prefix` when changing federation; name-only
+examples do not match this repository's current tokens.
 
 Set these **repository Actions variables**, not feed-signing secrets:
 
