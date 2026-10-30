@@ -138,6 +138,15 @@ internal static class ClipGrouping
         return result;
     }
 
+    /// <summary>The trims <see cref="Flatten"/> puts under <paramref name="parent"/> (also while it is collapsed; trims of trims included), newest first.</summary>
+    public static List<T> TrimsOf<T>(IReadOnlyList<T> items, Func<T, ClipEntry> entryOf, T parent) where T : class
+    {
+        string key = Key(entryOf(parent).Path);
+        return Flatten(items, entryOf, NewExpanded(new[] { key }))
+            .Where(f => f.Kind == ClipRowKind.Child && string.Equals(f.GroupKey, key, StringComparison.OrdinalIgnoreCase))
+            .Select(f => f.Item).ToList();
+    }
+
     /// <summary>
     /// The rows of the Local level. With the Trimmed filter on, <paramref name="filtered"/> (the trims, already picked) is listed flat,
     /// exactly as before; otherwise <paramref name="all"/> (every local clip) is nested by <see cref="Flatten"/>.

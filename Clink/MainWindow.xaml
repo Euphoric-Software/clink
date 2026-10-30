@@ -474,7 +474,7 @@
                                                 <ColumnDefinition Width="*" />
                                             </Grid.ColumnDefinitions>
                                             <Button Style="{StaticResource SmallButton}" Content="Reset &quot;Don't show again&quot;" Click="ResetNotices_Click" VerticalAlignment="Center" />
-                                            <TextBlock Grid.Column="1" Style="{StaticResource MutedText}" Margin="10,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap" Text="Shows dismissed warnings, such as the yellow capture border notice, again." />
+                                            <TextBlock Grid.Column="1" Style="{StaticResource MutedText}" Margin="10,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap" Text="Shows dismissed warnings and questions, such as the yellow capture border notice and the delete clip pop-up, again." />
                                         </Grid>
                                     </StackPanel>
                                 </Border>

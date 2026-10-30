@@ -448,7 +448,7 @@ public partial class ClipsPane : UserControl
 
     internal async Task ShareAsync(ClipRow row)
     {
-        if (row.IsUploading) return;
+        if (row.IsUploading || row.IsDeleting) return;
         row.Status = null;
         row.IsProblem = false;   // a retry after a failure is progress again, not amber
         row.Progress = 0;
@@ -493,7 +493,7 @@ public partial class ClipsPane : UserControl
     private async void Trim_Click(object sender, RoutedEventArgs e)
     {
         var row = RowOf(sender);
-        if (row == null) return;
+        if (row == null || row.IsDeleting) return;
         if (!await EnsureFileAsync(row)) { SayCannot(row, "trim"); return; }
         TrimRequested?.Invoke(row.Entry);
     }
@@ -505,6 +505,94 @@ public partial class ClipsPane : UserControl
         if (!await EnsureFileAsync(row)) { SayCannot(row, "open its folder"); return; }
         try { Process.Start("explorer.exe", $"/select,\"{row.Entry.Path}\""); }
         catch (Exception ex) { App.Say("Could not open folder: " + ex.Message); }
+    }
+
+    private ClipDeleter NewDeleter() => new(App.Library, () => App.Settings.ClipsFolder, () => App.Settings.ArchivePath) { IsTrimOpen = e => TrimWindow.Find(e) != null, IsUploading = App.IsUploading };
+
+    /// <summary>A deleter that also counts an upload the given rows show (the row knows before the app does).</summary>
+    private ClipDeleter NewDeleter(IReadOnlyList<ClipRow> rows)
+    {
+        var d = NewDeleter();
+        var byEntry = rows.ToDictionary(r => r.Entry, r => r, ReferenceEqualityComparer.Instance as IEqualityComparer<ClipEntry>);
+        var app = d.IsUploading;
+        d.IsUploading = e => app(e) || (byEntry.TryGetValue(e, out var r) && r.IsUploading);
+        return d;
+    }
+
+    /// <summary>
+    /// The Delete button: refuses first what cannot be deleted (a clip whose trim window is open, a file outside the clips / archive
+    /// folder), then asks (unless "Do not ask again" was ticked), then sends the file to the Recycle Bin off the UI thread. A shared
+    /// clip stays in the Shared list with its link. A clip with trims nested under it asks for the clip alone (its trims stay and
+    /// become top-level rows) or the clip and its trims (all go to the Recycle Bin, stopping at the first failure).
+    /// </summary>
+    private async void ClipDelete_Click(object sender, RoutedEventArgs e)
+    {
+        var row = RowOf(sender);
+        if (row == null) return;
+        await DeleteClipAsync(row);
+    }
+
+    internal async Task DeleteClipAsync(ClipRow row)
+    {
+        if (!row.CanDelete) return;
+        if (row.IsUploading) { row.SetProblem(ClipDeleter.ProblemText(ClipDeleteResult.Uploading)); return; }
+        var deleter = NewDeleter();
+        if (deleter.Precheck(row.Entry) is { } refused) { row.SetProblem(ClipDeleter.ProblemText(refused)); return; }
+        var owner = Window.GetWindow(this) ?? Application.Current?.MainWindow;
+        // Trims nested under this row (what the list shows under it, collapsed or not): the pop-up then offers the clip alone or with them.
+        var trimRows = row.IsParent ? ClipGrouping.TrimsOf(_localAll, r => r.Entry, row) : new List<ClipRow>();
+        bool withTrimsMode = ClipDeleter.TrimsMode(trimRows.Count);
+        // an upload under way on a trim row counts too (the row knows before the app does)
+        var trimDeleter = withTrimsMode ? NewDeleter(trimRows.Append(row).ToList()) : deleter;
+        bool deleteTrims = false;
+        if (ClipDeleter.ConfirmNeeded(App.Settings, trimRows.Count))
+        {
+            string body = withTrimsMode
+                ? ClipDeleter.ConfirmBodyWithTrims(row.Title, trimRows.Count, row.IsShared)
+                : ClipDeleter.ConfirmBody(row.Title, ClipDeleter.HasTrims(App.Library.Entries, row.Entry), row.IsShared);
+            string? blocked = withTrimsMode
+                ? ClipDeleter.TrimsBlockedText(trimDeleter.PrecheckTrims(trimRows.Select(r => r.Entry)), trimRows.Any(r => r.IsDeleting))
+                : null;
+            var dialog = new ClipDeleteConfirmWindow(body, owner, trimRows.Count, blocked);
+            bool confirmed = dialog.ShowDialog() == true && dialog.Confirmed;
+            if (!confirmed) return;
+            deleteTrims = dialog.Choice == ClipDeleteChoice.ClipAndTrims;
+            if (ClipDeleter.Remember(confirmed, dialog.DoNotAskAgain))
+            {
+                App.Settings.ClipDeleteConfirmDismissed = true;
+                try { App.Settings.Save(); } catch (Exception ex) { Log.Warn("settings: " + ex.Message); }
+            }
+        }
+        nint ownerHandle = 0;
+        try { if (owner != null) ownerHandle = new System.Windows.Interop.WindowInteropHelper(owner).Handle; }
+        catch { }
+        if (deleteTrims)
+        {
+            // state may have changed while the pop-up was open: DeleteWithTrimsAsync prechecks every file again before it touches any
+            // a trim's own delete may have started while the pop-up was open: both would race on that file, so none goes
+            if (trimRows.Any(r => r.IsDeleting)) { row.SetProblem("Nothing was deleted: one of its trims is already being deleted."); return; }
+            var all = trimRows.Append(row).ToList();
+            var mine = all.Where(r => !r.IsDeleting).ToList();   // only the rows this operation marks are cleared again
+            foreach (var r in mine) r.IsDeleting = true;
+            ClipDeleter.TreeOutcome outcome = new(ClipDeleteResult.Failed, 0, all.Count);
+            try { outcome = await trimDeleter.DeleteWithTrimsAsync(row.Entry, trimRows.Select(r => r.Entry).ToList(), ownerHandle); }
+            catch (Exception ex) { Log.Warn("library: clip delete: " + ex.Message); }
+            finally { foreach (var r in mine) r.IsDeleting = false; }
+            if (outcome.Result == ClipDeleteResult.Deleted) Refresh();
+            else
+            {
+                Refresh();   // the trims that did go leave the list
+                row.SetProblem(ClipDeleter.TreeProblemText(outcome));
+            }
+            return;
+        }
+        row.IsDeleting = true;
+        var result = ClipDeleteResult.Failed;
+        try { result = await deleter.DeleteAsync(row.Entry, ownerHandle); }   // IsDeleting stays set until the shell call returns
+        catch (Exception ex) { Log.Warn("library: clip delete: " + ex.Message); }
+        finally { row.IsDeleting = false; }
+        if (result == ClipDeleteResult.Deleted) Refresh();   // (the library says so too, via Changed)
+        else row.SetProblem(ClipDeleter.ProblemText(result));
     }
 
     private object? _pressed;   // the row (clip or screenshot) the left button went down on: a click that began elsewhere must not open this one
@@ -532,6 +620,7 @@ public partial class ClipsPane : UserControl
     {
         var row = RowOf(sender);
         if (row == null || e.Handled || !ClickedOn(row)) return;
+        if (row.IsDeleting) { e.Handled = true; return; }   // a click on the disabled Delete button reaches the row: it must not play the file being recycled
         if (OnButton(e, sender)) return;
         if (!row.HasLocalFile && !row.Entry.IsArchived) return;   // a shared clip whose file is gone has nothing to play
         e.Handled = true;
@@ -542,13 +631,14 @@ public partial class ClipsPane : UserControl
     {
         e.Handled = true;   // the row around the thumbnail would play the clip a second time
         var row = RowOf(sender);
-        if (row == null || !ClickedOn(row)) return;
+        if (row == null || !ClickedOn(row) || row.IsDeleting) return;
         await PlayAsync(row);
     }
 
     /// <summary>Plays a clip: the window opens its player; with nobody listening the system's own player does.</summary>
     private async Task PlayAsync(ClipRow row)
     {
+        if (row.IsDeleting) return;
         if (!await EnsureFileAsync(row)) { SayCannot(row, "play it"); return; }
         if (PlayRequested is { } play) { play(row.Entry); return; }
         string path = row.Entry.Path;
@@ -820,7 +910,7 @@ internal sealed class ClipRow : INotifyPropertyChanged
 
     public ClipEntry Entry { get; }
     private BitmapSource? _thumb;
-    private bool _uploading, _problem, _hasLocal = true, _gone;
+    private bool _uploading, _problem, _hasLocal = true, _gone, _deleting;
     private double _progress;
     private string? _status;
 
@@ -870,6 +960,10 @@ internal sealed class ClipRow : INotifyPropertyChanged
     public bool Looking { get; set; }
     public BitmapSource? Thumbnail { get => _thumb; set { _thumb = value; Raise(); } }
     public bool IsUploading { get => _uploading; set { _uploading = value; Raise(); } }
+    /// <summary>The Recycle Bin call for this clip is under way.</summary>
+    public bool IsDeleting { get => _deleting; set { _deleting = value; Raise(); Raise(nameof(CanDelete)); } }
+    /// <summary>The Delete button is on unless a delete is under way (while it uploads a click says so, instead of falling through to the row and playing the clip).</summary>
+    public bool CanDelete => !_deleting;
     public double Progress { get => _progress; set { _progress = value; Raise(); } }
     public string? Status { get => _status; set { _status = value; Raise(); } }
     /// <summary>The status line is a problem (amber) rather than progress (accent).</summary>
