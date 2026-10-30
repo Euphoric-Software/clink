@@ -94,6 +94,14 @@ internal static class CopiumConnect
         return "Clink-" + (name.Length == 0 ? "PC" : name) + suffix;
     }
 
+    /// <summary>The (already sanitized) name with <paramref name="suffix"/> appended, cut so the whole stays within 40 characters. No-op when it already ends with the suffix.</summary>
+    internal static string WithSuffix(string name, string suffix)
+    {
+        if (name.EndsWith(suffix, StringComparison.OrdinalIgnoreCase)) return name;
+        string head = Clean(name, MaxTokenNameLength - suffix.Length);
+        return (head.Length == 0 ? "Clink" : head) + suffix;
+    }
+
     /// <summary>The user's token name made safe: trimmed, no control or format characters, one space between words, at most 40 characters; the default when nothing is left.</summary>
     internal static string SanitizeTokenName(string? name)
     {
@@ -179,9 +187,14 @@ internal static class CopiumConnect
 
     // ------------------------------------------------------------------ wait
 
-    /// <summary>Polls until the user approves in the browser. Returns the upload token and the username.</summary>
-    public static async Task<ConnectResult> WaitAsync(ConnectStart start, CancellationToken ct)
+    /// <summary>
+    /// Polls until the user approves in the browser. Returns the upload token and the username.
+    /// <paramref name="onRetrying"/> (optional) is told true when polling starts backing off (Copium cannot be reached) and false when an answer comes again.
+    /// </summary>
+    public static async Task<ConnectResult> WaitAsync(ConnectStart start, CancellationToken ct, Action<bool>? onRetrying = null)
     {
+        bool retrying = false;
+        void Retrying(bool now) { if (now == retrying) return; retrying = now; try { onRetrying?.Invoke(now); } catch (Exception ex) { Log.Warn("copium: connect: progress listener failed: " + ex.GetType().Name); } }
         TimeSpan interval = ClampInterval(start.Interval.TotalSeconds);
         TimeSpan deadline = start.ExpiresIn < MaxWait ? start.ExpiresIn : MaxWait;
         long t0 = Stopwatch.GetTimestamp();
@@ -194,20 +207,20 @@ internal static class CopiumConnect
             while (true)
             {
                 ct.ThrowIfCancellationRequested();
-                if (Elapsed() >= deadline) throw Fail(ConnectFailure.Expired, "wait", "The code ran out - press Sign in again");
+                TimeSpan left = deadline - Elapsed();   // one clock read: the check and the clamp see the same value
+                if (left <= TimeSpan.Zero) throw Fail(ConnectFailure.Expired, "wait", "The code ran out - press Sign in again");
                 TimeSpan pause = backoff > TimeSpan.Zero ? backoff : interval;
-                TimeSpan remaining = deadline - Elapsed();
-                if (pause > remaining) pause = remaining;   // the overall deadline wins over a long back-off
+                if (pause > left) pause = left;   // the overall deadline wins over a long back-off
                 await Delay(pause, ct).ConfigureAwait(false);
                 waited += pause;
                 ct.ThrowIfCancellationRequested();
-                if (Elapsed() >= deadline) throw Fail(ConnectFailure.Expired, "wait", "The code ran out - press Sign in again");
+                if (deadline - Elapsed() <= TimeSpan.Zero) throw Fail(ConnectFailure.Expired, "wait", "The code ran out - press Sign in again");
 
                 int code; string text; TimeSpan? retryAfter = null;
                 try { (code, text, retryAfter) = await SendAsync(HttpMethod.Post, "/api/connect/poll", new { pollKey = start.PollKey }, null, ct).ConfigureAwait(false); }
                 catch (ConnectException ex) when (ex.Failure == ConnectFailure.Network) { code = -1; text = ""; }
 
-                if (code == 202) { backoff = TimeSpan.Zero; continue; }
+                if (code == 202) { backoff = TimeSpan.Zero; Retrying(false); continue; }
                 if (code == 200) return ReadApproval(text);
                 if (code == 410) throw Fail(ConnectFailure.Expired, "wait", "That connection expired - press Sign in again");
                 // Copium's own refusal is a JSON { "error": ... }; a 403 that is not (a Cloudflare / WAF challenge page) is a passing problem.
@@ -218,6 +231,7 @@ internal static class CopiumConnect
                     next = next < MaxBackoff ? next : MaxBackoff;
                     if (code == 429 && retryAfter is { } ra) next = ra < next ? next : ra < MaxRetryAfter ? ra : MaxRetryAfter;   // Retry-After: at least the back-off, at most 60 s
                     backoff = next;
+                    Retrying(true);
                     continue;
                 }
                 throw Fail(ConnectFailure.Unexpected, "wait", $"Copium sent an unexpected answer (HTTP {code})");
@@ -268,16 +282,19 @@ internal static class CopiumConnect
     }
 
     /// <summary>
-    /// DELETE /api/connect/token: asks Copium to drop this token. true = done (any 2xx) or already gone (401: revoked / replaced, so signed out anyway),
-    /// null = this Copium cannot do that (404), false = anything else (3xx, 403, 5xx, network). Throws <see cref="ConnectException"/> (Cancelled) when cancelled.
+    /// DELETE /api/connect/token: asks Copium to drop this token. true = done (any 2xx) or already gone (401: revoked / replaced; a 403 with Copium's
+    /// JSON and <c>signedOut: true</c> or <c>banned: true</c>: the account's access was revoked server-side), null = this Copium cannot do that (404),
+    /// false = anything else (3xx, any other 403 such as "This app connection can't do that" from a token scope without the route, 5xx, network).
+    /// Throws <see cref="ConnectException"/> (Cancelled) when cancelled.
     /// </summary>
     public static async Task<bool?> RevokeSelfAsync(string token, CancellationToken ct)
     {
         try
         {
-            var (code, _, _) = await SendAsync(HttpMethod.Delete, "/api/connect/token", null, token, ct).ConfigureAwait(false);
+            var (code, text, _) = await SendAsync(HttpMethod.Delete, "/api/connect/token", null, token, ct).ConfigureAwait(false);
             if (code >= 200 && code <= 299) { Log.Info("copium: connect: token revoked"); return true; }
             if (code == 401) { Log.Info("copium: connect: token was already revoked"); return true; }
+            if (code == 403 && AccessRevoked(text)) { Log.Info("copium: connect: the account's access was already revoked"); return true; }
             if (code == 404) { Log.Info("copium: connect: this Copium has no self-revoke"); return null; }
             Log.Warn($"copium: connect: revoke failed (HTTP {code})");
             return false;
@@ -286,6 +303,21 @@ internal static class CopiumConnect
         {
             return false;
         }
+    }
+
+    /// <summary>Copium's 403 for an account whose access it revoked itself (server/auth.js): a JSON object with <c>signedOut: true</c> (membership lost) or <c>banned: true</c>.</summary>
+    private static bool AccessRevoked(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        try
+        {
+            using var doc = JsonDocument.Parse(text);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return false;
+            return (root.TryGetProperty("signedOut", out var s) && s.ValueKind == JsonValueKind.True)
+                || (root.TryGetProperty("banned", out var b) && b.ValueKind == JsonValueKind.True);
+        }
+        catch (JsonException) { return false; }
     }
 
     // ------------------------------------------------------------------ plumbing

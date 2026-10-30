@@ -1017,6 +1017,8 @@ internal sealed partial class AppController : IDisposable
         Library.FreezeSaves();
         Interlocked.Increment(ref _startGen);   // a recorder start that has not begun is cancelled
         _starting = false;
+        // A sign-in stops too: its token could not be saved any more (saves are frozen), so a late approval is revoked, not stored.
+        try { _signIn?.Shutdown(); } catch (Exception ex) { Log.Warn("restart: sign-in: " + ex.Message); }
         try
         {
             if (_engineGate.Wait(RecorderStopLimit)) { try { Engine.Stop(); } finally { _engineGate.Release(); } }
@@ -2124,6 +2126,7 @@ internal sealed partial class AppController : IDisposable
         _disposed = true;
         Log.Info("Quitting");
         _cts.Cancel();
+        try { _signIn?.Shutdown(); } catch (Exception ex) { Log.Warn("Exit: sign-in: " + ex.Message); }   // no network wait: a late approval is simply never stored
         _timer?.Stop();
         SettingsImport.PendingChanged -= OnImportPending;
         SystemEvents.DisplaySettingsChanged -= OnDisplayChanged;

@@ -58,6 +58,26 @@ internal sealed class ConsentGate
     /// <summary>The pop-up offers the "upload every screenshot" box for a screenshot action. Not for a clip, and not when the user is turning that very setting on.</summary>
     public static bool OffersAutoUpload(ConsentContext context) => context is ConsentContext.ScreenshotUploadManual or ConsentContext.ScreenshotUploadLibrary or ConsentContext.Proactive;
 
+    /// <summary>
+    /// The welcome's "Automatically upload every screenshot I take" box when it opens (D1): ticked while the user has not agreed to sharing
+    /// yet (it only takes effect with "Start sharing"); with consent already given, the setting as it is.
+    /// </summary>
+    public static bool WelcomeInitialAutoUpload(Settings s) => !s.CopiumConsent || s.ScreenshotUpload;
+
+    /// <summary>
+    /// The welcome's answer. "Start sharing": consent, and the automatic screenshot upload exactly as the box says. "Not now": no consent change.
+    /// Either way the welcome counts as shown. Only these three settings are ever touched: clips and videos are never uploaded automatically (D3).
+    /// </summary>
+    public static void ApplyWelcome(Settings s, bool startSharing, bool autoUpload)
+    {
+        if (startSharing)
+        {
+            s.CopiumConsent = true;
+            s.ScreenshotUpload = autoUpload;
+        }
+        s.CopiumWelcomeShown = true;
+    }
+
     /// <summary>A clip context has its own "no token" path (the share window), so the gate does not also open the token setup.</summary>
     private static bool IsClip(ConsentContext context) => context is ConsentContext.ClipShare or ConsentContext.ShareLast or ConsentContext.TrimShare;
 

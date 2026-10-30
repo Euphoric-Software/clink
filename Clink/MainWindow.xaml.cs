@@ -1432,8 +1432,9 @@ public partial class MainWindow : Window
     private async void TokenSave_Click(object sender, RoutedEventArgs e)
     {
         string t = TokenBox.Password.Trim();
-        _app.Settings.SetCopiumToken(string.IsNullOrEmpty(t) ? null : t);   // a pasted token: no account name, not via Connect
-        _app.Settings.Save();
+        // A pasted token (no account name, not via Connect), stored, saved and published by the sign-in session in one step: it stops any
+        // sign-in first, so a late approval can never overwrite what the user just saved.
+        _app.SaveManualCopiumToken(string.IsNullOrEmpty(t) ? null : t);
         TokenSaveButton.IsEnabled = false;
         if (string.IsNullOrEmpty(t)) { CopiumStatus.Text = "Not connected"; CopiumStatus.SetResourceReference(TextBlock.ForegroundProperty, "Muted"); }
         else if (!t.StartsWith("eup_")) { CopiumStatus.Text = "Saved (tokens usually start with eup_)"; CopiumStatus.SetResourceReference(TextBlock.ForegroundProperty, "Warn"); }
