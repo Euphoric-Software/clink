@@ -240,6 +240,28 @@ try {
         Assert-True (-not (Test-Path -LiteralPath (Join-Path $out 'Clink-Setup.exe.sha256'))) 'a setup .sha256 exists although no setup exe was produced'
     }
 
+    Invoke-Test 'installer signatures change the bytes before all installer hashes are calculated; signer failure prevents metadata' {
+        $out = Get-ScratchFolder 'pkg-signed-installer'
+        $fake = New-FakeIscc 'fake-iscc-signing' (Join-Path $out 'Clink-Setup.exe')
+        $parameters = @{ ExePath = $scExe; FrameworkExePath = $fxExe; Version = '0.4.2'; OutDir = $out; MinRuntime = '10.0.0'; IsccPath = $fake.Cmd; RuntimeInfoPath = $runtimeInfo; RequireInstaller = $true; SkipVersionCheck = $true; SkipSetupSizeCheck = $true }
+        & $packageScript @parameters -SignInstaller { param($file) [System.IO.File]::AppendAllText($file, 'synthetic-signature') } | Out-Null
+        $setup = Join-Path $out 'Clink-Setup.exe'
+        Assert-True ([System.IO.File]::ReadAllText($setup).EndsWith('synthetic-signature')) 'signer did not alter installer bytes'
+        $hash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant()
+        $metadata = Get-Content -LiteralPath (Join-Path $out 'package.json') -Raw | ConvertFrom-Json
+        Assert-True ($metadata.files.installer.sha256 -ceq $hash) 'package.json hashed the installer before signing'
+        Assert-True ($metadata.files.installer.size -eq (Get-Item -LiteralPath $setup).Length) 'package.json has the unsigned size'
+        Assert-True ([System.IO.File]::ReadAllText((Join-Path $out 'Clink-Setup.exe.sha256')) -ceq "$hash *Clink-Setup.exe`n") 'checksum file hashed the unsigned installer'
+        $failed = Get-ScratchFolder 'pkg-failed-signer'
+        $parameters.OutDir = $failed
+        $parameters.IsccPath = (New-FakeIscc 'fake-iscc-signing-failure' (Join-Path $failed 'Clink-Setup.exe')).Cmd
+        $threw = $false
+        try { & $packageScript @parameters -SignInstaller { throw 'synthetic signing failure' } | Out-Null } catch { $threw = $_.Exception.Message -match 'synthetic signing failure' }
+        Assert-True $threw 'signer failure was ignored'
+        Assert-True (-not (Test-Path -LiteralPath (Join-Path $failed 'package.json'))) 'metadata was emitted after signing failed'
+        Assert-True (-not (Test-Path -LiteralPath (Join-Path $failed 'Clink-Setup.exe.sha256'))) 'checksum was emitted after signing failed'
+    }
+
     Invoke-Test 'package.ps1 fails closed on a non-zero ISCC exit (output echoed, stale setup sha256 deleted, no package.json) and echoes ISCC warnings' {
         # A fake ISCC that prints and exits 2. A stale Clink-Setup.exe.sha256 from an earlier run sits in the out dir.
         $failOut = Get-ScratchFolder 'pkg-iscc-exit2'

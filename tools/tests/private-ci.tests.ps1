@@ -570,7 +570,7 @@ try {
             Assert-True ($run.IndexOf('throw') -lt $run.IndexOf('Add-Content')) "$name : outputs are written before the refusal"
             Assert-True ($jobs.Publish.IndexOf('- name: Read feed configuration') -lt $jobs.Publish.IndexOf('secrets.') -and $jobs.Publish.IndexOf('- name: Read feed configuration') -lt $jobs.Publish.IndexOf('- name: Create GitHub release (draft)')) "$name : the refusal is not before the first secret and the draft"
             # The build job has no feed gate: it builds and tests whatever feed.json says.
-            Assert-True ($jobs.Build -notmatch 'Read feed configuration' -and $jobs.Build -notmatch 'refusing to publish' -and $jobs.Build -notmatch '\.Enabled') "$name : the build job gates on the feed"
+            Assert-True ($jobs.Build -notmatch 'Read feed configuration' -and $jobs.Build -notmatch 'refusing to publish' -and $jobs.Build -notmatch '\$[A-Za-z_][A-Za-z0-9_]*\.Enabled') "$name : the build job gates on the feed"
             # "A feed that was on stays on" stays as defence in depth.
             Assert-True ($jobs.Publish.Contains('- name: Guard - a feed that was on stays on') -and $jobs.Publish.Contains('Assert-FeedNeverWasOn')) "$name : the defence-in-depth guard is gone"
             # Behaviour against a scratch feed.json: off -> throws, writes nothing; on -> passes.

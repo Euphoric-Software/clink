@@ -20,6 +20,7 @@ param(
     [string]$NoticesPath,   # default <repo>\THIRD-PARTY-NOTICES.txt; must exist
     [string]$IsccPath,
     [string]$ProductVersion,   # the setup's ProductVersion text, e.g. 0.4.2-dev.11+<sha>; default: <Version>+<first 12 hex of the framework exe's commit> (just <Version> when the exe has none); max 50 characters
+    [scriptblock]$SignInstaller, # optional signing callback, called before installer hashes/package.json are calculated
     [switch]$SkipInstaller,     # never build the installer, even when Inno Setup is installed (CI package dry run)
     [switch]$RequireInstaller,   # fail instead of skipping when Inno Setup is missing
     [switch]$SkipSetupSizeCheck, # TEST-ONLY (the script tests use a fake ISCC that writes a tiny file): skips the "setup exe > 1 MiB" check on the ISCC output
@@ -192,6 +193,7 @@ if ($iscc) {
         $setupLength = (Get-Item -LiteralPath $setupPath).Length
         if ($setupLength -le 1048576) { throw "The setup exe $setupPath is only $setupLength bytes (expected more than 1 MiB): ISCC output is not a real installer." }
     }
+    if ($SignInstaller) { & $SignInstaller $setupPath }
     Write-Sha256File $setupName
 } else {
     if (-not $SkipInstaller) { Write-Warning 'Inno Setup 6 (ISCC.exe) not found: installer NOT built.' }

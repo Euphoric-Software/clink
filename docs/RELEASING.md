@@ -18,6 +18,61 @@ How it fits together (decided 2026-10-28):
 
 ## Owner guide
 
+### Windows publisher signing (prepared, disabled until activation)
+
+Windows Authenticode signing is separate from the signed update feed. The stable and dev workflows support Azure
+Artifact Signing behind the repository Actions variable `ARTIFACT_SIGNING_ENABLED`. Keep it unset or `false` while the
+company's identity is under review. A value other than lowercase `true`, `false`, or unset fails validation. Once
+enabled, authentication/signing failures, an invalid signature, a missing timestamp, or an unexpected publisher stop the
+build and prevent publishing. Previously published immutable objects are never re-signed or replaced.
+
+Use the planned Azure account `EuphoricSoftwareLLC` in East US (`https://eus.codesigning.azure.net`), its approved
+**Public** company identity, and a **Public Trust** certificate profile named `clink-public`. The expected publisher is
+`Euphoric Software LLC`; check the approved subject before activation.
+
+Create a single-tenant Entra application/service principal named `clink-github-signing`, without a redirect URI or
+client secret. After the profile exists, grant only **Artifact Signing Certificate Profile Signer** at that profile's
+scope. Use a separate Entra application from Kithnote so each repository can sign only through its own profile.
+
+Federation uses GitHub issuer `https://token.actions.githubusercontent.com`, audience `api://AzureADTokenExchange`,
+repository `Euphoric-Software/clink`. The dev subject is exactly `repo:Euphoric-Software/clink:ref:refs/heads/dev`;
+stable uses `repo:Euphoric-Software/clink:ref:refs/tags/vX.Y.Z` for the actual release tag. Standard credentials do not
+accept a `v*` subject wildcard. Add exact-tag credentials for releases, or separately review Microsoft's flexible
+federated credentials before adopting a tag expression. Do not authorize pull requests. This works without GitHub
+environments on a private Free repository.
+
+Set these **repository Actions variables**, not feed-signing secrets:
+
+| Variable | Value |
+| --- | --- |
+| `ARTIFACT_SIGNING_ENABLED` | `false` until the activation checks pass |
+| `ARTIFACT_SIGNING_ACCOUNT` | `EuphoricSoftwareLLC` |
+| `ARTIFACT_SIGNING_ENDPOINT` | `https://eus.codesigning.azure.net` |
+| `ARTIFACT_SIGNING_PROFILE` | `clink-public` |
+| `ARTIFACT_SIGNING_PUBLISHER` | Exact approved publisher, expected `Euphoric Software LLC` |
+| `AZURE_CLIENT_ID` | Clink Entra application's Application/client ID |
+| `AZURE_TENANT_ID` | Its Directory/tenant ID |
+| `AZURE_SUBSCRIPTION_ID` | Subscription containing the signing account |
+
+The release build jobs have `id-token: write` for OIDC and use no long-lived Azure credentials. The stable job checks
+the tagged commit is on `main` before authenticating; dev signing requires a push or dispatch on `dev`. After the
+existing build checks, both application flavours are signed and verified. `tools/package.ps1` embeds the signed
+framework executable in the installer and calls the optional installer signer before calculating its checksum and
+`package.json`. The pinned Artifact Signing action installs the PowerShell module used by that callback. A callback
+failure aborts packaging. The signed update manifests then describe the final signed bytes. PR build workflows retain no
+signing access.
+
+Activation requires identity **Completed**, profile active, the profile signer assignment propagated, matching
+federation and complete variables. Review/merge the prepared changes, enable signing for a dev release, verify both
+application signatures and the installer signature/timestamps, verify the published checksums/feed, and exercise the
+updater before enabling a stable release. The ordinary `build.ps1`/local packaging flow remains unsigned unless a signer
+is explicitly supplied. Keep existing unsigned-release notices until a signed public release is verified; signing does
+not promise instant SmartScreen reputation.
+
+Offline checks: `pwsh -NoProfile -File tools/tests/windows-signing.tests.ps1`, `tools/tests/packaging.tests.ps1` and
+`tools/tests/private-ci.tests.ps1`. No test needs Azure credentials. A real signing smoke test remains pending until the
+approved certificate profile exists.
+
 ### One-time setup
 
 Do this once, in this order, before the first feed-on release. All of it is clicks except the keys (one script). Never paste a secret
