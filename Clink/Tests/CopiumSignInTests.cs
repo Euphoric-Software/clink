@@ -277,6 +277,7 @@ internal static class CopiumSignInTests
             SignInAndApprove(r);
             Check.Equal(SignInStatus.SignedIn, r.Session.Current.Status);
             Check.False(r.Session.Current.Verified);
+            Check.True(r.Session.Current.AccountCheckFailed, "a failed check is remembered for the note");
             Check.Equal(Token, r.S.CopiumToken, "an /api/me failure never removes the token");
             Check.Equal("Jason", r.S.CopiumAccountName, "the name from the approval");
             Check.True(r.S.CopiumLinkedViaConnect);
@@ -758,11 +759,11 @@ internal static class CopiumSignInTests
         }
         using (var r = Linked(viaConnect: true))
         {
-            r.Session.SaveManualToken(Token);   // the same token pasted again: kept (now as a pasted one), not revoked
+            r.Session.SaveManualToken(Token);   // the same token again: unchanged (still linked, name kept), not revoked
             r.Idle();
             Check.Equal(0, r.Deletes);
             Check.Equal(Token, r.S.CopiumToken);
-            Check.False(r.S.CopiumLinkedViaConnect);
+            Check.True(r.S.CopiumLinkedViaConnect);
         }
     }
 
@@ -1420,6 +1421,140 @@ internal static class CopiumSignInTests
         Check.False(AppController.IsCurrentSignIn(signedIn, signedIn with { Version = 8 }, cloudSharing: true), "something happened since (even another SignedIn)");
         Check.False(AppController.IsCurrentSignIn(signedIn, new SignInState(SignInStatus.SignedOut, Version: 8), cloudSharing: true), "signed out since");
         Check.False(AppController.IsCurrentSignIn(signedIn, signedIn with { Status = SignInStatus.Starting }, cloudSharing: true));
+    }
+
+    [UnitTest]
+    public static void A_queued_sign_in_event_survives_a_cleanup_bump_of_the_same_sign_in_run()
+    {
+        var signedIn = new SignInState(SignInStatus.SignedIn, Version: 7, HasToken: true, LinkedViaConnect: true, Username: "Jason", RunId: 3);
+        Check.True(AppController.IsCurrentSignIn(signedIn, signedIn with { Version = 9, RemoteCleanupName = "PC" }, cloudSharing: true), "a cleanup flag is not a new sign-in");
+        Check.True(AppController.IsCurrentSignIn(signedIn, signedIn with { Version = 10, RemoteCleanupName = null }, cloudSharing: true), "nor is its dismissal");
+        Check.False(AppController.IsCurrentSignIn(signedIn, signedIn with { Version = 9, RunId = 4 }, cloudSharing: true), "another run's SignedIn");
+        Check.False(AppController.IsCurrentSignIn(signedIn, signedIn with { Version = 9, RunId = 0 }, cloudSharing: true), "a token saved by hand since");
+        Check.False(AppController.IsCurrentSignIn(signedIn, signedIn with { Version = 9, Status = SignInStatus.SignedOut }, cloudSharing: true));
+    }
+
+    [UnitTest]
+    public static void An_unrelated_version_bump_between_signed_in_and_the_event_does_not_drop_completed_or_the_welcome()
+    {
+        using var r = Linked(true);
+        r.Delete = () => Json(HttpStatusCode.NotFound, "{}");
+        Check.Equal(SignOutResult.NotSupportedDisconnectOnWebsite, r.Session.SignOutAsync().GetAwaiter().GetResult());
+        Check.True(r.Session.Current.RemoteCleanupName != null, "a cleanup note is pending");
+        bool bumped = false;
+        r.Session.Changed += s =>
+        {
+            if (s.Status == SignInStatus.SignedIn && !bumped) { bumped = true; r.Session.DismissRemoteCleanup(); }   // lands between SignedIn and the event
+        };
+        SignInAndApprove(r);
+        Check.True(bumped);
+        Check.Equal(SignInStatus.SignedIn, r.Session.Current.Status);
+        Check.True(r.Session.Current.RunId != 0);
+        Check.Equal(1, r.CompletedCount);
+        Check.Equal(1, r.Welcomes);
+        r.Session.SaveManualToken(Manual);
+        Check.Equal(0L, r.Session.Current.RunId, "a token by hand ends the run's state");
+    }
+
+    [UnitTest]
+    public static void Saving_the_stored_connect_token_again_keeps_it_linked_and_revokes_nothing()
+    {
+        using var r = Linked(true);
+        r.Session.SaveManualToken("  " + Token + " ");
+        r.Idle();
+        Check.Equal(Token, r.S.CopiumToken);
+        Check.True(r.S.CopiumLinkedViaConnect);
+        Check.Equal("Jason", r.S.CopiumAccountName);
+        Check.Equal(0, r.Deletes);
+        Check.Equal(SignInStatus.SignedIn, r.Session.Current.Status);
+        r.Session.SaveManualToken(Manual);   // a different token still replaces and revokes it
+        r.Idle();
+        Check.False(r.S.CopiumLinkedViaConnect);
+        Check.Equal(1, r.Deletes);
+    }
+
+    [UnitTest]
+    public static void A_token_that_cannot_be_stored_is_revoked_and_the_sign_in_rests_signed_out_with_a_message()
+    {
+        using var r = new Rig();
+        r.Session.AfterStore = () => r.S.CopiumTokenProtected = null;   // what Settings.Protect does when DPAPI fails
+        SignInAndApprove(r);
+        var now = r.Session.Current;
+        Check.Equal(SignInStatus.Failed, now.Status);
+        Check.Equal(SignInFailure.CouldNotSave, now.Failure);
+        Check.Equal("Couldn't save the sign-in on this PC.", now.Message);
+        Check.False(now.HasToken);
+        Check.Null(r.S.CopiumToken);
+        Check.Null(r.S.CopiumAccountName);
+        Check.False(r.S.CopiumLinkedViaConnect, "no partial flag");
+        Check.Equal(1, r.Deletes, "revoked once");
+        Check.Equal(Token, r.Last("DELETE", "/api/connect/token").Bearer);
+        Check.Equal(0, r.Count("GET", "/api/me"));
+        Check.Equal(0, r.CompletedCount);
+        Check.Equal(0, r.Welcomes);
+        Check.False(r.Session.IsRunning);
+    }
+
+    [UnitTest]
+    public static void A_pasted_token_survives_a_failed_write_of_the_new_token()
+    {
+        using var r = new Rig();
+        r.S.SetCopiumToken(Manual);   // a pasted token: no name, not via Connect
+        string? before = r.S.CopiumTokenProtected;
+        r.Session.AfterStore = () => r.S.CopiumTokenProtected = null;   // Settings.Protect gave null
+        SignInAndApprove(r);
+        Check.Equal(SignInFailure.CouldNotSave, r.Session.Current.Failure);
+        Check.Equal(Manual, r.S.CopiumToken, "the pasted token is still there");
+        Check.Equal(before, r.S.CopiumTokenProtected);
+        Check.Null(r.S.CopiumAccountName);
+        Check.False(r.S.CopiumLinkedViaConnect);
+        Check.True(r.Session.Current.HasToken);
+        Check.Equal(1, r.Deletes, "the new token was revoked once");
+        Check.Equal(Token, r.Last("DELETE", "/api/connect/token").Bearer);
+    }
+
+    [UnitTest]
+    public static void The_account_check_note_is_for_a_failed_check_only()
+    {
+        using (var r = new Rig())
+        {
+            r.S.SetCopiumToken(Token, "Jason", viaConnect: true);   // signed in earlier, nothing checked in this process
+            var rest = new CopiumSignInSession(r.S, _ => { }, () => { });
+            Check.False(rest.Current.Verified);
+            Check.False(rest.Current.AccountCheckFailed, "not checked yet is not a failure");
+            rest.SaveManualToken(Token);   // the same token again
+            Check.False(rest.Current.AccountCheckFailed);
+            Check.False(rest.Current.Verified);
+        }
+        using (var r = new Rig())
+        {
+            r.Me = () => Json(HttpStatusCode.InternalServerError, "{}");
+            SignInAndApprove(r);
+            Check.True(r.Session.Current.AccountCheckFailed);
+            r.Session.SaveManualToken(Token);   // same token: nothing new was checked, nothing new failed
+            Check.True(r.S.CopiumLinkedViaConnect);
+            r.Session.SaveManualToken(Manual);   // another token: the failure was about the old one
+            r.Idle();
+            Check.False(r.Session.Current.AccountCheckFailed);
+        }
+        using (var r = new Rig())
+        {
+            SignInAndApprove(r);
+            Check.True(r.Session.Current.Verified);
+            Check.False(r.Session.Current.AccountCheckFailed);
+        }
+    }
+
+    [UnitTest]
+    public static void A_token_that_cannot_be_stored_and_cannot_be_revoked_asks_for_cleanup()
+    {
+        using var r = new Rig();
+        r.Delete = () => Json(HttpStatusCode.InternalServerError, "{}");
+        r.Session.AfterStore = () => r.S.CopiumTokenProtected = null;
+        SignInAndApprove(r, "Gaming rig");
+        Check.Equal(SignInFailure.CouldNotSave, r.Session.Current.Failure);
+        Check.Equal("Gaming rig", r.Session.Current.RemoteCleanupName);
+        Check.Equal(1, r.Cleanups.Count);
     }
 
     [UnitTest]

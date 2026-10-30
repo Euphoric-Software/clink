@@ -34,5 +34,11 @@ internal sealed class CopiumPlusTick
         return tick;
     }
 
+    /// <summary>
+    /// "I have Copium+" is the account's while signed in with "Sign in with Copium" (a token is stored and came from Connect): the size target
+    /// must not tick it. Pass this as part of <c>alreadyTicked</c>.
+    /// </summary>
+    public static bool AccountOwnsPlus(bool linkedViaConnect, bool hasToken) => linkedViaConnect && hasToken;
+
     private static bool IsCopiumPlus(string? targetId) => Capabilities.SizeTargetFor(targetId).Id == "copiumplus";
 }

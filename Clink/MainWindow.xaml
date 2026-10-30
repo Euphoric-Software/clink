@@ -404,8 +404,8 @@
                                             <TextBlock x:Name="ScreenshotCloudOffHint" Style="{StaticResource Hint}" Margin="26,2,0,0" TextWrapping="Wrap" Visibility="Collapsed"
                                                        Text="Cloud sharing is off — enable it under App → Cloud sharing" />
                                             <StackPanel x:Name="ScreenshotTokenHint" Orientation="Horizontal" Margin="26,2,0,0">
-                                                <TextBlock Style="{StaticResource Hint}" Text="No Copium token yet." VerticalAlignment="Center" />
-                                                <Button Style="{StaticResource LinkButton}" Content="Add one under App → Copium" Click="ScreenshotTokenLink_Click" Margin="6,0,0,0" FontSize="12" />
+                                                <TextBlock Style="{StaticResource Hint}" Text="Not signed in to Copium." VerticalAlignment="Center" />
+                                                <Button Style="{StaticResource LinkButton}" Content="Sign in with Copium under App → Copium" Click="ScreenshotTokenLink_Click" Margin="6,0,0,0" FontSize="12" />
                                             </StackPanel>
                                             <CheckBox x:Name="ScreenshotCopyLinkCheck" Content="Copy the link to the clipboard after uploading" Margin="26,10,0,0" Checked="ScreenshotOptionChanged" Unchecked="ScreenshotOptionChanged"
                                                       ToolTipService.ShowOnDisabled="True" AutomationProperties.Name="Copy the link to the clipboard after uploading"
@@ -535,22 +535,74 @@
                                 </Border>
                                 <Border x:Name="CopiumCard" Style="{StaticResource Card}">
                                     <StackPanel>
+                                        <!-- "Sign in with Copium": what shows is decided by CopiumCardModel (MainWindow.RenderCopiumCard); all texts are set from there as plain text -->
+                                        <!-- signed in via Connect -->
+                                        <StackPanel x:Name="CopiumSignedInPanel" Visibility="Collapsed" Margin="0,0,0,10">
+                                            <TextBlock x:Name="CopiumSignedInText" FlowDirection="LeftToRight" TextTrimming="CharacterEllipsis" FontWeight="SemiBold" AutomationProperties.LiveSetting="Polite" />
+                                            <TextBlock x:Name="CopiumUnverifiedNote" Style="{StaticResource Hint}" Margin="0,2,0,0" TextWrapping="Wrap" Visibility="Collapsed" AutomationProperties.LiveSetting="Polite" />
+                                            <Button x:Name="CopiumSignOutButton" HorizontalAlignment="Left" Margin="0,8,0,0" Click="CopiumSignOut_Click"
+                                                    AutomationProperties.Name="Sign out of Copium" />
+                                        </StackPanel>
+                                        <!-- starting / waiting for the approval / finishing -->
+                                        <StackPanel x:Name="CopiumWaitingPanel" Visibility="Collapsed" Margin="0,0,0,10">
+                                            <TextBox x:Name="CopiumCodeBox" IsReadOnly="True" FontFamily="Consolas" FontSize="26" FontWeight="SemiBold" FlowDirection="LeftToRight"
+                                                     HorizontalAlignment="Left" BorderThickness="0" Padding="0,2" IsTabStop="True" Visibility="Collapsed"
+                                                     AutomationProperties.Name="Sign-in code" />
+                                            <TextBlock x:Name="CopiumCodeHint" Style="{StaticResource Hint}" Margin="0,2,0,0" TextWrapping="Wrap" Visibility="Collapsed" />
+                                            <TextBlock x:Name="CopiumProgressText" Style="{StaticResource MutedText}" Margin="0,6,0,0" TextWrapping="Wrap"
+                                                       AutomationProperties.LiveSetting="Polite" />
+                                            <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                                <Button x:Name="CopiumOpenAgainButton" Click="CopiumOpenAgain_Click" Visibility="Collapsed"
+                                                        AutomationProperties.Name="Open the Copium page again" />
+                                                <Button x:Name="CopiumCancelButton" Click="CopiumCancel_Click" Margin="8,0,0,0" AutomationProperties.Name="Cancel signing in" />
+                                            </StackPanel>
+                                        </StackPanel>
+                                        <!-- signed out, or a pasted token: start a sign-in -->
+                                        <StackPanel x:Name="CopiumStartPanel" Margin="0,0,0,10">
+                                            <Button x:Name="CopiumSignInButton" Style="{StaticResource AccentButton}" HorizontalAlignment="Left"
+                                                    Click="CopiumSignIn_Click" ToolTipService.ShowOnDisabled="True" />
+                                            <TextBlock x:Name="CopiumSignInHint" Style="{StaticResource Hint}" Margin="0,4,0,0" TextWrapping="Wrap" />
+                                            <TextBlock x:Name="CopiumNameLabel" Style="{StaticResource FieldLabel}" Margin="0,8,0,2" />
+                                            <TextBox x:Name="CopiumNameBox" MaxLength="40" FlowDirection="LeftToRight"
+                                                     ToolTip="The name this PC's connection gets on copium.pics under ShareX &amp; API" />
+                                            <Button x:Name="CopiumUseTokenLink" Style="{StaticResource LinkButton}" HorizontalAlignment="Left" Margin="0,8,0,0"
+                                                    Click="CopiumUseToken_Click" FontSize="12" />
+                                        </StackPanel>
+                                        <TextBlock x:Name="CopiumMessageText" Style="{StaticResource MutedText}" Margin="0,0,0,10" TextWrapping="Wrap" Visibility="Collapsed"
+                                                   AutomationProperties.LiveSetting="Polite" />
+                                        <!-- clink's connection could not be removed on Copium -->
+                                        <Border x:Name="CopiumCleanupPanel" Visibility="Collapsed" Margin="0,0,0,10" Padding="10" BorderThickness="1"
+                                                BorderBrush="{DynamicResource Warn}" Background="{DynamicResource WarnTint}" CornerRadius="6">
+                                            <StackPanel>
+                                                <TextBlock x:Name="CopiumCleanupText" TextWrapping="Wrap" FlowDirection="LeftToRight" AutomationProperties.LiveSetting="Polite" />
+                                                <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                                    <Button x:Name="CopiumCleanupOpenButton" Click="CopiumCleanupOpen_Click" />
+                                                    <Button x:Name="CopiumCleanupDismissButton" Click="CopiumCleanupDismiss_Click" Margin="8,0,0,0" AutomationProperties.Name="Dismiss this note" />
+                                                </StackPanel>
+                                            </StackPanel>
+                                        </Border>
+                                        <!-- the API token (a pasted token, or "Use an API token instead") -->
+                                        <StackPanel x:Name="CopiumTokenSection" Visibility="Collapsed">
                                         <Grid>
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="*" />
                                                 <ColumnDefinition Width="Auto" />
                                             </Grid.ColumnDefinitions>
-                                            <PasswordBox x:Name="TokenBox" PasswordChanged="Token_Changed" ToolTip="Upload token (starts with eup_) from copium.pics → ShareX &amp; API" />
-                                            <Button x:Name="TokenSaveButton" Grid.Column="1" Content="Save" Margin="8,0,0,0" Click="TokenSave_Click" />
+                                            <PasswordBox x:Name="TokenBox" PasswordChanged="Token_Changed" AutomationProperties.Name="Copium API token" ToolTip="Upload token (starts with eup_) from copium.pics → ShareX &amp; API" />
+                                            <Button x:Name="TokenSaveButton" Grid.Column="1" Content="Save" Margin="8,0,0,0" Click="TokenSave_Click" AutomationProperties.Name="Save API token" />
                                         </Grid>
                                         <StackPanel Orientation="Horizontal" Margin="2,8,0,0">
                                             <TextBlock x:Name="CopiumStatus" Style="{StaticResource MutedText}" Text="Not connected" VerticalAlignment="Center" />
-                                            <Button Style="{StaticResource LinkButton}" Content="Get a token" Click="CopiumSite_Click" Margin="8,0,0,0" FontSize="12" />
+                                            <Button Style="{StaticResource LinkButton}" Content="Get a token" Click="CopiumSite_Click" Margin="8,0,0,0" FontSize="12" AutomationProperties.Name="Get a token" />
+                                        </StackPanel>
                                         </StackPanel>
                                         <CheckBox x:Name="CopiumPlusCheck" Content="I have Copium+ (bigger uploads)" Margin="2,10,0,0" Checked="CopiumPlusChanged" Unchecked="CopiumPlusChanged"
+                                                  AutomationProperties.Name="I have Copium+"
                                                   ToolTip="Copium free uploads may be at most 200 MB and 10 min long, Copium Plus uploads 2 GB and 60 min. Share checks a clip against the limits of the account you tick here and refuses a bigger one" />
+                                        <TextBlock x:Name="CopiumPlusNote" Style="{StaticResource Hint}" Margin="26,2,0,0" Visibility="Collapsed" />
                                         <TextBlock Style="{StaticResource Hint}" Margin="2,6,0,0"
-                                                   Text="Nothing is uploaded until you say yes the first time you share, and cloud sharing can be turned off above. Anything you upload is public to anyone who has the link. Share uploads the clip and copies the link. By default the link is the raw video file (plays inline in Discord, no embed card) unless you turn on custom embeds on copium.pics. Copium free uploads are limited to 200 MB and 10 min, Copium Plus to 2 GB and 60 min; the size targets under Capture keep clips under those. Without a token, Share opens a window you can drag the clip from (into Discord, a browser or a folder)." />
+                                                   Text="Nothing is uploaded until you say yes the first time you share, and cloud sharing can be turned off above. Anything you upload is public to anyone who has the link. Share uploads the clip and copies the link. By default the link is the raw video file (plays inline in Discord, no embed card) unless you turn on custom embeds on copium.pics. Copium free uploads are limited to 200 MB and 10 min, Copium Plus to 2 GB and 60 min; the size targets under Capture keep clips under those." />
+                                        <TextBlock x:Name="CopiumNoTokenHint" Style="{StaticResource Hint}" Margin="2,4,0,0" />
                                     </StackPanel>
                                 </Border>
 

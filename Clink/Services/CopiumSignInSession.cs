@@ -33,6 +33,8 @@ internal enum SignInFailure
     /// second sign-in would leave this PC holding a dead token.) A pasted token does not refuse.
     /// </summary>
     AlreadySignedIn,
+    /// <summary>The approval came, but the token could not be stored on this PC (DPAPI): it was revoked again and nothing is signed in.</summary>
+    CouldNotSave,
 }
 
 /// <summary>
@@ -61,7 +63,16 @@ internal sealed record SignInState(
     bool Verified = false,
     SignInFailure? Failure = null,
     string? Message = null,
-    string? RemoteCleanupName = null);
+    string? RemoteCleanupName = null,
+    bool RemoteCleanupGuess = false,
+    long RunId = 0,
+    bool AccountCheckFailed = false)
+{
+    // RemoteCleanupGuess: RemoteCleanupName is the default token name, not one this PC knows it used ("probably named ...").
+    // AccountCheckFailed: an /api/me check of the stored Connect token failed in this process (not merely "not checked yet"); cleared when the token changes, is checked, or sharing stops.
+    // RunId: set on the SignedIn state a sign-in run ends with and kept by later changes that do not end the state (a cleanup flag or its dismissal),
+    // so a queued Completed / WelcomeNeeded can tell "still this sign-in" without comparing Version. 0 = not from a run.
+}
 
 internal enum SignOutResult
 {
@@ -122,7 +133,8 @@ internal sealed class CopiumSignInSession
         public readonly string Name;
         /// <summary>The token is stored: a user Cancel no longer undoes it (sign out, the kill switch, a hand-saved token and exit still stop the run).</summary>
         public bool Committed;
-        public Run(string name) { Name = name; }
+        public readonly long Id;
+        public Run(string name, long id) { Name = name; Id = id; }
     }
 
     private readonly Settings _settings;
@@ -135,7 +147,10 @@ internal sealed class CopiumSignInSession
     private long _version;
     private Uri? _approve;      // the validated address of the current Waiting state
     private bool _verified;     // /api/me confirmed the stored token in this process
+    private bool _checkFailed;  // an /api/me check actually failed in this process (never set by "not checked yet")
     private string? _cleanup;   // a Connect token name to remove on copium.pics by hand
+    private bool _cleanupGuess; // ... and that name is the default, not one this PC used
+    private long _runIds;
     private readonly List<Task> _work = new();
 
     /// <summary>Test seam: is this a --dev instance? (default <see cref="AppController.IsDev"/>).</summary>
@@ -144,6 +159,8 @@ internal sealed class CopiumSignInSession
     internal Func<bool> DevKeepsToken { get; set; } = () => AppController.DevToken;
     /// <summary>Test seam: awaited after the approval was read and before the commit decision (so a test can land an operation exactly there).</summary>
     internal Func<Task>? BeforeCommit { get; set; }
+    /// <summary>Test seam: runs right after the commit stored the token (under the lock, UI thread); a test can simulate a failed DPAPI write here.</summary>
+    internal Action? AfterStore { get; set; }
 
     /// <param name="openBrowser">Opens a validated approve address (production: <see cref="OpenInBrowser"/>). Called from <paramref name="onUi"/>.</param>
     /// <param name="save">Writes the settings file (production: <c>settings.Save</c>).</param>
@@ -283,7 +300,7 @@ internal sealed class CopiumSignInSession
                 // A test instance can never replace the real PC's token: its name always ends in -dev.
                 if (IsDevInstance()) name = CopiumConnect.WithSuffix(name, "-dev");
                 _settings.CopiumTokenName = name;
-                run = _run = new Run(name);
+                run = _run = new Run(name, ++_runIds);
                 first = PublishLocked(MakeLocked(SignInStatus.Starting));
             }
         }
@@ -378,7 +395,7 @@ internal sealed class CopiumSignInSession
 
         // The commit, on the UI thread: decided and done under one lock, so a cancel, a hand-saved token, the kill switch or exit either came
         // first (not stored: revoked below) or finds a stored token (and deals with it as a stored token).
-        bool stored = false;
+        bool stored = false, unsavable = false;
         try
         {
             await _onUi(() =>
@@ -387,9 +404,23 @@ internal sealed class CopiumSignInSession
                 lock (_gate)
                 {
                     if (_run != run || run.Cts.IsCancellationRequested || !_settings.CloudSharingEnabled) return;
+                    // What was stored before (a pasted token, say) must survive a failed write: snapshot it as it is.
+                    string? prevProtected = _settings.CopiumTokenProtected, prevName = _settings.CopiumAccountName;
+                    bool prevLinked = _settings.CopiumLinkedViaConnect;
                     _settings.SetCopiumToken(result.Token, result.Username, viaConnect: true);
+                    try { AfterStore?.Invoke(); } catch { }
+                    if (!string.Equals(_settings.CopiumToken, result.Token, StringComparison.Ordinal))
+                    {
+                        // DPAPI could not protect it (Settings.Protect gave null): the new token is not stored. Put the old one back exactly; revoked below.
+                        _settings.CopiumTokenProtected = prevProtected;
+                        _settings.CopiumAccountName = prevName;
+                        _settings.CopiumLinkedViaConnect = prevLinked;
+                        unsavable = true;
+                        return;
+                    }
                     run.Committed = true;
                     _verified = false;
+                    _checkFailed = false;
                     stored = true;
                     now = PublishLocked(MakeLocked(SignInStatus.Starting));
                 }
@@ -401,8 +432,14 @@ internal sealed class CopiumSignInSession
 
         if (!stored)
         {
-            Log.Info("copium sign-in: approved after it was stopped; not stored, revoking");
-            Set(run, RestingLocked, end: true);   // (when nothing else set the state: the UI went away)
+            if (!unsavable) Log.Info("copium sign-in: approved after it was stopped; not stored, revoking");
+            if (unsavable)
+            {
+                Log.Warn("copium sign-in: the token could not be protected for storage; revoking");
+                Save();
+                Set(run, () => MakeLocked(SignInStatus.Failed, failure: SignInFailure.CouldNotSave, message: "Couldn't save the sign-in on this PC."), end: true);
+            }
+            else Set(run, RestingLocked, end: true);   // (when nothing else set the state: the UI went away)
             // Intended exception to the kill switch: this request may go out with cloud sharing off. It only deletes the token Copium just
             // issued, which nobody stored; left alone it would stay valid on the account, unknown to this PC. It protects the account.
             await RevokeOrFlagAsync(result.Token, run.Name).ConfigureAwait(false);
@@ -413,10 +450,11 @@ internal sealed class CopiumSignInSession
         // Nothing more goes to Copium once the run was taken or sharing went off.
         if (RestIfStoppedOrSharingOff(run)) return;
         CopiumAccount? account = null;
+        bool checkFailed = false;
         try { account = await CopiumConnect.GetAccountAsync(result.Token, run.Cts.Token).ConfigureAwait(false); }
         catch (ConnectException ex) when (ex.Failure == ConnectFailure.Cancelled) { return; }   // signed out, kill switch, a token by hand, exit: whoever did that set the state
-        catch (ConnectException) { Log.Warn("copium sign-in: signed in, but the account could not be read; token kept"); }
-        catch (Exception ex) when (ex is not OperationCanceledException) { Log.Warn("copium sign-in: signed in, but reading the account failed (" + ex.GetType().Name + "); token kept"); }
+        catch (ConnectException) { checkFailed = true; Log.Warn("copium sign-in: signed in, but the account could not be read; token kept"); }
+        catch (Exception ex) when (ex is not OperationCanceledException) { checkFailed = true; Log.Warn("copium sign-in: signed in, but reading the account failed (" + ex.GetType().Name + "); token kept"); }
 
         // The account, on the UI thread; the run ends here.
         SignInState? done = null;
@@ -433,8 +471,10 @@ internal sealed class CopiumSignInSession
                     if (string.IsNullOrWhiteSpace(_settings.CopiumAccountName)) _settings.CopiumAccountName = account.Username;
                     _settings.CopiumPlus = account.Plus;   // the same setting as the "I have Copium+" box
                     _verified = true;
+                    _checkFailed = false;
                 }
-                done = PublishLocked(RestingLocked());
+                else if (ours && checkFailed) _checkFailed = true;
+                done = PublishLocked(RestingLocked() with { RunId = run.Id });
             }
             Save();
             Raise(done);
@@ -444,7 +484,8 @@ internal sealed class CopiumSignInSession
         bool fire, welcome;
         lock (_gate)
         {
-            fire = _state.Version == done.Version && _settings.CloudSharingEnabled;   // nothing happened since (sign out, kill switch, a new start)
+            // still this sign-in's SignedIn (not signed out, a new start, a token by hand): a cleanup flag or its dismissal does not end it
+            fire = _state.Status == SignInStatus.SignedIn && _state.RunId == done.RunId && _settings.CloudSharingEnabled;
             welcome = !_settings.CopiumWelcomeShown;
         }
         if (!fire) return;
@@ -463,6 +504,7 @@ internal sealed class CopiumSignInSession
             _run = null;
             _approve = null;
             _verified = false;
+            _checkFailed = false;
             now = PublishLocked(RestingLocked());
         }
         Raise(now);
@@ -497,12 +539,14 @@ internal sealed class CopiumSignInSession
 
     private void FlagCleanup(string? name)
     {
-        string label = string.IsNullOrWhiteSpace(name) ? CopiumConnect.DefaultTokenName() : name;
+        bool guess = string.IsNullOrWhiteSpace(name);
+        string label = guess ? CopiumConnect.DefaultTokenName() : name!;
         SignInState now;
         lock (_gate)
         {
             _cleanup = label;
-            now = PublishLocked(_state with { RemoteCleanupName = label });
+            _cleanupGuess = guess;
+            now = PublishLocked(_state with { RemoteCleanupName = label, RemoteCleanupGuess = guess });
         }
         Log.Info("copium sign-in: a connection could not be removed on Copium; the user is asked to remove it there");
         Raise(now);
@@ -517,7 +561,8 @@ internal sealed class CopiumSignInSession
         {
             if (_cleanup == null) return;
             _cleanup = null;
-            now = PublishLocked(_state with { RemoteCleanupName = null });
+            _cleanupGuess = false;
+            now = PublishLocked(_state with { RemoteCleanupName = null, RemoteCleanupGuess = false });
         }
         Raise(now);
     }
@@ -555,6 +600,7 @@ internal sealed class CopiumSignInSession
         {
             run = TakeRunLocked();
             _verified = false;
+            _checkFailed = false;
             now = PublishLocked(RestingLocked());
         }
         CancelRun(run);
@@ -579,8 +625,10 @@ internal sealed class CopiumSignInSession
             oldToken = _settings.CopiumToken;
             oldConnect = _settings.CopiumLinkedViaConnect && !string.IsNullOrWhiteSpace(oldToken);
             oldName = _settings.CopiumTokenName;
-            _settings.SetCopiumToken(token);   // a pasted token: no account name, not via Connect
+            // The stored token again (unchanged): leave it and its flags alone (a Connect token must not be demoted to a pasted one without a revoke).
+            if (!string.Equals(oldToken, token, StringComparison.Ordinal)) _settings.SetCopiumToken(token);   // a pasted token: no account name, not via Connect
             _verified = false;
+            _checkFailed = false;
             now = PublishLocked(RestingLocked());
         }
         CancelRun(run);
@@ -636,8 +684,8 @@ internal sealed class CopiumSignInSession
         bool has = !string.IsNullOrWhiteSpace(_settings.CopiumToken);
         bool linked = has && _settings.CopiumLinkedViaConnect;
         return new SignInState(status, Code: code, ApproveUrl: approve, HasToken: has, LinkedViaConnect: linked,
-            Username: linked ? _settings.CopiumAccountName ?? "" : null, Plus: linked && _settings.CopiumPlus, Verified: linked && _verified,
-            Failure: failure, Message: message, RemoteCleanupName: _cleanup);
+            Username: linked ? _settings.CopiumAccountName ?? "" : null, Plus: linked && _settings.CopiumPlus, Verified: linked && _verified, AccountCheckFailed: linked && !_verified && _checkFailed,
+            Failure: failure, Message: message, RemoteCleanupName: _cleanup, RemoteCleanupGuess: _cleanup != null && _cleanupGuess);
     }
 
     /// <summary>The state with no sign-in running: SignedIn for a token this app got by signing in, SignedOut otherwise.</summary>
@@ -664,6 +712,7 @@ internal sealed class CopiumSignInSession
             name = _settings.CopiumTokenName;
             if (!string.IsNullOrWhiteSpace(token)) _settings.SetCopiumToken(null);
             _verified = false;
+            _checkFailed = false;
             now = PublishLocked(RestingLocked());
         }
         CancelRun(run);

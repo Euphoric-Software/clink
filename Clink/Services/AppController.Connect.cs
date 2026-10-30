@@ -23,6 +23,9 @@ internal sealed partial class AppController
     /// <summary>A Connect token of this app could not be revoked on Copium: tell the user to remove the connection of this name on copium.pics &gt; ShareX &amp; API. UI thread.</summary>
     public event Action<string>? CopiumRemoteCleanupNeeded;
 
+    /// <summary>The app is exiting, disposed or restarting (a settings import): the UI ignores clicks that would reach the sign-in session.</summary>
+    internal bool IsShuttingDown => _disposed || _exiting || _restarting;
+
     /// <summary>Test seam: opens the approve page instead of the default browser (a test must never start one).</summary>
     internal Action<Uri>? SignInOpenerOverride { get; set; }
 
@@ -69,7 +72,9 @@ internal sealed partial class AppController
 
     /// <summary>A sign-in event still belongs to what is on screen: sharing is on and nothing changed since it was raised (no sign out, kill switch, new start, token by hand).</summary>
     internal static bool IsCurrentSignIn(SignInState raised, SignInState now, bool cloudSharing) =>
-        cloudSharing && now.Status == SignInStatus.SignedIn && now.Version == raised.Version;
+        cloudSharing && now.Status == SignInStatus.SignedIn
+        && (raised.RunId != 0 ? now.RunId == raised.RunId   // the same sign-in run: an unrelated bump (cleanup flag / dismissal) does not drop it
+                              : now.Version == raised.Version);
 
     private void OnSignedIn(SignInState state)
     {

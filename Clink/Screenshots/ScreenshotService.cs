@@ -369,7 +369,7 @@ internal sealed class ScreenshotService
         string? token = _settings.CopiumToken;
         if (string.IsNullOrWhiteSpace(token))
         {
-            _toasts.ShowProblem("Screenshot not uploaded", "Saved locally. Add your Copium token under App → Copium to upload screenshots.");
+            _toasts.ShowProblem("Screenshot not uploaded", "Saved locally. Sign in with Copium under App → Copium to upload screenshots.");
             return false;
         }
         // The size limit of the account is the only one that applies to a picture (no length).

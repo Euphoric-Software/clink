@@ -1846,16 +1846,16 @@ internal sealed partial class AppController : IDisposable
 
     private static bool ToastIsActive => System.Windows.Application.Current?.Windows.OfType<ToastWindow>().Any(t => t.IsActive) == true;
 
-    /// <summary>The share window's "Set up Copium…": brings the main window forward and says where the token goes.</summary>
+    /// <summary>The share window's "Set up Copium…": brings the main window forward and says where to sign in.</summary>
     public void ShowCopiumSetup()
     {
         if (!Settings.CloudSharingEnabled) { Say(CloudOffText); ShowRequested?.Invoke(); return; }   // there is no token box while sharing is off
-        Say("Add your token under App → Copium");
+        Say("Sign in with Copium under App → Copium");
         ShowRequested?.Invoke();
         CopiumSetupRequested?.Invoke();
     }
 
-    /// <summary>Raised after <see cref="ShowRequested"/> by <see cref="ShowCopiumSetup"/>: the window selects the App tab and focuses the token box.</summary>
+    /// <summary>Raised after <see cref="ShowRequested"/> by <see cref="ShowCopiumSetup"/>: the window selects the App tab and focuses the Copium card's sign-in button (or its token box).</summary>
     public event Action? CopiumSetupRequested;
 
     /// <summary>Asks the window to open the trim editor on a clip. False when no window has subscribed to <see cref="TrimRequested"/>.</summary>
