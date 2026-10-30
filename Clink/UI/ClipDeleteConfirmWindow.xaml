@@ -24,11 +24,16 @@
                     <Button x:Name="CancelButton" Content="Cancel" MinWidth="84" Margin="0,0,8,0" Click="Cancel_Click" IsCancel="True" IsDefault="True" />
                     <Button x:Name="DeleteButton" Style="{StaticResource DeleteConfirmButton}" Content="Delete" MinWidth="84" Padding="14,5" Click="Delete_Click"
                             AutomationProperties.Name="Delete clip" />
+                    <!-- trims mode (the row has trims nested under it): these two replace the plain Delete -->
+                    <Button x:Name="ClipOnlyButton" Style="{StaticResource DangerTextButton}" Content="Delete full clip only" Margin="0,0,8,0" Visibility="Collapsed" Click="ClipOnly_Click"
+                            AutomationProperties.Name="Delete full clip only" />
+                    <Button x:Name="WithTrimsButton" Style="{StaticResource DeleteConfirmButton}" Padding="14,5" Visibility="Collapsed" Click="WithTrims_Click" />
                 </StackPanel>
             </Border>
 
             <StackPanel Margin="16,4,16,16">
                 <TextBlock x:Name="BodyText" TextWrapping="Wrap" Margin="2,4,2,0" />
+                <TextBlock x:Name="BlockedText" TextWrapping="Wrap" Margin="2,10,2,0" Foreground="{DynamicResource Muted}" Visibility="Collapsed" />
                 <CheckBox x:Name="DoNotAskCheck" Margin="2,14,0,0" IsChecked="False" Content="Do not ask again"
                           ToolTip="Delete goes straight to the Recycle Bin from now on. Settings, Alerts, Reset &quot;Don't show again&quot; brings this question back" />
             </StackPanel>

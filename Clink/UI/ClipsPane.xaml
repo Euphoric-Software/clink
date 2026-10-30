@@ -104,7 +104,7 @@
             </Style.Triggers>
         </Style>
 
-        <!-- The "N trims" + chevron toggle on a clip that has trims under it. Muted text on the row (the theme's muted-on-panel pairing); the chevron points down when open. -->
+        <!-- The trim count + chevron toggle on a clip that has trims under it. Muted text on the row (the theme's muted-on-panel pairing); the chevron points down when open. -->
         <Style x:Key="TrimsToggle" TargetType="ToggleButton">
             <Setter Property="Foreground" Value="{DynamicResource Muted}" />
             <Setter Property="FontSize" Value="11.5" />
@@ -157,7 +157,7 @@
                     </Border>
                     <StackPanel Grid.Column="1" Margin="10,0,8,0" VerticalAlignment="Center">
                         <DockPanel LastChildFill="False">
-                            <!-- a clip with trims under it: "N trims" and a chevron (a focusable toggle; the pane keeps the state) -->
+                            <!-- a clip with trims under it: the trim count and a chevron (a focusable toggle; the pane keeps the state) -->
                             <ToggleButton DockPanel.Dock="Right" Style="{StaticResource TrimsToggle}" Margin="6,0,0,0" IsChecked="{Binding IsExpanded, Mode=OneWay}" Checked="Trims_Changed" Unchecked="Trims_Changed"
                                           Visibility="{Binding IsParent, Converter={StaticResource Vis}}" AutomationProperties.Name="{Binding ToggleName}" ToolTip="{Binding ToggleName}" />
                             <ContentPresenter DockPanel.Dock="Right" Content="{Binding}" ContentTemplate="{StaticResource Icons}" />

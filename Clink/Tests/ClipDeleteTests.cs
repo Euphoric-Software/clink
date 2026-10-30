@@ -374,4 +374,279 @@ internal static class ClipDeleteTests
         Check.Equal(ClipRowKind.Plain, after[0].Kind, "now a top-level row");
         Check.True(File.Exists(trim.Path), "the trim file is untouched");
     }
+
+    // ---- delete the clip and its trims ----
+
+    private static (ClipEntry Parent, ClipEntry[] Trims) Family(Rig rig, int trims, bool trimOfTrim = false)
+    {
+        var parent = rig.Clip(Path.Combine(rig.Clips, "p.mp4"));
+        var list = new List<ClipEntry>();
+        for (int i = 1; i <= trims; i++) list.Add(rig.Clip(Path.Combine(rig.Clips, $"p (trim {i}).mp4"), trim: true, source: parent.Path));
+        if (trimOfTrim) list.Add(rig.Clip(Path.Combine(rig.Clips, "p (trim 1) (trim).mp4"), trim: true, source: list[0].Path));
+        return (parent, list.ToArray());
+    }
+
+    private static List<ClipEntry> Under(Rig rig, ClipEntry parent) => ClipGrouping.TrimsOf(rig.Library.Entries, e => e, parent);
+
+    private static ClipDeleter.TreeOutcome DeleteTree(Rig rig, ClipEntry parent, IReadOnlyList<ClipEntry> trims)
+    {
+        var t = rig.Deleter.DeleteWithTrimsAsync(parent, trims, (nint)77);
+        ScreenshotUploadTests.Pump(() => t.IsCompleted, "the delete with trims");
+        return t.Result;
+    }
+
+    [UnitTest]
+    public static void The_trims_mode_is_chosen_only_for_a_row_with_nested_trims()
+    {
+        using var rig = new Rig();
+        var (parent, trims) = Family(rig, 2);
+        var lone = rig.Clip(Path.Combine(rig.Clips, "lone.mp4"));
+        Check.True(ClipDeleter.TrimsMode(Under(rig, parent).Count));
+        Check.False(ClipDeleter.TrimsMode(Under(rig, lone).Count), "a plain clip");
+        Check.False(ClipDeleter.TrimsMode(Under(rig, trims[0]).Count), "a trim has none");
+        Check.False(ClipDeleter.TrimsMode(0));
+    }
+
+    [UnitTest]
+    public static void A_dismissed_confirmation_does_not_skip_the_pop_up_for_a_clip_with_trims()
+    {
+        var s = new Settings { ClipDeleteConfirmDismissed = true };
+        Check.False(ClipDeleter.ConfirmNeeded(s, 0), "a plain clip still skips");
+        Check.False(ClipDeleter.ConfirmNeeded(s), "the default is the plain clip");
+        Check.True(ClipDeleter.ConfirmNeeded(s, 1), "one trim asks");
+        Check.True(ClipDeleter.ConfirmNeeded(s, 3), "three trims ask");
+    }
+
+    [UnitTest]
+    public static void Clip_and_trims_recycles_every_trim_then_the_clip_and_removes_the_entries()
+    {
+        using var rig = new Rig();
+        var (parent, trims) = Family(rig, 2);
+        var outcome = DeleteTree(rig, parent, Under(rig, parent));
+        Check.Equal(ClipDeleteResult.Deleted, outcome.Result);
+        Check.Equal(3, outcome.Deleted);
+        Check.Equal(3, outcome.Total);
+        Check.Equal(3, rig.Recycled.Count);
+        Check.Equal(Path.GetFullPath(parent.Path), rig.Recycled[2], "the clip goes last");
+        Check.True(rig.Recycled.Take(2).All(p => trims.Any(t => string.Equals(Path.GetFullPath(t.Path), p, StringComparison.OrdinalIgnoreCase))), "the trims go first");
+        Check.Equal(0, rig.Library.Entries.Count, "no entry is left");
+    }
+
+    [UnitTest]
+    public static void Clip_and_trims_keeps_the_entry_of_a_shared_clip_or_trim()
+    {
+        using var rig = new Rig();
+        var (parent, trims) = Family(rig, 2);
+        parent.CopiumLink = "https://copium.pics/p";
+        trims[1].CopiumLink = "https://copium.pics/t";
+        Check.Equal(ClipDeleteResult.Deleted, DeleteTree(rig, parent, Under(rig, parent)).Result);
+        Check.Equal(3, rig.Recycled.Count);
+        var left = rig.Library.Entries;
+        Check.Equal(2, left.Count, "the two shared entries stay for their links");
+        Check.True(left.All(e => e.IsShared));
+    }
+
+    [UnitTest]
+    public static void A_trim_of_a_trim_shown_under_the_clip_is_deleted_with_it()
+    {
+        using var rig = new Rig();
+        var (parent, trims) = Family(rig, 1, trimOfTrim: true);
+        var under = Under(rig, parent);
+        Check.Equal(2, under.Count, "both trims sit under the root");
+        Check.Equal(ClipDeleteResult.Deleted, DeleteTree(rig, parent, under).Result);
+        Check.Equal(3, rig.Recycled.Count);
+        Check.Equal(0, rig.Library.Entries.Count);
+        Check.False(File.Exists(trims[1].Path), "the trim of the trim is gone");
+    }
+
+    [UnitTest]
+    public static void Clip_and_trims_stops_at_the_first_failure_and_says_how_many_went()
+    {
+        using var rig = new Rig();
+        var (parent, _) = Family(rig, 2);
+        var under = Under(rig, parent);
+        // the second trim's file is a folder: that delete is refused when it is reached (after the first trim has gone)
+        string second = under[1].Path;
+        rig.Deleter.Probe = p => string.Equals(p, second, StringComparison.OrdinalIgnoreCase)
+            ? (ClipDeleter.FileProbe.Present, FileAttributes.Directory)
+            : ClipDeleter.DefaultProbe(p);
+        var outcome = DeleteTree(rig, parent, under);
+        Check.Equal(ClipDeleteResult.Refused, outcome.Result);
+        Check.Equal(1, outcome.Deleted);
+        Check.Equal(3, outcome.Total);
+        Check.Equal(1, rig.Recycled.Count, "only the first trim went");
+        Check.True(File.Exists(parent.Path), "the clip is untouched");
+        Check.True(File.Exists(second), "the failing trim is untouched");
+        Check.Equal(2, rig.Library.Entries.Count, "the deleted trim's entry left, the others stay");
+        string text = ClipDeleter.TreeProblemText(outcome);
+        Check.True(outcome.OnTrim, "the failing file was a trim");
+        Check.Equal("Deleted 1 of 3 files. One of its trims is outside the clips and archive folders. The clip and the remaining trims were kept.", text);
+    }
+
+    [UnitTest]
+    public static void The_problem_text_names_the_trim_when_a_trim_failed_and_the_clip_when_the_clip_failed()
+    {
+        using var rig = new Rig();
+        var (parent, _) = Family(rig, 2);
+        // a trim's shell call fails after one trim went
+        int calls = 0;
+        var inner = rig.Deleter.Recycler;
+        rig.Deleter.Recycler = (p, o) => { if (++calls == 2) throw new IOException("shell refused"); inner(p, o); };
+        var trimFail = DeleteTree(rig, parent, Under(rig, parent));
+        Check.True(trimFail.OnTrim);
+        Check.Equal("Deleted 1 of 3 files. One of its trims couldn't be moved to the Recycle Bin. The clip and the remaining trims were kept.", ClipDeleter.TreeProblemText(trimFail));
+        Check.Equal("Nothing was deleted: one of its trims is uploading.", ClipDeleter.TreeProblemText(new ClipDeleter.TreeOutcome(ClipDeleteResult.Uploading, 0, 3, OnTrim: true)));
+
+        // the clip's own shell call fails after both trims went
+        using var rig2 = new Rig();
+        var (parent2, _) = Family(rig2, 2);
+        var inner2 = rig2.Deleter.Recycler;
+        int calls2 = 0;
+        rig2.Deleter.Recycler = (p, o) => { if (++calls2 == 3) throw new IOException("shell refused"); inner2(p, o); };
+        var clipFail = DeleteTree(rig2, parent2, Under(rig2, parent2));
+        Check.False(clipFail.OnTrim);
+        Check.Equal(2, clipFail.Deleted);
+        Check.Equal("Deleted 2 of 3 files. The clip couldn't be moved to the Recycle Bin, so it was kept.", ClipDeleter.TreeProblemText(clipFail));
+        Check.Equal("Nothing was deleted: the clip is open in the trim window.", ClipDeleter.TreeProblemText(new ClipDeleter.TreeOutcome(ClipDeleteResult.TrimOpen, 0, 3)));
+    }
+
+    [UnitTest]
+    public static void Clip_and_trims_stops_when_the_clip_is_blocked_after_the_pop_up_and_touches_nothing()
+    {
+        using var rig = new Rig();
+        var (parent, _) = Family(rig, 2);
+        var under = Under(rig, parent);
+        rig.Deleter.IsTrimOpen = e => e == parent;   // the parent's trim window was opened while the pop-up was up
+        var outcome = DeleteTree(rig, parent, under);
+        Check.Equal(ClipDeleteResult.TrimOpen, outcome.Result);
+        Check.Equal(0, outcome.Deleted);
+        Check.False(outcome.OnTrim, "it is the clip that is blocked");
+        Check.Equal(0, rig.Recycled.Count);
+        Check.Equal(3, rig.Library.Entries.Count, "all entries are left");
+        Check.True(File.Exists(parent.Path) && under.All(t => File.Exists(t.Path)), "all files are left");
+    }
+
+    [UnitTest]
+    public static void A_trim_whose_file_is_already_gone_counts_as_deleted()
+    {
+        using var rig = new Rig();
+        var (parent, _) = Family(rig, 2);
+        var under = Under(rig, parent);
+        File.Delete(under[0].Path);
+        var outcome = DeleteTree(rig, parent, under);
+        Check.Equal(ClipDeleteResult.Deleted, outcome.Result);
+        Check.Equal(3, outcome.Deleted);
+        Check.Equal(3, outcome.Total);
+        Check.Equal(2, rig.Recycled.Count, "only the two files that were there went to the bin");
+        Check.Equal(0, rig.Library.Entries.Count);
+    }
+
+    [UnitTest]
+    public static void The_trims_of_one_clip_do_not_include_the_trims_of_another()
+    {
+        using var rig = new Rig();
+        var a = rig.Clip(Path.Combine(rig.Clips, "a.mp4"));
+        var a1 = rig.Clip(Path.Combine(rig.Clips, "a (trim).mp4"), trim: true, source: a.Path);
+        var b = rig.Clip(Path.Combine(rig.Clips, "b.mp4"));
+        var b1 = rig.Clip(Path.Combine(rig.Clips, "b (trim).mp4"), trim: true, source: b.Path);
+        var b2 = rig.Clip(Path.Combine(rig.Clips, "b (trim 2).mp4"), trim: true, source: b.Path);
+        var underA = Under(rig, a);
+        Check.Equal(1, underA.Count);
+        Check.True(ReferenceEquals(underA[0], a1), "A's own trim");
+        var underB = Under(rig, b);
+        Check.Equal(2, underB.Count);
+        Check.True(underB.All(t => ReferenceEquals(t, b1) || ReferenceEquals(t, b2)), "only B's trims");
+    }
+
+    [UnitTest]
+    public static void The_trims_mode_pop_up_defaults_to_cancel_and_turns_the_blocked_option_off_with_the_reason()
+    {
+        if (System.Windows.Application.Current == null) throw new TestFailure("needs the running application (run it with Clink.exe --unittest)");
+        var open = new ClipDeleteConfirmWindow("Body", null, 2, null);
+        Check.True(open.Choice == ClipDeleteChoice.Cancel, "Cancel until a button is pressed");
+        Check.False(open.DoNotAskAgain);
+        Check.True(open.DoNotAskCheck.Visibility == System.Windows.Visibility.Collapsed, "no Do not ask again in the trims mode");
+        Check.True(open.WithTrimsButton.IsEnabled, "enabled when nothing blocks");
+        Check.Equal("Delete clip and 2 trims", open.WithTrimsButton.Content as string);
+
+        string reason = ClipDeleter.TrimsBlockedText(ClipDeleteResult.Uploading)!;
+        var blocked = new ClipDeleteConfirmWindow("Body", null, 2, reason);
+        Check.True(blocked.Choice == ClipDeleteChoice.Cancel);
+        Check.False(blocked.WithTrimsButton.IsEnabled, "the with-trims button is off");
+        Check.Equal(reason, System.Windows.Automation.AutomationProperties.GetHelpText(blocked.WithTrimsButton));
+        Check.Equal(reason, blocked.BlockedText.Text);
+        Check.True(blocked.ClipOnlyButton.IsEnabled, "the clip alone still goes");
+    }
+
+    [UnitTest]
+    public static void A_shell_failure_on_a_trim_leaves_the_clip_and_the_rest()
+    {
+        using var rig = new Rig();
+        var (parent, _) = Family(rig, 2);
+        rig.Fail = true;
+        var outcome = DeleteTree(rig, parent, Under(rig, parent));
+        Check.Equal(ClipDeleteResult.Failed, outcome.Result);
+        Check.Equal(0, outcome.Deleted);
+        Check.Equal(0, rig.Recycled.Count);
+        Check.Equal(3, rig.Library.Entries.Count);
+        Check.True(File.Exists(parent.Path));
+    }
+
+    [UnitTest]
+    public static void A_blocked_trim_disables_the_with_trims_option_with_a_one_line_reason_and_the_clip_alone_still_goes()
+    {
+        using var rig = new Rig();
+        var (parent, trims) = Family(rig, 2);
+        var under = Under(rig, parent);
+        Check.True(rig.Deleter.PrecheckTrims(under) == null, "nothing blocks");
+        Check.True(ClipDeleter.TrimsBlockedText(null) == null, "null when nothing is blocked");
+        Check.Equal("Its trims can't be deleted right now: one is already being deleted.", ClipDeleter.TrimsBlockedText(null, oneDeleting: true));
+
+        rig.Deleter.IsTrimOpen = e => e == under[1];
+        var open = rig.Deleter.PrecheckTrims(under);
+        Check.Equal(ClipDeleteResult.TrimOpen, open);
+        Check.Equal("Its trims can't be deleted right now: one is open in the trim window.", ClipDeleter.TrimsBlockedText(open));
+        var blocked = DeleteTree(rig, parent, under);
+        Check.Equal(ClipDeleteResult.TrimOpen, blocked.Result);
+        Check.Equal(0, rig.Recycled.Count, "nothing is touched when one trim is blocked");
+
+        rig.Deleter.IsTrimOpen = _ => false;
+        rig.Deleter.IsUploading = e => e == under[0];
+        var up = rig.Deleter.PrecheckTrims(under);
+        Check.Equal(ClipDeleteResult.Uploading, up);
+        Check.Contains(ClipDeleter.TrimsBlockedText(up) ?? "", "one is uploading.");
+
+        rig.Deleter.IsUploading = _ => false;
+        rig.Deleter.IsFixedDrive = p => !string.Equals(p, under[0].Path, StringComparison.OrdinalIgnoreCase);
+        var net = rig.Deleter.PrecheckTrims(under);
+        Check.Equal(ClipDeleteResult.NotLocal, net);
+        Check.Contains(ClipDeleter.TrimsBlockedText(net) ?? "", "network or removable drive.");
+
+        foreach (var r in Enum.GetValues<ClipDeleteResult>())
+        {
+            if (r == ClipDeleteResult.Deleted) continue;
+            string line = ClipDeleter.TrimsBlockedText(r) ?? "";
+            Check.True(line.StartsWith("Its trims can't be deleted right now: ") && line.EndsWith(".") && line.Count(c => c == '.') == 1, "one sentence for " + r);
+        }
+
+        // the clip alone is the ordinary delete: it still works while a trim is open, and the trims stay
+        rig.Deleter.IsFixedDrive = _ => true;
+        rig.Deleter.IsTrimOpen = e => e == under[1];
+        Check.Equal(ClipDeleteResult.Deleted, rig.Delete(parent));
+        Check.True(File.Exists(trims[0].Path) && File.Exists(trims[1].Path), "the trims stay");
+    }
+
+    [UnitTest]
+    public static void The_trims_body_says_1_trim_or_2_trims_and_keeps_the_link_line()
+    {
+        string one = ClipDeleter.ConfirmBodyWithTrims("Game", 1, false);
+        Check.Contains(one, "Game has 1 trim.");
+        Check.Contains(one, "the clip and its trim?");
+        Check.Contains(one, "Everything goes to the Recycle Bin, where you can restore it.");
+        Check.False(one.Contains("link"), "no link line when not shared");
+        string two = ClipDeleter.ConfirmBodyWithTrims("Game", 2, true);
+        Check.Contains(two, "Game has 2 trims.");
+        Check.Contains(two, "the clip and its trims?");
+        Check.Contains(two, "The shared link keeps working.");
+    }
 }

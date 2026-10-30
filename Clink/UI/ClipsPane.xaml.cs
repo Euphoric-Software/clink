@@ -509,10 +509,21 @@ public partial class ClipsPane : UserControl
 
     private ClipDeleter NewDeleter() => new(App.Library, () => App.Settings.ClipsFolder, () => App.Settings.ArchivePath) { IsTrimOpen = e => TrimWindow.Find(e) != null, IsUploading = App.IsUploading };
 
+    /// <summary>A deleter that also counts an upload the given rows show (the row knows before the app does).</summary>
+    private ClipDeleter NewDeleter(IReadOnlyList<ClipRow> rows)
+    {
+        var d = NewDeleter();
+        var byEntry = rows.ToDictionary(r => r.Entry, r => r, ReferenceEqualityComparer.Instance as IEqualityComparer<ClipEntry>);
+        var app = d.IsUploading;
+        d.IsUploading = e => app(e) || (byEntry.TryGetValue(e, out var r) && r.IsUploading);
+        return d;
+    }
+
     /// <summary>
     /// The Delete button: refuses first what cannot be deleted (a clip whose trim window is open, a file outside the clips / archive
     /// folder), then asks (unless "Do not ask again" was ticked), then sends the file to the Recycle Bin off the UI thread. A shared
-    /// clip stays in the Shared list with its link; the trims of a deleted clip stay and become top-level rows.
+    /// clip stays in the Shared list with its link. A clip with trims nested under it asks for the clip alone (its trims stay and
+    /// become top-level rows) or the clip and its trims (all go to the Recycle Bin, stopping at the first failure).
     /// </summary>
     private async void ClipDelete_Click(object sender, RoutedEventArgs e)
     {
@@ -528,12 +539,24 @@ public partial class ClipsPane : UserControl
         var deleter = NewDeleter();
         if (deleter.Precheck(row.Entry) is { } refused) { row.SetProblem(ClipDeleter.ProblemText(refused)); return; }
         var owner = Window.GetWindow(this) ?? Application.Current?.MainWindow;
-        if (ClipDeleter.ConfirmNeeded(App.Settings))
+        // Trims nested under this row (what the list shows under it, collapsed or not): the pop-up then offers the clip alone or with them.
+        var trimRows = row.IsParent ? ClipGrouping.TrimsOf(_localAll, r => r.Entry, row) : new List<ClipRow>();
+        bool withTrimsMode = ClipDeleter.TrimsMode(trimRows.Count);
+        // an upload under way on a trim row counts too (the row knows before the app does)
+        var trimDeleter = withTrimsMode ? NewDeleter(trimRows.Append(row).ToList()) : deleter;
+        bool deleteTrims = false;
+        if (ClipDeleter.ConfirmNeeded(App.Settings, trimRows.Count))
         {
-            string body = ClipDeleter.ConfirmBody(row.Title, ClipDeleter.HasTrims(App.Library.Entries, row.Entry), row.IsShared);
-            var dialog = new ClipDeleteConfirmWindow(body, owner);
+            string body = withTrimsMode
+                ? ClipDeleter.ConfirmBodyWithTrims(row.Title, trimRows.Count, row.IsShared)
+                : ClipDeleter.ConfirmBody(row.Title, ClipDeleter.HasTrims(App.Library.Entries, row.Entry), row.IsShared);
+            string? blocked = withTrimsMode
+                ? ClipDeleter.TrimsBlockedText(trimDeleter.PrecheckTrims(trimRows.Select(r => r.Entry)), trimRows.Any(r => r.IsDeleting))
+                : null;
+            var dialog = new ClipDeleteConfirmWindow(body, owner, trimRows.Count, blocked);
             bool confirmed = dialog.ShowDialog() == true && dialog.Confirmed;
             if (!confirmed) return;
+            deleteTrims = dialog.Choice == ClipDeleteChoice.ClipAndTrims;
             if (ClipDeleter.Remember(confirmed, dialog.DoNotAskAgain))
             {
                 App.Settings.ClipDeleteConfirmDismissed = true;
@@ -543,6 +566,26 @@ public partial class ClipsPane : UserControl
         nint ownerHandle = 0;
         try { if (owner != null) ownerHandle = new System.Windows.Interop.WindowInteropHelper(owner).Handle; }
         catch { }
+        if (deleteTrims)
+        {
+            // state may have changed while the pop-up was open: DeleteWithTrimsAsync prechecks every file again before it touches any
+            // a trim's own delete may have started while the pop-up was open: both would race on that file, so none goes
+            if (trimRows.Any(r => r.IsDeleting)) { row.SetProblem("Nothing was deleted: one of its trims is already being deleted."); return; }
+            var all = trimRows.Append(row).ToList();
+            var mine = all.Where(r => !r.IsDeleting).ToList();   // only the rows this operation marks are cleared again
+            foreach (var r in mine) r.IsDeleting = true;
+            ClipDeleter.TreeOutcome outcome = new(ClipDeleteResult.Failed, 0, all.Count);
+            try { outcome = await trimDeleter.DeleteWithTrimsAsync(row.Entry, trimRows.Select(r => r.Entry).ToList(), ownerHandle); }
+            catch (Exception ex) { Log.Warn("library: clip delete: " + ex.Message); }
+            finally { foreach (var r in mine) r.IsDeleting = false; }
+            if (outcome.Result == ClipDeleteResult.Deleted) Refresh();
+            else
+            {
+                Refresh();   // the trims that did go leave the list
+                row.SetProblem(ClipDeleter.TreeProblemText(outcome));
+            }
+            return;
+        }
         row.IsDeleting = true;
         var result = ClipDeleteResult.Failed;
         try { result = await deleter.DeleteAsync(row.Entry, ownerHandle); }   // IsDeleting stays set until the shell call returns

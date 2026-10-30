@@ -25,12 +25,15 @@ internal enum ClipDeleteResult
     Failed,
 }
 
+/// <summary>What the clip delete pop-up came back with.</summary>
+internal enum ClipDeleteChoice { Cancel, ClipOnly, ClipAndTrims }
+
 /// <summary>
 /// Deletes a clip from the library: the decision logic of the Clips page's Delete button, with no window code (the pane asks, this
 /// decides). The file only ever goes to the Recycle Bin (<see cref="RecycleBin"/>), never a permanent delete, and only when it is
 /// the entry's own .mp4 inside the clips folder (any subfolder) or the archive folder. A shared clip keeps its entry (the link is
-/// what is left of it); any other leaves the library. Trims cut from the clip are not touched: they become top-level rows by
-/// themselves (<see cref="ClipGrouping"/> finds no source for them).
+/// what is left of it); any other leaves the library. Trims cut from the clip are left alone by <see cref="DeleteAsync"/> (they become top-level rows
+/// by themselves: <see cref="ClipGrouping"/> finds no source for them); <see cref="DeleteWithTrimsAsync"/> deletes them too.
 /// </summary>
 internal sealed class ClipDeleter
 {
@@ -85,8 +88,89 @@ internal sealed class ClipDeleter
         _archiveFolder = archiveFolder;
     }
 
-    /// <summary>The pop-up is needed unless the user ticked "Do not ask again".</summary>
-    internal static bool ConfirmNeeded(Settings settings) => !settings.ClipDeleteConfirmDismissed;
+    /// <summary>The pop-up is needed unless the user ticked "Do not ask again". A clip with nested trims always asks (which of the two deletes is a choice, not a confirmation).</summary>
+    internal static bool ConfirmNeeded(Settings settings, int trimCount = 0) => trimCount > 0 || !settings.ClipDeleteConfirmDismissed;
+
+    /// <summary>The pop-up offers "the clip only" / "the clip and its trims" when the row has trims nested under it.</summary>
+    internal static bool TrimsMode(int trimCount) => trimCount > 0;
+
+    /// <summary>The trims-mode pop-up's body: what the two choices are, plus the shared link line.</summary>
+    internal static string ConfirmBodyWithTrims(string title, int trimCount, bool shared)
+    {
+        string text = $"{title} has {ClipGrouping.TrimsLabel(trimCount)}. Delete just the full clip, or the clip and {(trimCount == 1 ? "its trim" : "its trims")}? Everything goes to the Recycle Bin, where you can restore it.";
+        if (shared) text += " The shared link keeps working.";
+        return text;
+    }
+
+    /// <summary>Why one file cannot be deleted, as a predicate ("is uploading"); <paramref name="past"/> words the two shell outcomes as having happened ("couldn't").</summary>
+    private static string Why(ClipDeleteResult failure, bool past = false) => failure switch
+    {
+        ClipDeleteResult.TrimOpen => "is open in the trim window",
+        ClipDeleteResult.Uploading => "is uploading",
+        ClipDeleteResult.NotLocal => "is on a network or removable drive",
+        ClipDeleteResult.Refused => "is outside the clips and archive folders",
+        ClipDeleteResult.Link => "is a shortcut to another location",
+        ClipDeleteResult.Unreachable => past ? "couldn't be reached" : "can't be reached",
+        _ => past ? "couldn't be moved to the Recycle Bin" : "can't be moved to the Recycle Bin",
+    };
+
+    /// <summary>
+    /// The line under the trims-mode body when the trims cannot be deleted (one sentence), or null when they can. <paramref name="oneDeleting"/>:
+    /// one trim is already being deleted on its own. (Precheck only returns the first four results; the rest are the default branch's.)
+    /// </summary>
+    internal static string? TrimsBlockedText(ClipDeleteResult? failure, bool oneDeleting = false)
+    {
+        if (oneDeleting) return "Its trims can't be deleted right now: one is already being deleted.";
+        if (failure == null) return null;
+        return $"Its trims can't be deleted right now: one {Why(failure.Value)}.";
+    }
+
+    /// <summary>How a clip-and-trims delete ended: the first failure (or Deleted), how many of the files went, and whether the failing file was a trim (not the clip).</summary>
+    internal sealed record TreeOutcome(ClipDeleteResult Result, int Deleted, int Total, bool OnTrim = false);
+
+    /// <summary>What the parent row says after a clip-and-trims delete that stopped early. Each sentence is one idea.</summary>
+    internal static string TreeProblemText(TreeOutcome outcome)
+    {
+        if (outcome.OnTrim)
+        {
+            string trim = $"one of its trims {Why(outcome.Result, past: true)}.";
+            if (outcome.Deleted == 0) return $"Nothing was deleted: {trim}";
+            return $"Deleted {outcome.Deleted} of {outcome.Total} files. One{trim.Substring(3)} The clip and the remaining trims were kept.";
+        }
+        string clip = $"the clip {Why(outcome.Result, past: true)}";
+        if (outcome.Deleted == 0) return $"Nothing was deleted: {clip}.";
+        return $"Deleted {outcome.Deleted} of {outcome.Total} files. The clip {Why(outcome.Result, past: true)}, so it was kept.";
+    }
+
+    /// <summary>The first failing precheck over the trims (path rule, network drive, uploading, trim window), or null when all may go. Call on the UI thread.</summary>
+    internal ClipDeleteResult? PrecheckTrims(IEnumerable<ClipEntry> trims)
+    {
+        foreach (var t in trims)
+            if (Precheck(t) is { } refused) return refused;
+        return null;
+    }
+
+    /// <summary>
+    /// Deletes the trims one by one (each exactly as <see cref="DeleteAsync"/> does), then the clip. Every file is prechecked first
+    /// (nothing is touched when one fails), and the run stops at the first failure: what is after it is not deleted, what went before
+    /// stays deleted. Never throws.
+    /// </summary>
+    internal async Task<TreeOutcome> DeleteWithTrimsAsync(ClipEntry clip, IReadOnlyList<ClipEntry> trims, nint owner = 0)
+    {
+        int total = trims.Count + 1;
+        if (PrecheckTrims(trims) is { } blocked) return new TreeOutcome(blocked, 0, total, OnTrim: true);
+        if (Precheck(clip) is { } refused) return new TreeOutcome(refused, 0, total);
+        int done = 0;
+        foreach (var file in trims.Append(clip))
+        {
+            var r = ClipDeleteResult.Failed;
+            try { r = await DeleteAsync(file, owner); }
+            catch (Exception ex) { Log.Warn("clip: not deleted: " + ex.Message); }
+            if (r != ClipDeleteResult.Deleted) return new TreeOutcome(r, done, total, OnTrim: !ReferenceEquals(file, clip));
+            done++;
+        }
+        return new TreeOutcome(ClipDeleteResult.Deleted, done, total);
+    }
 
     /// <summary>The pop-up's answer: remembers "Do not ask again" only for a confirmed delete (Cancel never saves it).</summary>
     internal static bool Remember(bool confirmed, bool doNotAskAgain) => confirmed && doNotAskAgain;
