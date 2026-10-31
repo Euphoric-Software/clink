@@ -1588,14 +1588,21 @@ public partial class MainWindow : Window
             CopiumCodeHint.Text = m.CodeHintVisible ? CopiumCardModel.CodeCheckHint : "";
             SetLive(CopiumProgressText, m.StatusText ?? "");
             CopiumOpenAgainButton.Visibility = Vis(m.OpenAgainVisible);
-            CopiumCancelButton.Visibility = Vis(m.CancelVisible);
+            CopiumCancelButton.Visibility = Vis(m.CancelVisible && !m.Contacting);
             CopiumCancelButton.IsEnabled = m.CancelEnabled && !busy;
+            // While Copium is being contacted the start panel stays; Cancel sits beside the (disabled) Sign in button.
+            CopiumStartCancelButton.Content = CopiumCardModel.CancelLabel;
+            bool startCancelHadFocus = CopiumStartCancelButton.IsKeyboardFocusWithin;
+            CopiumStartCancelButton.Visibility = Vis(m.Contacting);
+            CopiumStartCancelButton.IsEnabled = m.Contacting && !busy;
 
             CopiumStartPanel.Visibility = Vis(m.SignInVisible);
+            CopiumStartDetails.Visibility = Vis(m.SignInVisible);
             CopiumSignInButton.IsEnabled = m.SignInEnabled && !busy;
             CopiumSignInButton.ToolTip = m.SignInDisabledReason;
+            if (startCancelHadFocus && CopiumStartCancelButton.Visibility != Visibility.Visible && CopiumSignInButton.IsVisible && CopiumSignInButton.IsEnabled) CopiumSignInButton.Focus();
             CopiumSignInHint.Visibility = Vis(m.SignInVisible);
-            CopiumSignInHint.Text = m.SignInDisabledReason ?? (m.SignInHintVisible ? m.SignInHintText : "");
+            SetLive(CopiumSignInHint, m.SignInDisabledReason ?? (m.SignInHintVisible ? m.SignInHintText : ""));
             CopiumNameLabel.Visibility = Vis(m.NameBoxVisible);
             CopiumNameBox.Visibility = Vis(m.NameBoxVisible);
             CopiumNameBox.IsEnabled = m.NameBoxEnabled && !busy;
@@ -1619,7 +1626,11 @@ public partial class MainWindow : Window
             CopiumPlusNote.Text = m.PlusNote ?? "";
 
             string? message = busy ? CopiumCardModel.SignOutBusyStatus : m.FailureText ?? _copiumResultText;
-            CopiumMessageText.Visibility = Vis(!string.IsNullOrEmpty(message));
+            bool warn = !busy && m.MessageIsWarning && m.MessageVisible;
+            CopiumMessagePanel.Visibility = Vis(!string.IsNullOrEmpty(message));
+            CopiumMessagePanel.Margin = m.SignInVisible ? new Thickness(0, 8, 0, 0) : new Thickness(0, 0, 0, 10);
+            CopiumMessagePanel.SetResourceReference(Border.BorderBrushProperty, warn ? "Warn" : "Border");
+            CopiumMessagePanel.SetResourceReference(Border.BackgroundProperty, warn ? "WarnTint" : "Panel2");
             SetLive(CopiumMessageText, message ?? "");
 
             CopiumCleanupPanel.Visibility = Vis(m.CleanupVisible);
@@ -1659,6 +1670,7 @@ public partial class MainWindow : Window
         if (_app.IsShuttingDown || _signOutBusy) return;
         _copiumResultText = null;
         _app.SignIn.Start(CopiumNameBox.Text);   // only here, from the click
+        if (CopiumStartCancelButton.IsVisible) CopiumStartCancelButton.Focus();   // the clicked button is now disabled: keep keyboard focus in the card
     }
 
     private void CopiumCancel_Click(object sender, RoutedEventArgs e)

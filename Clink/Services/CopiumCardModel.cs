@@ -5,7 +5,7 @@ internal enum CopiumPanel
 {
     /// <summary>No token: "Sign in with Copium", the name box, and the "Use an API token instead" link.</summary>
     SignedOut,
-    /// <summary>A sign-in is running before the approval: asking for the code, or showing it and waiting.</summary>
+    /// <summary>A sign-in is running before the approval: the start panel shows the contacting state, and the Waiting panel shows the code.</summary>
     Waiting,
     /// <summary>The approval came and the token is stored; the account is being read.</summary>
     Finishing,
@@ -101,6 +101,14 @@ internal sealed class CopiumCardModel
 
     // ---- a failure line
     public string? FailureText { get; init; }
+    /// <summary>A failure line is on screen (the notice right under the Sign in button).</summary>
+    // Kept apart from MessageIsWarning: this is derived from the text, that one is the look (set by the factory) and may differ for non-failure lines.
+    public bool MessageVisible => FailureText != null;
+    /// <summary>The notice uses the warning look: true for every failure line. The sign-out result texts and the "Signing out…" line are neutral (the window shows them with this false).</summary>
+    public bool MessageIsWarning { get; init; }
+
+    /// <summary>The start request is in flight: the start panel stays, Sign in is disabled and shows the contacting line, and a compact Cancel sits beside it.</summary>
+    public bool Contacting { get; init; }
 
     // ---- the "remove it on copium.pics" notice
     public bool CleanupVisible { get; init; }
@@ -113,9 +121,12 @@ internal sealed class CopiumCardModel
     public static CopiumCardModel From(SignInState state, bool cloudSharingOn, bool isDev, bool devKeepsToken, string defaultTokenName, string? savedTokenName)
     {
         bool linked = state.LinkedViaConnect && state.HasToken;
+        // The start request is in flight (no code yet, no Connect token): the start panel stays put, so nothing jumps while Copium answers.
+        bool contacting = state.Status == SignInStatus.Starting && !linked;
         CopiumPanel panel =
             state.Status == SignInStatus.Starting && linked ? CopiumPanel.Finishing
-            : state.Status is SignInStatus.Starting or SignInStatus.Waiting ? CopiumPanel.Waiting
+            : contacting ? (state.HasToken ? CopiumPanel.PastedToken : CopiumPanel.SignedOut)
+            : state.Status == SignInStatus.Waiting ? CopiumPanel.Waiting
             : linked ? CopiumPanel.SignedIn
             : state.HasToken ? CopiumPanel.PastedToken
             : CopiumPanel.SignedOut;
@@ -133,8 +144,8 @@ internal sealed class CopiumCardModel
         string? status = panel switch
         {
             CopiumPanel.Finishing => FinishingStatus,
-            CopiumPanel.Waiting when state.Status == SignInStatus.Starting => StartingStatus,
             CopiumPanel.Waiting => state.Retrying ? RetryingStatus : WaitingStatus,
+            _ when contacting => StartingStatus,
             _ => null,
         };
 
@@ -155,12 +166,12 @@ internal sealed class CopiumCardModel
         {
             Panel = panel,
             SignInVisible = startPanel || panel == CopiumPanel.Finishing,
-            SignInEnabled = startPanel && canStart,
-            SignInDisabledReason = startPanel ? reason : null,
+            SignInEnabled = startPanel && canStart && !contacting,
+            SignInDisabledReason = startPanel && !contacting ? reason : null,
             SignInHintVisible = startPanel,
-            SignInHintText = SignInHint,
+            SignInHintText = contacting ? StartingStatus : SignInHint,
             NameBoxVisible = startPanel,
-            NameBoxEnabled = startPanel && canStart,
+            NameBoxEnabled = startPanel && canStart && !contacting,
             NameBoxText = name,
             UseTokenLinkVisible = panel == CopiumPanel.SignedOut,
             TokenSectionVisible = panel == CopiumPanel.PastedToken,
@@ -170,8 +181,9 @@ internal sealed class CopiumCardModel
             CodeText = hasCode ? state.Code : null,
             CodeHintVisible = hasCode,
             OpenAgainVisible = hasCode,
-            CancelVisible = panel is CopiumPanel.Waiting or CopiumPanel.Finishing,
-            CancelEnabled = panel == CopiumPanel.Waiting,
+            CancelVisible = panel is CopiumPanel.Waiting or CopiumPanel.Finishing || contacting,
+            CancelEnabled = panel == CopiumPanel.Waiting || contacting,
+            Contacting = contacting,
             StatusText = status,
             SignedInVisible = panel == CopiumPanel.SignedIn,
             SignedInText = signedInText,
@@ -184,6 +196,7 @@ internal sealed class CopiumCardModel
             PlusNote = linked ? PlusFromAccountNote : null,
             NoTokenHintVisible = !state.HasToken,
             FailureText = failure,
+            MessageIsWarning = failure != null,
             CleanupVisible = cleanup != null,
             CleanupText = cleanup,
         };
