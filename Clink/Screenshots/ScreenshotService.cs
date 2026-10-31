@@ -108,6 +108,8 @@ internal enum ScreenshotDeleteResult
     EditorOpen,
     /// <summary>The file went to the Recycle Bin but the history could not be written: the entry is still listed.</summary>
     ListNotUpdated,
+    /// <summary>Asked to delete only a file (<c>requireFile</c>, the bulk delete) but there is none at the path: nothing was touched and the entry stays.</summary>
+    FileGone,
 }
 
 /// <summary>What a saved screenshot is: the entry (in the history) and the encoded PNG (also for the clipboard).</summary>
@@ -669,9 +671,11 @@ internal sealed class ScreenshotService
     /// that is <see cref="ScreenshotDeleteResult.Refused"/> too. A screenshot with a Copium link keeps its entry (the link is the
     /// only thing left of it); one without leaves the history. An entry whose file is already gone is just taken out of the list.
     /// A Recycle Bin failure keeps the file and the entry; a file that an editor has open is not touched
-    /// (<see cref="ScreenshotDeleteResult.EditorOpen"/>). Off the UI thread; never throws.
+    /// (<see cref="ScreenshotDeleteResult.EditorOpen"/>). <paramref name="requireFile"/> (the bulk delete): only a file is deleted; when
+    /// there is none at the path (gone, or a directory / link there) the entry is NOT removed (it may hold a Copium link record) and the
+    /// result is <see cref="ScreenshotDeleteResult.FileGone"/>. Off the UI thread; never throws.
     /// </summary>
-    internal Task<ScreenshotDeleteResult> DeleteAsync(ScreenshotEntry entry, nint owner = 0) => Task.Run(() =>
+    internal Task<ScreenshotDeleteResult> DeleteAsync(ScreenshotEntry entry, nint owner = 0, bool requireFile = false) => Task.Run(() =>
     {
         string path = entry.Path;
         try
@@ -693,6 +697,11 @@ internal sealed class ScreenshotService
             {
                 if (!IsOpenableFile(path, KnownFolders()))
                 {
+                    if (requireFile)
+                    {
+                        Log.Warn("screenshot: not deleted: " + System.IO.Path.GetFileName(path) + " is not a screenshot file (directory or link); the entry stays");
+                        return ScreenshotDeleteResult.FileGone;
+                    }
                     // A directory or a link at the path: not a screenshot file, so the disk is left alone and only the list entry goes
                     // (the row offers "Remove from list" for it).
                     Log.Warn("screenshot: " + System.IO.Path.GetFileName(path) + " is not a screenshot file (directory or link); only the list entry is removed");
@@ -714,6 +723,11 @@ internal sealed class ScreenshotService
                     if (LastEdit is { } live && SamePath(live.Path, path)) ClearLastEdit("its file was deleted");
                     keep = !string.IsNullOrEmpty(History.Find(path)?.CopiumLink ?? entry.CopiumLink);
                 }
+            }
+            else if (requireFile)
+            {
+                Log.Info("screenshot: not deleted: " + System.IO.Path.GetFileName(path) + " has no file; the entry stays");
+                return ScreenshotDeleteResult.FileGone;
             }
             if (keep)
             {

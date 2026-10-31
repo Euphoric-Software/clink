@@ -1,0 +1,77 @@
+<Window x:Class="Clink.UI.ShareFilesWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Share files" Width="480" SizeToContent="Height"
+        WindowStyle="None" ResizeMode="NoResize" AllowsTransparency="True" Background="Transparent"
+        WindowStartupLocation="CenterScreen" Topmost="True" FontFamily="{StaticResource UiFont}" PreviewKeyDown="Window_PreviewKeyDown">
+    <!-- Every colour in this file is a DynamicResource: the window follows a theme change while it is open. -->
+    <Border Background="{DynamicResource Bg}" CornerRadius="10" BorderBrush="{DynamicResource Border}" BorderThickness="1">
+        <StackPanel>
+            <Grid Height="42" MouseLeftButtonDown="Header_MouseLeftButtonDown" Background="Transparent">
+                <TextBlock x:Name="TitleText" Style="{StaticResource Display}" Text="Share files" Margin="16,0,0,0" VerticalAlignment="Center" />
+                <Button Style="{StaticResource IconButton}" Content="✕" HorizontalAlignment="Right" Margin="0,0,8,0" Click="Close_Click" ToolTip="Close (Esc)" AutomationProperties.Name="Close" />
+            </Grid>
+
+            <TextBlock x:Name="IntroText" Style="{StaticResource MutedText}" Margin="16,0,16,10" TextWrapping="Wrap" />
+
+            <!-- The files card: drag them out together (always a copy, the originals stay in the library) -->
+            <Border x:Name="Card" Margin="16,0" CornerRadius="8" Padding="12"
+                    PreviewMouseLeftButtonDown="Card_PreviewMouseLeftButtonDown" MouseMove="Card_MouseMove" MouseLeftButtonUp="Card_MouseLeftButtonUp">
+                <Border.Style>
+                    <Style TargetType="Border">
+                        <Setter Property="Background" Value="{DynamicResource Panel}" />
+                        <Setter Property="Cursor" Value="Hand" />
+                        <Style.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Background" Value="{DynamicResource Panel2}" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.45" />
+                                <Setter Property="Cursor" Value="Arrow" />
+                            </Trigger>
+                        </Style.Triggers>
+                    </Style>
+                </Border.Style>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <Border Width="176" Height="100" CornerRadius="6" Background="{DynamicResource Panel3}" VerticalAlignment="Top">
+                        <Border.Clip>
+                            <RectangleGeometry Rect="0,0,176,100" RadiusX="6" RadiusY="6" />
+                        </Border.Clip>
+                        <Grid>
+                            <TextBlock Style="{StaticResource Glyph}" Text="&#xE8B9;" FontSize="26" HorizontalAlignment="Center" />
+                            <Image x:Name="ThumbImage" Stretch="UniformToFill" />
+                            <!-- Accent2 on Bg: the pair the theme tests hold to 4.5:1 -->
+                            <Border x:Name="MoreBadge" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="6" Padding="7,2" CornerRadius="9"
+                                    Background="{DynamicResource Bg}" BorderBrush="{DynamicResource Accent2}" BorderThickness="1" Visibility="Collapsed">
+                                <TextBlock x:Name="MoreText" Foreground="{DynamicResource Accent2}" FontWeight="SemiBold" FontSize="12" />
+                            </Border>
+                        </Grid>
+                    </Border>
+                    <StackPanel Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Center">
+                        <TextBlock x:Name="NameText" FontWeight="SemiBold" TextWrapping="Wrap" TextTrimming="CharacterEllipsis" MaxHeight="36" />
+                        <TextBlock x:Name="HintText" Style="{StaticResource MutedText}" Margin="0,10,0,0" TextWrapping="Wrap" Text="Drag into Discord, a browser upload box or a folder" />
+                        <TextBlock x:Name="DiscordText" Style="{StaticResource MutedText}" Margin="0,6,0,0" TextWrapping="Wrap" Visibility="Collapsed"
+                                   Text="Discord takes up to 10 files per message" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <!-- What just happened, files left out, or why the card is greyed out; two lines are reserved so the window does not jump -->
+            <TextBlock x:Name="StatusText" Style="{StaticResource MutedText}" Margin="18,8,16,0" MinHeight="32" TextWrapping="Wrap" Text="" />
+
+            <Grid Margin="16,4,16,16">
+                <StackPanel Orientation="Horizontal">
+                    <Button x:Name="CopyButton" Style="{StaticResource AccentButton}" Content="Copy files" Click="CopyFiles_Click" Margin="0,0,8,0"
+                            ToolTip="Copy the files, then paste them into Discord or a folder with Ctrl+V (Ctrl+C in this window does the same)" />
+                    <Button x:Name="FolderButton" Content="Open folder" Click="OpenFolder_Click" Margin="0,0,8,0" ToolTip="Show the first file in its folder" />
+                    <Button x:Name="SetUpCopiumButton" Content="Set up Copium…" Click="SetUpCopium_Click" ToolTip="Sign in with Copium under App → Copium: Share then uploads clips and copies the link (after you agree once)" />
+                </StackPanel>
+                <Button Content="Close" Click="Close_Click" HorizontalAlignment="Right" />
+            </Grid>
+        </StackPanel>
+    </Border>
+</Window>

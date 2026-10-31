@@ -172,6 +172,127 @@ internal sealed class ClipDeleter
         return new TreeOutcome(ClipDeleteResult.Deleted, done, total);
     }
 
+    // ------------------------------------------------------------------ the selection bar's Delete (many clips or screenshots at once)
+
+    /// <summary>The order a bulk delete goes in: a trim before the clip it was cut from (when both are selected), otherwise the order given.</summary>
+    internal static List<ClipEntry> BulkOrder(IReadOnlyList<ClipEntry> entries)
+    {
+        var byKey = new Dictionary<string, ClipEntry>(StringComparer.OrdinalIgnoreCase);
+        foreach (var e in entries) byKey[ClipGrouping.Key(e.Path)] = e;
+        int Depth(ClipEntry e)
+        {
+            int depth = 0;
+            var cur = e;
+            while (depth <= entries.Count && cur.IsTrim && !string.IsNullOrWhiteSpace(cur.SourcePath)
+                   && byKey.TryGetValue(ClipGrouping.Key(cur.SourcePath), out var parent) && !ReferenceEquals(parent, cur))
+            {
+                depth++;
+                cur = parent;
+            }
+            return depth;
+        }
+        // a trim sits "above" its parent (depth counts the selected ancestors of a row): deepest first; OrderBy is stable
+        return entries.Select((e, i) => (e, i, d: Depth(e))).OrderByDescending(t => t.d).ThenBy(t => t.i).Select(t => t.e).ToList();
+    }
+
+    private static string Noun(int n, bool screenshots) => screenshots ? (n == 1 ? "screenshot" : "screenshots") : (n == 1 ? "clip" : "clips");
+
+    /// <summary>"Delete 6 clips?" / "Delete 3 screenshots?"</summary>
+    internal static string BulkConfirmTitle(int n, bool screenshots) => $"Delete {n} {Noun(n, screenshots)}?";
+
+    /// <summary>
+    /// The bulk pop-up's body: what happens, the shared links, the trims of selected clips that were not selected (they stay and become
+    /// top-level rows), and what is skipped because it cannot be deleted right now.
+    /// </summary>
+    internal static string BulkConfirmBody(int n, int shared, int unselectedTrims, int blocked, bool screenshots, int withoutFile = 0)
+    {
+        string text = n == 1
+            ? $"1 {Noun(1, screenshots)} will be moved to the Recycle Bin, where you can restore it."
+            : $"{n} {Noun(n, screenshots)} will be moved to the Recycle Bin, where you can restore them.";
+        if (shared > 0) text += screenshots ? " The links stay on Copium." : " The shared links keep working.";
+        if (unselectedTrims > 0)
+            text += unselectedTrims == 1
+                ? " 1 trim of a selected clip is not selected: it stays in the list and moves to the top level."
+                : $" {unselectedTrims} trims of the selected clips are not selected: they stay in the list and move to the top level.";
+        if (blocked > 0)
+            text += blocked == 1
+                ? " 1 can't be deleted right now and will be skipped."
+                : $" {blocked} can't be deleted right now and will be skipped.";
+        if (withoutFile > 0) text += " " + WithoutFileText(withoutFile);
+        return text;
+    }
+
+    /// <summary>"1 without a file was left. Use Remove from list for it." (a screenshot row whose file is gone is never part of a bulk delete: the delete would drop its Copium link record).</summary>
+    internal static string WithoutFileText(int n) => n == 1
+        ? "1 without a file was left. Use Remove from list for it."
+        : $"{n} without a file were left. Use Remove from list for them.";
+
+    /// <summary>Why a selected screenshot is not part of a bulk delete.</summary>
+    internal enum ShotSkip { None, Deleting, Uploading, NoFile, Refused, NotLocal }
+
+    /// <summary>What is known about one selected screenshot row before a bulk delete (read on the UI thread / a worker).</summary>
+    internal readonly record struct ShotFacts(bool HasLocalFile, bool IsUploading, bool IsDeleting, bool Openable, bool OnFixedDrive);
+
+    /// <summary>Which of the selected screenshots a bulk delete takes (<see cref="Delete"/>, indexes into the facts) and which it leaves, with the reason.</summary>
+    internal sealed record ShotDeletePlan(IReadOnlyList<int> Delete, IReadOnlyList<(int Index, ShotSkip Why)> Skipped)
+    {
+        public int Count(ShotSkip why) => Skipped.Count(s => s.Why == why);
+    }
+
+    /// <summary>
+    /// The bulk screenshot delete's decision (pure). Only a row whose file is there, that passes the path rule and sits on a local fixed
+    /// drive, and that nothing else is working on, is deleted. A row without a file is never included (deleting it would only remove
+    /// its list entry, losing the Copium link record: that is "Remove from list", one row at a time). Reasons, first match wins:
+    /// being deleted, uploading, no file, outside the screenshots folders, not on a local fixed drive.
+    /// </summary>
+    internal static ShotDeletePlan PlanShotDelete(IReadOnlyList<ShotFacts> rows)
+    {
+        var delete = new List<int>();
+        var skipped = new List<(int, ShotSkip)>();
+        for (int i = 0; i < rows.Count; i++)
+        {
+            var f = rows[i];
+            ShotSkip why = f.IsDeleting ? ShotSkip.Deleting
+                : f.IsUploading ? ShotSkip.Uploading
+                : !f.HasLocalFile ? ShotSkip.NoFile
+                : !f.Openable ? ShotSkip.Refused
+                : !f.OnFixedDrive ? ShotSkip.NotLocal
+                : ShotSkip.None;
+            if (why == ShotSkip.None) delete.Add(i); else skipped.Add((i, why));
+        }
+        return new ShotDeletePlan(delete, skipped);
+    }
+
+    /// <summary>The row's problem line for a screenshot a bulk delete left (empty: nothing to say, e.g. a delete already under way).</summary>
+    internal static string ShotSkipText(ShotSkip why) => why switch
+    {
+        ShotSkip.Uploading => "This screenshot is uploading. Delete it after the upload finishes.",
+        ShotSkip.NoFile => ScreenshotRow.NoFileText,
+        ShotSkip.Refused => "Not deleted: not a file in the screenshots folder",
+        ShotSkip.NotLocal => ScreenshotRow.NotLocalText,
+        _ => "",
+    };
+
+    /// <summary>What the bar says after a bulk screenshot delete: <paramref name="total"/> counts every row the delete was asked for, <paramref name="withoutFile"/> of them left because their file is gone.</summary>
+    internal static string ShotBulkSummary(int deleted, int total, int withoutFile)
+    {
+        int kept = total - deleted;
+        string left = withoutFile > 0 ? " " + WithoutFileText(withoutFile) : "";
+        if (kept - withoutFile <= 0)
+            return (deleted == 0 ? "Nothing was deleted." : deleted == 1 ? "Deleted 1 screenshot." : $"Deleted {deleted} screenshots.") + left;
+        return BulkProblemText(deleted, total, null) + left;
+    }
+
+    /// <summary>What the bar says when a bulk delete kept some files ("Deleted 4 of 6. 2 were kept: one is uploading."); empty when everything went.</summary>
+    internal static string BulkProblemText(int deleted, int total, ClipDeleteResult? first)
+    {
+        int kept = total - deleted;
+        if (kept <= 0) return "";
+        string was = kept == 1 ? "1 was" : $"{kept} were";
+        string why = first is { } f ? $": {(kept == 1 ? "it" : "one")} {Why(f)}" : "";
+        return $"Deleted {deleted} of {total}. {was} kept{why}.";
+    }
+
     /// <summary>The pop-up's answer: remembers "Do not ask again" only for a confirmed delete (Cancel never saves it).</summary>
     internal static bool Remember(bool confirmed, bool doNotAskAgain) => confirmed && doNotAskAgain;
 

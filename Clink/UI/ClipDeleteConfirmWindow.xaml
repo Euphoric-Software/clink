@@ -15,7 +15,7 @@
     <Border Background="{DynamicResource Bg}" CornerRadius="10" BorderBrush="{DynamicResource Border}" BorderThickness="1">
         <DockPanel>
             <Grid DockPanel.Dock="Top" Height="44" MouseLeftButtonDown="Header_MouseLeftButtonDown" Background="Transparent">
-                <TextBlock Style="{StaticResource Display}" Text="Delete clip?" Margin="16,0,0,0" VerticalAlignment="Center" />
+                <TextBlock x:Name="TitleText" Style="{StaticResource Display}" Text="Delete clip?" Margin="16,0,0,0" VerticalAlignment="Center" />
             </Grid>
 
             <Border DockPanel.Dock="Bottom" Padding="16,10,16,14" BorderBrush="{DynamicResource Border}" BorderThickness="0,1,0,0">

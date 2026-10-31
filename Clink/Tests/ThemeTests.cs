@@ -214,6 +214,20 @@ internal static class ThemeTests
     }
 
     [UnitTest]
+    public static void TheSelectedRowBorderIsVisibleInEveryTheme()
+    {
+        // ClipsPane.xaml LibRow: a selected row is a Panel2 fill with an Accent2 border, on the window (Bg) or a card; the border must stand out from both (WCAG 1.4.11, 3:1).
+        foreach (var (theme, accent) in AllCombinations())
+        {
+            var t = ThemeManager.Tokens(theme, accent);
+            foreach (string behind in new[] { "Panel2", "Bg" })
+            {
+                double ratio = Contrast(t["Accent2"], t[behind]);
+                Check.True(ratio >= 3.0, $"{theme}/{accent}: selected-row border Accent2 on {behind} is {ratio.ToString("0.00", CultureInfo.InvariantCulture)}:1, needs 3:1");
+            }
+        }
+    }
+    [UnitTest]
     public static void TheFilterChipIsReadableOffHoveredAndOn()
     {
         // FilterChip (Theme.xaml): off = Muted on the card, hovered = Fg on Panel3 (the hover trigger sets Foreground), on = OnAccent on Accent.

@@ -180,9 +180,24 @@ internal sealed class ScreenshotRow : INotifyPropertyChanged
         Refresh();
     }
 
+    // The library selection (ClipsPane keeps the model; the row shows it): the checkbox, the highlight and "Select ..." name follow these.
+    private bool _selected, _selectMode;
+    /// <summary>The row is in the selection.</summary>
+    public bool IsSelected => _selected;
+    /// <summary>The list this row is in has a selection: the checkboxes are all shown and a plain click selects.</summary>
+    public bool SelectMode => _selectMode;
+    /// <summary>The checkbox's accessible name.</summary>
+    public string SelectName => $"Select {Title}, {Entry.Created:MMM d, HH:mm}";
+
+    public void SetSelection(bool selected, bool selectMode)
+    {
+        if (_selected != selected) { _selected = selected; Raise(nameof(IsSelected)); }
+        if (_selectMode != selectMode) { _selectMode = selectMode; Raise(nameof(SelectMode)); }
+    }
     public void SetProblem(string text) { IsProblem = true; Status = text; }
 
     public const string NotLocalText = "Delete is only available for screenshots on a local fixed drive";
+    public const string NoFileText = "Its file is already gone. Use Remove from list.";
     public const string RemoveHint = "Remove from this list. The link stays on Copium";
 
     /// <summary>The question before a delete: names the file; a shared one says its link stays.</summary>
@@ -200,6 +215,7 @@ internal sealed class ScreenshotRow : INotifyPropertyChanged
         ScreenshotDeleteResult.Refused => "Not deleted: not a file in the screenshots folder",
         ScreenshotDeleteResult.EditorOpen => "Not deleted: close the editor first",
         ScreenshotDeleteResult.ListNotUpdated => "The file was removed from disk but the list could not be updated",
+        ScreenshotDeleteResult.FileGone => NoFileText,
         _ => "Not deleted: the file could not be moved to the Recycle Bin (or the Windows confirmation was declined)",
     };
 
@@ -246,7 +262,7 @@ internal sealed class ScreenshotRow : INotifyPropertyChanged
 
     public void Refresh()
     {
-        foreach (var p in new[] { nameof(Title), nameof(Meta), nameof(HasLocalFile), nameof(HasLink), nameof(Link), nameof(HasPage), nameof(UploadVisible), nameof(DeleteVisible), nameof(RemoveVisible), nameof(IsEdited) })
+        foreach (var p in new[] { nameof(Title), nameof(Meta), nameof(HasLocalFile), nameof(HasLink), nameof(Link), nameof(HasPage), nameof(UploadVisible), nameof(DeleteVisible), nameof(RemoveVisible), nameof(IsEdited), nameof(SelectName) })
             Raise(p);
     }
 

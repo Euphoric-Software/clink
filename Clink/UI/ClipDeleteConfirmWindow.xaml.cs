@@ -55,6 +55,19 @@ public partial class ClipDeleteConfirmWindow : Window
         }
     }
 
+    /// <summary>
+    /// The pop-up of the selection bar's Delete (several clips or screenshots): always asked, so no "Do not ask again"; the one
+    /// confirming button is named <paramref name="deleteLabel"/>.
+    /// </summary>
+    internal ClipDeleteConfirmWindow(string title, string body, string deleteLabel, Window? owner) : this(body, owner, 0, null)
+    {
+        Title = title;
+        TitleText.Text = title;
+        DeleteButton.Content = deleteLabel;
+        System.Windows.Automation.AutomationProperties.SetName(DeleteButton, deleteLabel);
+        DoNotAskCheck.Visibility = Visibility.Collapsed;
+    }
+
     private long _shownAt = long.MaxValue;   // Environment.TickCount64 when loaded; not loaded yet = ignore input
 
     private void Window_Loaded(object sender, RoutedEventArgs e)
