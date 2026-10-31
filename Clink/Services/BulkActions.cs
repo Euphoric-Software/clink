@@ -23,14 +23,14 @@ internal static class BulkActions
     /// <summary>
     /// The Share menu of the bar, or null when Share acts directly (no token, or cloud sharing off). <paramref name="linked"/> of
     /// <paramref name="count"/> selected clips have a link; "Copy links" needs all of them linked. <paramref name="uploadOn"/>:
-    /// "Upload and copy links" is offered for the clips that have none (a later slice turns it on; the library passes false for now).
+    /// "Upload and copy links" is offered (first) for the clips that have none.
     /// </summary>
-    public static IReadOnlyList<BulkActionItem>? ShareMenu(bool hasToken, bool cloudOn, int count, int linked, bool uploadOn)
+    public static IReadOnlyList<BulkActionItem>? ShareMenu(bool hasToken, bool cloudOn, int count, int linked, bool uploadOn, bool screenshots = false)
     {
         if (!hasToken || !cloudOn) return null;
         var items = new List<BulkActionItem>();
         if (uploadOn && linked < count)
-            items.Add(new BulkActionItem(BulkAction.Upload, "_Upload and copy links", "Upload the clips that have no link to your Copium account, then copy every link"));
+            items.Add(new BulkActionItem(BulkAction.Upload, "_" + UploadLabel, UploadTip(screenshots)));
         if (count > 0 && linked == count)
             items.Add(new BulkActionItem(BulkAction.CopyLinks, "_Copy links", "Copy the Copium links of the selected clips, one per line"));
         bool tooMany = count > MaxShareFiles;
@@ -40,7 +40,78 @@ internal static class BulkActions
         return items;
     }
 
-    public const string ShareFilesLabel = "Share files…", CopyLinksLabel = "Copy links";
+    public const string ShareFilesLabel = "Share files…", CopyLinksLabel = "Copy links", UploadLabel = "Upload and copy links";
+
+    /// <summary>The tooltip of "Upload and copy links".</summary>
+    public static string UploadTip(bool screenshots) =>
+        $"Upload the {(screenshots ? "screenshots" : "clips")} that have no link yet, then copy all links";
+
+    /// <summary>"Upload and copy links" is offered on the bar: a token, cloud sharing on and at least one selected item without a link.</summary>
+    public static bool UploadOffered(bool hasToken, bool cloudOn, int count, int linked) => hasToken && cloudOn && count > 0 && linked < count;
+
+    /// <summary>The status after Cancel was pressed during a bulk upload.</summary>
+    public const string UploadStoppingText = "Stopping after this one…";
+
+    /// <summary>The bar's status when a bulk upload ends: the summary, or why nothing was tried (no token, cloud off, the user said "Not now").</summary>
+    public static string UploadStatus(BulkShareResult r, bool screenshots)
+    {
+        if (r.Declined) return "Not uploaded: sharing with Copium is not enabled";
+        bool tried = r.Uploaded + r.AlreadyLinked + r.Refused + r.Busy + r.Failed > 0 || r.Cancelled;
+        if (!tried && !string.IsNullOrWhiteSpace(r.FirstError)) return r.FirstError;
+        return UploadSummary(r, screenshots);
+    }
+
+    /// <summary>The summary of a finished bulk upload (the notice and, unless nothing was tried, the bar's status).</summary>
+    public static string UploadSummary(BulkShareResult r, bool screenshots)
+    {
+        // With no failure the stop reason is also FirstError: pass it once, as the stop reason.
+        string? failError = r.Failed > 0 || r.StopError == null ? r.FirstError : null;
+        bool allLinked = r.Uploaded + r.AlreadyLinked == r.Total;   // then "Copy links" is offered for this selection
+        return UploadSummary(r.Uploaded, r.AlreadyLinked, r.Total, r.Refused, r.Busy, r.Failed, failError, r.Cancelled, screenshots,
+            r.StopError, r.NotTried, r.NotCopied, allLinked);
+    }
+
+    /// <summary>The status while a bulk upload runs: "Uploading 2 of 6…" (with " 40%" once the item reports progress).</summary>
+    public static string UploadingStatus(int index, int total, double fraction = -1) =>
+        fraction > 0 ? $"Uploading {index} of {total}… {fraction:P0}" : $"Uploading {index} of {total}…";
+
+    /// <summary>
+    /// What the bar and the toast say after "Upload and copy links". <paramref name="uploaded"/> were uploaded now,
+    /// <paramref name="alreadyLinked"/> had a link already; every selected item is in <paramref name="total"/>. The links on the clipboard
+    /// are the sum of the two. Refused (over the account's limit), busy, failed (first error as told) and a cancel are added.
+    /// </summary>
+    public static string UploadSummary(int uploaded, int alreadyLinked, int total, int refused, int busy, int failed, string? firstError, bool cancelled, bool screenshots,
+        string? stopError = null, int notTried = 0, bool notCopied = false, bool canRetryCopy = false)
+    {
+        int links = uploaded + alreadyLinked;
+        string why = "";
+        if (refused > 0) why += refused == 1 ? " 1 is too large to share." : $" {refused} are too large to share.";
+        if (busy > 0) why += busy == 1 ? " 1 was busy." : $" {busy} were busy.";
+        if (failed > 0 || !string.IsNullOrWhiteSpace(firstError))
+        {
+            bool hasError = !string.IsNullOrWhiteSpace(firstError);
+            if (hasError && failed > 1) why += $" {failed} failed: {firstError!.TrimEnd('.')}.";
+            else if (hasError) why += " " + firstError!.TrimEnd('.') + ".";
+            else why += failed == 1 ? " 1 failed." : $" {failed} failed.";
+        }
+        if (!string.IsNullOrWhiteSpace(stopError))
+        {
+            bool afterFailure = failed > 0 || !string.IsNullOrWhiteSpace(firstError);
+            why += (afterFailure ? " Stopped: " : " ") + stopError!.TrimEnd('.') + ".";
+        }
+        if (notTried > 0) why += notTried == 1 ? " 1 was not tried." : $" {notTried} were not tried.";
+        if (cancelled) why += " Cancelled.";
+        if (links == 0) return "Nothing was uploaded." + why;
+        int toUpload = total - alreadyLinked;
+        string headNoun = screenshots ? (toUpload == 1 ? "screenshot" : "screenshots") : (toUpload == 1 ? "clip" : "clips");
+        string head = toUpload <= 0 ? ""
+            : uploaded >= toUpload ? $"Uploaded {uploaded} {headNoun}. "
+            : $"Uploaded {uploaded} of {toUpload} {headNoun}. ";
+        string onClipboard = notCopied
+            ? (links == 1 ? "1 link is ready but couldn't be copied to the clipboard." : $"{links} links are ready but couldn't be copied to the clipboard.")
+            : (links == 1 ? "1 link is on the clipboard." : $"{links} links are on the clipboard.");
+        return head + onClipboard + why + (notCopied && canRetryCopy ? " Use Copy links to try again." : "");
+    }
 
     /// <summary>
     /// The bar's share buttons, in order: the menu (token and cloud sharing on), or "Share files…" (cloud on, no token) followed by
@@ -58,10 +129,10 @@ internal static class BulkActions
     }
 
     /// <summary>
-    /// The selection bar is shown while something is selected, and also while copies are being saved (it then holds the only Cancel,
-    /// so emptying the selection or switching the list must not take it away).
+    /// The selection bar is shown while something is selected, and also while copies are being saved or links uploaded (it then holds
+    /// the only Cancel, so emptying the selection or switching the list must not take it away).
     /// </summary>
-    public static bool BarVisible(int selectedCount, bool saving) => selectedCount > 0 || saving;
+    public static bool BarVisible(int selectedCount, bool longRunning) => selectedCount > 0 || longRunning;
 
     /// <summary>"6 clips selected", "1 clip selected", "3 screenshots selected".</summary>
     public static string CountLabel(int n, bool screenshots)

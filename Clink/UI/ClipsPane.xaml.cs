@@ -962,12 +962,18 @@ public partial class ClipsPane : UserControl
     {
         var row = ShotOf(sender);
         if (row == null || row.IsDeleting || row.IsUploading) return;
-        string what = ScreenshotRow.ConfirmText(row.Entry, row.HasLocalFile);
+        bool hadFile = row.HasLocalFile;   // what the user was asked about: a delete (file) or a Remove from list (no file)
+        string what = ScreenshotRow.ConfirmText(row.Entry, hadFile);
         var owner = Window.GetWindow(this);
         var answer = owner != null
             ? MessageBox.Show(owner, what, "Clink", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No)
             : MessageBox.Show(what, "Clink", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No);
         if (answer != MessageBoxResult.Yes) return;
+        if (row.IsDeleting || row.IsUploading || !_shots.Contains(row))   // a bulk delete / upload took the row, or it left the list, while the question was up
+        {
+            if (row.IsUploading) row.SetProblem("This screenshot is uploading. Delete it after the upload finishes.");
+            return;
+        }
         row.IsDeleting = true;
         var result = ScreenshotDeleteResult.Failed;
         nint ownerHandle = 0;
@@ -977,10 +983,12 @@ public partial class ClipsPane : UserControl
             if (w != null) ownerHandle = new System.Windows.Interop.WindowInteropHelper(w).Handle;
         }
         catch { }
-        try { result = await App.Screenshots.DeleteAsync(row.Entry, ownerHandle); }   // IsDeleting stays set until the shell call returns
+        // requireFile when the user was asked to delete a file: one that went meanwhile keeps its entry (FileGone), never a silent Remove from list
+        try { result = await App.Screenshots.DeleteAsync(row.Entry, ownerHandle, requireFile: hadFile); }   // IsDeleting stays set until the shell call returns
         catch (Exception ex) { Log.Warn("library: screenshot delete: " + ex.Message); }
         finally { row.IsDeleting = false; }
-        if (result is ScreenshotDeleteResult.Deleted or ScreenshotDeleteResult.ListNotUpdated) RefreshShots();   // (the history says so too, once the entry was in it)
+        if (result == ScreenshotDeleteResult.FileGone) { if (OnShots) RefreshShots(); row.SetProblem(ScreenshotRow.DeleteProblemText(result, false)); return; }
+        if (result is ScreenshotDeleteResult.Deleted or ScreenshotDeleteResult.ListNotUpdated) { if (OnShots) RefreshShots(); }   // (the history says so too, once the entry was in it)
         if (result != ScreenshotDeleteResult.Deleted)
             row.SetProblem(ScreenshotRow.DeleteProblemText(result, ScreenshotService.IsOnLocalFixedDrive(row.Entry.Path)));
     }

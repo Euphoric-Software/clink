@@ -20,12 +20,17 @@ public partial class ClipsPane
     private readonly LibrarySelection<ClipRow> _clipSel = new();
     private readonly LibrarySelection<ScreenshotRow> _shotSel = new();
 
-    private enum BarBusy { None, Working, Saving }
+    private enum BarBusy { None, Working, Saving, Uploading }
 
     private BarBusy _busy;
     private string? _barSignature;
     private readonly List<(Button Button, bool Enabled)> _barButtons = new();   // the bar's current buttons and whether each is on when nothing is working
     private CancellationTokenSource? _saveCts;
+    private CancellationTokenSource? _uploadCts;
+    private bool _uploadStopping;   // Cancel was pressed: the bulk upload stops after the item in hand
+
+    /// <summary>Saving copies or uploading: the bar holds the only Cancel, so it stays, Clear is off and Esc does nothing.</summary>
+    private bool LongRunning => _busy is BarBusy.Saving or BarBusy.Uploading;
 
     private IReadOnlyList<ClipRow> VisibleClips => _level == LibraryLevel.Shared ? _shared : _local;
     private bool OnShots => Feature == LibraryFeature.Screenshots;
@@ -105,7 +110,7 @@ public partial class ClipsPane
     /// <summary>Clear by the user (the Clear button, Esc): not while copies are being saved (the bar holds the Cancel); keyboard focus then goes into the list.</summary>
     private void ClearByUser()
     {
-        if (_busy == BarBusy.Saving) return;
+        if (LongRunning) return;
         bool moveFocus = SelectBar.IsKeyboardFocusWithin || !FocusInActiveList();
         ClearSelections();
         if (moveFocus) Dispatcher.BeginInvoke(DispatcherPriority.Input, FocusActiveList);   // after the bar collapsed
@@ -146,7 +151,7 @@ public partial class ClipsPane
     {
         base.OnPreviewKeyDown(e);
         if (e.Handled || App == null) return;
-        if (e.Key == Key.Escape && SelectionActive && _busy != BarBusy.Saving)
+        if (e.Key == Key.Escape && SelectionActive && !LongRunning)
         {
             e.Handled = true;
             ClearByUser();
@@ -199,7 +204,7 @@ public partial class ClipsPane
     {
         bool shots = OnShots;
         int count = shots ? _shotSel.Count : _clipSel.Count;
-        bool saving = _busy == BarBusy.Saving;
+        bool saving = LongRunning;
         bool active = BulkActions.BarVisible(count, saving);
         SelectBar.Visibility = active ? Visibility.Visible : Visibility.Collapsed;
         LevelRow.Visibility = active ? Visibility.Collapsed : Visibility.Visible;
@@ -211,12 +216,12 @@ public partial class ClipsPane
             SetBarStatus(null);
             return;
         }
-        SetLive(SelectCount, count > 0 ? BulkActions.CountLabel(count, shots) : "Saving copies…");
+        SetLive(SelectCount, count > 0 ? BulkActions.CountLabel(count, shots) : _busy == BarBusy.Uploading ? "Uploading…" : "Saving copies…");
         int linked = shots ? _shotSel.InOrder(_shots).Count(r => r.HasLink) : _clipSel.InOrder(VisibleClips).Count(r => r.HasLink);
         bool hasToken = App.HasCopiumToken, cloudOn = App.Settings.CloudSharingEnabled;
         // Rebuilt only when what it offers changes (a refresh must not take the keyboard focus off a bar button). Working / idle only
         // switches the buttons on and off; saving replaces them with Cancel, which is the one rebuild a busy state needs.
-        string signature = $"{shots}|{_level}|{hasToken}|{cloudOn}|{linked == count}|{linked > 0}|{count > BulkActions.MaxShareFiles}|{saving}";
+        string signature = $"{shots}|{_level}|{hasToken}|{cloudOn}|{linked == count}|{linked > 0}|{count > BulkActions.MaxShareFiles}|{_busy is BarBusy.Saving}|{_busy is BarBusy.Uploading}";
         if (signature != _barSignature)
         {
             _barSignature = signature;
@@ -246,9 +251,16 @@ public partial class ClipsPane
             yield return BarButton("Cancel", () => _saveCts?.Cancel(), "Stop saving; copies already made stay");
             yield break;
         }
+        if (_busy == BarBusy.Uploading)
+        {
+            yield return BarButton("Cancel", StopUpload, "Stop after the current upload; links already made stay");
+            yield break;
+        }
         bool tooMany = count > BulkActions.MaxShareFiles;
         if (shots)
         {
+            if (BulkActions.UploadOffered(hasToken, cloudOn, count, linked))
+                yield return BarButton(BulkActions.UploadLabel, () => Run(UploadSelectedAsync()), BulkActions.UploadTip(true), style: "AccentButton");
             if (cloudOn) yield return BarButton("Share files…", () => Run(ShareFilesAsync()), tooMany ? BulkActions.TooManyToShareText : "Drag or copy the files into Discord, a browser or a folder", !tooMany);
             if (linked == count) yield return BarButton("Copy links", BulkCopyLinks, "Copy the Copium links, one per line");
             yield return BarButton("Delete", () => Run(DeleteSelectedAsync()), "Move the selected files to the Recycle Bin", style: "DangerTextButton");
@@ -269,8 +281,7 @@ public partial class ClipsPane
                 Button? menuButton = null;
                 menuButton = BarButton(label, () =>
                 {
-                    // uploadOn is false until the bulk upload exists
-                    if (BulkActions.ShareMenu(hasToken, cloudOn, count, linked, uploadOn: false) is { } items)
+                    if (BulkActions.ShareMenu(hasToken, cloudOn, count, linked, uploadOn: true) is { } items)
                         ShareMenu.OpenBulk(menuButton!, items, RunBarAction);
                 }, style: style);
                 System.Windows.Automation.AutomationProperties.SetName(menuButton, "Share options");
@@ -288,6 +299,7 @@ public partial class ClipsPane
     {
         switch (action)
         {
+            case BulkAction.Upload: Run(UploadSelectedAsync()); break;
             case BulkAction.CopyLinks: BulkCopyLinks(); break;
             case BulkAction.ShareFiles: Run(ShareFilesAsync()); break;
             case BulkAction.SaveCopies: Run(SaveCopiesAsync()); break;
@@ -302,6 +314,7 @@ public partial class ClipsPane
         {
             Log.Error("library: bulk action", ex);
             _saveCts = null;
+            _uploadCts = null;
             SetBusy(BarBusy.None);
             SetBarStatus("Something went wrong: " + ex.Message);
         }
@@ -387,7 +400,7 @@ public partial class ClipsPane
             if (current != null) { EndRow(current); current = null; }
             if (finished || i < 0 || i >= total) return false;
             var row = ready[i];
-            if (row.IsUploading || row.IsSaving || row.IsDeleting) return false;
+            if (row.IsUploading || row.IsSaving || row.IsDeleting || !_local.Contains(row)) return false;   // busy, or gone from the list meanwhile
             current = row;
             row.IsProblem = false;
             row.IsSaving = true;
@@ -423,6 +436,146 @@ public partial class ClipsPane
             ? (result.Folder == null ? null : $"Cancelled. {result.Saved} of {result.Total + busyRows} saved.")
             : BulkActions.SaveSummary(result.Saved, result.Total + busyRows, result.FirstError, result.Unreachable, busyRows + result.Busy);
         SetBarStatus(status);
+    }
+
+    // ------------------------------------------------------------------ upload and copy links
+
+    /// <summary>The bar's Cancel while uploading: the batch stops after the item in hand (an upload under way is not aborted).</summary>
+    private void StopUpload()
+    {
+        if (_uploadCts == null || _uploadStopping) return;
+        _uploadStopping = true;
+        try { _uploadCts.Cancel(); } catch (ObjectDisposedException) { }
+        ShowStatus(BulkActions.UploadStoppingText);
+    }
+
+    private Task UploadSelectedAsync() => OnShots ? UploadShotsAsync() : UploadClipsAsync();
+
+    private string UploadLine(int index, int total, double fraction = -1) =>
+        _uploadStopping ? BulkActions.UploadStoppingText : BulkActions.UploadingStatus(index, total, fraction);
+
+    private async Task UploadClipsAsync()
+    {
+        if (_busy != BarBusy.None || OnShots || _level != LibraryLevel.Local) return;
+        var rows = _clipSel.InOrder(VisibleClips).ToList();
+        if (rows.Count == 0) return;
+        using var cts = new CancellationTokenSource();
+        _uploadCts = cts;
+        _uploadStopping = false;
+        int total = rows.Count;
+        var index = new Dictionary<ClipEntry, int>(ReferenceEqualityComparer.Instance);
+        for (int i = 0; i < total; i++) index[rows[i].Entry] = i;
+        ClipRow? current = null;   // the row the upload owns now (only it is marked and later cleared)
+        bool finished = false;
+        void EndRow(ClipRow row) { row.Progress = 0; row.Status = null; row.IsUploading = false; }
+        // A row's turn (UI thread, before its upload): a single upload / save / delete the user started on it meanwhile makes it busy;
+        // it is skipped (counted as busy) and left alone. Otherwise the upload takes it.
+        bool BeginRow(int i)
+        {
+            if (!Dispatcher.CheckAccess()) return Dispatcher.Invoke(() => BeginRow(i));
+            if (current != null) { EndRow(current); current = null; }
+            if (finished || i < 0 || i >= total) return false;
+            var row = rows[i];
+            if (row.IsUploading || row.IsSaving || row.IsDeleting || !_local.Contains(row)) return false;   // busy, or gone from the list meanwhile
+            current = row;
+            row.IsProblem = false;
+            row.Progress = 0;
+            row.IsUploading = true;
+            row.Status = "Uploading…";
+            ShowStatus(UploadLine(i + 1, total));
+            return true;
+        }
+        IProgress<double>? ProgressFor(ClipEntry entry)
+        {
+            int i = index.TryGetValue(entry, out int n) ? n : -1;
+            return new Progress<double>(p =>   // made on the UI thread: reports there
+            {
+                if (finished || i < 0 || !ReferenceEquals(current, rows[i])) return;   // not a row the upload owns, or a late report
+                rows[i].Progress = p;
+                rows[i].Status = $"Uploading… {p:P0}";
+                ShowStatus(UploadLine(i + 1, total, p));
+            });
+        }
+        SetBusy(BarBusy.Uploading);
+        ShowStatus(UploadLine(1, total));
+        BulkShareResult result;
+        try { result = await App.ShareManyAsync(rows.Select(r => r.Entry).ToList(), BeginRow, ProgressFor, cts.Token); }
+        catch (Exception ex)
+        {
+            Log.Error("library: upload", ex);
+            result = new BulkShareResult(0, 0, total, Array.Empty<string>(), 0, 0, 0, ex.Message, false, false);
+        }
+        finally
+        {
+            finished = true;
+            if (current != null) EndRow(current);
+            _uploadCts = null;
+            _uploadStopping = false;
+        }
+        SetBusy(BarBusy.None);
+        foreach (var row in rows) row.Refresh();
+        if (result.Uploaded > 0) Refresh();   // the clips are shared now: they join the Shared tab and get the cloud icon
+        SetBarStatus(BulkActions.UploadStatus(result, false));
+    }
+
+    private async Task UploadShotsAsync()
+    {
+        if (_busy != BarBusy.None || !OnShots) return;
+        var rows = _shotSel.InOrder(_shots).ToList();
+        if (rows.Count == 0) return;
+        using var cts = new CancellationTokenSource();
+        _uploadCts = cts;
+        _uploadStopping = false;
+        int total = rows.Count;
+        var index = new Dictionary<ScreenshotEntry, int>(ReferenceEqualityComparer.Instance);
+        for (int i = 0; i < total; i++) index[rows[i].Entry] = i;
+        ScreenshotRow? current = null;
+        bool finished = false;
+        void EndRow(ScreenshotRow row) { row.Status = null; row.IsUploading = false; }
+        bool BeginRow(int i)
+        {
+            if (!Dispatcher.CheckAccess()) return Dispatcher.Invoke(() => BeginRow(i));
+            if (current != null) { EndRow(current); current = null; }
+            if (finished || i < 0 || i >= total) return false;
+            var row = rows[i];
+            if (row.IsUploading || row.IsDeleting || !_shots.Contains(row)) return false;   // busy, or gone from the list meanwhile
+            current = row;
+            row.IsProblem = false;
+            row.IsUploading = true;
+            row.Status = "Uploading…";
+            ShowStatus(UploadLine(i + 1, total));
+            return true;
+        }
+        IProgress<double>? ProgressFor(ScreenshotEntry entry)
+        {
+            int i = index.TryGetValue(entry, out int n) ? n : -1;
+            return new Progress<double>(p =>
+            {
+                if (finished || i < 0 || !ReferenceEquals(current, rows[i])) return;
+                rows[i].Status = $"Uploading… {p:P0}";
+                ShowStatus(UploadLine(i + 1, total, p));
+            });
+        }
+        SetBusy(BarBusy.Uploading);
+        ShowStatus(UploadLine(1, total));
+        BulkShareResult result;
+        try { result = await App.UploadShotsAsync(rows.Select(r => r.Entry).ToList(), BeginRow, ProgressFor, cts.Token); }
+        catch (Exception ex)
+        {
+            Log.Error("library: screenshot upload", ex);
+            result = new BulkShareResult(0, 0, total, Array.Empty<string>(), 0, 0, 0, ex.Message, false, false);
+        }
+        finally
+        {
+            finished = true;
+            if (current != null) EndRow(current);
+            _uploadCts = null;
+            _uploadStopping = false;
+        }
+        SetBusy(BarBusy.None);
+        foreach (var row in rows) row.Refresh();
+        if (result.Uploaded > 0 && OnShots) RefreshShots();
+        SetBarStatus(BulkActions.UploadStatus(result, true));
     }
 
     // ------------------------------------------------------------------ delete
@@ -565,7 +718,7 @@ public partial class ClipsPane
             if (result != ScreenshotDeleteResult.Deleted) failed.Add((row, result));
         }
         _shotSel.Clear();
-        RefreshShots();
+        if (OnShots) RefreshShots();
         foreach (var (row, why) in failed)
             row.SetProblem(ScreenshotRow.DeleteProblemText(why, ScreenshotService.IsOnLocalFixedDrive(row.Entry.Path)));
         foreach (var row in noFile) row.SetProblem(ScreenshotRow.NoFileText);
