@@ -65,15 +65,34 @@ internal static class CopiumCardModelTests
     }
 
     [UnitTest]
-    public static void Starting_and_waiting_show_the_code_the_hint_open_again_and_cancel_with_a_live_status()
+    public static void Starting_without_a_code_keeps_the_start_panel_with_a_disabled_sign_in_and_a_cancel()
     {
         var starting = M(new SignInState(SignInStatus.Starting));
-        Check.Equal(CopiumPanel.Waiting, starting.Panel);
+        Check.Equal(CopiumPanel.SignedOut, starting.Panel);
+        Check.True(starting.Contacting);
         Check.False(starting.CodeVisible); Check.False(starting.OpenAgainVisible);
         Check.True(starting.CancelVisible); Check.True(starting.CancelEnabled);
         Check.Equal("Contacting Copium…", starting.StatusText);
-        Check.False(starting.SignInVisible); Check.False(starting.NameBoxVisible); Check.False(starting.TokenSectionVisible);
+        Check.Equal("Contacting Copium…", starting.SignInHintText);
+        Check.True(starting.SignInVisible); Check.False(starting.SignInEnabled); Check.Null(starting.SignInDisabledReason);
+        Check.True(starting.NameBoxVisible); Check.False(starting.NameBoxEnabled);
+        var idle = M(Out);
+        Check.Equal(idle.TokenSectionVisible, starting.TokenSectionVisible);
+        Check.Equal(idle.UseTokenLinkVisible, starting.UseTokenLinkVisible);
+        Check.Equal(idle.AutoExpandToken, starting.AutoExpandToken);
 
+        var pasted = M(new SignInState(SignInStatus.Starting, HasToken: true));
+        Check.Equal(CopiumPanel.PastedToken, pasted.Panel);
+        Check.True(pasted.TokenSectionVisible); Check.False(pasted.UseTokenLinkVisible);
+        Check.False(pasted.SignInEnabled); Check.True(pasted.CancelVisible);
+
+        Check.False(idle.Contacting);
+        Check.False(M(new SignInState(SignInStatus.Waiting, Code: "X")).Contacting);
+    }
+
+    [UnitTest]
+    public static void Waiting_with_a_code_shows_the_code_the_hint_open_again_and_cancel_with_a_live_status()
+    {
         var waiting = M(new SignInState(SignInStatus.Waiting, Code: "AB2C-DE9F"));
         Check.Equal(CopiumPanel.Waiting, waiting.Panel);
         Check.True(waiting.CodeVisible); Check.Equal("AB2C-DE9F", waiting.CodeText);
@@ -98,6 +117,7 @@ internal static class CopiumCardModelTests
         var m = M(Linked(status: SignInStatus.Starting));
         Check.Equal(CopiumPanel.Finishing, m.Panel);
         Check.Equal("Finishing sign-in…", m.StatusText);
+        Check.False(m.Contacting);
         Check.True(m.CancelVisible); Check.False(m.CancelEnabled);
         Check.True(m.SignInVisible); Check.False(m.SignInEnabled);
         Check.False(m.SignOutVisible);
@@ -176,6 +196,7 @@ internal static class CopiumCardModelTests
             Check.Equal(CopiumPanel.SignedOut, m.Panel, f.ToString());
             Check.Equal(text, m.FailureText, f.ToString());
             Check.Equal(f == SignInFailure.Unsupported, m.AutoExpandToken, f.ToString());
+            Check.True(m.MessageVisible, f.ToString()); Check.True(m.MessageIsWarning, "a failure is a warning: " + f);
             Check.True(m.SignInVisible, "the user can try again: " + f);
         }
         Check.Equal(Enum.GetValues<SignInFailure>().Length, lines.Length, "every failure is covered");
@@ -197,6 +218,24 @@ internal static class CopiumCardModelTests
         var pasted = M(Pasted with { Status = SignInStatus.Failed, Failure = SignInFailure.Denied });
         Check.Equal(CopiumPanel.PastedToken, pasted.Panel);
         Check.Equal("The sign-in was cancelled on Copium.", pasted.FailureText);
+        Check.True(pasted.MessageVisible); Check.True(pasted.MessageIsWarning);
+    }
+
+    [UnitTest]
+    public static void A_pasted_token_with_unsupported_sign_in_shows_the_warning_and_a_signed_out_card_without_failure_has_none()
+    {
+        var m = M(Pasted with { Status = SignInStatus.Failed, Failure = SignInFailure.Unsupported });
+        Check.Equal(CopiumPanel.PastedToken, m.Panel);
+        Check.True(m.MessageVisible); Check.True(m.MessageIsWarning);
+        Check.Equal("Sign in with Copium isn't available yet. Use an API token instead.", m.FailureText);
+        Check.True(m.TokenSectionVisible);
+        // Sign-out result texts are not failures: the window shows them neutral (MessageIsWarning is false without a failure line).
+        foreach (var s in new[] { Out, Pasted, Linked() })
+        {
+            var n = M(s);
+            Check.False(n.MessageVisible); Check.False(n.MessageIsWarning);
+        }
+        Check.True(CopiumCardModel.SignOutText(SignOutResult.Revoked) != null);
     }
 
     [UnitTest]
