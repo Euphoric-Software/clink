@@ -269,6 +269,8 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
     private readonly TimeSpan _duration;
     private readonly bool _preview;
     private bool _busy;
+    private bool _menuOpen;      // the Share menu is open: the toast stays up (no fade, no hide timer)
+    private System.Windows.Controls.ContextMenu? _menu;
     private bool _dismissed;     // fading out; Close() follows when the fade ends
 
     internal string Kind { get; } = "clip";
@@ -322,11 +324,15 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         // Cloud sharing off (Settings → App): nothing on a toast uploads. Existing links stay copyable.
         if (kind == "clip" && !CloudOn) ShareButton.Visibility = Visibility.Collapsed;
         // "Share" alone without a token: the button then opens the share window (the file to drag), it does not upload.
-        if (kind == "clip") ShareButton.Content = entry?.IsShared == true ? "Copy link" : AppController.Instance?.HasCopiumToken == true ? "Share to Copium" : "Share";
+        if (kind == "clip")
+        {
+            ShareButton.Content = ShareChoices.ToastLabel(HasToken, CloudOn, entry?.IsShared == true);
+            if (ShareChoices.ButtonName(HasToken, CloudOn, entry?.IsShared == true) is { } name) System.Windows.Automation.AutomationProperties.SetName(ShareButton, name);
+        }
         _hide.Interval = duration;
-        _hide.Tick += (_, _) => { if (!_busy) Dismiss(); };
+        _hide.Tick += (_, _) => { if (!_busy && !_menuOpen) Dismiss(); };
         MouseEnter += (_, _) => _hide.Stop();
-        MouseLeave += (_, _) => { if (!_busy && !_dismissed) _hide.Start(); };
+        MouseLeave += (_, _) => { if (!_busy && !_dismissed && !_menuOpen) _hide.Start(); };
         SourceInitialized += (_, _) => ScreenPlacement.ExcludeFromCaptureUnlessDocShots(new WindowInteropHelper(this).Handle);
     }
 
@@ -366,6 +372,7 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         if (_dismissed) return;
         _dismissed = true;
         _hide.Stop();
+        if (_menu is { IsOpen: true }) _menu.IsOpen = false;
         IsHitTestVisible = false;
         var fade = new DoubleAnimation(0, FadeOutTime) { FillBehavior = FillBehavior.HoldEnd };
         fade.Completed += (_, _) => { try { Close(); } catch { } };
@@ -381,16 +388,121 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
     /// <summary>The cloud kill switch is on (or there is no controller, as in a preview made by a test).</summary>
     private static bool CloudOn => AppController.Instance?.Settings.CloudSharingEnabled != false;
 
+    private static bool HasToken => AppController.Instance?.HasCopiumToken == true;
+
     private async void Share_Click(object sender, RoutedEventArgs e)
+    {
+        if (Entry == null || _busy || _preview) return;
+        if (ShareChoices.For(HasToken, CloudOn, Entry.IsShared) is { } items)
+        {
+            _hide.Stop();   // the menu is open: the toast stays (it restarts when the menu closes without a choice)
+            bool picked = false;
+            _menuOpen = true;
+            _menu = ShareMenu.Open(ShareButton, items, choice =>
+            {
+                picked = true;
+                _ = RunChoiceAsync(choice);
+            }, onClosed: () => { _menuOpen = false; if (!picked && !_busy && !_dismissed && !IsMouseOver) StartTimer(); });
+            return;
+        }
+        await UploadAsync();
+    }
+
+    private async Task RunChoiceAsync(ShareChoice choice)
+    {
+        try
+        {
+            switch (choice)
+            {
+                case ShareChoice.ShareFile:
+                    if (Entry == null) break;
+                    if (AppController.Instance.ShareFile(Entry)) { Dismiss(); break; }   // the share window took over
+                    SetShareStatus("Share failed");
+                    ShareButton.ToolTip = AppController.ShareWindowFailedText;
+                    ShowSubtitle(AppController.ShareWindowFailedText, wrap: true);
+                    _hide.Interval = TimeSpan.FromSeconds(8);
+                    _hide.Start();
+                    break;
+                case ShareChoice.SaveCopy: await SaveCopyAsync(); break;
+                default: await UploadAsync(); break;   // Upload / Copy link: what the button did before
+            }
+        }
+        catch (Exception ex) { Log.Error("toast share choice", ex); _busy = false; }
+    }
+
+    /// <summary>"Save a copy…" from the toast: the dialog is owned by the toast, which stays up while it is open and while it copies.</summary>
+    private async Task SaveCopyAsync()
+    {
+        if (Entry == null || _busy || _preview) return;
+        var app = AppController.Instance;
+        _busy = true;
+        _hide.Stop();
+        ShareButton.ToolTip = null;
+        SetShareStatus("Saving…");
+        var progress = new Progress<double>(p => SetShareStatus($"Saving… {p:P0}"));
+        SaveResult result;
+        try { result = await app.SaveCopyAsync(Entry, this, progress); }
+        finally { _busy = false; }
+        if (_dismissed) return;
+        switch (result.Outcome)
+        {
+            case SaveOutcome.Saved:
+            {
+                string dir = System.IO.Path.GetDirectoryName(result.SavedTo) ?? "";
+                string folder = System.IO.Path.GetFileName(dir) is { Length: > 0 } leaf ? leaf : dir;
+                ShowSubtitle("Saved to " + folder, wrap: false);
+                RestoreShareLabel();
+                StartTimer();
+                break;
+            }
+            case SaveOutcome.Cancelled:
+                RestoreShareLabel();
+                StartTimer();
+                break;
+            default:
+                SetShareStatus("Save failed");
+                ShareButton.ToolTip = result.Error;
+                if (result.Error is string why) ShowSubtitle(why, wrap: true);
+                _hide.Interval = TimeSpan.FromSeconds(8);
+                _hide.Start();
+                break;
+        }
+    }
+
+    /// <summary>A status in place of the Share label ("Saving… 40%", "Upload failed"): the label's accessible name ("Share options") no longer fits it, so the content speaks for itself.</summary>
+    private void SetShareStatus(string text)
+    {
+        ShareButton.Content = text;
+        ShareButton.ClearValue(System.Windows.Automation.AutomationProperties.NameProperty);
+    }
+
+    /// <summary>The Share label back after a status, with its accessible name when it has one.</summary>
+    private void RestoreShareLabel()
+    {
+        ShareButton.Content = ShareChoices.ToastLabel(HasToken, CloudOn, Entry?.IsShared == true);
+        if (ShareChoices.ButtonName(HasToken, CloudOn, Entry?.IsShared == true) is { } name)
+            System.Windows.Automation.AutomationProperties.SetName(ShareButton, name);
+    }
+
+    private void ShowSubtitle(string text, bool wrap)
+    {
+        Subtitle.Text = text;
+        Subtitle.ToolTip = text;
+        if (wrap) Subtitle.TextWrapping = TextWrapping.Wrap;
+        UpdateLayout();
+        _owner?.Relayout();          // it may have grown a line: keep the stack inside the work area
+    }
+
+    /// <summary>Uploads the clip to Copium (or copies its link; with no token opens the share window): what the Share button always did.</summary>
+    private async Task UploadAsync()
     {
         if (Entry == null || _busy || _preview) return;
         _busy = true;
         _hide.Stop();
-        var before = ShareButton.Content;
         ShareButton.IsEnabled = false;
         ShareButton.ToolTip = null;
-        ShareButton.Content = "Uploading…";
-        var progress = new Progress<double>(p => ShareButton.Content = $"Uploading… {p:P0}");
+        SetShareStatus("Uploading…");
+        var progress = new Progress<double>(p => SetShareStatus($"Uploading… {p:P0}"));
         bool ok = await AppController.Instance.ShareAsync(Entry, progress);
         _busy = false;
         if (ok) { Dismiss(); return; }   // the "Shared" toast takes over
@@ -400,7 +512,7 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         if (app.LastShareOutcome == ShareOutcome.Declined)
         {
             // "Not now" in the Share with Copium? pop-up, or cloud sharing off: nothing failed. The button is as it was (or gone).
-            ShareButton.Content = before;
+            RestoreShareLabel();
             ShareButton.IsEnabled = true;
             if (!CloudOn) ShareButton.Visibility = Visibility.Collapsed;
             StartTimer();
@@ -408,8 +520,8 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         }
         // Short labels (the card is 330 wide); the full refusal or failure reason is the tooltip. The rare "could not open the share
         // window" (no token) is no upload failure: the subtitle below names it.
-        ShareButton.Content = app.ShareRefusal != null ? (app.Settings.CopiumPlus ? "Over Plus limit" : "Over free limit")
-            : app.LastShareOutcome == ShareOutcome.WindowFailed ? "Share failed" : "Upload failed";
+        SetShareStatus(app.ShareRefusal != null ? (app.Settings.CopiumPlus ? "Over Plus limit" : "Over free limit")
+            : app.LastShareOutcome == ShareOutcome.WindowFailed ? "Share failed" : "Upload failed");
         ShareButton.ToolTip = app.ShareRefusal ?? app.ShareError;
         if (app.ShareRefusal == null && app.ShareError is string why)
         {

@@ -171,6 +171,7 @@
                         <Button Content="Trim" Click="Trim_Click" Padding="9,5" Margin="0,0,4,0" />
                         <!-- MinWidth = the "Copy link" width: Trim and the folder button stay in fixed columns down the list -->
                         <Button Content="{Binding ShareLabel}" Click="Share_Click" Padding="9,5" Margin="0,0,4,0" MinWidth="76" Style="{StaticResource AccentButton}"
+                                AutomationProperties.Name="{Binding ShareName}"
                                 Visibility="{Binding ShareVisible, Converter={StaticResource Vis}}" />
                         <Button Style="{StaticResource GlyphButton}" Content="&#xE8B7;" Click="Folder_Click" Padding="7,5" Margin="0,0,4,0" ToolTip="Show in folder" />
                         <!-- grey like Trim and the folder button, red under the pointer; off only while the clip is being deleted -->

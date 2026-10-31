@@ -443,7 +443,78 @@ public partial class ClipsPane : UserControl
     private async void Share_Click(object sender, RoutedEventArgs e)
     {
         var row = RowOf(sender);
-        if (row != null) await ShareAsync(row);
+        if (row == null) return;
+        if (row.IsUploading || row.IsDeleting) return;
+        if (row.ShareMenuItems is { } items && sender is Button button)
+        {
+            ShareMenu.Open(button, items, choice => _ = RunShareChoiceAsync(row, choice));
+            return;
+        }
+        await ShareAsync(row);
+    }
+
+    private async Task RunShareChoiceAsync(ClipRow row, ShareChoice choice)
+    {
+        try
+        {
+            switch (choice)
+            {
+                case ShareChoice.ShareFile: await ShareFileAsync(row); break;
+                case ShareChoice.SaveCopy: await SaveAsync(row); break;
+                default: await ShareAsync(row); break;   // Upload / Copy link: what the button did before
+            }
+        }
+        catch (Exception ex) { Log.Error("share choice", ex); row.IsUploading = false; }
+    }
+
+    /// <summary>"Share file…": the share window with the clip's file (after the file is looked for, like the other file actions).</summary>
+    internal async Task ShareFileAsync(ClipRow row)
+    {
+        if (row.IsUploading || row.IsDeleting) return;
+        row.Status = null;
+        row.IsProblem = false;
+        row.Progress = 0;
+        row.IsUploading = true;   // keeps a second click out while an archived file is looked up
+        bool there;
+        try { there = await EnsureFileAsync(row); }
+        finally { row.IsUploading = false; }
+        if (!there) { SayCannot(row, "share"); return; }
+        if (!App.ShareFile(row.Entry)) row.SetProblem(AppController.ShareWindowFailedText);
+    }
+
+    /// <summary>"Save a copy…": the save dialog, then the copy with the row's progress bar.</summary>
+    internal async Task SaveAsync(ClipRow row)
+    {
+        if (row.IsUploading || row.IsDeleting) return;
+        row.Status = null;
+        row.IsProblem = false;
+        row.Progress = 0;
+        row.IsSaving = true;
+        row.IsUploading = true;   // the progress bar, and no second click meanwhile
+        try
+        {
+            if (!await EnsureFileAsync(row)) { SayCannot(row, "save"); return; }
+            var progress = new Progress<double>(p => { row.Progress = p; row.Status = $"Saving… {p:P0}"; });
+            var result = await App.SaveCopyAsync(row.Entry, Window.GetWindow(this), progress);
+            switch (result.Outcome)
+            {
+                case SaveOutcome.Saved:
+                    string folder = System.IO.Path.GetFileName(System.IO.Path.GetDirectoryName(result.SavedTo) ?? "") is { Length: > 0 } name ? name : (System.IO.Path.GetDirectoryName(result.SavedTo) ?? "");
+                    string text = "Saved to " + folder;
+                    row.IsProblem = false;
+                    row.Status = text;
+                    _ = Task.Delay(4000).ContinueWith(_ => Dispatcher.BeginInvoke(() => { if (row.Status == text) row.Status = null; }));
+                    break;
+                case SaveOutcome.Cancelled:
+                    row.Status = null;
+                    row.IsProblem = false;
+                    break;
+                default:
+                    row.SetProblem("Save failed: " + result.Error);
+                    break;
+            }
+        }
+        finally { row.IsUploading = false; row.IsSaving = false; }
     }
 
     internal async Task ShareAsync(ClipRow row)
@@ -535,14 +606,15 @@ public partial class ClipsPane : UserControl
     internal async Task DeleteClipAsync(ClipRow row)
     {
         if (!row.CanDelete) return;
-        if (row.IsUploading) { row.SetProblem(ClipDeleter.ProblemText(ClipDeleteResult.Uploading)); return; }
+        if (row.IsUploading) { row.SetProblem(row.IsSaving ? ClipRow.SavingDeleteText : ClipDeleter.ProblemText(ClipDeleteResult.Uploading)); return; }
         var deleter = NewDeleter();
         if (deleter.Precheck(row.Entry) is { } refused) { row.SetProblem(ClipDeleter.ProblemText(refused)); return; }
         var owner = Window.GetWindow(this) ?? Application.Current?.MainWindow;
         // Trims nested under this row (what the list shows under it, collapsed or not): the pop-up then offers the clip alone or with them.
         var trimRows = row.IsParent ? ClipGrouping.TrimsOf(_localAll, r => r.Entry, row) : new List<ClipRow>();
         bool withTrimsMode = ClipDeleter.TrimsMode(trimRows.Count);
-        // an upload under way on a trim row counts too (the row knows before the app does)
+        // a save under way on a trim row refuses like the single row does; an upload there counts too (the row knows before the app does)
+        if (withTrimsMode && trimRows.Any(r => r.IsSaving)) { row.SetProblem(ClipRow.SavingDeleteText); return; }
         var trimDeleter = withTrimsMode ? NewDeleter(trimRows.Append(row).ToList()) : deleter;
         bool deleteTrims = false;
         if (ClipDeleter.ConfirmNeeded(App.Settings, trimRows.Count))
@@ -937,7 +1009,13 @@ internal sealed class ClipRow : INotifyPropertyChanged
             return $"{Entry.Created:MMM d, yyyy HH:mm}{size}{where}";
         }
     }
-    public string ShareLabel => HasLink ? "Copy link" : "Share";
+    public string ShareLabel => ShareChoices.ButtonLabel(HasToken, CloudOn, HasLink);
+    /// <summary>"Share options" while the button opens a menu; null (the label names it) otherwise.</summary>
+    public string? ShareName => ShareChoices.ButtonName(HasToken, CloudOn, HasLink);
+    /// <summary>The menu to show for this row's Share button, or null when it acts directly.</summary>
+    public IReadOnlyList<ShareChoiceItem>? ShareMenuItems => ShareChoices.For(HasToken, CloudOn, HasLink);
+    private static bool HasToken => AppController.Instance?.HasCopiumToken == true;
+    private static bool CloudOn => AppController.Instance?.Settings.CloudSharingEnabled != false;
     /// <summary>The Share button shows: always for a clip that has a link (Copy link needs no network), otherwise only while cloud sharing is on (Settings → App).</summary>
     public bool ShareVisible => HasLink || AppController.Instance?.Settings.CloudSharingEnabled != false;
     public bool HasLink => !string.IsNullOrEmpty(Entry.CopiumLink);
@@ -960,6 +1038,9 @@ internal sealed class ClipRow : INotifyPropertyChanged
     public bool Looking { get; set; }
     public BitmapSource? Thumbnail { get => _thumb; set { _thumb = value; Raise(); } }
     public bool IsUploading { get => _uploading; set { _uploading = value; Raise(); } }
+    /// <summary>"Save a copy…" is running on this row (it also sets <see cref="IsUploading"/>, for the bar and to block a second click): Delete says so.</summary>
+    public bool IsSaving { get; set; }
+    public const string SavingDeleteText = "This clip is being saved. Delete it after the save finishes.";
     /// <summary>The Recycle Bin call for this clip is under way.</summary>
     public bool IsDeleting { get => _deleting; set { _deleting = value; Raise(); Raise(nameof(CanDelete)); } }
     /// <summary>The Delete button is on unless a delete is under way (while it uploads a click says so, instead of falling through to the row and playing the clip).</summary>
@@ -1015,7 +1096,7 @@ internal sealed class ClipRow : INotifyPropertyChanged
 
     public void Refresh()
     {
-        foreach (var p in new[] { nameof(ShareLabel), nameof(ShareVisible), nameof(HasLink), nameof(Link), nameof(Meta), nameof(CloudMeta), nameof(Title), nameof(IsShared), nameof(IsTrim), nameof(IsArchived), nameof(IsLocalOnly), nameof(ArchiveTip), nameof(ToggleName) })
+        foreach (var p in new[] { nameof(ShareLabel), nameof(ShareName), nameof(ShareVisible), nameof(HasLink), nameof(Link), nameof(Meta), nameof(CloudMeta), nameof(Title), nameof(IsShared), nameof(IsTrim), nameof(IsArchived), nameof(IsLocalOnly), nameof(ArchiveTip), nameof(ToggleName) })
             Raise(p);
     }
 

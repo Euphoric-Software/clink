@@ -185,6 +185,7 @@ internal static class SettingsTests
           "ImportDeclined": "Some.Package_abc|638650000000000000",
           "ScreenshotsEnabled": true,
           "ScreenshotsFolder": "D:\\Pictures\\Clink Shots",
+          "SaveCopyFolder": "D:\\Videos\\Copies",
           "ScreenshotMode": "after",
           "ScreenshotEditor": {
             "Color": "#43A047", "Width": 6, "TextColor": "#000000", "FontSize": 36, "Bold": true, "TextBackdrop": "box", "BackdropColor": "#FFFFFF",
@@ -325,6 +326,15 @@ internal static class SettingsTests
         Check.Equal("spark", s.Accent);
         Check.Equal(30, s.Fps);
         Check.Equal(45, s.BufferSeconds);   // missing key: the new default
+    }
+
+    [UnitTest]
+    public static void SaveCopyFolder_is_kept_only_as_a_full_path()
+    {
+        Check.Null(Settings.FromJson("""{ "SaveCopyFolder": "." }""").SaveCopyFolder, "relative");
+        Check.Null(Settings.FromJson("""{ "SaveCopyFolder": "   " }""").SaveCopyFolder, "whitespace");
+        Check.Null(Settings.FromJson("{}").SaveCopyFolder, "missing");
+        Check.Equal(@"D:\Saved clips", Settings.FromJson("""{ "SaveCopyFolder": "D:\\Saved clips" }""").SaveCopyFolder, "full path");
     }
 
     [UnitTest]

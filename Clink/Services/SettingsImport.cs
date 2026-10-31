@@ -410,6 +410,7 @@ internal static class SettingsImport
         || key.Equals(nameof(Settings.UseDevBuilds), StringComparison.OrdinalIgnoreCase)
         || key.Equals(nameof(Settings.CopiumImageUploadUrl), StringComparison.OrdinalIgnoreCase)   // where the token is sent: this machine's own choice, never another copy's
         || key.Equals(nameof(Settings.ImportDeclined), StringComparison.OrdinalIgnoreCase)
+        || key.Equals(nameof(Settings.SaveCopyFolder), StringComparison.OrdinalIgnoreCase)   // the last "Save a copy" folder on this machine
         // consent and sharing controls: what this person agreed to on this machine is never another copy's to decide
         || key.Equals(nameof(Settings.CloudSharingEnabled), StringComparison.OrdinalIgnoreCase)
         || key.StartsWith("CopiumConsent", StringComparison.OrdinalIgnoreCase)
