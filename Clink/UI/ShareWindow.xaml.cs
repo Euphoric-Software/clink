@@ -15,7 +15,8 @@ using Clink.Services;
 namespace Clink.UI;
 
 /// <summary>
-/// The share window: what Share opens for a clip when there is no Copium token to upload it with (<see cref="AppController.ShareAsync"/>).
+/// The share window: what Share opens for a clip when there is no Copium token to upload it with (<see cref="AppController.ShareAsync"/>),
+/// and what "Share file…" opens even with one (<see cref="AppController.ShareFile"/>).
 /// Its file card is the clip's file, ready to drag out into Discord, a browser upload box or an Explorer folder; Copy file puts the
 /// same file on the clipboard for Ctrl+V; Open folder shows it in Explorer; Set up Copium… brings the main window forward to add a
 /// token. Dragging and copying only ever <b>copy</b> (<see cref="DragEffects"/>, <see cref="FileData"/>), so a drop target can never
@@ -62,7 +63,11 @@ public partial class ShareWindow : Window, ICaptureExcludedWindow
         InitializeComponent();
         AppIcons.Attach(this);   // has its own taskbar button (no owner): the icon size the taskbar draws, not WPF's default frame
         // Cloud sharing off (Settings → App): the file to drag is local, but there is nothing to set up.
-        if (CloudSharingOff()) SetUpCopiumButton.Visibility = Visibility.Collapsed;
+        // Already signed in (or a token pasted): nothing to set up either.
+        bool hasToken = HasToken();
+        bool nothingToSetUp = CloudSharingOff() || hasToken;
+        if (nothingToSetUp) SetUpCopiumButton.Visibility = Visibility.Collapsed;
+        IntroText.Text = IntroFor(nothingToSetUp);
         ShowEntry();
         // A local file is taken to be there (the worker's look is quick and only matters when it is not); an archived one waits for
         // its share to answer, which can take the SMB timeout when it is offline.
@@ -89,6 +94,12 @@ public partial class ShareWindow : Window, ICaptureExcludedWindow
         };
     }
 
+    /// <summary>The line above the card: the no-token explanation, or just what to do with the file when a token exists (Share file…).</summary>
+    internal static string IntroFor(bool hasToken) => hasToken
+        ? "Drag the file where you want it, or copy it:"
+        : "No Copium token yet, so there is no link to copy. Share the file itself:";
+
+    private static bool HasToken() => AppController.Instance is { } app && app.HasCopiumToken;
     private static bool CloudSharingOff() => AppController.Instance?.Settings.CloudSharingEnabled == false;
 
     // ------------------------------------------------------------------ what is dragged and copied

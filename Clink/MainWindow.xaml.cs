@@ -91,7 +91,7 @@ public partial class MainWindow : Window
         _app.CopiumSetupRequested += () => Dispatcher.BeginInvoke(FocusTokenBox);   // after ShowRequested (it is raised first): the window is up by then
         _app.CopiumWelcomeNeeded += ShowCopiumWelcome;   // the UI thread: the first sign-in finished
         _app.CloudSharingChanged += () => Dispatcher.BeginInvoke(UpdateCloudUi);
-        _app.SignInChanged += state => RenderCopiumCard(state);   // the UI thread, the latest state
+        _app.SignInChanged += state => { RenderCopiumCard(state); Clips.RefreshShareButtons(); };   // the UI thread, the latest state; the Share buttons follow the token
         _app.Consent.ConsentChanged += () => Dispatcher.BeginInvoke(SyncScreenshotChecks);
         _app.FeaturesChanged += () => Dispatcher.BeginInvoke(SyncFeatureUi);
         _app.TrimLastRequested += () => Dispatcher.BeginInvoke(async () =>
@@ -1527,6 +1527,7 @@ public partial class MainWindow : Window
         TokenSaveButton.IsEnabled = false;
         UpdateTokenStatus(t);
         UpdateScreenshotTab();   // the upload options follow the token
+        Clips.RefreshShareButtons();   // the Share buttons follow the token
         // A token was just saved but sharing is not agreed to yet: ask once, now, instead of at the first Share. (A cleared token asks nothing.)
         if (!string.IsNullOrEmpty(t) && _app.Settings.CloudSharingEnabled && !_app.Settings.CopiumConsent)
         {

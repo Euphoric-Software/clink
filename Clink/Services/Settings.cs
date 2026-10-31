@@ -224,6 +224,8 @@ internal sealed class Settings
     public bool ScreenshotsEnabled { get; set; } = true;
     /// <summary>Where screenshots are saved; null = a <c>Screenshots</c> folder inside <see cref="ClipsFolder"/> (resolved when used).</summary>
     public string? ScreenshotsFolder { get; set; }
+    /// <summary>The folder the last "Save a copy…" of a clip went to (no setting UI); null = My Videos. Only a local fixed-drive folder is remembered. This machine's own: never imported.</summary>
+    public string? SaveCopyFolder { get; set; }
     /// <summary>none | before | after (<see cref="Clink.Screenshots.ScreenshotModes"/>): what happens after the region is picked. "none" saves at once; "after" opens the editor on the picture first; "before" edits the chosen area right in the capture overlay (an area over several monitors opens the editor window instead).</summary>
     public string ScreenshotMode { get; set; } = Clink.Screenshots.ScreenshotModes.None;
     /// <summary>The screenshot editor's last-used tool options (colour, width, text size / backdrop): the next editor opens the way the last one was left.</summary>
@@ -622,6 +624,8 @@ internal sealed class Settings
         if (string.IsNullOrWhiteSpace(ScreenshotsFolder)) ScreenshotsFolder = null;
         // A relative path (a hand edit, an import) would resolve against the current directory, which is System32 at sign-in: the default instead.
         else if (!IsFullPath(ScreenshotsFolder.Trim())) ScreenshotsFolder = null;
+        // Same rule as the screenshots folder (no drive or network check here: that is for the save dialog's start folder).
+        if (string.IsNullOrWhiteSpace(SaveCopyFolder) || !IsFullPath(SaveCopyFolder.Trim())) SaveCopyFolder = null;
         ScreenshotMode = Clink.Screenshots.ScreenshotModes.Normalize(ScreenshotMode);
         ScreenshotEditor ??= new Clink.Screenshots.Editing.ScreenshotEditorOptions();
         ScreenshotEditor.Normalize();

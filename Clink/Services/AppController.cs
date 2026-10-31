@@ -1717,15 +1717,7 @@ internal sealed partial class AppController : IDisposable
                 LastShareOutcome = ShareOutcome.Failed;
                 return false;
             }
-            if (!OpenShareWindow(entry))
-            {
-                ShareError = ShareWindowFailedText;
-                Say(ShareError);
-                LastShareOutcome = ShareOutcome.WindowFailed;
-                return false;
-            }
-            Say("Drag the clip where you want to share it");
-            LastShareOutcome = ShareOutcome.FileShareOpened;
+            ShareFile(entry);
             return false;
         }
         // Defence in depth: nothing is uploaded without the user's yes and with the kill switch off, whichever path got here.
@@ -2138,6 +2130,7 @@ internal sealed partial class AppController : IDisposable
         _disposed = true;
         Log.Info("Quitting");
         _cts.Cancel();
+        try { WaitForSaves(ExitStopLimit); } catch (Exception ex) { Log.Warn("Exit: saves: " + ex.Message); }   // a running "Save a copy" removes its .clinkpart within 4 s
         try { _signIn?.Shutdown(); } catch (Exception ex) { Log.Warn("Exit: sign-in: " + ex.Message); }   // no network wait: a late approval is simply never stored
         _timer?.Stop();
         CopiumClient.UploadTooLarge -= OnUploadTooLarge;

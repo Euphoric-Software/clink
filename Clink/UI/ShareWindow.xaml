@@ -12,7 +12,7 @@
                 <Button Style="{StaticResource IconButton}" Content="✕" HorizontalAlignment="Right" Margin="0,0,8,0" Click="Close_Click" ToolTip="Close (Esc)" />
             </Grid>
 
-            <TextBlock Style="{StaticResource MutedText}" Margin="16,0,16,10"
+            <TextBlock x:Name="IntroText" Style="{StaticResource MutedText}" Margin="16,0,16,10"
                        Text="No Copium token yet, so there is no link to copy. Share the file itself:" />
 
             <!-- The file card: drag it out (always a copy, the clip stays in the library) -->

@@ -30,7 +30,7 @@ internal static class CaptureExclusion
         if (Interlocked.Exchange(ref s_registered, 1) == 1) return;
         EventManager.RegisterClassHandler(typeof(ToolTip), ToolTip.OpenedEvent, new RoutedEventHandler((s, _) =>
         {
-            if (s is ToolTip { PlacementTarget: { } owner } tip && IsExcluded(Window.GetWindow(owner)) && PresentationSource.FromVisual(tip) is HwndSource src)
+            if (s is ToolTip { PlacementTarget: { } owner } tip && IsExcluded(OwnerWindow(owner)) && PresentationSource.FromVisual(tip) is HwndSource src)
                 ScreenPlacement.ExcludeFromCapture(src.Handle);
         }));
         EventManager.RegisterClassHandler(typeof(ContextMenu), ContextMenu.OpenedEvent, new RoutedEventHandler((s, _) =>
@@ -44,6 +44,26 @@ internal static class CaptureExclusion
             if (s is Window { Owner: { } parent } w && IsExcluded(parent) && PresentationSource.FromVisual(w) is HwndSource src)
                 ScreenPlacement.ExcludeFromCapture(src.Handle);
         }));
+    }
+
+    /// <summary>
+    /// The window an element belongs to. A menu item's tooltip has none (a context menu is a popup of its own): then the window of
+    /// the element the item's context menu opened from (the toast's Share button).
+    /// </summary>
+    private static Window? OwnerWindow(DependencyObject element)
+    {
+        if (Window.GetWindow(element) is { } window) return window;
+        DependencyObject? current = element;
+        for (int depth = 0; current != null && depth < 16; depth++)
+        {
+            if (current is ContextMenu { PlacementTarget: { } target }) return Window.GetWindow(target);
+            DependencyObject? parent = current is MenuItem item ? ItemsControl.ItemsControlFromItemContainer(item) : null;
+            parent ??= current is System.Windows.Media.Visual or System.Windows.Media.Media3D.Visual3D
+                ? System.Windows.Media.VisualTreeHelper.GetParent(current) : null;
+            parent ??= LogicalTreeHelper.GetParent(current);
+            current = parent;
+        }
+        return null;
     }
 
     /// <summary>The window, or one that owns it (directly or further up), is an <see cref="ICaptureExcludedWindow"/>: its tooltips, menus and dialogs are kept out of capture too.</summary>
