@@ -91,6 +91,8 @@ internal sealed partial class AppController : IDisposable
     public string? ShareRefusal { get; private set; }
     /// <summary>Why the last <see cref="ShareAsync"/> failed (no token, Copium's answer, the network), for the clip row, the toast and the trim editor to show; null when it did not fail.</summary>
     public string? ShareError { get; private set; }
+    /// <summary>The last upload failed because Copium rejected the token (HTTP 401 / 403): a bulk upload stops instead of trying the rest.</summary>
+    internal bool ShareTokenRejected { get; private set; }
     /// <summary>
     /// How the last <see cref="ShareAsync"/> ended, set on every path of it. The callers tell "the share window opened" (no Copium
     /// token: the user has the file to drag, nothing failed, so no error line) from a failure by it; read it right after the call returns.
@@ -1650,17 +1652,21 @@ internal sealed partial class AppController : IDisposable
     /// <see cref="ShareError"/>). Returns true only when a link was copied or the clip was uploaded.
     /// </summary>
     /// <param name="announce">From the hotkey / tray / --share-last, which have no progress UI of their own: unless the window is in front, a toast says the upload started; and no window opens over a game.</param>
-    public async Task<bool> ShareAsync(ClipEntry entry, IProgress<double>? progress = null, bool announce = false, ConsentContext context = ConsentContext.ClipShare)
+    public async Task<bool> ShareAsync(ClipEntry entry, IProgress<double>? progress = null, bool announce = false, ConsentContext context = ConsentContext.ClipShare, bool quiet = false, Action? released = null)
     {
         ShareRefusal = null;
         ShareError = null;
+        ShareTokenRejected = false;
         LastShareOutcome = ShareOutcome.None;
         if (!string.IsNullOrEmpty(entry.CopiumLink))
         {
             // An existing link is only copied (no network), so it stays available whatever the kill switch says.
-            CopyToClipboard(entry.CopiumLink);
-            Say("Link copied");
-            Toasts.ShowShared(entry, entry.CopiumLink);
+            if (!quiet)
+            {
+                CopyToClipboard(entry.CopiumLink);
+                Say("Link copied");
+                Toasts.ShowShared(entry, entry.CopiumLink);
+            }
             LastShareOutcome = ShareOutcome.LinkCopied;
             return true;
         }
@@ -1707,6 +1713,12 @@ internal sealed partial class AppController : IDisposable
         }
         if (string.IsNullOrWhiteSpace(token))
         {
+            if (quiet)   // a bulk upload opens no window (it needs the token first)
+            {
+                ShareError = "No Copium token: sign in with Copium under App → Copium";
+                LastShareOutcome = ShareOutcome.Failed;
+                return false;
+            }
             // Nothing to upload to: hand over the file instead. The hotkey path over the game opens no window (it would land on the
             // picture): it says where to go, and the caller shows the line over the game. "Over the game" is the detected game, and
             // also a full-screen application the shell reports (a Direct3D game Clink did not detect, another full-screen program).
@@ -1741,6 +1753,7 @@ internal sealed partial class AppController : IDisposable
         {
             Say("Already uploading this clip…");
             if (announce && !MainWindowInFront) Toasts.ShowUploading(entry, "Already uploading to Copium…");
+            released?.Invoke();   // this caller's row is not the uploader: it must not keep showing the progress
             bool joinedOk = await running.Task;
             LastShareOutcome = joinedOk ? ShareOutcome.Uploaded : ShareOutcome.Failed;
             return joinedOk;
@@ -1764,9 +1777,12 @@ internal sealed partial class AppController : IDisposable
             entry.CopiumPageUrl = up.PageUrl;
             entry.CopiumId = up.Id;
             Library.Update(entry);
-            CopyToClipboard(up.Link);
-            Say("Uploaded, link copied");
-            Toasts.ShowShared(entry, up.Link);
+            if (!quiet)
+            {
+                CopyToClipboard(up.Link);
+                Say("Uploaded, link copied");
+                Toasts.ShowShared(entry, up.Link);
+            }
             ok = true;
         }
         catch (Exception ex)
@@ -1783,6 +1799,7 @@ internal sealed partial class AppController : IDisposable
             {
                 Log.Error("Copium upload", ex);
                 ShareError = ex.Message;
+                ShareTokenRejected = ex is CopiumHttpException tokenEx && CopiumClient.IsTokenRejection(tokenEx.StatusCode, tokenEx.ErrorText);
                 Say("Upload failed: " + ex.Message);
             }
         }
@@ -1874,11 +1891,18 @@ internal sealed partial class AppController : IDisposable
     /// <summary>Test seam: receives the text instead of the real clipboard.</summary>
     internal Action<string>? ClipboardOverride { get; set; }
 
-    public void CopyToClipboard(string text)
+    public void CopyToClipboard(string text) => TryCopyToClipboard(text);
+
+    /// <summary>Puts the text on the clipboard; false (logged) when that failed.</summary>
+    public bool TryCopyToClipboard(string text)
     {
-        if (ClipboardOverride is { } over) { over(text); return; }
-        try { _ui.Invoke(() => Clipboard.SetDataObject(text, true)); }
-        catch (Exception ex) { Log.Warn("clipboard: " + ex.Message); }
+        if (ClipboardOverride is { } over)
+        {
+            try { over(text); return true; }
+            catch (Exception ex) { Log.Warn("clipboard: " + ex.Message); return false; }
+        }
+        try { _ui.Invoke(() => Clipboard.SetDataObject(text, true)); return true; }
+        catch (Exception ex) { Log.Warn("clipboard: " + ex.Message); return false; }
     }
 
     public void OpenFolder(string? file = null)

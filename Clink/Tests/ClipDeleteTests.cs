@@ -649,4 +649,94 @@ internal static class ClipDeleteTests
         Check.Contains(two, "the clip and its trims?");
         Check.Contains(two, "The shared link keeps working.");
     }
+
+    // ------------------------------------------------------------------ the selection bar's bulk delete
+
+    [UnitTest]
+    public static void A_bulk_delete_goes_trims_first_and_otherwise_in_the_order_given()
+    {
+        using var rig = new Rig();
+        var (parent, trims) = Family(rig, 2);
+        var other = rig.Clip(Path.Combine(rig.Clips, "other.mp4"));
+        var order = ClipDeleter.BulkOrder(new[] { parent, other, trims[0], trims[1] });
+        Check.Equal(new[] { trims[0], trims[1], parent, other }, order.ToArray(), "the trims go before the clip they were cut from");
+        // a trim whose clip is not selected is not moved
+        var alone = ClipDeleter.BulkOrder(new[] { other, trims[1], trims[0] });
+        Check.Equal(new[] { other, trims[1], trims[0] }, alone.ToArray(), "no selected parent: the order given");
+        // a trim of a trim: deepest first
+        var nested = rig.Clip(Path.Combine(rig.Clips, "nested.mp4"), trim: true, source: trims[0].Path);
+        var deep = ClipDeleter.BulkOrder(new[] { parent, trims[0], nested });
+        Check.Equal(new[] { nested, trims[0], parent }, deep.ToArray(), "deepest trim first");
+    }
+
+    [UnitTest]
+    public static void The_bulk_pop_up_names_the_count_and_what_is_kept_or_skipped()
+    {
+        Check.Equal("Delete 6 clips?", ClipDeleter.BulkConfirmTitle(6, false));
+        Check.Equal("Delete 1 clip?", ClipDeleter.BulkConfirmTitle(1, false));
+        Check.Equal("Delete 3 screenshots?", ClipDeleter.BulkConfirmTitle(3, true));
+        string plain = ClipDeleter.BulkConfirmBody(6, 0, 0, 0, false);
+        Check.Contains(plain, "6 clips will be moved to the Recycle Bin");
+        Check.False(plain.Contains("link") || plain.Contains("trim") || plain.Contains("skipped"), "only what applies is said");
+        string full = ClipDeleter.BulkConfirmBody(6, 2, 3, 1, false);
+        Check.Contains(full, "The shared links keep working.");
+        Check.Contains(full, "3 trims of the selected clips are not selected: they stay in the list and move to the top level.");
+        Check.Contains(full, "1 can't be deleted right now and will be skipped.");
+        Check.Contains(ClipDeleter.BulkConfirmBody(1, 0, 1, 2, false), "1 trim of a selected clip is not selected");
+        Check.Contains(ClipDeleter.BulkConfirmBody(3, 1, 0, 0, true), "3 screenshots will be moved");
+        Check.Contains(ClipDeleter.BulkConfirmBody(3, 1, 0, 0, true), "The links stay on Copium.");
+    }
+
+    [UnitTest]
+    public static void The_bulk_status_says_how_many_went_and_why_the_rest_was_kept()
+    {
+        Check.Equal("Deleted 4 of 6. 2 were kept: one is uploading.", ClipDeleter.BulkProblemText(4, 6, ClipDeleteResult.Uploading));
+        Check.Equal("Deleted 5 of 6. 1 was kept: it is uploading.", ClipDeleter.BulkProblemText(5, 6, ClipDeleteResult.Uploading));
+        Check.Equal("Deleted 0 of 2. 2 were kept.", ClipDeleter.BulkProblemText(0, 2, null));
+        Check.Equal("", ClipDeleter.BulkProblemText(6, 6, null), "nothing kept, nothing to say");
+    }
+
+    // ------------------------------------------------------------------ the bulk screenshot delete's plan
+
+    private static ClipDeleter.ShotFacts Shot(bool file = true, bool uploading = false, bool deleting = false, bool openable = true, bool fixedDrive = true) =>
+        new(file, uploading, deleting, openable, fixedDrive);
+
+    [UnitTest]
+    public static void A_bulk_screenshot_delete_never_takes_a_row_without_a_file()
+    {
+        var plan = ClipDeleter.PlanShotDelete(new[] { Shot(), Shot(file: false), Shot(), Shot(file: false, fixedDrive: false) });
+        Check.Equal(new[] { 0, 2 }, plan.Delete.ToArray(), "only the rows with a file");
+        Check.Equal(2, plan.Count(ClipDeleter.ShotSkip.NoFile), "left, not deleted: DeleteAsync would drop the entry and its Copium link record");
+        Check.Equal(new[] { (1, ClipDeleter.ShotSkip.NoFile), (3, ClipDeleter.ShotSkip.NoFile) }, plan.Skipped.ToArray());
+    }
+
+    [UnitTest]
+    public static void A_bulk_screenshot_delete_leaves_what_the_single_delete_refuses_or_is_busy()
+    {
+        var plan = ClipDeleter.PlanShotDelete(new[]
+        {
+            Shot(deleting: true), Shot(uploading: true), Shot(openable: false), Shot(fixedDrive: false), Shot(), Shot(file: false, uploading: true),
+        });
+        Check.Equal(new[] { 4 }, plan.Delete.ToArray());
+        Check.Equal(new[]
+        {
+            (0, ClipDeleter.ShotSkip.Deleting), (1, ClipDeleter.ShotSkip.Uploading), (2, ClipDeleter.ShotSkip.Refused),
+            (3, ClipDeleter.ShotSkip.NotLocal), (5, ClipDeleter.ShotSkip.Uploading),
+        }, plan.Skipped.ToArray(), "first reason wins: uploading before no file");
+        Check.Equal(0, ClipDeleter.PlanShotDelete(Array.Empty<ClipDeleter.ShotFacts>()).Delete.Count);
+    }
+
+    [UnitTest]
+    public static void The_screenshot_bulk_texts_name_what_was_left()
+    {
+        Check.Contains(ClipDeleter.BulkConfirmBody(3, 0, 0, 0, true, 1), "1 without a file was left. Use Remove from list for it.");
+        Check.Contains(ClipDeleter.BulkConfirmBody(3, 0, 0, 1, true, 2), "2 without a file were left. Use Remove from list for them.");
+        Check.False(ClipDeleter.BulkConfirmBody(3, 0, 0, 0, true).Contains("without a file"), "nothing left: nothing said");
+        Check.Equal("Deleted 3 screenshots. 1 without a file was left. Use Remove from list for it.", ClipDeleter.ShotBulkSummary(3, 4, 1));
+        Check.Equal("Deleted 1 screenshot.", ClipDeleter.ShotBulkSummary(1, 1, 0));
+        Check.Equal("Deleted 2 of 5. 3 were kept. 1 without a file was left. Use Remove from list for it.", ClipDeleter.ShotBulkSummary(2, 5, 1));
+        Check.Contains(ClipDeleter.ShotSkipText(ClipDeleter.ShotSkip.Uploading), "uploading");
+        Check.Equal(ScreenshotRow.NotLocalText, ClipDeleter.ShotSkipText(ClipDeleter.ShotSkip.NotLocal));
+        Check.Equal("", ClipDeleter.ShotSkipText(ClipDeleter.ShotSkip.Deleting), "a delete already under way says nothing");
+    }
 }

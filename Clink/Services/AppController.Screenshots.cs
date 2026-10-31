@@ -14,6 +14,9 @@ internal sealed partial class AppController
     internal ScreenshotService Screenshots =>
         _screenshots ??= new ScreenshotService(Settings, Toasts, new RegionOverlayPicker((title, text) => Toasts.ShowNotice(title, text)), () => CurrentGame, () => SelectedMonitor, editor: _screenshotEditor = new EditorWindowHost(), consent: Consent);
 
+    /// <summary>Test seam: the screenshot coordinator to use instead of the real one (it would need windows and the real toasts).</summary>
+    internal void UseScreenshotsForTests(ScreenshotService service) => _screenshots = service;
+
     /// <summary>Opens the screenshots folder in Explorer (created first when it does not exist yet).</summary>
     public void OpenScreenshotsFolder()
     {

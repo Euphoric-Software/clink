@@ -50,6 +50,8 @@ public partial class ClipsPane : UserControl
         ClipLocalList.ItemsSource = _local;
         ClipSharedList.ItemsSource = _shared;
         ShotList.ItemsSource = _shots;
+        _clipSel.Changed += ApplySelection;
+        _shotSel.Changed += ApplySelection;
         // The row a press went down on is good for the release that follows it and no other. A row's own button handles its release
         // (Click), so the row never hears of it and the press would stay remembered: a later press that began somewhere else (the
         // empty part of the list, the tab header) and came up over that row would then play it. So every release in the pane forgets
@@ -91,6 +93,7 @@ public partial class ClipsPane : UserControl
     {
         foreach (var row in _rows.Values.ToList()) row.Refresh();
         foreach (var row in _shotRows.Values.ToList()) row.Refresh();
+        if (App != null) UpdateBar();   // the bar's share buttons follow the token and the cloud setting too
     }
 
     // ------------------------------------------------------------------ the two switches
@@ -134,6 +137,7 @@ public partial class ClipsPane : UserControl
     {
         if (_syncing || App == null) return;
         _wantedFeature = ReferenceEquals(sender, ShotsFeature) ? LibraryFeature.Screenshots : LibraryFeature.Clips;
+        ClearSelections();   // a selection never reaches into the other list
         ViewChanged?.Invoke();
         Refresh();
     }
@@ -142,6 +146,7 @@ public partial class ClipsPane : UserControl
     {
         if (_syncing || App == null) return;
         _level = ReferenceEquals(sender, SharedLevel) ? LibraryLevel.Shared : LibraryLevel.Local;
+        ClearSelections();
         ViewChanged?.Invoke();
         Refresh();
     }
@@ -170,7 +175,7 @@ public partial class ClipsPane : UserControl
         if (App == null) return;
         RestoreState();
         SyncSwitches();
-        if (Feature == LibraryFeature.Screenshots) RefreshShots(); else RefreshClips();
+        if (Feature == LibraryFeature.Screenshots) { _clipSel.Clear(); RefreshShots(); } else { _shotSel.Clear(); RefreshClips(); }
     }
 
     private void RefreshClips()
@@ -212,6 +217,7 @@ public partial class ClipsPane : UserControl
         ShowList(LibraryFeature.Clips, shown.Count);
         // Only listed rows, in list order (newest first), and only while the pane is on screen (IsVisibleChanged refreshes on show).
         if (IsVisible) LoadThumbnails(shown.Where(r => !r.Checked).ToList());
+        PruneSelection();
     }
 
     // Local level: trims nested under the clip they were cut from (ClipGrouping). The Trimmed filter and the Shared level stay flat.
@@ -249,6 +255,7 @@ public partial class ClipsPane : UserControl
         ClipGrouping.SyncRows(_local, view, int.MaxValue);   // a toggle is one contiguous block: never rebuild (the chevron keeps focus)
         if (toggle.IsChecked != row.IsExpanded) toggle.SetCurrentValue(System.Windows.Controls.Primitives.ToggleButton.IsCheckedProperty, row.IsExpanded);
         if (IsVisible && _level == LibraryLevel.Local) LoadThumbnails(view.Where(r => !r.Checked).ToList());
+        PruneSelection();   // collapsing a clip deselects its trims
     }
 
     /// <summary>
@@ -694,6 +701,7 @@ public partial class ClipsPane : UserControl
         if (row == null || e.Handled || !ClickedOn(row)) return;
         if (row.IsDeleting) { e.Handled = true; return; }   // a click on the disabled Delete button reaches the row: it must not play the file being recycled
         if (OnButton(e, sender)) return;
+        if (GestureFor(_clipSel.Active) is { } gesture) { e.Handled = true; _clipSel.Apply(row, gesture, VisibleClips); return; }   // selecting: no play
         if (!row.HasLocalFile && !row.Entry.IsArchived) return;   // a shared clip whose file is gone has nothing to play
         e.Handled = true;
         await PlayAsync(row);
@@ -701,9 +709,11 @@ public partial class ClipsPane : UserControl
 
     private async void Thumb_Click(object sender, MouseButtonEventArgs e)
     {
+        if (OnButton(e, sender)) return;
         e.Handled = true;   // the row around the thumbnail would play the clip a second time
         var row = RowOf(sender);
         if (row == null || !ClickedOn(row) || row.IsDeleting) return;
+        if (GestureFor(_clipSel.Active) is { } gesture) { _clipSel.Apply(row, gesture, VisibleClips); return; }
         await PlayAsync(row);
     }
 
@@ -811,6 +821,7 @@ public partial class ClipsPane : UserControl
         // Only rows that have a visual get a thumbnail (a long history is not decoded in one go): a row that is realized later asks itself
         // (ShotRow_Loaded / ShotRow_DataContextChanged, as the list scrolls); the ones already on screen are asked now.
         if (IsVisible) QueueThumbnails(rows.Where(r => ShotList.ItemContainerGenerator.ContainerFromItem(r) != null));
+        PruneSelection();
     }
 
     private void ShotRow_Loaded(object sender, RoutedEventArgs e)
@@ -861,7 +872,9 @@ public partial class ClipsPane : UserControl
     private void Shot_Click(object sender, MouseButtonEventArgs e)
     {
         var row = ShotOf(sender);
-        if (row == null || e.Handled || !ClickedOn(row) || OnButton(e, sender) || !row.HasLocalFile) return;
+        if (row == null || e.Handled || !ClickedOn(row) || OnButton(e, sender)) return;
+        if (GestureFor(_shotSel.Active) is { } gesture) { e.Handled = true; _shotSel.Apply(row, gesture, _shots); return; }   // selecting: no editor
+        if (!row.HasLocalFile) return;
         e.Handled = true;
         EditShot(row);
     }
@@ -949,12 +962,18 @@ public partial class ClipsPane : UserControl
     {
         var row = ShotOf(sender);
         if (row == null || row.IsDeleting || row.IsUploading) return;
-        string what = ScreenshotRow.ConfirmText(row.Entry, row.HasLocalFile);
+        bool hadFile = row.HasLocalFile;   // what the user was asked about: a delete (file) or a Remove from list (no file)
+        string what = ScreenshotRow.ConfirmText(row.Entry, hadFile);
         var owner = Window.GetWindow(this);
         var answer = owner != null
             ? MessageBox.Show(owner, what, "Clink", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No)
             : MessageBox.Show(what, "Clink", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No);
         if (answer != MessageBoxResult.Yes) return;
+        if (row.IsDeleting || row.IsUploading || !_shots.Contains(row))   // a bulk delete / upload took the row, or it left the list, while the question was up
+        {
+            if (row.IsUploading) row.SetProblem("This screenshot is uploading. Delete it after the upload finishes.");
+            return;
+        }
         row.IsDeleting = true;
         var result = ScreenshotDeleteResult.Failed;
         nint ownerHandle = 0;
@@ -964,10 +983,12 @@ public partial class ClipsPane : UserControl
             if (w != null) ownerHandle = new System.Windows.Interop.WindowInteropHelper(w).Handle;
         }
         catch { }
-        try { result = await App.Screenshots.DeleteAsync(row.Entry, ownerHandle); }   // IsDeleting stays set until the shell call returns
+        // requireFile when the user was asked to delete a file: one that went meanwhile keeps its entry (FileGone), never a silent Remove from list
+        try { result = await App.Screenshots.DeleteAsync(row.Entry, ownerHandle, requireFile: hadFile); }   // IsDeleting stays set until the shell call returns
         catch (Exception ex) { Log.Warn("library: screenshot delete: " + ex.Message); }
         finally { row.IsDeleting = false; }
-        if (result is ScreenshotDeleteResult.Deleted or ScreenshotDeleteResult.ListNotUpdated) RefreshShots();   // (the history says so too, once the entry was in it)
+        if (result == ScreenshotDeleteResult.FileGone) { if (OnShots) RefreshShots(); row.SetProblem(ScreenshotRow.DeleteProblemText(result, false)); return; }
+        if (result is ScreenshotDeleteResult.Deleted or ScreenshotDeleteResult.ListNotUpdated) { if (OnShots) RefreshShots(); }   // (the history says so too, once the entry was in it)
         if (result != ScreenshotDeleteResult.Deleted)
             row.SetProblem(ScreenshotRow.DeleteProblemText(result, ScreenshotService.IsOnLocalFixedDrive(row.Entry.Path)));
     }
@@ -1071,6 +1092,20 @@ internal sealed class ClipRow : INotifyPropertyChanged
             Raise(p);
     }
 
+    // The library selection (ClipsPane keeps the model; the row shows it): the checkbox, the highlight and "Select ..." name follow these.
+    private bool _selected, _selectMode;
+    /// <summary>The row is in the selection.</summary>
+    public bool IsSelected => _selected;
+    /// <summary>The list this row is in has a selection: the checkboxes are all shown and a plain click selects.</summary>
+    public bool SelectMode => _selectMode;
+    /// <summary>The checkbox's accessible name.</summary>
+    public string SelectName => $"Select {Title}, {Entry.Created:MMM d, HH:mm}";
+
+    public void SetSelection(bool selected, bool selectMode)
+    {
+        if (_selected != selected) { _selected = selected; Raise(nameof(IsSelected)); }
+        if (_selectMode != selectMode) { _selectMode = selectMode; Raise(nameof(SelectMode)); }
+    }
     public void SetProblem(string text) { IsProblem = true; Status = text; }
 
     /// <summary>
@@ -1096,7 +1131,7 @@ internal sealed class ClipRow : INotifyPropertyChanged
 
     public void Refresh()
     {
-        foreach (var p in new[] { nameof(ShareLabel), nameof(ShareName), nameof(ShareVisible), nameof(HasLink), nameof(Link), nameof(Meta), nameof(CloudMeta), nameof(Title), nameof(IsShared), nameof(IsTrim), nameof(IsArchived), nameof(IsLocalOnly), nameof(ArchiveTip), nameof(ToggleName) })
+        foreach (var p in new[] { nameof(ShareLabel), nameof(ShareName), nameof(ShareVisible), nameof(HasLink), nameof(Link), nameof(Meta), nameof(CloudMeta), nameof(Title), nameof(IsShared), nameof(IsTrim), nameof(IsArchived), nameof(IsLocalOnly), nameof(ArchiveTip), nameof(ToggleName), nameof(SelectName) })
             Raise(p);
     }
 

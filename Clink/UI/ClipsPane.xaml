@@ -94,6 +94,39 @@
                 </Setter.Value>
             </Setter>
         </Style>
+        <!-- A library row: the shared Row look with a 2 px border that is transparent until the row is selected (Panel2 fill + Accent2 border; the padding gives the 2 px back so nothing shifts). -->
+        <Style x:Key="LibRow" TargetType="Border" BasedOn="{StaticResource Row}">
+            <Setter Property="BorderThickness" Value="2" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+            <Setter Property="Padding" Value="4" />
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                    <Setter Property="Background" Value="{DynamicResource Panel2}" />
+                    <Setter Property="BorderBrush" Value="{DynamicResource Accent2}" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+        <!-- The row's select box: always in the tree (and a tab stop, so the keyboard finds it), drawn only when the row is hovered, the box has the focus, it is checked, or the list is in selection mode. -->
+        <Style x:Key="RowCheck" TargetType="CheckBox" BasedOn="{StaticResource {x:Type CheckBox}}">
+            <Setter Property="Opacity" Value="0" />
+            <Setter Property="HorizontalAlignment" Value="Left" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="Margin" Value="2,0,0,0" />
+            <Style.Triggers>
+                <Trigger Property="IsKeyboardFocused" Value="True">
+                    <Setter Property="Opacity" Value="1" />
+                </Trigger>
+                <Trigger Property="IsChecked" Value="True">
+                    <Setter Property="Opacity" Value="1" />
+                </Trigger>
+                <DataTrigger Binding="{Binding SelectMode}" Value="True">
+                    <Setter Property="Opacity" Value="1" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding RelativeSource={RelativeSource FindAncestor, AncestorType=Border}, Path=IsMouseOver}" Value="True">
+                    <Setter Property="Opacity" Value="1" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
         <Style x:Key="UploadBar" TargetType="ProgressBar" BasedOn="{StaticResource {x:Type ProgressBar}}">
             <Setter Property="Visibility" Value="Collapsed" />
             <Setter Property="Margin" Value="0,4,0,0" />
@@ -141,21 +174,23 @@
             <Grid>
             <!-- a trim listed under its clip: indented, with a quiet guide line down the left (the full height of the row, gap included, so a run of trims reads as one block) -->
             <Border Width="2" HorizontalAlignment="Left" Margin="13,0,0,0" Background="{DynamicResource Border}" Visibility="{Binding IsChild, Converter={StaticResource Vis}}" />
-            <Border Style="{StaticResource Row}" Margin="{Binding NestMargin}" Cursor="Hand" PreviewMouseLeftButtonDown="Row_Down" MouseLeftButtonUp="Row_Click">
-                <!-- a click anywhere on the row that is not on one of its buttons plays the clip -->
+            <Border Style="{StaticResource LibRow}" Margin="{Binding NestMargin}" Cursor="Hand" PreviewMouseLeftButtonDown="Row_Down" MouseLeftButtonUp="Row_Click">
+                <!-- a click anywhere on the row that is not on one of its buttons plays the clip (selects it while a selection is going, or with Ctrl / Shift) -->
                 <Grid>
                     <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="26" />
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
-                    <Border Width="88" Height="50" CornerRadius="4" Background="{DynamicResource Panel3}" Cursor="Hand" MouseLeftButtonUp="Thumb_Click" ToolTip="Play">
+                    <CheckBox Grid.Column="0" Style="{StaticResource RowCheck}" IsChecked="{Binding IsSelected, Mode=OneWay}" Checked="Select_Changed" Unchecked="Select_Changed" AutomationProperties.Name="{Binding SelectName}" />
+                    <Border Grid.Column="1" Width="88" Height="50" CornerRadius="4" Background="{DynamicResource Panel3}" Cursor="Hand" MouseLeftButtonUp="Thumb_Click" ToolTip="Play">
                         <Border.Clip>
                             <RectangleGeometry Rect="0,0,88,50" RadiusX="4" RadiusY="4" />
                         </Border.Clip>
                         <Image Source="{Binding Thumbnail}" Stretch="UniformToFill" />
                     </Border>
-                    <StackPanel Grid.Column="1" Margin="10,0,8,0" VerticalAlignment="Center">
+                    <StackPanel Grid.Column="2" Margin="10,0,8,0" VerticalAlignment="Center">
                         <DockPanel LastChildFill="False">
                             <!-- a clip with trims under it: the trim count and a chevron (a focusable toggle; the pane keeps the state) -->
                             <ToggleButton DockPanel.Dock="Right" Style="{StaticResource TrimsToggle}" Margin="6,0,0,0" IsChecked="{Binding IsExpanded, Mode=OneWay}" Checked="Trims_Changed" Unchecked="Trims_Changed"
@@ -167,7 +202,7 @@
                         <TextBlock Text="{Binding Status}" Style="{StaticResource StatusText}" />
                         <ProgressBar Value="{Binding Progress}" Maximum="1" Style="{StaticResource UploadBar}" />
                     </StackPanel>
-                    <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                    <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
                         <Button Content="Trim" Click="Trim_Click" Padding="9,5" Margin="0,0,4,0" />
                         <!-- MinWidth = the "Copy link" width: Trim and the folder button stay in fixed columns down the list -->
                         <Button Content="{Binding ShareLabel}" Click="Share_Click" Padding="9,5" Margin="0,0,4,0" MinWidth="76" Style="{StaticResource AccentButton}"
@@ -188,7 +223,7 @@
             <Border PreviewMouseLeftButtonDown="Row_Down" MouseLeftButtonUp="Row_Click">
                 <Border.Style>
                     <!-- a click on the row plays the local file; no hand over a shared clip whose file is gone (an archived one still answers: "archive offline") -->
-                    <Style TargetType="Border" BasedOn="{StaticResource Row}">
+                    <Style TargetType="Border" BasedOn="{StaticResource LibRow}">
                         <Setter Property="Cursor" Value="Hand" />
                         <Style.Triggers>
                             <MultiDataTrigger>
@@ -203,18 +238,20 @@
                 </Border.Style>
                 <Grid>
                     <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="26" />
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
-                    <Border Width="88" Height="50" CornerRadius="4" Background="{DynamicResource Panel3}" Cursor="Hand" MouseLeftButtonUp="Thumb_Click" ToolTip="Play"
+                    <CheckBox Grid.Column="0" Style="{StaticResource RowCheck}" IsChecked="{Binding IsSelected, Mode=OneWay}" Checked="Select_Changed" Unchecked="Select_Changed" AutomationProperties.Name="{Binding SelectName}" />
+                    <Border Grid.Column="1" Width="88" Height="50" CornerRadius="4" Background="{DynamicResource Panel3}" Cursor="Hand" MouseLeftButtonUp="Thumb_Click" ToolTip="Play"
                             Visibility="{Binding HasLocalFile, Converter={StaticResource Vis}}">
                         <Border.Clip>
                             <RectangleGeometry Rect="0,0,88,50" RadiusX="4" RadiusY="4" />
                         </Border.Clip>
                         <Image Source="{Binding Thumbnail}" Stretch="UniformToFill" />
                     </Border>
-                    <StackPanel Grid.Column="1" Margin="10,0,8,0" VerticalAlignment="Center">
+                    <StackPanel Grid.Column="2" Margin="10,0,8,0" VerticalAlignment="Center">
                         <DockPanel LastChildFill="False">
                             <ContentPresenter DockPanel.Dock="Right" Content="{Binding}" ContentTemplate="{StaticResource Icons}" />
                             <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap" />
@@ -225,7 +262,7 @@
                         </Button>
                         <TextBlock Text="{Binding Status}" Style="{StaticResource StatusText}" />
                     </StackPanel>
-                    <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                    <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
                         <Button Content="Open page" Click="OpenPage_Click" Padding="10,5" Margin="0,0,6,0" ToolTip="Open the clip on copium.pics" />
                         <Button Style="{StaticResource GlyphButton}" Content="&#xE8B7;" Click="Folder_Click" Padding="8,5" ToolTip="Show the local file in its folder"
                                 Visibility="{Binding HasLocalFile, Converter={StaticResource Vis}}" />
@@ -237,21 +274,23 @@
         <!-- Screenshot row: 176 x 99 thumbnail, title + meta (+ link when shared) + status, then Edit / Open / folder / Upload or Copy link + Open page / Delete.
              A click on the row (not on a button) edits the screenshot. -->
         <DataTemplate x:Key="ShotRow">
-            <Border Style="{StaticResource Row}" Cursor="Hand" PreviewMouseLeftButtonDown="Shot_Down" MouseLeftButtonUp="Shot_Click"
+            <Border Style="{StaticResource LibRow}" Cursor="Hand" PreviewMouseLeftButtonDown="Shot_Down" MouseLeftButtonUp="Shot_Click"
                     Loaded="ShotRow_Loaded" DataContextChanged="ShotRow_DataContextChanged" AutomationProperties.Name="{Binding Title}">
                 <Grid>
                     <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="26" />
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="*" />
                     </Grid.ColumnDefinitions>
-                    <Border Width="176" Height="99" CornerRadius="4" Background="{DynamicResource Panel3}" VerticalAlignment="Top" ToolTip="Edit"
+                    <CheckBox Grid.Column="0" Style="{StaticResource RowCheck}" VerticalAlignment="Top" Margin="2,41,0,0" IsChecked="{Binding IsSelected, Mode=OneWay}" Checked="Select_Changed" Unchecked="Select_Changed" AutomationProperties.Name="{Binding SelectName}" />
+                    <Border Grid.Column="1" Width="176" Height="99" CornerRadius="4" Background="{DynamicResource Panel3}" VerticalAlignment="Top" ToolTip="Edit"
                             Visibility="{Binding HasLocalFile, Converter={StaticResource Vis}}">
                         <Border.Clip>
                             <RectangleGeometry Rect="0,0,176,99" RadiusX="4" RadiusY="4" />
                         </Border.Clip>
                         <Image Source="{Binding Thumbnail}" Stretch="UniformToFill" />
                     </Border>
-                    <StackPanel Grid.Column="1" Margin="10,0,0,0" VerticalAlignment="Top">
+                    <StackPanel Grid.Column="2" Margin="10,0,0,0" VerticalAlignment="Top">
                         <DockPanel LastChildFill="False">
                             <TextBlock DockPanel.Dock="Right" Style="{StaticResource Glyph}" Text="&#xE753;" Foreground="{DynamicResource Accent}" Margin="6,1,0,0" ToolTip="Shared to Copium"
                                        Visibility="{Binding HasLink, Converter={StaticResource Vis}}" />
@@ -306,15 +345,31 @@
 
         <!-- Second level, lower and quieter: Local | Shared, and on the clips side the Trimmed filter -->
         <Grid Grid.Row="1" Margin="0,0,0,8">
-            <!-- Panel, not Panel3: the muted segment text measures 4.5:1 on Bg / Panel / Panel2 in both themes (ThemeTests), not on Panel3 -->
-            <Border Background="{DynamicResource Panel}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="7" Padding="2" HorizontalAlignment="Left">
-                <StackPanel Orientation="Horizontal">
-                    <RadioButton x:Name="LocalLevel" GroupName="LibraryLevel" Style="{StaticResource SegmentSecondary}" Content="Local" AutomationProperties.Name="Local" Checked="Level_Checked" />
-                    <RadioButton x:Name="SharedLevel" GroupName="LibraryLevel" Style="{StaticResource SegmentSecondary}" Content="Shared" AutomationProperties.Name="Shared" Checked="Level_Checked" />
+            <Grid x:Name="LevelRow">
+                <!-- Panel, not Panel3: the muted segment text measures 4.5:1 on Bg / Panel / Panel2 in both themes (ThemeTests), not on Panel3 -->
+                <Border Background="{DynamicResource Panel}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="7" Padding="2" HorizontalAlignment="Left">
+                    <StackPanel Orientation="Horizontal">
+                        <RadioButton x:Name="LocalLevel" GroupName="LibraryLevel" Style="{StaticResource SegmentSecondary}" Content="Local" AutomationProperties.Name="Local" Checked="Level_Checked" />
+                        <RadioButton x:Name="SharedLevel" GroupName="LibraryLevel" Style="{StaticResource SegmentSecondary}" Content="Shared" AutomationProperties.Name="Shared" Checked="Level_Checked" />
+                    </StackPanel>
+                </Border>
+                <ToggleButton x:Name="TrimmedChip" Style="{StaticResource FilterChip}" Content="Trimmed" HorizontalAlignment="Right" AutomationProperties.Name="Trimmed"
+                              ToolTip="Show only trimmed clips" Checked="Trimmed_Changed" Unchecked="Trimmed_Changed" />
+            </Grid>
+
+            <!-- The selection bar: replaces the Local | Shared row while something is selected (the pane fills the actions in) -->
+            <Border x:Name="SelectBar" Visibility="Collapsed" Background="{DynamicResource Panel2}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="7" Padding="8,6">
+                <StackPanel>
+                    <DockPanel>
+                        <Button x:Name="SelectClearButton" DockPanel.Dock="Right" Content="Clear" Click="SelectClear_Click" Margin="8,0,0,0" VerticalAlignment="Top"
+                                ToolTip="Clear selection (Esc)" AutomationProperties.Name="Clear selection" />
+                        <WrapPanel x:Name="SelectActions" VerticalAlignment="Center">
+                            <TextBlock x:Name="SelectCount" FontWeight="SemiBold" VerticalAlignment="Center" Margin="2,0,12,0" AutomationProperties.LiveSetting="Polite" />
+                        </WrapPanel>
+                    </DockPanel>
+                    <TextBlock x:Name="SelectStatus" Style="{StaticResource MutedText}" Margin="2,6,0,0" TextWrapping="Wrap" Visibility="Collapsed" AutomationProperties.LiveSetting="Polite" />
                 </StackPanel>
             </Border>
-            <ToggleButton x:Name="TrimmedChip" Style="{StaticResource FilterChip}" Content="Trimmed" HorizontalAlignment="Right" AutomationProperties.Name="Trimmed"
-                          ToolTip="Show only trimmed clips" Checked="Trimmed_Changed" Unchecked="Trimmed_Changed" />
         </Grid>
 
         <Grid Grid.Row="2">

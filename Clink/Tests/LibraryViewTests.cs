@@ -492,6 +492,72 @@ internal static class LibraryViewTests
     }
 
     [UnitTest]
+    public static void A_bulk_delete_of_an_entry_whose_file_is_gone_keeps_the_entry_and_its_link()
+    {
+        string? savedOverride = Settings.DirOverride;
+        try
+        {
+            using var drive = Drive(3);
+            using var dir = new TempDir();
+            var rig = ScreenshotUploadTests.Make(dir, upload: false);
+            ScreenshotUploadTests.Capture(rig);
+            var entry = rig.Service.HistoryEntries.Single();
+            entry.CopiumLink = "https://v.copium.pics/gone.png";   // (the history's own instance)
+            var recycled = new List<string>();
+            rig.Service.Recycler = (p, _) => { recycled.Add(p); File.Delete(p); };
+            File.Delete(entry.Path);   // deleted outside Clink while the confirmation was up
+            var t = rig.Service.DeleteAsync(entry, 0, requireFile: true);
+            Pump(t);
+            Check.Equal(ScreenshotDeleteResult.FileGone, t.Result, "not Deleted: nothing was deleted");
+            Check.Equal(0, recycled.Count);
+            var kept = rig.Service.HistoryEntries.Single();
+            Check.Equal("https://v.copium.pics/gone.png", kept.CopiumLink, "the Copium link record stays");
+            Check.Equal(ScreenshotRow.NoFileText, ScreenshotRow.DeleteProblemText(ScreenshotDeleteResult.FileGone, true));
+            Check.Equal(ScreenshotRow.NoFileText, ClipDeleter.ShotSkipText(ClipDeleter.ShotSkip.NoFile), "the same text as a row left out before the confirmation");
+            // also without a link: the bulk delete never removes an entry, only files
+            kept.CopiumLink = null;
+            var t2 = rig.Service.DeleteAsync(kept, 0, requireFile: true);
+            Pump(t2);
+            Check.Equal(ScreenshotDeleteResult.FileGone, t2.Result);
+            Check.Equal(1, rig.Service.HistoryEntries.Count, "the entry stays");
+            // the single row's Remove from list (default) still takes the entry out
+            var t3 = rig.Service.DeleteAsync(kept);
+            Pump(t3);
+            Check.Equal(ScreenshotDeleteResult.Deleted, t3.Result);
+            Check.Equal(0, rig.Service.HistoryEntries.Count);
+        }
+        finally { Settings.DirOverride = savedOverride; }
+    }
+
+    [UnitTest]
+    public static void A_bulk_delete_with_a_directory_at_the_path_keeps_the_entry_and_leaves_the_disk_alone()
+    {
+        string? savedOverride = Settings.DirOverride;
+        try
+        {
+            using var drive = Drive(3);
+            using var dir = new TempDir();
+            var rig = ScreenshotUploadTests.Make(dir, upload: false);
+            ScreenshotUploadTests.Capture(rig);
+            var entry = rig.Service.HistoryEntries.Single();
+            entry.CopiumLink = "https://v.copium.pics/dir.png";
+            File.Delete(entry.Path);
+            Directory.CreateDirectory(entry.Path);   // a directory under the screenshot's name
+            File.WriteAllText(Path.Combine(entry.Path, "inside.txt"), "keep");
+            var recycled = new List<string>();
+            rig.Service.Recycler = (p, _) => recycled.Add(p);
+            var t = rig.Service.DeleteAsync(entry, 0, requireFile: true);
+            Pump(t);
+            Check.Equal(ScreenshotDeleteResult.FileGone, t.Result);
+            Check.Equal(0, recycled.Count, "the recycler is never called for it");
+            Check.Equal(1, rig.Service.HistoryEntries.Count, "the entry stays");
+            Check.Equal("https://v.copium.pics/dir.png", rig.Service.HistoryEntries.Single().CopiumLink);
+            Check.True(File.Exists(Path.Combine(entry.Path, "inside.txt")), "and the directory is untouched");
+        }
+        finally { Settings.DirOverride = savedOverride; }
+    }
+
+    [UnitTest]
     public static void A_thumbnail_decoded_for_the_old_file_is_not_shown_after_the_file_changed()
     {
         var row = new ScreenshotRow(new ScreenshotItem(Shot(@"C:\s\a.png", size: 10), true, 4, 4));

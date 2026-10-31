@@ -44,7 +44,7 @@ public partial class ShareWindow : Window, ICaptureExcludedWindow
     /// <summary>The toasts' distance from the edges of the work area, in DIPs (<c>Toasts</c>).</summary>
     private const int ToastMargin = 16;
 
-    private enum FileState { Unknown, Present, Missing, Offline }
+    internal enum FileState { Unknown, Present, Missing, Offline }
 
     private FileState _state;
     private bool _checking, _closed, _dragArmed, _stateNote, _afterDrag, _openingFolder;
@@ -109,9 +109,12 @@ public partial class ShareWindow : Window, ICaptureExcludedWindow
     /// to be <b>copied only</b> (<see cref="DragEffects"/>). "Preferred DropEffect" = Copy tells Explorer's paste the same, and the
     /// drag itself offers no other effect, so no target can move the clip out of the library.
     /// </summary>
-    internal static DataObject FileData(string path)
+    internal static DataObject FileData(string path) => FileData(new[] { path });
+
+    /// <summary>Several files as one drop (the multi-file share window): the same copy-only rules as <see cref="FileData(string)"/>, the list in the order given.</summary>
+    internal static DataObject FileData(IReadOnlyList<string> paths)
     {
-        var data = new DataObject(DataFormats.FileDrop, new[] { path });
+        var data = new DataObject(DataFormats.FileDrop, paths.ToArray());
         data.SetData(PreferredDropEffect, new MemoryStream(BitConverter.GetBytes((int)DragEffects)));
         return data;
     }
@@ -128,7 +131,7 @@ public partial class ShareWindow : Window, ICaptureExcludedWindow
     // ------------------------------------------------------------------ the file behind the card
 
     /// <summary>Any thread, never the UI one for an archived path: an offline share blocks for its SMB timeout. Same reading as the clip rows.</summary>
-    private static FileState Probe(string path, bool archived)
+    internal static FileState Probe(string path, bool archived)
     {
         string? dir = Path.GetDirectoryName(path);
         try
@@ -296,18 +299,24 @@ public partial class ShareWindow : Window, ICaptureExcludedWindow
     private void UpdateTopmost()
     {
         if (_closed || QuietMode.Active) return;   // --dev-quiet: never topmost
+        KeepBehindGame(this);
+    }
+
+    /// <summary>The Topmost / behind-the-game rule of <see cref="UpdateTopmost"/> for any share window (UI thread).</summary>
+    internal static void KeepBehindGame(Window window)
+    {
         bool game = Hotkeys.GameInFront();
-        if (game && Topmost)
+        if (game && window.Topmost)
         {
-            Topmost = false;
+            window.Topmost = false;
             // Not enough on its own: a window that stops being topmost stays above the ordinary windows, the game's included. Slip it in
             // right behind the game's window (the foreground one).
             var fg = PInvoke.GetForegroundWindow();
-            nint self = new WindowInteropHelper(this).Handle;
+            nint self = new WindowInteropHelper(window).Handle;
             if (!fg.IsNull && self != 0)
                 PInvoke.SetWindowPos(new HWND(self), fg, 0, 0, 0, 0, SET_WINDOW_POS_FLAGS.SWP_NOMOVE | SET_WINDOW_POS_FLAGS.SWP_NOSIZE | SET_WINDOW_POS_FLAGS.SWP_NOACTIVATE);
         }
-        else if (!game && !Topmost) Topmost = true;
+        else if (!game && !window.Topmost) window.Topmost = true;
     }
 
     // ------------------------------------------------------------------ dragging the card out

@@ -34,8 +34,10 @@ internal static class SaveCopy
     /// <summary>
     /// Copies <paramref name="src"/> to <paramref name="dst"/> through "dst.clinkpart" and moves it into place only when complete;
     /// on failure or cancel the part file is removed and an existing target stays as it was. Progress 0..1, ending at 1.
+    /// <paramref name="overwrite"/> false (the bulk save): a file that is at <paramref name="dst"/> when the copy is complete is never
+    /// replaced; the move then fails with an <see cref="IOException"/> and the part file is removed.
     /// </summary>
-    public static async Task CopyAsync(string src, string dst, IProgress<double>? progress, CancellationToken ct)
+    public static async Task CopyAsync(string src, string dst, IProgress<double>? progress, CancellationToken ct, bool overwrite = true)
     {
         string part = dst + ".clinkpart";
         try
@@ -61,7 +63,7 @@ internal static class SaveCopy
                 }
             }
             ct.ThrowIfCancellationRequested();
-            File.Move(part, dst, overwrite: true);
+            File.Move(part, dst, overwrite);
             progress?.Report(1);
         }
         catch
@@ -69,5 +71,38 @@ internal static class SaveCopy
             try { File.Delete(part); } catch { }
             throw;
         }
+    }
+
+    /// <summary>How many other names a bulk copy tries when files keep appearing under the name it picked.</summary>
+    public const int MaxNameTries = 20;
+
+    /// <summary>
+    /// Copies <paramref name="src"/> into <paramref name="folder"/> under a name that clashes with nothing (<see cref="BulkActions.UniqueName"/>)
+    /// and never replaces a file: when one appears under the picked name before the copy is moved into place, the next name is taken
+    /// and the copy repeated (at most <see cref="MaxNameTries"/> times). A directory under a name clashes like a file. Any other failure
+    /// (the source unreadable, the folder locked or gone) is thrown at once, not retried. <paramref name="exists"/> is a test seam
+    /// (default: a file or a directory is there). Returns the target path.
+    /// </summary>
+    public static async Task<string> CopyUniqueAsync(string src, string folder, string fileName, ISet<string> taken, IProgress<double>? progress,
+        CancellationToken ct, Func<string, bool>? exists = null)
+    {
+        exists ??= Taken;
+        for (int attempt = 0; ; attempt++)
+        {
+            string target = Path.Combine(folder, BulkActions.UniqueName(folder, fileName, exists, taken));   // the name is in taken: a retry moves on
+            try
+            {
+                await CopyAsync(src, target, progress, ct, overwrite: false).ConfigureAwait(false);
+                return target;
+            }
+            catch (IOException) when (attempt < MaxNameTries && Taken(target)) { }
+        }
+    }
+
+    /// <summary>Something (a file or a directory) is at <paramref name="path"/>: a bulk copy must not use that name.</summary>
+    private static bool Taken(string path)
+    {
+        try { return File.Exists(path) || Directory.Exists(path); }
+        catch { return false; }
     }
 }
