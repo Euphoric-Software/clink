@@ -211,7 +211,7 @@ internal static unsafe class EncoderBench
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = true, PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
 
     /// <summary>
-    /// The bitrates a codec is benched at by default (1080p60: the H.264 presets' 12 / 16 / 20, and HEVC's default of 14: SetupPresets), each
+    /// The bitrates a codec is benched at by default (1080p60: the H.264 presets' 12 / 16 / 20, and 14 for HEVC; these are bench rates only, not app defaults), each
     /// with a point at 0.9x so that "VBR at 90% of the bytes" is measured directly: the CBR ("off") runs form the curve the others are judged
     /// against, so they need to span the sizes the VBR runs end up at. The top point (22.2 = 20 / 0.9, 15.6 = 14 / 0.9 rounded) keeps the
     /// highest preset's VBR run, compared at its size / 0.9, inside the curve.
