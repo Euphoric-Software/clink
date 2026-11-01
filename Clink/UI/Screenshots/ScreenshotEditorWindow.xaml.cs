@@ -13,6 +13,7 @@ using Windows.Win32.UI.WindowsAndMessaging;
 using Clink.Screenshots;
 using Clink.Screenshots.Editing;
 using Clink.Services;
+using Clink.Services.Localization;
 
 namespace Clink.UI.Screenshots;
 
@@ -46,7 +47,11 @@ public partial class ScreenshotEditorWindow : Window, ICaptureExcludedWindow
             HintText.Text = request.Hint;
             HintText.Visibility = Visibility.Visible;
         }
-        DiscardButton.Content = request.IsNewCapture ? "Discard" : "Close";
+        DiscardButton.Content = request.IsNewCapture ? L.T("Discard") : L.T("Close");
+        // the tooltips that name a key: the key is a {keys} placeholder (key names are not translated)
+        CloseButton.ToolTip = L.T("Close ({keys})", ("keys", L.Ltr("Esc")));
+        DiscardButton.ToolTip = L.T("Close without saving ({keys})", ("keys", L.Ltr("Esc")));
+        DoneButton.ToolTip = L.T("Save the picture, copy it and close ({keys})", ("keys", L.Ltr("Ctrl+Enter")));
         Canvas.Attach(_session);
         Toolbar.Attach(_session);
         Toolbar.CopyRequested += () => Run(CopyAsync);
@@ -157,7 +162,7 @@ public partial class ScreenshotEditorWindow : Window, ICaptureExcludedWindow
         catch (Exception ex)
         {
             Log.Error("screenshot editor: insert image", ex);
-            Say("Could not insert the image: " + ex.Message);
+            Say(L.T("Could not insert the image: {error}", ("error", ex.Message)));
         }
         Canvas.Focus();
     }
@@ -167,7 +172,7 @@ public partial class ScreenshotEditorWindow : Window, ICaptureExcludedWindow
     {
         if (_session == null || _inserting) return;
         _inserting = true;
-        Say("Reading the picture…");
+        Say(L.T("Reading the picture…"));
         try
         {
             var (ok, _) = await insert();
@@ -202,7 +207,7 @@ public partial class ScreenshotEditorWindow : Window, ICaptureExcludedWindow
         if (_session == null || _busy) return;
         if (Canvas.IsTextEditing) Canvas.CommitText();
         SetBusy(true);   // the buttons are off while the picture is made
-        Say("Copying…");
+        Say(L.T("Copying…"));
         try
         {
             var image = await _session.ExportAsync();
@@ -213,12 +218,12 @@ public partial class ScreenshotEditorWindow : Window, ICaptureExcludedWindow
                 return (made, PngFile.Encode(made));
             });
             bool ok = ScreenshotClipboard.Copy(bitmap, png);
-            Say(ok ? "Copied to the clipboard" : "The clipboard is busy: not copied");
+            Say(ok ? L.T("Copied to the clipboard") : L.T("The clipboard is busy: not copied"));
         }
         catch (Exception ex)
         {
             Log.Error("screenshot editor: copy", ex);
-            Say("Could not copy: " + ex.Message);
+            Say(L.T("Could not copy: {error}", ("error", ex.Message)));
         }
         finally { SetBusy(false); }
         Canvas.Focus();
@@ -230,7 +235,7 @@ public partial class ScreenshotEditorWindow : Window, ICaptureExcludedWindow
         if (_session == null || _request == null || _busy) return false;
         if (Canvas.IsTextEditing) Canvas.CommitText();
         SetBusy(true);
-        Say("Saving…");
+        Say(L.T("Saving…"));
         try
         {
             var doc = _session.Committed;
@@ -242,15 +247,15 @@ public partial class ScreenshotEditorWindow : Window, ICaptureExcludedWindow
             {
                 _everSaved = true;
                 if (ReferenceEquals(_session.Committed, doc)) _session.MarkSaved();
-                Say(finish ? "" : "Saved");
+                Say(finish ? "" : L.T("Saved"));
             }
-            else Say("Could not save (the reason is in the notification)");
+            else Say(L.T("Could not save (the reason is in the notification)"));
             return ok;
         }
         catch (Exception ex)
         {
             Log.Error("screenshot editor: save", ex);
-            Say("Could not save: " + ex.Message);
+            Say(L.T("Could not save: {error}", ("error", ex.Message)));
             return false;
         }
         finally { SetBusy(false); }
@@ -307,8 +312,8 @@ public partial class ScreenshotEditorWindow : Window, ICaptureExcludedWindow
         }
         Hotkeys.GrantForeground();
         Activate();
-        var answer = MessageBox.Show(this, "Save your edits before Clink quits?\n\nYes saves the picture, No discards the edits, Cancel keeps Clink running.",
-            "Clink screenshot editor", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+        var answer = MessageBox.Show(this, L.T("Save the changes to this screenshot before Clink quits?"),
+            L.T("Clink screenshot editor"), MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
         if (answer == MessageBoxResult.Cancel) return false;
         if (answer == MessageBoxResult.Yes && !await SaveCoreAsync(finish: false)) return false;
         return true;
@@ -328,8 +333,8 @@ public partial class ScreenshotEditorWindow : Window, ICaptureExcludedWindow
         if (Canvas.IsTextEditing) Canvas.CommitText();
         if (_session.IsDirty)
         {
-            var answer = MessageBox.Show(this, "Save your edits?\n\nYes saves the picture, No discards the edits, Cancel keeps editing.",
-                "Clink screenshot editor", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+            var answer = MessageBox.Show(this, L.T("Save the changes to this screenshot?"),
+                L.T("Clink screenshot editor"), MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
             if (answer == MessageBoxResult.Cancel) return;
             if (answer == MessageBoxResult.Yes && !await SaveCoreAsync(finish: true)) return;
         }

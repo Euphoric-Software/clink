@@ -14,6 +14,7 @@ using Clink.Screenshots.Geometry;
 using Clink.Screenshots.Imaging;
 using Clink.Screenshots.Sources;
 using Clink.Services;
+using Clink.Services.Localization;
 
 namespace Clink.UI.Screenshots;
 
@@ -825,10 +826,14 @@ internal sealed class RegionOverlayPicker : IRegionPicker
             if (!_state.IsIdle(limit)) return;
             bool editing = _state.IsEditing;
             Log.Info($"screenshot: no input for {limit.TotalMinutes:0} minutes: cancelled");
-            if (editing) { try { _notice?.Invoke("Screenshot cancelled", $"Screenshot cancelled after {limit.TotalMinutes:0} minutes without input"); } catch (Exception ex) { Log.Warn("screenshot: idle notice: " + ex.Message); } }
+            if (editing) { try { _notice?.Invoke(L.T("Screenshot cancelled"), IdleCancelledText(limit)); } catch (Exception ex) { Log.Warn("screenshot: idle notice: " + ex.Message); } }
             Cancel();
         }
     }
+
+    /// <summary>The notice text when the editing overlay is cancelled for lack of input: "Screenshot cancelled after 20 minutes without input" (the minutes are a plural).</summary>
+    internal static string IdleCancelledText(TimeSpan limit) =>
+        L.Plural("Screenshot cancelled after {count} minutes without input", (long)Math.Round(limit.TotalMinutes, MidpointRounding.AwayFromZero));
 
     private static bool TryGetCursor(out int x, out int y)
     {

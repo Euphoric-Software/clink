@@ -6,6 +6,7 @@ using Clink.Screenshots.Editing;
 using Clink.Screenshots.Geometry;
 using Clink.Screenshots.Imaging;
 using Clink.Services;
+using Clink.Services.Localization;
 
 namespace Clink.UI.Screenshots;
 
@@ -119,7 +120,7 @@ internal sealed class EditorSession
         {
             _warnedMany = true;
             Log.Warn($"screenshot editor: {n} raster objects (blur, highlight, spotlight, magnify, erase, images): editing gets slower with each");
-            Notice?.Invoke($"{n} effects on this picture: more of them make editing slower. Consider flattening by saving and reopening.");
+            Notice?.Invoke(L.Plural("{count} effects on this picture: more of them make editing slower. Consider flattening by saving and reopening.", n));
         }
         else if (n < RasterWarnCount) _warnedMany = false;
     }
@@ -505,11 +506,11 @@ internal sealed class EditorSession
             Log.Warn("screenshot editor: paste: " + ex.Message);
             image = null;
             bitmap = null;
-            error = "Could not read the clipboard";
+            error = L.T("Could not read the clipboard");
         }
         if (image == null && bitmap == null)
         {
-            error ??= "There is no picture on the clipboard";
+            error ??= L.T("There is no picture on the clipboard");
             Notice?.Invoke(error);
             return (false, error);
         }
@@ -524,7 +525,7 @@ internal sealed class EditorSession
                 var loaded = ImageInput.FromBitmap(src, out var e);
                 return (loaded == null ? null : ImageInput.FitWithin(loaded, bw, bh), e);
             }).ConfigureAwait(false);
-            return await OnUi(() => Finish(converted, centre, err ?? "Could not read that picture"));
+            return await OnUi(() => Finish(converted, centre, err ?? L.T("Could not read that picture")));
         }
         var direct = image!;   // (not null: there was a picture and it was not a bitmap)
         if (direct.Width > picture.Width || direct.Height > picture.Height)
@@ -549,12 +550,12 @@ internal sealed class EditorSession
             var loaded = ImageInput.LoadFile(path, out var err);
             return (loaded == null ? null : ImageInput.FitWithin(loaded, w, h), err);
         }).ConfigureAwait(false);
-        return await OnUi(() => Finish(image, centre, error ?? "Could not read that picture"));
+        return await OnUi(() => Finish(image, centre, error ?? L.T("Could not read that picture")));
     }
 
     private (bool Ok, string? Error) Finish(BgraImage? image, Point centre, string? error)
     {
-        if (_released) return (false, "The editor was closed");
+        if (_released) return (false, L.T("The editor was closed"));
         if (image == null)
         {
             Notice?.Invoke(error!);

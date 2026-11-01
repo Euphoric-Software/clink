@@ -10,6 +10,7 @@ using Clink.Screenshots.Editing;
 using Clink.Screenshots.Geometry;
 using Clink.Screenshots.Imaging;
 using Clink.Services;
+using Clink.Services.Localization;
 
 namespace Clink.UI.Screenshots;
 
@@ -446,7 +447,7 @@ internal sealed class EditorCanvas : FrameworkElement
                 }
             }
             foreach (var (_, at) in handles) DrawHandle(dc, ToView(at));
-            if (sel is MagnifyBox mag) DrawSourceFrame(dc, mag.Source, "Source");
+            if (sel is MagnifyBox mag) DrawSourceFrame(dc, mag.Source, L.T("magnify|Source"));
         }
         if (_ghostSource is { } ghost && _move != null) DrawSourceFrame(dc, ghost, null);
     }
