@@ -385,14 +385,14 @@ internal static class L10nTreeEditorTests
         var core = L10nSourceScan.AreaKeys(root, "core");
         var problems = new List<string>();
 
-        // C#: the first string literal of L.T( / L.Plural( and of the toolbar's Tip( helper
+        // C#: the first string literal of L.T( / L.Plural( / Note.Of( (exception texts) and of the toolbar's Tip( helper
         var hits = L10nSourceScan.CSharp(root, new[]
         {
             @"Screenshots\Editing\ComposeQueue.cs", @"Screenshots\Editing\ImageInput.cs", @"Screenshots\ScreenshotService.cs",
             @"Screenshots\Sources\GdiScreenshotSource.cs", @"Screenshots\Sources\FrozenDesktop.cs", @"Screenshots\Geometry\SelectionMath.cs",
             @"UI\Screenshots\EditorCanvas.cs", @"UI\Screenshots\EditorSession.cs", @"UI\Screenshots\EditorToolbar.xaml.cs",
             @"UI\Screenshots\InsertImagePicker.xaml.cs", @"UI\Screenshots\RegionOverlayWindow.xaml.cs", @"UI\Screenshots\ScreenshotEditorWindow.xaml.cs",
-        }, new[] { L10nSourceScan.T, L10nSourceScan.Plural, L10nSourceScan.Tip });
+        }, new[] { L10nSourceScan.T, L10nSourceScan.Plural, L10nSourceScan.Tip, L10nSourceScan.NoteOf });
         hits.AddRange(L10nSourceScan.Xaml(root, new[]
         {
             @"UI\Screenshots\EditorToolbar.xaml", @"UI\Screenshots\InsertImagePicker.xaml", @"UI\Screenshots\RegionOverlayWindow.xaml", @"UI\Screenshots\ScreenshotEditorWindow.xaml",

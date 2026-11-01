@@ -155,12 +155,15 @@ internal sealed partial class AppController
             Engine.StartRecording(new RecordingOptions(RecordingsFolder), CurrentGame);
             return null;
         }
+        catch (NotEnoughFreeSpaceException ex)   // by type, not by the words of its message (which stays the engine's English)
+        {
+            Log.Warn("Start recording: " + ex.Message);
+            return Note.Of("Not enough free space to record. {error}", ("error", ex.Message));
+        }
         catch (IOException ex)
         {
             Log.Warn("Start recording: " + ex.Message);
-            return ex.Message.StartsWith("Not enough free", StringComparison.Ordinal)   // (the engine's own English text: its exception message stays as it is)
-                ? Note.Of("Not enough free space to record. {error}", ("error", ex.Message))
-                : Note.Of("Could not write the recording: {error}", ("error", ex.Message));
+            return Note.Of("Could not write the recording: {error}", ("error", ex.Message));
         }
         catch (UnauthorizedAccessException ex)
         {

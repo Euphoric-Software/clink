@@ -57,11 +57,10 @@ internal sealed class RecycleAbortedException : IOException
     public RecycleAbortedException(string message) : base(message) { }
 }
 
-/// <summary>A failure of the install whose text the user sees: <see cref="Exception.Message"/> stays English for the log, <see cref="Shown"/> is in the UI language.</summary>
+/// <summary>A failure of the install whose text the user sees: <see cref="Exception.Message"/> is the note's English (the log), <see cref="UserText.Of"/> the note in the UI language.</summary>
 internal sealed class SelfInstallException : IOException
 {
-    public string Shown { get; }
-    public SelfInstallException(string english, string shown) : base(english) { Shown = shown; }
+    public SelfInstallException(Note note) : base(note.English) { UserText.Attach(this, note); }
 }
 
 /// <summary>The disk and process access of <see cref="SelfInstall"/>. Real: <see cref="SelfInstallSystem"/>.</summary>
@@ -187,7 +186,7 @@ internal static class SelfInstall
                     if (child.WaitForExit(SurvivalMilliseconds)) return new RelocationResult(RelocationOutcome.Failed, "The installed Clink ended right after it started.", UserError: L.T("The installed Clink ended right after it started."));
                     return new RelocationResult(RelocationOutcome.LaunchedExisting, null, hash);
                 }
-                catch (Exception ex) { return new RelocationResult(RelocationOutcome.Failed, ex.Message, UserError: ex is SelfInstallException s ? s.Shown : ex.Message); }
+                catch (Exception ex) { return new RelocationResult(RelocationOutcome.Failed, ex.Message, UserError: UserText.Of(ex)); }
         }
 
         string newPath = plan.NewPath, backup = plan.BackupPath, target = plan.Target;
@@ -235,7 +234,7 @@ internal static class SelfInstall
         }
         catch (Exception ex)
         {
-            return Failed(ex.Message, ex is SelfInstallException s ? s.Shown : ex.Message, Rollback(plan, sys, swapped, backedUp));
+            return Failed(ex.Message, UserText.Of(ex), Rollback(plan, sys, swapped, backedUp));
         }
     }
 
@@ -450,7 +449,7 @@ internal sealed class SelfInstallSystem : ISelfInstallSystem
     {
         var psi = new ProcessStartInfo(exePath) { UseShellExecute = false, WorkingDirectory = Path.GetDirectoryName(exePath) ?? "" };
         foreach (string a in args) psi.ArgumentList.Add(a);
-        return new Child(TestGuard.Start(psi) ?? throw new SelfInstallException("The new copy could not be started.", L.T("The new copy could not be started.")));
+        return new Child(TestGuard.Start(psi) ?? throw new SelfInstallException(Note.Of("The new copy could not be started.")));
     }
 
     public void Sleep(int milliseconds) => Thread.Sleep(milliseconds);

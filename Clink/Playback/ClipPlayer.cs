@@ -8,15 +8,15 @@ using Windows.Win32.System.Com.StructuredStorage;
 using Windows.Win32.System.Variant;
 using Clink.Audio;
 using Clink.Native;
+using Clink.Services;
 using Clink.Services.Localization;
 
 namespace Clink.Playback;
 
-/// <summary>A failure of the player whose text the user sees: <see cref="Exception.Message"/> stays English for the log, <see cref="Shown"/> is in the UI language.</summary>
+/// <summary>A failure of the player whose text the user sees: <see cref="Exception.Message"/> is the note's English (the log), <see cref="UserText.Of"/> the note in the UI language.</summary>
 internal sealed class ClipPlayerException : InvalidOperationException
 {
-    public string Shown { get; }
-    public ClipPlayerException(string english, string shown) : base(english) { Shown = shown; }
+    public ClipPlayerException(Note note) : base(note.English) { UserText.Attach(this, note); }
 }
 
 /// <summary>Why the preview plays without sound (<see cref="ClipPlayer.AudioIssue"/>).</summary>
@@ -340,7 +340,7 @@ internal sealed unsafe class ClipPlayer : IDisposable
                 }
                 t->Release();
             }
-            if (videoIdx == uint.MaxValue) throw new ClipPlayerException("No video stream in file", L.T("No video stream in file"));
+            if (videoIdx == uint.MaxValue) throw new ClipPlayerException(Note.Of("No video stream in file"));
             // Track i is the file's i-th audio track (the mix first), the same numbering the trimmer's mix uses. The stream numbers are
             // those of the readers the audio is read with (Engine.ClipSource, with the audio edit lists hidden), not of the video's own
             // reader above: nothing here depends on the two numbering the streams alike.
@@ -428,7 +428,7 @@ internal sealed unsafe class ClipPlayer : IDisposable
             int stride = unchecked((int)Mf.GetU32(a, PInvoke.MF_MT_DEFAULT_STRIDE, (uint)(w * 4)));
             if (initial)
             {
-                if (w <= 0 || h <= 0) throw new ClipPlayerException("Decoder reported an empty frame size", L.T("Decoder reported an empty frame size"));
+                if (w <= 0 || h <= 0) throw new ClipPlayerException(Note.Of("Decoder reported an empty frame size"));
                 _w = w; _h = h; _stride = stride == 0 ? w * 4 : stride;
             }
             else
@@ -447,7 +447,7 @@ internal sealed unsafe class ClipPlayer : IDisposable
             !TrySetAudioType(t, PInvoke.MFAudioFormat_PCM, full: true) &&
             !TrySetAudioType(t, PInvoke.MFAudioFormat_Float, full: false) &&
             !TrySetAudioType(t, PInvoke.MFAudioFormat_PCM, full: false))
-            throw new ClipPlayerException("Audio stream cannot be decoded to PCM", L.T("Audio stream cannot be decoded to PCM"));
+            throw new ClipPlayerException(Note.Of("Audio stream cannot be decoded to PCM"));
         IMFMediaType* cur;
         t.Reader->GetCurrentMediaType(t.Stream, &cur).Check("GetCurrentMediaType(audio)");
         try
@@ -457,7 +457,7 @@ internal sealed unsafe class ClipPlayer : IDisposable
             t.SrcChannels = Math.Max(1, (int)Mf.GetU32(a, PInvoke.MF_MT_AUDIO_NUM_CHANNELS, 2));
             t.SrcRate = Math.Max(1, (int)Mf.GetU32(a, PInvoke.MF_MT_AUDIO_SAMPLES_PER_SECOND, Rate));
             if (!t.SrcFloat && Mf.GetU32(a, PInvoke.MF_MT_AUDIO_BITS_PER_SAMPLE, 16) != 16)
-                throw new ClipPlayerException("Unsupported PCM sample size", L.T("Unsupported PCM sample size"));
+                throw new ClipPlayerException(Note.Of("Unsupported PCM sample size"));
             if (t.SrcRate != Rate || t.SrcChannels != 2 || !t.SrcFloat)
                 Log.Info($"Preview audio stream {t.Stream}: decoding as {(t.SrcFloat ? "float" : "pcm16")} {t.SrcChannels}ch {t.SrcRate} Hz (converted)");
         }
@@ -634,7 +634,7 @@ internal sealed unsafe class ClipPlayer : IDisposable
         }
         catch (Exception ex)
         {
-            LastErrorShown = ex is ClipPlayerException shown ? shown.Shown : ex.Message;   // before LastError: the UI shows LastErrorShown once LastError is set
+            LastErrorShown = UserText.Of(ex);   // before LastError: the UI shows LastErrorShown once LastError is set
             LastError = ex.Message;
             Log.Error("Preview player", ex);
         }

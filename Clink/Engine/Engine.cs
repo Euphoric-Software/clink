@@ -43,6 +43,9 @@ internal sealed class EngineConfig
     }
 }
 
+/// <summary>The disk has less free space than a recording needs (<see cref="Engine.StartRecording"/>): the type, not the English words, tells the controller which sentence to show.</summary>
+internal sealed class NotEnoughFreeSpaceException(string message) : IOException(message);
+
 /// <summary>The engine's status line: what it is doing (<see cref="Engine.StatusKind"/>).</summary>
 internal enum EngineStatusKind { Stopped, Starting, Recording, Error }
 
@@ -694,7 +697,7 @@ internal sealed unsafe class Engine : IDisposable
         Services.TestGuard.Check(folder);
         Directory.CreateDirectory(folder);
         long free = FreeBytes(folder);
-        if (free >= 0 && free < MinFreeBytes) throw new IOException($"Not enough free disk space to record ({free / 1_048_576} MB free, 1024 MB needed)");
+        if (free >= 0 && free < MinFreeBytes) throw new NotEnoughFreeSpaceException($"Not enough free disk space to record ({free / 1_048_576} MB free, 1024 MB needed)");
 
         string game = _gameName ?? (string.IsNullOrEmpty(gameHint) ? "" : gameHint);
         string baseName = string.IsNullOrEmpty(game) ? "Recording" : SanitizeName(game);

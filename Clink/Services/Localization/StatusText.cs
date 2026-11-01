@@ -35,10 +35,13 @@ internal static class EngineStatusText
     };
 
     /// <summary>Why the engine failed: our own text for a lost GPU, the exception's own message otherwise.</summary>
-    public static string Error(EngineError error) => error.Kind switch
+    public static string Error(EngineError error) => ErrorNote(error).Shown;
+
+    /// <summary><see cref="Error"/> as a note: shown in the language of the UI, English (<see cref="EngineError.English"/>) in a log line built around it.</summary>
+    public static Note ErrorNote(EngineError error) => error.Kind switch
     {
-        EngineErrorKind.GpuReset => L.T("engine-error|The GPU was reset (graphics driver crash or TDR)"),
-        _ => error.Arg ?? "",
+        EngineErrorKind.GpuReset => Note.Of("engine-error|The GPU was reset (graphics driver crash or TDR)"),
+        _ => Note.Verbatim(error.Arg ?? ""),
     };
 
     /// <summary>Why an audio device cannot be used right now ("not connected", "disabled"); null for an active one.</summary>

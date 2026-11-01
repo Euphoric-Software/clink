@@ -4,6 +4,7 @@ using System.Net.Http;
 using Clink.Engine;
 using Clink.Screenshots;
 using Clink.Services;
+using Clink.Services.Localization;
 using Clink.UI;
 
 namespace Clink.Tests;
@@ -351,7 +352,7 @@ internal static class ShareCopiumFitTests
         var big = rig.Clip(OverSize);
         Check.False(Wait(rig.App.ShareAsync(big)), "too big and no copies here: Copium would refuse it");
         Check.Equal(ShareOutcome.Refused, rig.App.LastShareOutcome);
-        string unavailable = ShareFitModel.UnavailableText(ShareFitModel.ForCopium(false), ShareCache.ElevatedReason, OverSize);
+        string unavailable = ShareFitModel.UnavailableText(ShareFitModel.ForCopium(false), ShareUnavailableKind.Elevated, OverSize);
         Check.Equal(unavailable, rig.App.ShareRefusal);
         Check.Equal(unavailable, rig.App.LastNotice);
         Check.Equal(1, rig.Http.Requests);
@@ -396,7 +397,43 @@ internal static class ShareCopiumFitTests
             string text = File.ReadAllText(Path.Combine(root, file));
             Check.Contains(text, "ShareProgressText(", file);
             Check.False(text.Contains("Uploading… {p:P0}", StringComparison.Ordinal), file + " still builds its own upload line");
+            // the toast keeps its own L.T line (UploadingText); the clip list and the trim editor must not build theirs: a literal there is a second copy of the words
+            if (file != @"UI\ToastWindow.xaml.cs")
+                Check.False(text.Contains("L.T(\"Uploading\u2026 {percent}\"", StringComparison.Ordinal), file + " builds its own L.T upload line instead of ShareProgressText");
         }
+    }
+
+    private sealed class Refuse(HttpStatusCode code, string body) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+            => Task.FromResult(new HttpResponseMessage(code) { Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json") });
+    }
+
+    [UnitTest]
+    public static void A_failed_upload_is_shown_in_the_users_language_while_the_log_keeps_the_english_text()
+    {
+        var logged = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        void Collect(string line) => logged.Enqueue(line);
+        Log.Line += Collect;
+        try
+        {
+            using var rig = new Rig();
+            CopiumClient.HttpOverride = new HttpClient(new Refuse(HttpStatusCode.ServiceUnavailable, "{\"error\":\"down\"}"));
+            using var scope = L.Scope("qps-ploc");
+            L.ClearMissing();
+            var clip = rig.Clip(5000);
+            Check.False(Wait(rig.App.ShareAsync(clip)));
+            Check.Equal(ShareOutcome.Failed, rig.App.LastShareOutcome);
+            // what the clip row and the toast show (ShareError) and the footer line (LastNotice) are from the catalog; the server's own words are left alone
+            Check.True(PseudoLocale.IsPseudo(rig.App.ShareError ?? ""), "ShareError is translated: " + rig.App.ShareError);
+            Check.Contains(rig.App.ShareError!, "down");
+            Check.True(PseudoLocale.IsPseudo(rig.App.LastNotice), "the footer is translated: " + rig.App.LastNotice);
+            // the log: English, whatever the language
+            Check.True(logged.Any(l => l.Contains("notice: Upload failed: Copium is having trouble (down), try again later")), "the notice is logged in English");
+            Check.False(logged.Any(l => l.Contains("notice: Upload failed") && l.Contains("[!!")), "no pseudo text in the log");
+            Check.Equal(Array.Empty<string>(), L.Missing.ToArray(), "every key is in the English catalog");
+        }
+        finally { Log.Line -= Collect; }
     }
 
     [UnitTest]
@@ -437,7 +474,7 @@ internal static class ShareCopiumFitTests
             Check.Equal(ShareOutcome.Refused, rig.App.LastShareOutcome);
             Check.Equal(0, rig.ToastsNow().Length);
             Check.False(rig.NoticesNow().Contains(AppController.CopyingToastText), string.Join(" | ", rig.NoticesNow()));
-            Check.Equal(ShareFitModel.UnavailableText(ShareFitModel.ForCopium(false), ShareCache.ElevatedReason, OverSize), rig.App.LastNotice);
+            Check.Equal(ShareFitModel.UnavailableText(ShareFitModel.ForCopium(false), ShareUnavailableKind.Elevated, OverSize), rig.App.LastNotice);
             Check.False(Directory.Exists(rig.Cache.Root), "the cache was not touched");
             Check.False(rig.Cache.IsInUse(rig.Key(clip)), "no mark");
             Check.Equal((0, 0, 0), (rig.Transcoder.Probes, rig.Transcoder.Transcodes, rig.Http.Requests));

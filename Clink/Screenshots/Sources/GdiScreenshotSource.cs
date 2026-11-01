@@ -6,6 +6,7 @@ using Windows.Win32.Graphics.Gdi;
 using Clink.Native;
 using Clink.Screenshots.Geometry;
 using Clink.Screenshots.Imaging;
+using Clink.Services;
 using Clink.Services.Localization;
 
 namespace Clink.Screenshots.Sources;
@@ -28,7 +29,7 @@ internal sealed unsafe class GdiScreenshotSource : IScreenshotSource
     {
         int w = monitor.Width, h = monitor.Height;
         if (w <= 0 || h <= 0 || (long)w * h > BgraImage.MaxPixels) throw new ScreenshotCaptureException($"{monitor.ShortName} has an unusable size ({w} x {h})",
-            L.T("{monitor} has an unusable size ({size})", ("monitor", L.Ltr(monitor.ShortName)), ("size", SelectionMath.SizeLabel(w, h))));
+            Note.Of("{monitor} has an unusable size ({size})", ("monitor", Note.Ltr(monitor.ShortName)), ("size", SelectionMath.SizeLabel(w, h))));
         var sw = Stopwatch.StartNew();
         HDC screen = default, mem = default;
         HBITMAP dib = default;
@@ -36,9 +37,9 @@ internal sealed unsafe class GdiScreenshotSource : IScreenshotSource
         try
         {
             screen = PInvoke.GetDC(HWND.Null);
-            if (screen.IsNull) throw new ScreenshotCaptureException("The screen could not be read (GetDC failed)", L.T("The screen could not be read ({detail})", ("detail", "GetDC failed")));
+            if (screen.IsNull) throw new ScreenshotCaptureException("The screen could not be read (GetDC failed)", Note.Of("The screen could not be read ({detail})", ("detail", "GetDC failed")));
             mem = PInvoke.CreateCompatibleDC(screen);
-            if (mem.IsNull) throw new ScreenshotCaptureException("The screen could not be read (CreateCompatibleDC failed)", L.T("The screen could not be read ({detail})", ("detail", "CreateCompatibleDC failed")));
+            if (mem.IsNull) throw new ScreenshotCaptureException("The screen could not be read (CreateCompatibleDC failed)", Note.Of("The screen could not be read ({detail})", ("detail", "CreateCompatibleDC failed")));
 
             BITMAPINFO bmi = default;
             bmi.bmiHeader.biSize = (uint)sizeof(BITMAPINFOHEADER);
@@ -50,16 +51,16 @@ internal sealed unsafe class GdiScreenshotSource : IScreenshotSource
             void* bits = null;
             dib = PInvoke.CreateDIBSection(mem, &bmi, DIB_USAGE.DIB_RGB_COLORS, &bits, HANDLE.Null, 0);
             if (dib.IsNull || bits == null) throw new ScreenshotCaptureException($"The screen copy could not be allocated ({w} x {h})",
-                L.T("The screen copy could not be allocated ({size})", ("size", SelectionMath.SizeLabel(w, h))));
+                Note.Of("The screen copy could not be allocated ({size})", ("size", SelectionMath.SizeLabel(w, h))));
 
             old = PInvoke.SelectObject(mem, dib);
             if (old.IsNull) throw new ScreenshotCaptureException($"The screen copy of {monitor.ShortName} could not be prepared (SelectObject failed)",
-                L.T("The screen copy of {monitor} could not be prepared ({detail})", ("monitor", L.Ltr(monitor.ShortName)), ("detail", "SelectObject failed")));   // BitBlt would copy into nothing: an all-black picture
+                Note.Of("The screen copy of {monitor} could not be prepared ({detail})", ("monitor", Note.Ltr(monitor.ShortName)), ("detail", "SelectObject failed")));   // BitBlt would copy into nothing: an all-black picture
             if (!PInvoke.BitBlt(mem, 0, 0, w, h, screen, monitor.Left, monitor.Top, ROP_CODE.SRCCOPY | ROP_CODE.CAPTUREBLT))
             {
                 int error = Marshal.GetLastWin32Error();
                 throw new ScreenshotCaptureException($"The screen of {monitor.ShortName} could not be copied (BitBlt failed, error {error})",
-                    L.T("The screen of {monitor} could not be copied ({detail})", ("monitor", L.Ltr(monitor.ShortName)), ("detail", $"BitBlt failed, error {error}")));
+                    Note.Of("The screen of {monitor} could not be copied ({detail})", ("monitor", Note.Ltr(monitor.ShortName)), ("detail", $"BitBlt failed, error {error}")));
             }
             PInvoke.GdiFlush();
 

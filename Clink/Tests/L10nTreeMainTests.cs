@@ -140,8 +140,7 @@ internal static class L10nTreeMainTests
             new(SignInStatus.SignedIn, HasToken: true, LinkedViaConnect: true, Username: "Jason", Verified: true, RemoteCleanupName: "Clink-PC"),
         };
         foreach (SignInFailure f in Enum.GetValues<SignInFailure>())
-            if (f != SignInFailure.CloudSharingOff)   // ConsentGate.CloudOffText: slice S3b's text (orphan)
-                states.Add(new SignInState(SignInStatus.Failed, Failure: f));
+            states.Add(new SignInState(SignInStatus.Failed, Failure: f));
         var card = new List<string>();
         foreach (var st in states)
         {
@@ -229,7 +228,7 @@ internal static class L10nTreeMainTests
         Marked(signedIn.PlusNote, "PlusNote");
         Marked(CopiumCardModel.From(new SignInState(SignInStatus.Waiting, Code: "X"), true, false, false, "PC", null).StatusText, "waiting status");
         Marked(CopiumCardModel.From(new SignInState(SignInStatus.SignedIn, HasToken: true, LinkedViaConnect: true, RemoteCleanupName: "PC", RemoteCleanupGuess: true), true, false, false, "PC", null).CleanupText, "cleanup text");
-        foreach (SignInFailure f in Enum.GetValues<SignInFailure>().Where(f => f != SignInFailure.CloudSharingOff))
+        foreach (SignInFailure f in Enum.GetValues<SignInFailure>())
             Marked(CopiumCardModel.FailureLine(f), "failure " + f);
         foreach (SignOutResult r in new[] { SignOutResult.Revoked, SignOutResult.NotSupportedDisconnectOnWebsite, SignOutResult.FailedButSignedOutLocally, SignOutResult.Manual })
             Marked(CopiumCardModel.SignOutText(r), "sign out " + r);
@@ -337,12 +336,13 @@ internal static class L10nTreeMainTests
         Check.Equal("No monitor", MainWindow.MonitorLabelText(null));
         Check.Equal("Update to v1.2.3", MainWindow.UpdateButtonText("1.2.3", true));
         Check.Equal("Update", MainWindow.UpdateButtonText("", false));
-        Check.Equal("disk full", MainWindow.UpdateProblemLine("disk full", "other", true, false));
-        Check.Equal("Last check failed: offline", MainWindow.UpdateProblemLine(null, "offline", true, false));
-        Check.Equal("Update problem: bad signature", MainWindow.UpdateProblemLine(null, "bad signature", false, false));
-        Check.Null(MainWindow.UpdateProblemLine(null, null, false, false));
-        Check.Null(MainWindow.UpdateProblemLine(null, Updater.DevModeNote.ToUpperInvariant(), true, true));   // dev mode: said by the version line, not as a problem
-        Check.Equal("Last check failed: " + Updater.DevModeNote, MainWindow.UpdateProblemLine(null, Updater.DevModeNote, true, false));
+        Check.Equal("disk full", MainWindow.UpdateProblemLine("disk full", "other", true, false, false));
+        Check.Equal("Last check failed: offline", MainWindow.UpdateProblemLine(null, "offline", true, false, false));
+        Check.Equal("Update problem: bad signature", MainWindow.UpdateProblemLine(null, "bad signature", false, false, false));
+        Check.Null(MainWindow.UpdateProblemLine(null, null, false, false, false));
+        Check.Null(MainWindow.UpdateProblemLine(null, Updater.DevModeNote.ToUpperInvariant(), true, true, lastErrorIsDevMode: true));   // dev mode: said by the version line, not as a problem (told by the flag, never by the words)
+        Check.NotNull(MainWindow.UpdateProblemLine(null, Updater.DevModeNote, true, true, lastErrorIsDevMode: false));   // the same words without the flag are an ordinary problem
+        Check.Equal("Last check failed: " + Updater.DevModeNote, MainWindow.UpdateProblemLine(null, Updater.DevModeNote, true, false, false));
         None(L.Missing.ToList(), "keys asked for and not in the English catalog (English)");
 
         // pseudo-locale: every builder is in the catalog, nothing else is left in the sentence
@@ -364,8 +364,8 @@ internal static class L10nTreeMainTests
         Marked(MainWindow.MonitorLabelText(null), "no monitor");
         Marked(MainWindow.UpdateButtonText("1.2.3", true), "update to version");
         Marked(MainWindow.UpdateButtonText("", false), "update");
-        Marked(MainWindow.UpdateProblemLine(null, "offline", true, false), "check failed");
-        Marked(MainWindow.UpdateProblemLine(null, "bad signature", false, false), "update problem");
+        Marked(MainWindow.UpdateProblemLine(null, "offline", true, false, false), "check failed");
+        Marked(MainWindow.UpdateProblemLine(null, "bad signature", false, false, false), "update problem");
         None(L.Missing.ToList(), "keys asked for and not in the English catalog (pseudo)");
     }
 

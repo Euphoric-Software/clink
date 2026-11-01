@@ -874,15 +874,10 @@ internal sealed class Updater : IDisposable
     // ---- what the user is told about a failed download: fixed texts only (like UpdateFeed.FetchCappedAsync's UserDetail), never an
     // exception's own message, which may carry what a server sent (a header line, a reason phrase). The log has the full message.
 
-    private const string UserTextKey = "Clink.Updater.UserText";
     private const string SizeMismatch = "size mismatch";
 
     /// <summary><paramref name="ex"/>, carrying <paramref name="userText"/> (built here from constants and numbers, never from a server) for <see cref="DownloadErrorText"/>.</summary>
-    private static T Shown<T>(T ex, string userText) where T : Exception
-    {
-        ex.Data[UserTextKey] = userText;
-        return ex;
-    }
+    private static T Shown<T>(T ex, string userText) where T : Exception => UserText.Attach(ex, userText);
 
     /// <summary>
     /// The short text the user is shown for a failed exe download from <paramref name="url"/>: the fixed text <see cref="DownloadAsync"/>
@@ -891,7 +886,7 @@ internal sealed class Updater : IDisposable
     /// </summary>
     internal static string DownloadErrorText(Exception ex, string url)
     {
-        if (ex.Data[UserTextKey] is string text) return text;
+        if (ex.Data[UserText.Key] is string text) return text;
         if (ex is OperationCanceledException) return $"no answer within {FeedClientTimeout.TotalSeconds:0} s";
         if (ex is HttpRequestException { StatusCode: { } code }) return $"HTTP {(int)code}";
         for (Exception? e = ex; e != null; e = e.InnerException)

@@ -5,6 +5,7 @@ using System.Windows.Automation;
 using System.Windows.Controls;
 using Clink.Engine;
 using Clink.Services;
+using Clink.Services.Localization;
 using Clink.UI;
 using Rig = Clink.Tests.ShareCopyJobTests.Rig;
 using Sink = Clink.Tests.ShareCopyJobTests.Sink;
@@ -113,7 +114,7 @@ internal static class ShareWindowTests
         // Done: the card, the drag and Copy file use the copy.
         gate.SetResult();
         Pump(() => w.FitKind == ShareFitStateKind.Done && w2.FitKind == ShareFitStateKind.Done, "both copies");
-        string details = "18.0 MB" + Dot + "0:45" + Dot + "720p60";
+        string details = (18.0).ToString("0.0", L.FormatCulture) + " MB" + Dot + "0:45" + Dot + "720p60";
         Check.Equal(details, w.FitText.Text);
         Check.Equal(details, w.MetaText.Text, "the card describes the file that is shared");
         Check.Equal("original", Buttons(w));
@@ -520,7 +521,7 @@ internal static class ShareWindowTests
         Pump(() => again.FitKind == ShareFitStateKind.Done, "the copy to be found");
         Check.Equal(FinalOf(rig, clip), again.SharePath);
         Check.Equal(1, rig.Fake.Transcodes, "found, not made again");
-        Check.Equal("18.0 MB" + Dot + "0:45" + Dot + "720p60", again.FitText.Text);
+        Check.Equal((18.0).ToString("0.0", L.FormatCulture) + " MB" + Dot + "0:45" + Dot + "720p60", again.FitText.Text);
         again.Close();
         Pump(() => !rig.Cache.IsInUse(key), "the second window to let go");
     }

@@ -818,7 +818,7 @@ internal static class L10nTreeTrimTests
         public bool LooksLikeClink(string exePath) => TargetIsClink;
         public void StripZoneIdentifier(string path) { }
         public IChildProcess Start(string exePath, IReadOnlyList<string> args) =>
-            StartThrows ? throw new SelfInstallException("The new copy could not be started.", L.T("The new copy could not be started.")) : new Child(ChildEnds);
+            StartThrows ? throw new SelfInstallException(Note.Of("The new copy could not be started.")) : new Child(ChildEnds);
         public void Recycle(string path, nint? ownerHwnd) => Files.Remove(path);
         public uint DriveTypeOf(string root) => 3;
         public IReadOnlyList<string> ProgramFilesFolders() => Array.Empty<string>();
@@ -928,9 +928,9 @@ internal static class L10nTreeTrimTests
         {
             L.ClearMissing();
             foreach (var issue in Enum.GetValues<PlayerAudioIssue>()) Marked(ClipPlayer.AudioIssueText(issue), "audio issue " + issue);
-            var ex = new ClipPlayerException("No video stream in file", L.T("No video stream in file"));
+            var ex = new ClipPlayerException(Note.Of("No video stream in file"));
             Check.Equal("No video stream in file", ex.Message, "the log text is English");
-            Marked(ex.Shown, "exception text");
+            Marked(UserText.Of(ex), "exception text");
             Marked(L.T("Decoder reported an empty frame size"), "decoder");
             Marked(L.T("Audio stream cannot be decoded to PCM"), "pcm");
             Marked(L.T("Unsupported PCM sample size"), "sample size");
@@ -1048,8 +1048,8 @@ internal static class L10nTreeTrimTests
             @"UI\TrimWindow.xaml.cs", @"UI\ArchiveWindow.xaml.cs", @"UI\ThirdPartyNoticesWindow.xaml.cs", @"UI\TimelineControl.cs",
             @"Services\ArchiveService.cs", @"Services\SelfInstall.cs", @"Services\InstallLocation.cs", @"Services\RecordingPolicy.cs", @"Playback\ClipPlayer.cs",
         };
-        // L.T / L.Plural / ArchiveProblem.Of / unit( with a key or a "cond ? key : key" first argument, and L.TIn("en", key)
-        var call = new Regex(@"(?<![\w])(?:L\.T|L\.Plural|ArchiveProblem\.Of|unit)\(\s*(?:[^""\r\n]*?\?\s*)?""((?:[^""\\]|\\.)*)""(?:\s*:\s*""((?:[^""\\]|\\.)*)"")?"
+        // L.T / L.Plural / Note.Of (exception texts) / ArchiveProblem.Of / unit( with a key or a "cond ? key : key" first argument, and L.TIn("en", key)
+        var call = new Regex(@"(?<![\w])(?:L\.T|L\.Plural|Note\.Of|ArchiveProblem\.Of|unit)\(\s*(?:[^""\r\n]*?\?\s*)?""((?:[^""\\]|\\.)*)""(?:\s*:\s*""((?:[^""\\]|\\.)*)"")?"
             + @"|(?<![\w])L\.TIn\(""en"",\s*""((?:[^""\\]|\\.)*)""", RegexOptions.Compiled);
         var hits = new List<ScanHit>();
         foreach (string file in files)

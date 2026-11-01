@@ -1237,9 +1237,9 @@ public partial class MainWindow : Window
     /// failed check is called one. A --dev instance never looks for updates: the version line says so, so the "last check failed:
     /// updates are off in dev mode" the updater leaves as its status (Updater.LastError) is not shown a second time as a problem.
     /// </summary>
-    internal static string? UpdateProblemLine(string? installProblem, string? lastError, bool checkFailed, bool isDev, bool? lastErrorIsDevMode = null) =>
+    internal static string? UpdateProblemLine(string? installProblem, string? lastError, bool checkFailed, bool isDev, bool lastErrorIsDevMode) =>
         installProblem
-            ?? (lastError is string err && !(isDev && (lastErrorIsDevMode ?? string.Equals(err, Updater.DevModeNote, StringComparison.OrdinalIgnoreCase)))
+            ?? (lastError is string err && !(isDev && lastErrorIsDevMode)
                 ? (checkFailed ? L.T("Last check failed: {error}", ("error", err)) : L.T("Update problem: {error}", ("error", err))) : null);
 
     /// <summary>Why there is nothing to check: a --dev instance never looks for updates; a build without a signed update feed has no updates at all.</summary>
@@ -1405,7 +1405,7 @@ public partial class MainWindow : Window
             var info = await check;
             // The release notes page is the signed manifest's notesUrl, opened only when it is https and under the base of the feed it came
             // from (Updater.OpenReleasePage), else a fixed page: no other text of a manifest ever reaches the shell.
-            if (info == null) _app.Say(up.LastError != null ? L.T("Update check failed: {error}", ("error", up.LastError)) : L.T("You're up to date (v{version})", ("version", L.Ltr(up.VersionDisplay))));
+            if (info == null) _app.Say(up.LastError != null ? L.T("Update check failed: {error}", ("error", up.LastErrorText)) : L.T("You're up to date (v{version})", ("version", L.Ltr(up.VersionDisplay))));
             else if (_app.PendingVersion is ReleaseVersion pending && pending >= info.Version) _app.Say(L.T("Update v{version} is ready - click 'Update to v{pending}' to restart", ("version", L.Ltr(info.Version.ToString())), ("pending", L.Ltr(pending.ToString()))));
             else if (!_app.Settings.AutoUpdate)
             {
@@ -1417,7 +1417,7 @@ public partial class MainWindow : Window
             {
                 // Auto-update is on but nothing is ready to install (the download failed, Updater.LastError says why): an
                 // "available" with nothing to click would be a dead end, so say why and show the release instead.
-                string? why = up.LastError?.TrimEnd('.');
+                string? why = up.LastErrorText?.TrimEnd('.');
                 _app.Say(why != null
                     ? L.T("Update v{version} found, but {reason} - opening the release page", ("version", L.Ltr(info.Version.ToString())), ("reason", why))
                     : L.T("Update v{version} found, but it could not be downloaded - opening the release page", ("version", L.Ltr(info.Version.ToString()))));

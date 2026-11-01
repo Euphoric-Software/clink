@@ -117,7 +117,7 @@ internal sealed partial class AppController
         ShareError = null;
         if (!OpenShareWindow(entry))
         {
-            var failed = Note.Of("Could not open the share window");   // (the const ShareWindowFailedText is the same English, for the trim window)
+            var failed = Note.Of("Could not open the share window");   // (AppController.ShareWindowFailedText is the same key, for the clip list)
             ShareError = failed.Shown;
             Say(failed);
             LastShareOutcome = ShareOutcome.WindowFailed;

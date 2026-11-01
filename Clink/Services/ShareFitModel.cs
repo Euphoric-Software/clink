@@ -9,11 +9,25 @@ namespace Clink.Services;
 /// <param name="Label">The limit as the UI says it ("Discord free (20 MB)"): <see cref="Capabilities.SizeTargets"/>' name for it.</param>
 internal sealed record ShareFitTarget(long LimitBytes, int MaxSeconds, string Label)
 {
+    private readonly string? _shortLabel;
+
     /// <summary>The service the copy is for, as in "a copy for Discord": "Discord" or "Copium".</summary>
     public string Service { get; init; } = "Discord";
 
+    /// <summary>
+    /// The catalog key of <see cref="Label"/> (<see cref="SizeTargetInfo.NameKey"/>), so a <see cref="Note"/> keeps the plan name as a key and
+    /// its English stays English whatever language <see cref="Label"/> was built in. Null for a label that is plain text (a test target).
+    /// </summary>
+    public string? NameKey { get; init; }
+
     /// <summary>The short name in a refusal ("Too big for Copium: ..."): <see cref="Label"/> unless the service has a longer one.</summary>
-    public string ShortLabel { get; init; } = Label;
+    public string ShortLabel { get => _shortLabel ?? Label; init => _shortLabel = value; }
+
+    /// <summary><see cref="Label"/> as a note argument: the catalog entry <see cref="NameKey"/> (shown translated, logged in English), else the text as it is.</summary>
+    public Note LabelNote => NameKey != null ? Note.Of(NameKey) : Note.Verbatim(Label);
+
+    /// <summary><see cref="ShortLabel"/> as a note argument: a product name set by the service is never translated; the default is <see cref="LabelNote"/>.</summary>
+    public Note ShortLabelNote => _shortLabel != null ? Note.Verbatim(_shortLabel) : LabelNote;
 }
 
 /// <summary>What the share window (or a row, or a toast) shows for a clip and a target. The members after <see cref="Kind"/> are set for the kinds that use them.</summary>
@@ -47,7 +61,12 @@ internal sealed record ShareFitState(ShareFitStateKind Kind)
     public ShareFitPlan? Plan { get; init; }
     public ShareCopyResult? Copy { get; init; }
     public int MaxSeconds { get; init; }
+    /// <summary>English: the reason of a Failed state, the whole text of a Refused one (logs, tests). The user is shown <see cref="ReasonNote"/> / <see cref="ShareFitModel.TextNote"/>.</summary>
     public string? Reason { get; init; }
+    /// <summary>The reason as a note (a Failed state made from a result that carried one); null: <see cref="Reason"/> is shown as it is.</summary>
+    public Note? ReasonNote { get; init; }
+    /// <summary>For Unavailable: why smaller copies are not available.</summary>
+    public ShareUnavailableKind Why { get; init; }
     /// <summary>For Failed: why (from <see cref="ShareCopyResult.ErrorKind"/>). None when the state was built from a reason alone.</summary>
     public ShareCopyError ErrorKind { get; init; }
 
@@ -60,7 +79,8 @@ internal sealed record ShareFitState(ShareFitStateKind Kind)
     public static ShareFitState CantFit(int maxSeconds) => new(ShareFitStateKind.CantFit) { MaxSeconds = maxSeconds };
     public static ShareFitState Failed(string reason) => new(ShareFitStateKind.Failed) { Reason = reason, ErrorKind = reason == ShareFitModel.StayedTooBigReason ? ShareCopyError.StayedTooBig : ShareCopyError.None };
     public static ShareFitState Failed(string reason, ShareCopyError kind) => new(ShareFitStateKind.Failed) { Reason = reason, ErrorKind = kind };
-    public static ShareFitState Unavailable(string reason) => new(ShareFitStateKind.Unavailable) { Reason = reason };
+    public static ShareFitState Failed(Note reason, ShareCopyError kind) => new(ShareFitStateKind.Failed) { Reason = reason.English, ReasonNote = reason, ErrorKind = kind };
+    public static ShareFitState Unavailable(ShareUnavailableKind why) => new(ShareFitStateKind.Unavailable) { Why = why, Reason = ShareFitModel.UnavailableReason(why) };
     public static ShareFitState Refused(string text) => new(ShareFitStateKind.Refused) { Reason = text };
 }
 
@@ -104,7 +124,7 @@ internal static class ShareFitModel
     public static ShareFitTarget ForPlan(string? plan)
     {
         var t = Capabilities.SizeTargetFor(TargetIdFor(plan));
-        return new ShareFitTarget(t.Bytes, t.MaxSeconds, t.Name);
+        return new ShareFitTarget(t.Bytes, t.MaxSeconds, t.Name) { NameKey = t.NameKey };
     }
 
     /// <summary>The target of the user's Discord plan setting.</summary>
@@ -114,7 +134,7 @@ internal static class ShareFitModel
     public static ShareFitTarget ForCopium(bool plus)
     {
         var t = Capabilities.SizeTargetFor(plus ? "copiumplus" : "copium200");
-        return new ShareFitTarget(t.Bytes, t.MaxSeconds, t.Name) { Service = "Copium", ShortLabel = plus ? "Copium Plus" : "Copium" };
+        return new ShareFitTarget(t.Bytes, t.MaxSeconds, t.Name) { Service = "Copium", ShortLabel = plus ? "Copium Plus" : "Copium", NameKey = t.NameKey };
     }
 
     // ---- the state ----------------------------------------------------------------------------------------------------------------
@@ -130,11 +150,11 @@ internal static class ShareFitModel
     public static ShareFitState StateFor(ShareCopyResult result) => result.Outcome switch
     {
         ShareCopyOutcome.UseCopy => ShareFitState.Done(result),
-        ShareCopyOutcome.UseOriginal => result.Error == null ? ShareFitState.Fits : ShareFitState.Unavailable(result.Error),
+        ShareCopyOutcome.UseOriginal => result.Error == null ? ShareFitState.Fits : ShareFitState.Unavailable(result.Unavailable),
         ShareCopyOutcome.CantFit => ShareFitState.CantFit(result.MaxSeconds),
         ShareCopyOutcome.Refused => ShareFitState.Refused(result.Error ?? "") with { ErrorKind = result.ErrorKind },
         ShareCopyOutcome.Cancelled => ShareFitState.Over,
-        _ => ShareFitState.Failed(result.Error ?? "something went wrong", result.ErrorKind) with { MaxSeconds = result.MaxSeconds },
+        _ => ShareFitState.Failed(result.Error ?? "something went wrong", result.ErrorKind) with { MaxSeconds = result.MaxSeconds, ReasonNote = result.ErrorNote ?? (result.Error == null ? Note.Of("reason|something went wrong") : null) },
     };
 
     // ---- the texts ----------------------------------------------------------------------------------------------------------------
@@ -142,7 +162,7 @@ internal static class ShareFitModel
 
     /// <summary>"Too big for Discord free (20 MB): this clip is 46 MB"</summary>
     public static Note OverNote(ShareFitTarget target, long originalBytes)
-        => Note.Of("Too big for {label}: this clip is {size}", ("label", target.Label), ("size", Capabilities.FormatBytes(originalBytes)));
+        => Note.Of("Too big for {label}: this clip is {size}", ("label", target.LabelNote), ("size", Note.Size(originalBytes)));
 
     /// <summary>"Too big for Discord free (20 MB): this clip is 46 MB"</summary>
     public static string OverText(ShareFitTarget target, long originalBytes) => OverNote(target, originalBytes).Shown;
@@ -159,7 +179,7 @@ internal static class ShareFitModel
         int percent = (int)Math.Round(Math.Clamp(progress, 0, 1) * 100, MidpointRounding.AwayFromZero);
         var pct = ("percent", (object?)(percent / 100.0).ToString("P0", L.FormatCulture));
         if (target.Service == "Copium") return Note.Of("Making a smaller copy for Copium... {percent}", pct);
-        var size = ("size", (object?)Capabilities.FormatBytes(target.LimitBytes));
+        var size = ("size", (object?)Note.Size(target.LimitBytes));
         var service = ("service", (object?)target.Service);   // a product name
         if (plan == null) return Note.Of("Making a {size} copy for {service}... {percent}", size, service, pct);
         return Note.Of("Making a {size} copy for {service}: {label} at {mbps} Mbps... {percent}", size, service, ("label", plan.Label), ("mbps", plan.VideoMbps.ToString("0.#", L.FormatCulture)), pct);
@@ -181,7 +201,7 @@ internal static class ShareFitModel
     /// <summary>"A 3:20 clip can't fit in 20 MB. Trim it to about 0:55." (without a length to trim to: "A 3:20 clip can't fit in 20 MB."; a clip of unknown length: "This clip can't fit in 20 MB.")</summary>
     public static Note CantFitNote(ShareFitTarget target, double clipSeconds, int maxSeconds)
     {
-        var size = ("size", (object?)Capabilities.FormatBytes(target.LimitBytes));
+        var size = ("size", (object?)Note.Size(target.LimitBytes));
         var length = ("length", (object?)Capabilities.FormatClipLength(clipSeconds));
         var trim = ("trim", (object?)Capabilities.FormatClipLength(maxSeconds));
         if (clipSeconds > 0)
@@ -191,40 +211,34 @@ internal static class ShareFitModel
 
     public static string CantFitText(ShareFitTarget target, double clipSeconds, int maxSeconds) => CantFitNote(target, clipSeconds, maxSeconds).Shown;
 
+    /// <summary>"the copy stayed too big": the reason of a copy that was over the limit through every attempt (the English text is <see cref="StayedTooBigReason"/>).</summary>
+    public static Note StayedTooBigReasonNote => Note.Of("reason|the copy stayed too big");
+
+    /// <summary>"there is not enough free disk space (about 2.3 GB are needed)" for a copy to <paramref name="limitBytes"/>.</summary>
+    public static Note LowDiskNote(long limitBytes)
+        => Note.Of("reason|there is not enough free disk space (about {size} are needed)", ("size", Note.Size(RequiredFreeBytes(limitBytes))));
+
     /// <summary>
-    /// The reason of a failed copy as a note, for "Couldn't make a smaller copy: {reason}": the reasons Clink words itself are catalog entries,
-    /// the text of Windows or of a media library (a decoder, a dimension) is shown as it is. <paramref name="limitBytes"/> sizes the low-disk reason.
+    /// The reason of a failed copy as a note, for "Couldn't make a smaller copy: {reason}". The reason is the note the failure carried
+    /// (<paramref name="reason"/>: a catalog entry for what Clink words itself, verbatim text for what Windows or a library said); a
+    /// failure that carried none is shown as its English <paramref name="english"/>. The kinds that name their own reason are chosen by
+    /// <paramref name="kind"/>, never by the text: low disk (sized by <paramref name="limitBytes"/>) and stayed too big.
     /// </summary>
-    public static Note ReasonNote(string reason, ShareCopyError kind = ShareCopyError.None, long limitBytes = 0)
+    public static Note ReasonNote(Note? reason, string english, ShareCopyError kind = ShareCopyError.None, long limitBytes = 0)
     {
-        if (kind == ShareCopyError.LowDisk && limitBytes > 0)
-            return Note.Of("reason|there is not enough free disk space (about {size} are needed)", ("size", Capabilities.FormatBytes(RequiredFreeBytes(limitBytes))));
-        return reason switch
-        {
-            StayedTooBigReason => Note.Of("reason|the copy stayed too big"),
-            "the disk is full" => Note.Of("reason|the disk is full"),
-            "the graphics driver was reset" => Note.Of("reason|the graphics driver was reset"),
-            "Windows has no decoder for this clip's video" => Note.Of("reason|Windows has no decoder for this clip's video"),
-            "the file is not a video Clink can read" => Note.Of("reason|the file is not a video Clink can read"),
-            "the clip file is not there" => Note.Of("reason|the clip file is not there"),
-            "the clip has no video" => Note.Of("reason|the clip has no video"),
-            "the clip has no video frames" => Note.Of("reason|the clip has no video frames"),
-            "the clip's audio is not AAC" => Note.Of("reason|the clip's audio is not AAC"),
-            "the clip has no keyframe to start from" => Note.Of("reason|the clip has no keyframe to start from"),
-            "the clip's file is not there any more" => Note.Of("reason|the clip's file is not there any more"),
-            "the clip could not be read" => Note.Of("reason|the clip could not be read"),
-            "the clip's length could not be read" => Note.Of("reason|the clip's length could not be read"),
-            "the copy could not be saved" => Note.Of("reason|the copy could not be saved"),
-            "something went wrong while making the copy" => Note.Of("reason|something went wrong while making the copy"),
-            "something went wrong" => Note.Of("reason|something went wrong"),
-            _ => Note.Verbatim(reason),
-        };
+        if (kind == ShareCopyError.LowDisk && limitBytes > 0) return LowDiskNote(limitBytes);
+        if (kind == ShareCopyError.StayedTooBig) return StayedTooBigReasonNote;
+        return reason ?? Note.Verbatim(english);
     }
 
-    /// <summary>"Couldn't make a smaller copy: the disk is full. The original is 46 MB, over Discord free (20 MB)."</summary>
+    /// <summary>"Couldn't make a smaller copy: the disk is full. The original is 46 MB, over Discord free (20 MB)." (<paramref name="reason"/> is shown as it is, or by <paramref name="kind"/>.)</summary>
     public static Note FailedNote(ShareFitTarget target, string reason, long originalBytes, ShareCopyError kind = ShareCopyError.None)
+        => FailedNote(target, null, reason, originalBytes, kind);
+
+    /// <summary>The same with the reason as the note the failure carried (null: <paramref name="english"/> is shown as it is).</summary>
+    public static Note FailedNote(ShareFitTarget target, Note? reason, string english, long originalBytes, ShareCopyError kind = ShareCopyError.None)
         => Note.Of("Couldn't make a smaller copy: {reason}. The original is {size}, over {limit}.",
-            ("reason", ReasonNote(reason, kind, target.LimitBytes)), ("size", Capabilities.FormatBytes(originalBytes)), ("limit", target.Label));
+            ("reason", ReasonNote(reason, english, kind, target.LimitBytes)), ("size", Note.Size(originalBytes)), ("limit", target.LabelNote));
 
     public static string FailedText(ShareFitTarget target, string reason, long originalBytes) => FailedNote(target, reason, originalBytes).Shown;
 
@@ -232,26 +246,38 @@ internal static class ShareFitModel
     public static Note StayedTooBigNote(ShareFitTarget target, long originalBytes, int maxSeconds)
         => maxSeconds > 0
             ? Note.Of("Couldn't make a smaller copy: the copy stayed too big. The original is {size}, over {limit}. Trim it to about {trim}.",
-                ("size", Capabilities.FormatBytes(originalBytes)), ("limit", target.Label), ("trim", Capabilities.FormatClipLength(maxSeconds)))
-            : FailedNote(target, StayedTooBigReason, originalBytes);
+                ("size", Note.Size(originalBytes)), ("limit", target.LabelNote), ("trim", Capabilities.FormatClipLength(maxSeconds)))
+            : FailedNote(target, StayedTooBigReasonNote, StayedTooBigReason, originalBytes, ShareCopyError.StayedTooBig);
 
     public static string StayedTooBigText(ShareFitTarget target, long originalBytes, int maxSeconds) => StayedTooBigNote(target, originalBytes, maxSeconds).Shown;
 
-    /// <summary>"Smaller copies are not available while Clink runs as administrator. The original is 46 MB, over Discord free (20 MB)."</summary>
-    public static Note UnavailableNote(ShareFitTarget target, string reason, long originalBytes)
+    /// <summary>"Smaller copies are not available while Clink runs as administrator. The original is 46 MB, over Discord free (20 MB)." Each reason is a whole sentence of its own.</summary>
+    public static Note UnavailableNote(ShareFitTarget target, ShareUnavailableKind why, long originalBytes)
     {
-        var size = ("size", (object?)Capabilities.FormatBytes(originalBytes));
-        var limit = ("limit", (object?)target.Label);
-        if (reason == ShareCache.ElevatedReason) return Note.Of("Smaller copies are not available while Clink runs as administrator. The original is {size}, over {limit}.", size, limit);
-        if (reason == ShareCache.RedirectedReason) return Note.Of("Smaller copies are not available because the share cache folder is redirected somewhere else (a junction or link). The original is {size}, over {limit}.", size, limit);
-        if (reason == ShareCache.LinkedReason) return Note.Of("Smaller copies are not available because the share cache folder for this copy is a junction or link. The original is {size}, over {limit}.", size, limit);
-        return Note.Of("Smaller copies are {reason}. The original is {size}, over {limit}.", ("reason", Note.Verbatim(reason)), size, limit);
+        var size = ("size", (object?)Note.Size(originalBytes));
+        var limit = ("limit", (object?)target.LabelNote);
+        return why switch
+        {
+            ShareUnavailableKind.Elevated => Note.Of("Smaller copies are not available while Clink runs as administrator. The original is {size}, over {limit}.", size, limit),
+            ShareUnavailableKind.Redirected => Note.Of("Smaller copies are not available because the share cache folder is redirected somewhere else (a junction or link). The original is {size}, over {limit}.", size, limit),
+            ShareUnavailableKind.Linked => Note.Of("Smaller copies are not available because the share cache folder for this copy is a junction or link. The original is {size}, over {limit}.", size, limit),
+            _ => Note.Of("Smaller copies are not available. The original is {size}, over {limit}.", size, limit),
+        };
     }
 
-    public static string UnavailableText(ShareFitTarget target, string reason, long originalBytes) => UnavailableNote(target, reason, originalBytes).Shown;
+    public static string UnavailableText(ShareFitTarget target, ShareUnavailableKind why, long originalBytes) => UnavailableNote(target, why, originalBytes).Shown;
+
+    /// <summary>The English reason of <paramref name="why"/> (data for <see cref="ShareCopyResult.Error"/> and logs; the user is shown <see cref="UnavailableNote"/>).</summary>
+    public static string UnavailableReason(ShareUnavailableKind why) => why switch
+    {
+        ShareUnavailableKind.Elevated => ShareCache.ElevatedReason,
+        ShareUnavailableKind.Redirected => ShareCache.RedirectedReason,
+        ShareUnavailableKind.Linked => ShareCache.LinkedReason,
+        _ => "not available",
+    };
 
     /// <summary>"Too big for Copium: open Clink to make a smaller copy" (a game is in front and copies during games are off).</summary>
-    public static Note GameRefusalNote(ShareFitTarget target) => Note.Of("Too big for {label}: open Clink to make a smaller copy", ("label", target.ShortLabel));
+    public static Note GameRefusalNote(ShareFitTarget target) => Note.Of("Too big for {label}: open Clink to make a smaller copy", ("label", target.ShortLabelNote));
 
     public static string GameRefusalText(ShareFitTarget target) => GameRefusalNote(target).Shown;
 
@@ -264,7 +290,7 @@ internal static class ShareFitModel
     };
 
     /// <summary>The not-enough-disk reason (English: it is data in <see cref="ShareCopyResult.Error"/>; <see cref="ReasonNote"/> words it for the user): "there is not enough free disk space (about 2.3 GB are needed)".</summary>
-    public static string LowDiskReason(long limitBytes) => $"there is not enough free disk space (about {Capabilities.FormatBytes(RequiredFreeBytes(limitBytes))} are needed)";
+    public static string LowDiskReason(long limitBytes) => $"there is not enough free disk space (about {L.BytesIn("en", RequiredFreeBytes(limitBytes))} are needed)";
 
     /// <summary>The line the window shows for a state, as a note (null for Fits: nothing to say). <paramref name="clipSeconds"/> is the clip's length (for the can't-fit text).</summary>
     public static Note? TextNote(ShareFitState state, ShareFitTarget target, long originalBytes, double clipSeconds) => state.Kind switch
@@ -276,9 +302,9 @@ internal static class ShareFitModel
         ShareFitStateKind.Waiting => Note.Of("Waiting..."),
         ShareFitStateKind.Done => Note.Verbatim(state.Copy is { } c ? DoneDetails(c.Bytes, c.Seconds, c.Label) : ""),
         ShareFitStateKind.CantFit => CantFitNote(target, clipSeconds, state.MaxSeconds),
-        ShareFitStateKind.Failed => state.ErrorKind == ShareCopyError.StayedTooBig || state.Reason == StayedTooBigReason ? StayedTooBigNote(target, originalBytes, state.MaxSeconds)
-            : FailedNote(target, state.Reason ?? "something went wrong", originalBytes, state.ErrorKind),
-        ShareFitStateKind.Unavailable => UnavailableNote(target, state.Reason ?? "not available", originalBytes),
+        ShareFitStateKind.Failed => state.ErrorKind == ShareCopyError.StayedTooBig ? StayedTooBigNote(target, originalBytes, state.MaxSeconds)
+            : FailedNote(target, state.ReasonNote, state.Reason ?? "something went wrong", originalBytes, state.ErrorKind),
+        ShareFitStateKind.Unavailable => UnavailableNote(target, state.Why, originalBytes),
         ShareFitStateKind.Refused => state.ErrorKind == ShareCopyError.GameInFront || string.IsNullOrEmpty(state.Reason) ? GameRefusalNote(target) : Note.Verbatim(state.Reason),
         _ => null,
     };

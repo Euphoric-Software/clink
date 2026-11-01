@@ -2,6 +2,7 @@ using System.IO;
 using System.Text.Json;
 using System.Windows;
 using Clink.Capture;
+using Clink.Engine;
 using Clink.Screenshots;
 using Clink.Services;
 using Clink.Services.Localization;
@@ -413,7 +414,7 @@ internal static class L10nTreeAppTests
             env.App.ShareWindowOpener = _ => false;
             using (L.Scope("qps-ploc")) { env.App.ShareFile(SampleClip()); Marked(env.App.ShareError, "share window failure"); }
             env.App.ShareFile(SampleClip());
-            Check.Equal(AppController.ShareWindowFailedText, env.App.ShareError, "the const the trim window uses is the same English");
+            Check.Equal(AppController.ShareWindowFailedText, env.App.ShareError, "in English the share error is the same text as AppController.ShareWindowFailedText (the clip list's message for this failure)");
         }
         finally { Toasts.ShowOverride = saved; }
     }
@@ -479,7 +480,7 @@ internal static class L10nTreeAppTests
         English_and_pseudo("Recording · Neon Drift", () => AppController.StatusTextFor(true, RecordingState.Recording, false, null, "Neon Drift"), "recording a game");
         English_and_pseudo("Recording (resuming…)", () => AppController.StatusTextFor(true, RecordingState.Recording, true, null, null), "resuming");
         English_and_pseudo("Error", () => AppController.StatusTextFor(true, RecordingState.Error, false, null, null), "error");
-        English_and_pseudo("Error: disk full", () => AppController.TrayStatusFor("Error", RecordingState.Error, "disk full"), "tray error with its text");
+        English_and_pseudo("Error: disk full", () => AppController.TrayStatusFor("Error", RecordingState.Error, new EngineError(EngineErrorKind.Other, "disk full")), "tray error with its text");
     }
 
     [UnitTest]

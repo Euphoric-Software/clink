@@ -194,7 +194,7 @@ public partial class TrimWindow : Window
         catch (Exception ex)
         {
             Log.Warn("Trim preview failed: " + ex.Message);
-            StatusText.Text = L.T("Preview unavailable: {error}", ("error", ex is ClipPlayerException shown ? shown.Shown : ex.Message));
+            StatusText.Text = L.T("Preview unavailable: {error}", ("error", UserText.Of(ex)));
             TracksHint.Text = L.T("No preview; the trim still works.");
             return null;
         }
@@ -820,7 +820,7 @@ public partial class TrimWindow : Window
         try
         {
             Pause();
-            var app = AppController.Instance ?? throw new ShownException("Clink is not running", L.T("Clink is not running"));
+            var app = AppController.Instance ?? throw new ShownException(Note.Of("Clink is not running"));
             // A retry after a share step that did not finish shares the clip that step saved: nothing that shapes the output changed.
             // "Save trimmed" is an explicit save: always a new trim, and the memory goes.
             ClipEntry? reuse = share ? SavedToReuse() : null;
@@ -847,7 +847,7 @@ public partial class TrimWindow : Window
                 dst = Path.Combine(dir, stem + " (trim).mp4");
                 int n = 2;
                 while (File.Exists(dst)) dst = Path.Combine(dir, stem + $" (trim {n++}).mp4");
-                if (end - start < 0.1) throw new ShownException("Selection is too short", L.T("Selection is too short"));
+                if (end - start < 0.1) throw new ShownException(Note.Of("Selection is too short"));
                 TestGuard.Check(dst);
                 Directory.CreateDirectory(dir);
                 // The rows' names (file order, as the mix); without rows the trimmer reads them from the file itself.
@@ -925,7 +925,7 @@ public partial class TrimWindow : Window
             Log.Error("Trim", ex);
             if (!trimmed)
             {
-                StatusText.Text = L.T("Trim failed: {error}", ("error", ex is ShownException shown ? shown.Shown : ex.Message));
+                StatusText.Text = L.T("Trim failed: {error}", ("error", UserText.Of(ex)));
                 try { if (File.Exists(dst) && !string.Equals(dst, src, StringComparison.OrdinalIgnoreCase)) File.Delete(dst); } catch { }
             }
             else
@@ -933,7 +933,7 @@ public partial class TrimWindow : Window
                 // The trim itself finished: keep the file and say where it is.
                 string kept = File.Exists(dst) ? dst : src;
                 StatusText.Text = L.T(share && result != null ? "Saved {name}, but: {error}. Choose again to share it." : "Saved {name}, but: {error}",
-                    ("name", L.Ltr(Path.GetFileName(kept))), ("error", ex is ShownException shown ? shown.Shown : ex.Message));
+                    ("name", L.Ltr(Path.GetFileName(kept))), ("error", UserText.Of(ex)));
             }
             try { await KeepOpenAsync(); }
             catch (Exception ex2) { Log.Error("Trim", ex2); }   // the window must not be left disabled by a failure in the recovery itself
@@ -988,11 +988,10 @@ public partial class TrimWindow : Window
         }
     }
 
-    /// <summary>A failure whose text the user sees: <see cref="Exception.Message"/> stays English for the log, <see cref="Shown"/> is in the UI language.</summary>
+    /// <summary>A failure whose text the user sees: <see cref="Exception.Message"/> is the note's English (the log), <see cref="UserText.Of"/> the note in the UI language.</summary>
     private sealed class ShownException : InvalidOperationException
     {
-        public string Shown { get; }
-        public ShownException(string english, string shown) : base(english) { Shown = shown; }
+        public ShownException(Note note) : base(note.English) { UserText.Attach(this, note); }
     }
 
     private void Header_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)

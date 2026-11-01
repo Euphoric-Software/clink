@@ -76,8 +76,12 @@ internal sealed record ShareCopyResult(ShareCopyOutcome Outcome, string Path, lo
     /// <summary>CantFit and a StayedTooBig failure: the longest clip, in seconds, that would fit.</summary>
     public int MaxSeconds { get; init; }
     public ShareCopyError ErrorKind { get; init; }
-    /// <summary>The reason (Failed: completes "Couldn't make a smaller copy: ..."; UseOriginal: why no copy was possible) or, for Refused, the whole text. Null otherwise.</summary>
+    /// <summary>The reason in English (data, for logs and tests: Failed completes "Couldn't make a smaller copy: ..."; UseOriginal says why no copy was possible) or, for Refused, the whole text. Null otherwise. Nothing translated is kept here: the user is shown <see cref="ErrorNote"/>.</summary>
     public string? Error { get; init; }
+    /// <summary>The reason as a note (catalog key + arguments) for Failed; null: <see cref="Error"/> is shown as it is.</summary>
+    public Note? ErrorNote { get; init; }
+    /// <summary>For UseOriginal with an <see cref="Error"/>: why smaller copies are not available.</summary>
+    public ShareUnavailableKind Unavailable { get; init; }
     /// <summary>The original's size.</summary>
     public long OriginalBytes { get; init; }
     /// <summary>The cache's in-use mark for the copy (UseCopy only).</summary>
@@ -454,7 +458,7 @@ internal sealed partial class AppController
         {
             // Find gives what Make would, when that is known without work: the same results for a missing file and a clip that fits.
             if (key == null)
-                return new ShareCopyResult(ShareCopyOutcome.Failed, src, 0) { ErrorKind = ShareCopyError.FileMissing, Error = "the clip's file is not there any more", OriginalBytes = entry.Size };
+                return new ShareCopyResult(ShareCopyOutcome.Failed, src, 0) { ErrorKind = ShareCopyError.FileMissing, Error = FileGone.English, ErrorNote = FileGone, OriginalBytes = entry.Size };
             var original = new ShareCopyResult(ShareCopyOutcome.UseOriginal, src, size) { OriginalBytes = size };
             if (lease == null) return original;   // it fits: nothing to make, the original is shared
             ask.Hold(lease);
@@ -494,7 +498,7 @@ internal sealed partial class AppController
                 {
                     if (gone != null) return null;   // a job that is going away: nothing to show (the button comes back)
                     // No job. Smaller copies not available here: what the job would answer at once, without touching the cache.
-                    if (!cache.IsAvailable) return original with { ErrorKind = ShareCopyError.CacheUnavailable, Error = ShareCache.ElevatedReason };
+                    if (!cache.IsAvailable) return original with { ErrorKind = ShareCopyError.CacheUnavailable, Error = ShareCache.ElevatedReason, Unavailable = ShareUnavailableKind.Elevated };
                     // A finished copy, if the cache has one (looked at off the caller's thread).
                     if (!settled) return null;
                     string name = Path.GetFileName(src);
@@ -517,7 +521,7 @@ internal sealed partial class AppController
                 catch (Exception ex)
                 {
                     Log.Warn("share copy: the job failed: " + ex.Message);
-                    made = new ShareCopyResult(ShareCopyOutcome.Failed, src, size) { ErrorKind = ShareCopyError.Failed, Error = "something went wrong while making the copy" };
+                    made = new ShareCopyResult(ShareCopyOutcome.Failed, src, size) { ErrorKind = ShareCopyError.Failed, Error = Wrong.English, ErrorNote = Wrong };
                 }
             }
             if (made.Outcome != ShareCopyOutcome.UseCopy) return made with { OriginalBytes = size };
@@ -592,8 +596,8 @@ internal sealed partial class AppController
     {
         var state = new ShareJobState();
         var original = new ShareCopyResult(ShareCopyOutcome.UseOriginal, src, size) { OriginalBytes = size };
-        ShareCopyResult Failed(ShareCopyError kind, string reason, int maxSeconds = 0)
-            => original with { Outcome = ShareCopyOutcome.Failed, ErrorKind = kind, Error = reason, MaxSeconds = maxSeconds };
+        ShareCopyResult Failed(ShareCopyError kind, Note reason, int maxSeconds = 0)
+            => original with { Outcome = ShareCopyOutcome.Failed, ErrorKind = kind, Error = reason.English, ErrorNote = reason, MaxSeconds = maxSeconds };
         try
         {
             return await ShareCopyCoreAsync(job, cache, state, src, entrySeconds, size, target, original, Failed);
@@ -605,22 +609,22 @@ internal sealed partial class AppController
         catch (ShareCacheUnavailableException ex)
         {
             Log.Info("share copy: no cache: " + ex.Message);
-            return original with { ErrorKind = ShareCopyError.CacheUnavailable, Error = ex.Message };
+            return original with { ErrorKind = ShareCopyError.CacheUnavailable, Error = ex.Message, Unavailable = ex.Why };
         }
         catch (ShareTranscodeException ex)
         {
             Log.Warn($"share copy of {Path.GetFileName(src)} failed ({ex.Kind}): {ex.Message}");
-            return Failed(ErrorKindOf(ex.Kind), ex.Message);
+            return Failed(ErrorKindOf(ex.Kind), ex.Reason);
         }
         catch (ArgumentException ex)
         {
             Log.Warn($"share copy of {Path.GetFileName(src)}: the clip or the plan was not usable: {ex.Message}");
-            return Failed(ShareCopyError.Unreadable, "the clip could not be read");
+            return Failed(ShareCopyError.Unreadable, Note.Of("reason|the clip could not be read"));
         }
         catch (Exception ex)
         {
             Log.Error("share copy", ex);
-            return Failed(ShareCopyError.Failed, "something went wrong while making the copy");
+            return Failed(ShareCopyError.Failed, Wrong);
         }
         finally
         {
@@ -638,7 +642,7 @@ internal sealed partial class AppController
     }
 
     private async Task<ShareCopyResult> ShareCopyCoreAsync(ShareJob job, ShareCache cache, ShareJobState state, string src, double entrySeconds, long size,
-        ShareFitTarget target, ShareCopyResult original, Func<ShareCopyError, string, int, ShareCopyResult> failed)
+        ShareFitTarget target, ShareCopyResult original, Func<ShareCopyError, Note, int, ShareCopyResult> failed)
     {
         var ct = job.Cts.Token;
         var impl = ShareTranscoderImpl;
@@ -648,7 +652,7 @@ internal sealed partial class AppController
 
         string key = job.Key;
         using var jobLease = cache.MarkInUse(key, out bool settled);   // the job's own mark: cleanup leaves the key alone even when every asker has left
-        if (!cache.IsAvailable) return original with { ErrorKind = ShareCopyError.CacheUnavailable, Error = ShareCache.ElevatedReason };
+        if (!cache.IsAvailable) return original with { ErrorKind = ShareCopyError.CacheUnavailable, Error = ShareCache.ElevatedReason, Unavailable = ShareUnavailableKind.Elevated };
 
         // settled false: a cleanup of this key's folder may still be going on, so what is in it is not reused (the copy is made again).
         if (settled && ReusableCopy(cache, key, name, original) is { } reused) return reused;
@@ -658,7 +662,7 @@ internal sealed partial class AppController
         // can't fit, can't be read or has no video is never kept waiting behind another copy.
         if (ShareGameBlocks()) return GameRefusal(original, target);
         if (FreeSpaceProbe(cache.Root) < ShareFitModel.RequiredFreeBytes(limit))
-            return failed(ShareCopyError.LowDisk, ShareFitModel.LowDiskReason(limit), 0);
+            return failed(ShareCopyError.LowDisk, ShareFitModel.LowDiskNote(limit), 0);
 
         var probe = impl.Probe(src, Settings.KeyframeSeconds);
         ct.ThrowIfCancellationRequested();
@@ -666,7 +670,7 @@ internal sealed partial class AppController
         double fps = probe.Fps > 0 ? probe.Fps : 30;   // the planner needs a rate; the transcoder picks frames by the clip's own timestamps
         int tracks = probe.AudioTracks;
         int audioKbps = tracks > 0 ? Capabilities.AudioKbps : 0;
-        if (duration <= 0) return failed(ShareCopyError.Unreadable, "the clip's length could not be read", 0);
+        if (duration <= 0) return failed(ShareCopyError.Unreadable, Note.Of("reason|the clip's length could not be read"), 0);
 
         ShareFitResult Plan(bool allowRemux) => ShareFit.Plan(probe.Width, probe.Height, fps, duration, size, limit, ShareFitModel.Codec, audioKbps, tracks,
             probe.Codec, probe.KeyframeSeconds, allowRemux);
@@ -684,7 +688,7 @@ internal sealed partial class AppController
         state.HoldsGate = true;
         if (ShareGameBlocks()) return GameRefusal(original, target);   // a game started while this one waited (or since the first check)
         if (waited && FreeSpaceProbe(cache.Root) < ShareFitModel.RequiredFreeBytes(limit))   // the copy before this one used some
-            return failed(ShareCopyError.LowDisk, ShareFitModel.LowDiskReason(limit), 0);
+            return failed(ShareCopyError.LowDisk, ShareFitModel.LowDiskNote(limit), 0);
         ct.ThrowIfCancellationRequested();
 
         job.Report(new ShareCopyProgress(ShareCopyStage.Working, 0, step.Plan));
@@ -723,12 +727,12 @@ internal sealed partial class AppController
             // Out of attempts, or out of rungs after a re-encode came out too big: the copy stayed too big (Failed, never CantFit).
             // CantFit is only the planner's answer before any re-encode (here: the re-plan after a stream copy that was too big).
             if (step.Kind == ShareFitKind.Failed || (step.Kind == ShareFitKind.CantFit && encoded))
-                return failed(ShareCopyError.StayedTooBig, ShareFitModel.StayedTooBigReason, step.MaxSeconds);
+                return failed(ShareCopyError.StayedTooBig, ShareFitModel.StayedTooBigReasonNote, step.MaxSeconds);
             return original with { Outcome = ShareCopyOutcome.CantFit, MaxSeconds = step.MaxSeconds };
         }
 
         ct.ThrowIfCancellationRequested();
-        if (!cache.MarkFinished(key, name)) return failed(ShareCopyError.Failed, "the copy could not be saved", 0);
+        if (!cache.MarkFinished(key, name)) return failed(ShareCopyError.Failed, Note.Of("reason|the copy could not be saved"), 0);
         state.Finished = true;
         string final = cache.PathFor(key, name);
         long finalBytes = file.SizeBytes;
@@ -745,7 +749,10 @@ internal sealed partial class AppController
     }
 
     private static ShareCopyResult GameRefusal(ShareCopyResult original, ShareFitTarget target)
-        => original with { Outcome = ShareCopyOutcome.Refused, ErrorKind = ShareCopyError.GameInFront, Error = ShareFitModel.GameRefusalText(target) };
+        => original with { Outcome = ShareCopyOutcome.Refused, ErrorKind = ShareCopyError.GameInFront, Error = ShareFitModel.GameRefusalNote(target).English };   // English: the window shows GameRefusalNote(target) by ErrorKind, in its own language
+
+    private static Note FileGone => Note.Of("reason|the clip's file is not there any more");
+    private static Note Wrong => Note.Of("reason|something went wrong while making the copy");
 
     private static ShareCopyError ErrorKindOf(ShareTranscodeFailure kind) => kind switch
     {

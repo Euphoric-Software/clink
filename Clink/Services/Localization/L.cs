@@ -424,6 +424,18 @@ internal static class L
         return T("unit|{n} GB", ("n", (bytes / 1_000_000_000.0).ToString("0", fc)));
     }
 
+    /// <summary><see cref="Bytes"/> in <paramref name="locale"/> (a log line is written in English whatever language the UI has); the number still follows <see cref="FormatCulture"/>.</summary>
+    public static string BytesIn(string locale, long bytes)
+    {
+        var fc = FormatCulture;
+        if (bytes < 0) bytes = 0;
+        if (bytes < 1_000_000) return TIn(locale, "unit|{n} kB", ("n", (bytes / 1_000.0).ToString("0", fc)));
+        if (bytes < 10_000_000) return TIn(locale, "unit|{n} MB", ("n", (bytes / 1_000_000.0).ToString("0.#", fc)));
+        if (bytes < 1_000_000_000) return TIn(locale, "unit|{n} MB", ("n", (bytes / 1_000_000.0).ToString("0", fc)));
+        if (bytes < 10_000_000_000) return TIn(locale, "unit|{n} GB", ("n", (bytes / 1_000_000_000.0).ToString("0.#", fc)));
+        return TIn(locale, "unit|{n} GB", ("n", (bytes / 1_000_000_000.0).ToString("0", fc)));
+    }
+
     /// <summary>"15 s", "1:30", "10:00", "1 h", "1:05:00" (as Capabilities.FormatDuration).</summary>
     public static string Duration(int seconds)
     {

@@ -37,6 +37,12 @@ internal sealed class Note
     /// <summary>An argument (a path, a version, a key combo) that keeps its left-to-right direction inside right-to-left text; the marks are added when the note is <see cref="Shown"/>, never in <see cref="English"/>.</summary>
     internal readonly record struct LtrArg(string Text);
 
+    /// <summary>A byte count that is written with the units of the language it is shown in (<see cref="Shown"/>) or of English (<see cref="English"/>): the log never gets a translated unit.</summary>
+    internal readonly record struct SizeArg(long Bytes);
+
+    /// <summary>A byte count as an argument of a note (see <see cref="SizeArg"/>); use it instead of <c>Capabilities.FormatBytes</c> in <see cref="Of"/>.</summary>
+    public static SizeArg Size(long bytes) => new(bytes);
+
     /// <summary>Marks <paramref name="text"/> as a left-to-right argument of a note (see <see cref="LtrArg"/>); use it instead of <see cref="L.Ltr"/> in <see cref="Of"/> / <see cref="PluralOf"/>.</summary>
     public static LtrArg Ltr(string text) => new(text);
 
@@ -53,6 +59,7 @@ internal sealed class Note
         {
             Note n => (object)(english ? n.English : n.Shown),
             LtrArg l => english ? l.Text : L.Ltr(l.Text),
+            SizeArg b => english ? L.BytesIn("en", b.Bytes) : L.Bytes(b.Bytes),
             _ => a.Value,
         })).ToArray();
 
@@ -152,7 +159,7 @@ internal sealed partial class AppController : IDisposable
     /// </summary>
     public ShareOutcome LastShareOutcome { get; private set; }
     /// <summary>What <see cref="ShareError"/> says when <see cref="LastShareOutcome"/> is <see cref="ShareOutcome.WindowFailed"/>: not an upload failure, so the row and the toast show it as it is.</summary>
-    public const string ShareWindowFailedText = "Could not open the share window";
+    public static string ShareWindowFailedText => L.T("Could not open the share window");
     /// <summary>A Copium upload token is saved: Share uploads. Without one it opens the share window (the file to drag) instead.</summary>
     public bool HasCopiumToken => !string.IsNullOrWhiteSpace(Settings.CopiumToken);
     /// <summary>Version of a downloaded update waiting to be installed, or null.</summary>
@@ -1314,12 +1321,12 @@ internal sealed partial class AppController : IDisposable
                         _engineRunGen++;
                         StartQueuedRecording();
                     }
-                    else if (Engine.Error != null)
+                    else if (Engine.ErrorInfo is { } failed)
                     {
-                        SayT("Recording failed: {error}", ("error", Engine.Error));   // the engine's own text stays as it is (S3c gives it a kind)
+                        SayT("Recording failed: {error}", ("error", EngineStatusText.ErrorNote(failed)));
                         // The window is usually in the tray while a game runs, so the footer alone is invisible. Once per
                         // streak: Tick keeps retrying.
-                        if (_startFailures++ == 0) NotifyProblem(L.T("Clink is not recording"), Engine.Error);
+                        if (_startFailures++ == 0) NotifyProblem(L.T("Clink is not recording"), EngineStatusText.Error(failed));
                     }
                 }
                 if (Engine.IsRunning && _announceGame is string game) { _announceGame = null; Toasts.ShowRecordingStarted(game); }
@@ -1608,7 +1615,7 @@ internal sealed partial class AppController : IDisposable
         _restarting ? Note.Of("Clink is restarting")
         : IsPaused ? Note.Of("Recording is paused")
         : waitingForGame ? Note.Of("Not recording: waiting for a game")
-        : Engine.Error is string err && !_starting ? Note.Of("Recording failed: {error}", ("error", err))
+        : Engine.ErrorInfo is { } err && !_starting ? Note.Of("Recording failed: {error}", ("error", EngineStatusText.ErrorNote(err)))
         : Note.Of("Not recording yet");
 
     /// <param name="seconds">Replay length to save; null = the replay-length slider (<see cref="Settings.BufferSeconds"/>).</param>
@@ -1886,7 +1893,7 @@ internal sealed partial class AppController : IDisposable
         // No smaller copies here (as administrator, a redirected cache folder): known at once, so refuse before any job, mark or toast.
         if (needsCopy && !ShareCopiesAvailable)
         {
-            var unavailable = ShareFitModel.UnavailableNote(ShareFitModel.ForCopium(Settings.CopiumPlus), ShareCache.ElevatedReason, entry.Size);
+            var unavailable = ShareFitModel.UnavailableNote(ShareFitModel.ForCopium(Settings.CopiumPlus), ShareUnavailableKind.Elevated, entry.Size);
             ShareRefusal = unavailable.Shown;
             Say(unavailable);
             LastShareOutcome = ShareOutcome.Refused;
@@ -1997,9 +2004,10 @@ internal sealed partial class AppController : IDisposable
             else
             {
                 Log.Error("Copium upload", ex);
-                ShareError = ex.Message;
+                var failure = UserText.NoteOf(ex);   // Copium's refusals and timeouts carry a note: the row and the toast show it translated, the log (above) has the English Message
+                ShareError = failure.Shown;
                 ShareTokenRejected = ex is CopiumHttpException tokenEx && CopiumClient.IsTokenRejection(tokenEx.StatusCode, tokenEx.ErrorText);
-                SayT("Upload failed: {error}", ("error", ex.Message));
+                SayT("Upload failed: {error}", ("error", failure));
             }
         }
         finally
@@ -2113,7 +2121,7 @@ internal sealed partial class AppController : IDisposable
             // A last look at what is about to go up: a copy over the limit or over the length would only be refused by Copium.
             Note? refusal = null;
             if (result.Bytes > target.LimitBytes)
-                refusal = ShareFitModel.FailedNote(target, ShareFitModel.StayedTooBigReason, result.OriginalBytes > 0 ? result.OriginalBytes : entry.Size);
+                refusal = ShareFitModel.FailedNote(target, ShareFitModel.StayedTooBigReason, result.OriginalBytes > 0 ? result.OriginalBytes : entry.Size, ShareCopyError.StayedTooBig);
             else if (result.Seconds > Capabilities.CopiumLimits(plus).Seconds)
                 refusal = OverLimitNote(plus);
             if (refusal != null)
@@ -2381,7 +2389,7 @@ internal sealed partial class AppController : IDisposable
     {
         if (_tray == null) return;
         string status = StatusText;
-        status = TrayStatusFor(status, State, Engine.Error);
+        status = TrayStatusFor(status, State, Engine.ErrorInfo);
         string text = TrayText(TrayName, status);
         if (text != _trayText)
         {
@@ -2392,8 +2400,8 @@ internal sealed partial class AppController : IDisposable
     }
 
     /// <summary>The tray's status line: an engine error in its own words while the state is Error, otherwise the status as it is.</summary>
-    internal static string TrayStatusFor(string status, RecordingState state, string? engineError) =>
-        state == RecordingState.Error && engineError != null ? L.T("Error: {error}", ("error", engineError)) : status;
+    internal static string TrayStatusFor(string status, RecordingState state, EngineError? engineError) =>
+        state == RecordingState.Error && engineError != null ? L.T("Error: {error}", ("error", EngineStatusText.Error(engineError))) : status;
 
     /// <summary>The tray icon's tooltip: the name, a dot and the status, cut to 120 characters (NotifyIcon.Text throws above 127) whatever the language.</summary>
     internal static string TrayText(string name, string status)

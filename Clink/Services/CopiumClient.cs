@@ -14,13 +14,17 @@ internal sealed class CopiumHttpException : InvalidOperationException
     public int StatusCode { get; }
     /// <summary>Copium's own error text from the answer (null when there was none): <see cref="CopiumClient.IsTypeRefusal"/> reads it.</summary>
     public string? ErrorText { get; }
-    /// <param name="message">English, for the log.</param>
-    /// <param name="userText">The same sentence in the user's language (<see cref="CopiumErrors.UserText"/>); null: <paramref name="message"/> is shown.</param>
-    public CopiumHttpException(int statusCode, string message, string? errorText = null, string? userText = null) : base(message)
+    /// <param name="message">English, for the log; also what is shown when no note is given.</param>
+    public CopiumHttpException(int statusCode, string message, string? errorText = null) : base(message)
     {
         StatusCode = statusCode;
         ErrorText = errorText;
-        if (userText != null) CopiumErrors.Attach(this, userText);
+    }
+
+    /// <param name="note">The sentence: its English is the <see cref="Exception.Message"/> (log), and it is translated when shown (<see cref="UserText.Of"/>).</param>
+    public CopiumHttpException(int statusCode, Note note, string? errorText = null) : this(statusCode, note.English, errorText)
+    {
+        UserText.Attach(this, note);
     }
 }
 
@@ -125,7 +129,7 @@ internal static class CopiumClient
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            throw CopiumErrors.Shown(m => new TimeoutException(m), locale => CopiumErrors.Tr(locale, "Copium did not finish its answer within {seconds} s", ("seconds", BodyTimeout.TotalSeconds.ToString("0", L.FormatCulture))));
+            throw CopiumErrors.Shown(m => new TimeoutException(m), Note.Of("Copium did not finish its answer within {seconds} s", ("seconds", BodyTimeout.TotalSeconds.ToString("0", L.FormatCulture))));
         }
     }
 
@@ -154,7 +158,7 @@ internal static class CopiumClient
     /// <param name="imageEndpoint">The hidden image-host override (<see cref="Settings.CopiumImageUploadUrl"/>); used for pictures only (<see cref="EndpointFor"/>).</param>
     public static async Task<CopiumUpload> UploadAsync(string token, string path, string? title, IProgress<double>? progress, CancellationToken ct, string? imageEndpoint = null)
     {
-        if (string.IsNullOrWhiteSpace(token)) throw CopiumErrors.Shown(m => new InvalidOperationException(m), locale => CopiumErrors.Tr(locale, "No Copium token set. Create one under ShareX & API on copium.pics and paste it in Clink."));
+        if (string.IsNullOrWhiteSpace(token)) throw CopiumErrors.Shown(m => new InvalidOperationException(m), Note.Of("No Copium token set. Create one under ShareX & API on copium.pics and paste it in Clink."));
 
         var kind = KindOf(path);
         string noun = kind == MediaKind.Image ? "Screenshot" : "Clip";   // identifies the kind (ErrorMessage); never shown as it is
@@ -189,35 +193,35 @@ internal static class CopiumClient
         {
             // HttpClient wraps a failed read of the clip itself (an archive share that went away mid-upload) like a network error.
             if (stream.ReadError != null)
-                throw CopiumErrors.Shown(m => new IOException(m, ex), locale => kind == MediaKind.Image
-                    ? CopiumErrors.Tr(locale, "Could not read the screenshot: {error}", ("error", stream.ReadError.Message))
-                    : CopiumErrors.Tr(locale, "Could not read the clip: {error}", ("error", stream.ReadError.Message)));
+                throw CopiumErrors.Shown(m => new IOException(m, ex), kind == MediaKind.Image
+                    ? Note.Of("Could not read the screenshot: {error}", ("error", Note.Verbatim(stream.ReadError.Message)))
+                    : Note.Of("Could not read the clip: {error}", ("error", Note.Verbatim(stream.ReadError.Message))));
             // Offline / DNS / refused before anything was sent; or the connection dropped while the file was going up, which is
             // also how a proxy or CDN body limit answers (it closes the connection early, so its 413 never arrives).
-            throw CopiumErrors.Shown(m => new InvalidOperationException(m, ex), locale => ex is HttpRequestException && ex.InnerException is not IOException
-                ? CopiumErrors.Tr(locale, "Can't reach Copium - check your connection")
-                : CopiumErrors.Tr(locale, "Connection to Copium dropped during the upload (network, or the file is over your upload limit)"));
+            throw CopiumErrors.Shown(m => new InvalidOperationException(m, ex), ex is HttpRequestException && ex.InnerException is not IOException
+                ? Note.Of("Can't reach Copium - check your connection")
+                : Note.Of("Connection to Copium dropped during the upload (network, or the file is over your upload limit)"));
         }
         catch (TaskCanceledException ex) when (!ct.IsCancellationRequested)
         {
-            throw CopiumErrors.Shown(m => new TimeoutException(m, ex), locale => CopiumErrors.Tr(locale, "Upload timed out after {minutes} min - the connection is too slow or stalled", ("minutes", http.Timeout.TotalMinutes.ToString("0", L.FormatCulture))));
+            throw CopiumErrors.Shown(m => new TimeoutException(m, ex), Note.Of("Upload timed out after {minutes} min - the connection is too slow or stalled", ("minutes", http.Timeout.TotalMinutes.ToString("0", L.FormatCulture))));
         }
         // Redirects are never followed (the token would go with them): a 3xx is an error.
-        if (code >= 300 && code <= 399) throw CopiumErrors.Shown(m => new InvalidOperationException(m), locale => CopiumErrors.Tr(locale, "Copium sent an unexpected redirect (HTTP {code})", ("code", code)));
+        if (code >= 300 && code <= 399) throw CopiumErrors.Shown(m => new InvalidOperationException(m), Note.Of("Copium sent an unexpected redirect (HTTP {code})", ("code", code)));
         if (code == 413) RaiseTooLarge();
-        if (code < 200 || code > 299) throw new CopiumHttpException(code, ErrorMessage(code, body, noun), TryError(body), ErrorMessageIn(L.Code, code, body, noun));
+        if (code < 200 || code > 299) throw new CopiumHttpException(code, ErrorNote(code, body, noun), TryError(body));
         JsonDocument doc;
         try { doc = JsonDocument.Parse(body); }
         catch (JsonException ex)
         {
             // A captive portal or a proxy page instead of Copium's JSON.
             Log.Warn($"copium: HTTP {code} answer is not JSON: {Cap(body)}");
-            throw CopiumErrors.Shown(m => new InvalidOperationException(m, ex), locale => CopiumErrors.Tr(locale, "Copium sent an unexpected answer (HTTP {code})", ("code", code)));
+            throw CopiumErrors.Shown(m => new InvalidOperationException(m, ex), Note.Of("Copium sent an unexpected answer (HTTP {code})", ("code", code)));
         }
         using (doc)
         {
             var root = doc.RootElement;
-            if (root.ValueKind != JsonValueKind.Object) throw CopiumErrors.Shown(m => new InvalidOperationException(m), locale => CopiumErrors.Tr(locale, "Copium sent an unexpected answer (HTTP {code})", ("code", code)));
+            if (root.ValueKind != JsonValueKind.Object) throw CopiumErrors.Shown(m => new InvalidOperationException(m), Note.Of("Copium sent an unexpected answer (HTTP {code})", ("code", code)));
             string Get(string name) => root.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : "";
             long size = root.TryGetProperty("size", out var s) && s.ValueKind == JsonValueKind.Number && s.TryGetInt64(out long n) ? n : 0;
             string link = Get("link");
@@ -225,14 +229,14 @@ internal static class CopiumClient
             if (string.IsNullOrEmpty(link))
             {
                 Log.Warn($"copium: HTTP {code} answer without a link: {Cap(body)}");
-                throw CopiumErrors.Shown(m => new InvalidOperationException(m), locale => CopiumErrors.Tr(locale, "Copium sent an unexpected answer (HTTP {code}, no link)", ("code", code)));
+                throw CopiumErrors.Shown(m => new InvalidOperationException(m), Note.Of("Copium sent an unexpected answer (HTTP {code}, no link)", ("code", code)));
             }
             // The link is only copied and opened by the shell, so any absolute https address will do (a custom embed or CDN host);
             // only the destination of the token is pinned (EndpointFor). Not file:, not http:, not relative.
             if (!IsHttpsUrl(link, out _))
             {
                 Log.Warn($"copium: HTTP {code} answer with a link that is not an https address: {Cap(link)}");
-                throw CopiumErrors.Shown(m => new InvalidOperationException(m), locale => CopiumErrors.Tr(locale, "Copium sent an unexpected answer (HTTP {code}, bad link)", ("code", code)));
+                throw CopiumErrors.Shown(m => new InvalidOperationException(m), Note.Of("Copium sent an unexpected answer (HTTP {code}, bad link)", ("code", code)));
             }
             string Safe(string value) => IsHttpsUrl(value, out _) ? value : "";
             return new CopiumUpload(Get("id"), link, Safe(Get("url")), Safe(Get("pageUrl")), Safe(Get("thumbUrl")) is { Length: > 0 } th ? th : null, size);
@@ -251,24 +255,24 @@ internal static class CopiumClient
         catch (Exception ex) { Log.Warn("copium: 413 handler failed: " + ex.GetType().Name); }
     }
 
-    /// <summary>One sentence for a failed upload, in English (the exception's <see cref="Exception.Message"/>, for the log): <see cref="ErrorMessageIn"/> has it in the user's language.</summary>
+    /// <summary>One sentence for a failed upload, in English (the exception's <see cref="Exception.Message"/>, for the log): <see cref="ErrorNote"/> is the sentence for the user.</summary>
     /// <param name="noun">"Clip" (the default) or "Screenshot": which kind was uploaded (an identifier, not shown). For a screenshot 400 / 415 means the picture type is not accepted.</param>
-    internal static string ErrorMessage(int code, string body, string noun = "Clip") => ErrorMessageIn("en", code, body, noun);
+    internal static string ErrorMessage(int code, string body, string noun = "Clip") => ErrorNote(code, body, noun).English;
 
-    /// <summary>What the status means in <paramref name="locale"/>, with Copium's own error text (or the status code) in brackets. Copium's text is the server's and is not translated.</summary>
-    internal static string ErrorMessageIn(string locale, int code, string body, string noun = "Clip")
+    /// <summary>What the status means, with Copium's own error text (or the status code) in brackets. Copium's text is the server's and is not translated.</summary>
+    internal static Note ErrorNote(int code, string body, string noun = "Clip")
     {
         string? text = TryError(body);
-        var error = ("error", (object?)(text ?? CopiumErrors.Tr(locale, "HTTP {code}", ("code", code))));
+        var error = ("error", (object?)(text != null ? Note.Verbatim(text) : Note.Of("HTTP {code}", ("code", code))));
         bool image = noun != "Clip";
-        if (image && IsTypeRefusal(code, text)) return CopiumErrors.Tr(locale, "Copium did not accept the image ({error})", error);
+        if (image && IsTypeRefusal(code, text)) return Note.Of("Copium did not accept the image ({error})", error);
         return code switch
         {
-            _ when IsTokenRejection(code, text) => CopiumErrors.Tr(locale, "Copium rejected the token ({error})", error),
-            413 => image ? CopiumErrors.Tr(locale, "Screenshot is larger than your Copium upload limit ({error})", error) : CopiumErrors.Tr(locale, "Clip is larger than your Copium upload limit ({error})", error),
-            429 => CopiumErrors.Tr(locale, "Too many uploads, wait a bit ({error})", error),
-            >= 500 => CopiumErrors.Tr(locale, "Copium is having trouble ({error}), try again later", error),
-            _ => CopiumErrors.Tr(locale, "Copium refused the upload ({error})", error),
+            _ when IsTokenRejection(code, text) => Note.Of("Copium rejected the token ({error})", error),
+            413 => image ? Note.Of("Screenshot is larger than your Copium upload limit ({error})", error) : Note.Of("Clip is larger than your Copium upload limit ({error})", error),
+            429 => Note.Of("Too many uploads, wait a bit ({error})", error),
+            >= 500 => Note.Of("Copium is having trouble ({error}), try again later", error),
+            _ => Note.Of("Copium refused the upload ({error})", error),
         };
     }
 

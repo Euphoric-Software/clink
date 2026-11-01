@@ -286,16 +286,16 @@ internal static class L10nEngineStatusTests
         var engineKeys = L10nSourceScan.AreaKeys(root, "engine");
         var main = L10nSourceScan.AreaKeys(root, "main");
         var core = L10nSourceScan.AreaKeys(root, "core");
-        var hits = L10nSourceScan.CSharp(root, Sources, new[] { L10nSourceScan.T });
+        var hits = L10nSourceScan.CSharp(root, Sources, new[] { L10nSourceScan.T, L10nSourceScan.NoteOf });   // (the error is a note too: shown translated, logged in English)
         Check.True(hits.Count >= 25, "found the keys of StatusText.cs: " + hits.Count);
         var problems = hits.Where(h => !engineKeys.Contains(h.Key) && !main.Contains(h.Key) && !core.Contains(h.Key)).Select(h => h.File + ": " + h.Key).ToList();
         Check.Equal(0, problems.Count, "keys missing from engine.json / main.json / core.json: " + string.Join(" | ", problems));
         var used = hits.Select(h => h.Key).ToHashSet(StringComparer.Ordinal);
         Check.Equal(Array.Empty<string>(), engineKeys.Where(k => !used.Contains(k)).OrderBy(k => k, StringComparer.Ordinal).ToArray(), "engine.json keys nothing asks for");
-        // the track names of the checkboxes are reused, not copied (a key in two files must not differ, and none is added twice)
-        foreach (string k in new[] { "track|Mix", "track|Game", "track|Mic", "track|Desktop", "track|Voice" })   // (track|Voice: the status line's own word for the voice-chat track; the checkbox says "Voice chat". One copy, in main.json)
+        // the track names are used by the checkboxes, the status line and the trim window: one copy each, in core.json (shared by several areas)
+        foreach (string k in new[] { "track|Mix", "track|Game", "track|Mic", "track|Desktop", "track|Voice" })   // (track|Voice: the status line's own word for the voice-chat track; the checkbox says "Voice chat")
         {
-            Check.True(main.Contains(k) && !engineKeys.Contains(k), k + " lives in main.json only");
+            Check.True(core.Contains(k) && !main.Contains(k) && !engineKeys.Contains(k), k + " lives in core.json only");
             Check.True(used.Contains(k), k + " is used");
         }
 

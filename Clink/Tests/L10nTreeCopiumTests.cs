@@ -51,7 +51,7 @@ internal static class L10nTreeCopiumTests
     private static void MarkedUser(Exception? ex, string what)
     {
         Check.NotNull(ex, what + ": a failure was expected");
-        Marked(CopiumErrors.UserText(ex!), what);
+        Marked(UserText.Of(ex!), what);
         Check.False(PseudoLocale.IsPseudo(ex!.Message), what + ": the Message (the log's text) must stay English: \"" + ex.Message + "\"");
         Check.False(ex.Message.Contains("[!!"), what + ": no pseudo frame in the log text");
     }
@@ -344,7 +344,7 @@ internal static class L10nTreeCopiumTests
             var refused = (CopiumHttpException)UploadFails("a.png", _ => Reply(403, "{\"error\":\"" + serverText.Replace("\"", "'") + "\"}"))!;
             Check.Contains(refused.Message, "Weird {error} text");
             Check.Contains(refused.Message, "not ours");
-            Check.Contains(CopiumErrors.UserText(refused), "Weird {error} text");
+            Check.Contains(UserText.Of(refused), "Weird {error} text");
             Check.Equal(403, refused.StatusCode);
             // the answer's body that stalls
             var oldTimeout = CopiumClient.BodyTimeout;
@@ -498,29 +498,29 @@ internal static class L10nTreeCopiumTests
         using (L.Scope("qps-ploc"))
         {
             L.ClearMissing();
-            var timeout = CopiumErrors.Shown(m => new TimeoutException(m), locale => CopiumErrors.Tr(locale, "Upload timed out after {minutes} min - the connection is too slow or stalled", ("minutes", 30)));
+            var timeout = CopiumErrors.Shown(m => new TimeoutException(m), Note.Of("Upload timed out after {minutes} min - the connection is too slow or stalled", ("minutes", 30)));
             Check.Equal("Upload timed out after 30 min - the connection is too slow or stalled", timeout.Message);
-            Marked(CopiumErrors.UserText(timeout), "UserText");
+            Marked(UserText.Of(timeout), "UserText");
             Check.True(!PseudoLocale.IsPseudo(timeout.Message));
             // one wrapper (Task.Run / Wait) is looked through; two are not
             var one = new AggregateException(timeout);
-            Check.Equal(CopiumErrors.UserText(timeout), CopiumErrors.UserText(one));
+            Check.Equal(UserText.Of(timeout), UserText.Of(one));
             var two = new AggregateException(timeout, new InvalidOperationException("x"));
-            Check.Equal(two.Message, CopiumErrors.UserText(two));
+            Check.Equal(two.Message, UserText.Of(two));
             // an exception nobody attached a text to shows its own message
-            Check.Equal("plain", CopiumErrors.UserText(new InvalidOperationException("plain")));
+            Check.Equal("plain", UserText.Of(new InvalidOperationException("plain")));
             // the HTTP refusal carries both too, and the server's text is left alone in both
-            var refusal = new CopiumHttpException(503, CopiumClient.ErrorMessage(503, "{\"error\":\"down\"}"), "down", CopiumClient.ErrorMessageIn(L.Code, 503, "{\"error\":\"down\"}"));
+            var refusal = new CopiumHttpException(503, CopiumClient.ErrorNote(503, "{\"error\":\"down\"}"), "down");
             Check.Equal("Copium is having trouble (down), try again later", refusal.Message);
-            Marked(CopiumErrors.UserText(refusal), "refusal UserText");
-            Check.Contains(CopiumErrors.UserText(refusal), "down");
+            Marked(UserText.Of(refusal), "refusal UserText");
+            Check.Contains(UserText.Of(refusal), "down");
             NoMissing("CopiumErrors");
         }
         using (L.Scope("en"))
         {
-            var e = CopiumErrors.Shown(m => new IOException(m), locale => CopiumErrors.Tr(locale, "Could not read the clip: {error}", ("error", "gone")));
+            var e = CopiumErrors.Shown(m => new IOException(m), Note.Of("Could not read the clip: {error}", ("error", "gone")));
             Check.Equal("Could not read the clip: gone", e.Message);
-            Check.Equal(e.Message, CopiumErrors.UserText(e));
+            Check.Equal(e.Message, UserText.Of(e));
             Check.Equal(typeof(IOException), e.GetType());
         }
     }
@@ -546,7 +546,7 @@ internal static class L10nTreeCopiumTests
                     Check.True(error is IOException, "an IOException: " + error);
                     Check.True(error!.Message.StartsWith("Could not read the screenshot: ", StringComparison.Ordinal), "English Message: " + error.Message);
                     if (language == "qps-ploc") { MarkedUser(error, "read error"); NoMissing("the read error"); }
-                    else Check.Equal(error.Message, CopiumErrors.UserText(error));
+                    else Check.Equal(error.Message, UserText.Of(error));
                 }
         }
         finally { holder.Unlock(0, 4096); CopiumClient.HttpOverride = old; }
@@ -564,7 +564,7 @@ internal static class L10nTreeCopiumTests
             L.ClearMissing();
             using var dir = new TempDir();
             var rig = ScreenshotUploadTests.Make(dir, uploader: (_, _, _, _, _, _) => Task.FromException<CopiumUpload>(
-                CopiumErrors.Shown(m => new TimeoutException(m), locale => CopiumErrors.Tr(locale, "Upload timed out after {minutes} min - the connection is too slow or stalled", ("minutes", 30)))));
+                CopiumErrors.Shown(m => new TimeoutException(m), Note.Of("Upload timed out after {minutes} min - the connection is too slow or stalled", ("minutes", 30)))));
             ScreenshotUploadTests.Capture(rig);
             string english = "Upload timed out after 30 min - the connection is too slow or stalled";
             Check.True(logged.Any(l => l.Contains("screenshot: upload failed: " + english)), "the log has the English Message");
@@ -597,8 +597,9 @@ internal static class L10nTreeCopiumTests
             @"UI\ShareWindow.xaml.cs", @"UI\CopiumConsentWindow.xaml.cs", @"UI\CopiumWelcomeWindow.xaml.cs", @"UI\CopiumPlusTick.cs", @"UI\ShareMenu.cs",
             @"Services\ShareChoices.cs", @"Services\ConsentGate.cs", @"Services\CopiumPopupModel.cs", @"Services\CopiumWelcomeModel.cs", @"Services\CopiumClient.cs",
             @"Services\CopiumConnect.cs", @"Services\CopiumSignInSession.cs", @"Screenshots\CopiumNudge.cs", @"Services\ShareFitModel.cs",
+            @"Engine\ShareTranscoder.cs", @"Engine\ShareProbe.cs", @"Services\ShareCache.cs", @"Services\AppController.ShareFit.cs", @"Services\CopiumErrors.cs",   // (the throw sites of the copy-failure reasons: reason|... keys)
         };
-        var hits = L10nSourceScan.CSharp(root, csFiles, new[] { L10nSourceScan.T, L10nSourceScan.Plural, L10nSourceScan.TrLocale, "Note.Of(" });   // (Note.Of: ConsentGate and ShareFitModel keep their sentences as notes)
+        var hits = L10nSourceScan.CSharp(root, csFiles, new[] { L10nSourceScan.T, L10nSourceScan.Plural, L10nSourceScan.NoteOf });   // (Note.Of: ConsentGate, ShareFitModel, CopiumClient and the share-copy throw sites keep their sentences as notes)
         hits.AddRange(L10nSourceScan.Xaml(root, new[] { @"UI\ShareWindow.xaml", @"UI\CopiumConsentWindow.xaml", @"UI\CopiumWelcomeWindow.xaml" }));
         var used = hits.Select(h => h.Key).ToHashSet(StringComparer.Ordinal);
         var problems = hits.Where(h => !copium.Contains(h.Key) && !core.Contains(h.Key) && !others.Contains(h.Key)).Select(h => h.File + ": " + h.Key).Distinct().ToArray();

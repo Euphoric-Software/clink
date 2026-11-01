@@ -15,6 +15,8 @@ using Windows.Win32.System.Variant;
 using Clink.Audio;
 using Clink.Encode;
 using Clink.Native;
+using Clink.Services;
+using Clink.Services.Localization;
 
 namespace Clink.Engine;
 
@@ -63,13 +65,23 @@ internal enum ShareTranscodeFailure
     Failed,
 }
 
-/// <summary>A smaller copy could not be made. <see cref="Exception.Message"/> is a short reason the UI can show after
-/// "Couldn't make a smaller copy: "; the inner exception has the details (and is logged).</summary>
+/// <summary>A smaller copy could not be made. <see cref="Exception.Message"/> is a short English reason (the log); <see cref="Reason"/> is the
+/// same reason as a note, which the UI shows after "Couldn't make a smaller copy: " in its own language. The inner exception has the details (and is logged).</summary>
 internal sealed class ShareTranscodeException : Exception
 {
     public ShareTranscodeFailure Kind { get; }
+    /// <summary>The reason as a sentence fragment: a <c>reason|...</c> catalog entry for what Clink words itself, <see cref="Note.Verbatim"/> for the text of Windows or a library.</summary>
+    public Note Reason { get; }
 
-    public ShareTranscodeException(ShareTranscodeFailure kind, string reason, Exception? inner = null) : base(reason, inner) { Kind = kind; }
+    public ShareTranscodeException(ShareTranscodeFailure kind, Note reason, Exception? inner = null) : base(reason.English, inner)
+    {
+        Kind = kind;
+        Reason = reason;
+        UserText.Attach(this, reason);
+    }
+
+    /// <summary>A reason that is shown as it is (text of Windows or a library; tests): no catalog entry.</summary>
+    public ShareTranscodeException(ShareTranscodeFailure kind, string reason, Exception? inner = null) : this(kind, Note.Verbatim(reason), inner) { }
 }
 
 /// <summary>
@@ -101,7 +113,6 @@ internal static unsafe class ShareTranscoder
     private static readonly HRESULT MF_E_INVALID_FILE_FORMAT = (HRESULT)unchecked((int)0xC00D3E8C);
     private static readonly HRESULT MF_E_INVALIDMEDIATYPE = (HRESULT)unchecked((int)0xC00D36B4);
     private const int ErrorDiskFull = unchecked((int)0x80070070), ErrorHandleDiskFull = unchecked((int)0x80070027);
-    private const string GpuLostReason = "the graphics driver was reset";
 
     /// <summary>Test seam: read the source without the GPU (no D3D manager, DXVA off), so the CPU upload path is what copies the frames.</summary>
     internal static bool ForceSoftwareDecode { get; set; }
@@ -173,7 +184,7 @@ internal static unsafe class ShareTranscoder
                     DeleteTemporaries(outputPath);
                     ShareTranscodeException typed;
                     try { typed = Classify(ex); }
-                    catch (Exception) { typed = new ShareTranscodeException(ShareTranscodeFailure.Failed, "something went wrong while encoding", ex); }
+                    catch (Exception) { typed = new ShareTranscodeException(ShareTranscodeFailure.Failed, Note.Of("reason|something went wrong while encoding"), ex); }
                     try { Log.Warn($"share copy of {Path.GetFileName(sourcePath)} failed ({typed.Kind}): {typed.Message}; {ex.GetType().Name}: {ex.Message}"); }
                     catch (Exception) { }
                     tcs.TrySetException(typed);
@@ -181,7 +192,7 @@ internal static unsafe class ShareTranscoder
             }
             catch (Exception last)
             {
-                try { tcs.TrySetException(new ShareTranscodeException(ShareTranscodeFailure.Failed, "something went wrong while encoding", last)); }
+                try { tcs.TrySetException(new ShareTranscodeException(ShareTranscodeFailure.Failed, Note.Of("reason|something went wrong while encoding"), last)); }
                 catch (Exception) { }
             }
         }) { IsBackground = true, Name = name, Priority = ThreadPriority.BelowNormal };
@@ -197,19 +208,20 @@ internal static unsafe class ShareTranscoder
         for (Exception? e = ex; e != null; e = e.InnerException)
         {
             if (e is IOException && (e.HResult == ErrorDiskFull || e.HResult == ErrorHandleDiskFull))
-                return new ShareTranscodeException(ShareTranscodeFailure.DiskFull, "the disk is full", ex);
+                return new ShareTranscodeException(ShareTranscodeFailure.DiskFull, Note.Of("reason|the disk is full"), ex);
             if (e.HResult == MF_E_TOPO_CODEC_NOT_FOUND.Value)
-                return new ShareTranscodeException(ShareTranscodeFailure.DecoderMissing, "Windows has no decoder for this clip's video", ex);
+                return new ShareTranscodeException(ShareTranscodeFailure.DecoderMissing, Note.Of("reason|Windows has no decoder for this clip's video"), ex);
             if (e.HResult == MF_E_UNSUPPORTED_BYTESTREAM_TYPE.Value || e.HResult == MF_E_INVALID_FILE_FORMAT.Value)
-                return new ShareTranscodeException(ShareTranscodeFailure.Unsupported, "the file is not a video Clink can read", ex);
+                return new ShareTranscodeException(ShareTranscodeFailure.Unsupported, Note.Of("reason|the file is not a video Clink can read"), ex);
             if (e.HResult is unchecked((int)0x887A0005) or unchecked((int)0x887A0006) or unchecked((int)0x887A0007) or unchecked((int)0x887A0020))
-                return new ShareTranscodeException(ShareTranscodeFailure.GpuLost, GpuLostReason, ex);
+                return new ShareTranscodeException(ShareTranscodeFailure.GpuLost, Note.Of("reason|the graphics driver was reset"), ex);
         }
-        if (ex is TimeoutException) return new ShareTranscodeException(ShareTranscodeFailure.Failed, "the hardware encoder stopped responding", ex);
-        if (ex is FileNotFoundException or DirectoryNotFoundException) return new ShareTranscodeException(ShareTranscodeFailure.Unsupported, "the clip file is not there", ex);
-        if (ex is UnauthorizedAccessException) return new ShareTranscodeException(ShareTranscodeFailure.Failed, "the copy could not be written (access denied)", ex);
-        if (ex is IOException) return new ShareTranscodeException(ShareTranscodeFailure.Failed, "the copy could not be written", ex);
-        return new ShareTranscodeException(ShareTranscodeFailure.Failed, ex is COMException c ? $"Media Foundation failed (0x{(uint)c.HResult:X8})" : "something went wrong while encoding", ex);
+        if (ex is TimeoutException) return new ShareTranscodeException(ShareTranscodeFailure.Failed, Note.Of("reason|the hardware encoder stopped responding"), ex);
+        if (ex is FileNotFoundException or DirectoryNotFoundException) return new ShareTranscodeException(ShareTranscodeFailure.Unsupported, Note.Of("reason|the clip file is not there"), ex);
+        if (ex is UnauthorizedAccessException) return new ShareTranscodeException(ShareTranscodeFailure.Failed, Note.Of("reason|the copy could not be written (access denied)"), ex);
+        if (ex is IOException) return new ShareTranscodeException(ShareTranscodeFailure.Failed, Note.Of("reason|the copy could not be written"), ex);
+        return new ShareTranscodeException(ShareTranscodeFailure.Failed,
+            ex is COMException c ? Note.Of("reason|Media Foundation failed ({code})", ("code", Note.Ltr($"0x{(uint)c.HResult:X8}"))) : Note.Of("reason|something went wrong while encoding"), ex);
     }
 
     /// <summary>
@@ -221,7 +233,7 @@ internal static unsafe class ShareTranscoder
     {
         if (!removedReason.Failed || ex is OperationCanceledException or ShareRequestException) return null;
         if (ex is ShareTranscodeException { Kind: ShareTranscodeFailure.GpuLost } already) return already;
-        return new ShareTranscodeException(ShareTranscodeFailure.GpuLost, GpuLostReason,
+        return new ShareTranscodeException(ShareTranscodeFailure.GpuLost, Note.Of("reason|the graphics driver was reset"),
             new InvalidOperationException($"GPU device removed (0x{(uint)removedReason.Value:X8})", ex));
     }
 
@@ -277,14 +289,14 @@ internal static unsafe class ShareTranscoder
     {
         if (SamePathString(Path.GetFullPath(sourcePath), Path.GetFullPath(outputPath)))
             throw new ShareRequestException("The copy cannot be written over the original", nameof(outputPath));
-        if (!File.Exists(sourcePath)) throw new ShareTranscodeException(ShareTranscodeFailure.Unsupported, "the clip file is not there");
+        if (!File.Exists(sourcePath)) throw new ShareTranscodeException(ShareTranscodeFailure.Unsupported, Note.Of("reason|the clip file is not there"));
         if (Directory.Exists(outputPath)) throw new ShareRequestException("The output must be a file, not a folder", nameof(outputPath));
         if (File.Exists(outputPath))
         {
             bool? same = SameFile(sourcePath, outputPath);
             if (same == true) throw new ShareRequestException("The copy cannot be written over the original (the output path is another name for it)", nameof(outputPath));
             // Not established (the earlier file is open without sharing, or cannot be read): it is not deleted on a guess.
-            if (same == null) throw new ShareTranscodeException(ShareTranscodeFailure.Failed, "the earlier copy is in use");
+            if (same == null) throw new ShareTranscodeException(ShareTranscodeFailure.Failed, Note.Of("reason|the earlier copy is in use"));
         }
         string? dir = Path.GetDirectoryName(Path.GetFullPath(outputPath));
         if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
@@ -292,7 +304,7 @@ internal static unsafe class ShareTranscoder
         Exception? why = null;
         try { File.Delete(outputPath); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { why = ex; }
-        if (File.Exists(outputPath)) throw new ShareTranscodeException(ShareTranscodeFailure.Failed, "the earlier copy is in use", why);
+        if (File.Exists(outputPath)) throw new ShareTranscodeException(ShareTranscodeFailure.Failed, Note.Of("reason|the earlier copy is in use"), why);
     }
 
     /// <summary>
@@ -379,7 +391,7 @@ internal static unsafe class ShareTranscoder
             }
             finally { t->Release(); }
         }
-        if (found == null) throw new ShareTranscodeException(ShareTranscodeFailure.Unsupported, "the clip has no video");
+        if (found == null) throw new ShareTranscodeException(ShareTranscodeFailure.Unsupported, Note.Of("reason|the clip has no video"));
         reader->SetStreamSelection(found.Stream, true).Check("SetStreamSelection(video)");
         PROPVARIANT pv = default;
         Guid durKey = PInvoke.MF_PD_DURATION;
@@ -408,7 +420,7 @@ internal static unsafe class ShareTranscoder
         {
             var a = (IMFAttributes*)t;
             if (Mf.GetGuid(a, PInvoke.MF_MT_SUBTYPE) != PInvoke.MFAudioFormat_AAC)
-                throw new ShareTranscodeException(ShareTranscodeFailure.Unsupported, "the clip's audio is not AAC");
+                throw new ShareTranscodeException(ShareTranscodeFailure.Unsupported, Note.Of("reason|the clip's audio is not AAC"));
             var ud = Mf.GetBlob(a, PInvoke.MF_MT_USER_DATA);
             desc = new AudioTrackDesc
             {
@@ -556,7 +568,7 @@ internal static unsafe class ShareTranscoder
             var mix = FindMix(src, reader);
             var video = FindVideo(reader);
             string codec = video.CopyCodec ?? throw new ShareTranscodeException(ShareTranscodeFailure.Unsupported,
-                video.Subtype == PInvoke.MFVideoFormat_AV1 ? "an AV1 clip cannot be copied without re-encoding it" : "only H.264 and HEVC clips can be copied without re-encoding them");
+                video.Subtype == PInvoke.MFVideoFormat_AV1 ? Note.Of("reason|an AV1 clip cannot be copied without re-encoding it") : Note.Of("reason|only H.264 and HEVC clips can be copied without re-encoding them"));
             bool hevc = codec == "hevc";
             var report = new ProgressReporter(progress, video.ExpectedFrames);
             if (mix != null) feeder = new MixFeeder(src, mix);
@@ -596,7 +608,7 @@ internal static unsafe class ShareTranscoder
                 }
                 if (end) break;
             }
-            if (mux == null) throw new ShareTranscodeException(ShareTranscodeFailure.Unsupported, "the clip has no keyframe to start from");
+            if (mux == null) throw new ShareTranscodeException(ShareTranscodeFailure.Unsupported, Note.Of("reason|the clip has no keyframe to start from"));
             feeder?.WriteUpTo(mux, long.MaxValue, origin);
             ct.ThrowIfCancellationRequested();
             var done = mux.Finish();   // the last step that can fail: from here the copy is complete under its name
@@ -676,10 +688,10 @@ internal static unsafe class ShareTranscoder
                         $"({inputFailures} ProcessInput and {outputFailures} ProcessOutput failures, {sourceFrames} source frames)";
         warning = null;
         if (framesOut < framesIn)
-            return new ShareTranscodeException(ShareTranscodeFailure.Failed, "the hardware encoder lost frames",
+            return new ShareTranscodeException(ShareTranscodeFailure.Failed, Note.Of("reason|the hardware encoder lost frames"),
                 new InvalidOperationException(counts + ": frames went into the encoder and did not come out"));
         if (droppedInput > allowed)
-            return new ShareTranscodeException(ShareTranscodeFailure.Failed, "the hardware encoder lost frames",
+            return new ShareTranscodeException(ShareTranscodeFailure.Failed, Note.Of("reason|the hardware encoder lost frames"),
                 new InvalidOperationException(counts + $": more than {allowed:0.##} frames never went in"));
         if (droppedInput > 0 || outputFailures > 0 || framesOut > framesIn) warning = counts;
         return null;
@@ -746,7 +758,7 @@ internal static unsafe class ShareTranscoder
             }
             catch (Exception ex) when (ex is InvalidOperationException or COMException)
             {
-                throw new ShareTranscodeException(ShareTranscodeFailure.NoHardwareEncoder, $"no hardware H.264 encoder could be opened on {d3d.AdapterName}", ex);
+                throw new ShareTranscodeException(ShareTranscodeFailure.NoHardwareEncoder, Note.Of("reason|no hardware H.264 encoder could be opened on {adapter}", ("adapter", d3d.AdapterName)), ex);
             }
             encoder.OnOutput = (pts, key, annexB) => outputs.Enqueue((pts, key, annexB.ToArray()));
 
@@ -815,7 +827,7 @@ internal static unsafe class ShareTranscoder
                 Flush();
                 if (end) break;
             }
-            if (submitted == 0) throw new ShareTranscodeException(ShareTranscodeFailure.Unsupported, "the clip has no video frames");
+            if (submitted == 0) throw new ShareTranscodeException(ShareTranscodeFailure.Unsupported, Note.Of("reason|the clip has no video frames"));
             encoder.Drain(ct);
             Flush();
             // Every frame that went into the encoder has to come out (0 B-frames, no frame skipping): a hole inside a GOP breaks the rest of
@@ -826,7 +838,7 @@ internal static unsafe class ShareTranscoder
             if (JudgeEncoderLoss(encoder.EncoderName, decoded, submitted, framesIn, framesOut, inFailed, outFailed, out long droppedInput, out string? lossWarning) is { } loss)
                 throw loss;
             if (lossWarning != null) Log.Warn($"share copy of {Path.GetFileName(src)}: the encoder lost a few frames, the copy is kept: {lossWarning}");
-            if (mux == null) throw new ShareTranscodeException(ShareTranscodeFailure.Failed, "the hardware encoder gave no output");
+            if (mux == null) throw new ShareTranscodeException(ShareTranscodeFailure.Failed, Note.Of("reason|the hardware encoder gave no output"));
             feeder?.WriteUpTo(mux, long.MaxValue, origin);
             ct.ThrowIfCancellationRequested();
             var done = mux.Finish();   // the last step that can fail: from here the copy is complete under its name
@@ -885,10 +897,10 @@ internal static unsafe class ShareTranscoder
         }
         finally { want->Release(); }
         if (hr == MF_E_TOPO_CODEC_NOT_FOUND)
-            throw new ShareTranscodeException(ShareTranscodeFailure.DecoderMissing, $"Windows has no {video.CodecName} video decoder (the Microsoft Store has it as a video extension)",
+            throw new ShareTranscodeException(ShareTranscodeFailure.DecoderMissing, Note.Of("reason|Windows has no {codec} video decoder (the Microsoft Store has it as a video extension)", ("codec", video.CodecName)),
                 new COMException("SetCurrentMediaType(NV12)", hr.Value));
         if (hr == MF_E_INVALIDMEDIATYPE)
-            throw new ShareTranscodeException(ShareTranscodeFailure.Unsupported, $"the video cannot be scaled to {width}x{height}", new COMException("SetCurrentMediaType(NV12)", hr.Value));
+            throw new ShareTranscodeException(ShareTranscodeFailure.Unsupported, Note.Of("reason|the video cannot be scaled to {size}", ("size", $"{width}x{height}")), new COMException("SetCurrentMediaType(NV12)", hr.Value));
         hr.Check("SetCurrentMediaType(NV12)");
         return CheckDecodedType(reader, video.Stream, width, height);
     }
@@ -903,7 +915,7 @@ internal static unsafe class ShareTranscoder
             var a = (IMFAttributes*)cur;
             ulong size = Mf.GetU64(a, PInvoke.MF_MT_FRAME_SIZE);
             if (Mf.GetGuid(a, PInvoke.MF_MT_SUBTYPE) != PInvoke.MFVideoFormat_NV12 || (int)(size >> 32) != width || (int)(size & 0xFFFFFFFF) != height)
-                throw new ShareTranscodeException(ShareTranscodeFailure.Unsupported, $"the video decoder does not give {width}x{height} NV12 frames");
+                throw new ShareTranscodeException(ShareTranscodeFailure.Unsupported, Note.Of("reason|the video decoder does not give {size} NV12 frames", ("size", $"{width}x{height}")));
             int stride = (int)Mf.GetU32(a, PInvoke.MF_MT_DEFAULT_STRIDE, 0);   // a signed value stored as UINT32
             return stride > 0 ? stride : 0;
         }
@@ -935,7 +947,8 @@ internal static unsafe class ShareTranscoder
                     D3D11_TEXTURE2D_DESC desc;
                     src->GetDesc(&desc);
                     if (desc.Format != DXGI_FORMAT.DXGI_FORMAT_NV12 || desc.Width < (uint)width || desc.Height < (uint)height)
-                        throw new ShareTranscodeException(ShareTranscodeFailure.Unsupported, $"the video decoder gave {desc.Width}x{desc.Height} frames in format {(int)desc.Format}, not {width}x{height} NV12");
+                        throw new ShareTranscodeException(ShareTranscodeFailure.Unsupported,
+                            Note.Of("reason|the video decoder gave {frame} frames in format {format}, not {size} NV12", ("frame", $"{desc.Width}x{desc.Height}"), ("format", ((int)desc.Format).ToString(System.Globalization.CultureInfo.InvariantCulture)), ("size", $"{width}x{height}")));
                     lock (d3d.ContextLock)
                         d3d.Context->CopySubresourceRegion((ID3D11Resource*)dst, dstSub, 0, 0, 0, (ID3D11Resource*)src, srcSub, box);
                 }

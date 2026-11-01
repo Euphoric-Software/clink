@@ -15,7 +15,7 @@ internal readonly record struct ScanHit(string File, string Key);
 internal static class L10nSourceScan
 {
     /// <summary>The call prefixes whose first string literal is a catalog key (every slice picks the ones its files use).</summary>
-    public const string T = "L.T(", Plural = "L.Plural(", TInEn = "L.TIn(\"en\",", TrLocale = "Tr(locale,", Skipped = "Skipped(", SkippedBy = "SkippedBy(", Tip = "Tip(";
+    public const string T = "L.T(", Plural = "L.Plural(", TInEn = "L.TIn(\"en\",", TrLocale = "Tr(locale,", Skipped = "Skipped(", SkippedBy = "SkippedBy(", Tip = "Tip(", NoteOf = "Note.Of(", NotePluralOf = "Note.PluralOf(", SayT = "SayT(";
 
     /// <summary>
     /// The folder that holds Clink.csproj, found by walking up from the test exe. Null when the tests do not run from a checkout; that

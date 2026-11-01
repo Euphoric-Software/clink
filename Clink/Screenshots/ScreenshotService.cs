@@ -503,7 +503,7 @@ internal sealed class ScreenshotService
         {
             Log.Warn("screenshot: upload failed: " + ex.Message);
             toast.Failed();
-            string userText = CopiumErrors.UserText(ex);   // the log has the English Message; the notification speaks the user's language
+            string userText = Clink.Services.Localization.UserText.Of(ex);   // the log has the English Message; the notification speaks the user's language
             if (ex is CopiumHttpException refusal && CopiumClient.IsTypeRefusal(refusal.StatusCode, refusal.ErrorText))
             {
                 CopiumImagesRefused = true;
@@ -515,7 +515,7 @@ internal sealed class ScreenshotService
                 _rejectedToken = token;
                 Interlocked.Increment(ref _tokenRejections);
                 Problem(L.T("Copium token rejected"), L.T("Saved locally. Check the token in Settings → App → Copium; automatic uploads are paused until it is changed. ({error})", ("error", userText)),
-                    L.T("Copium rejected the token (HTTP {status})", ("status", tokenRefusal.StatusCode)));
+                    L.T("Copium rejected the token ({error})", ("error", L.T("HTTP {code}", ("code", tokenRefusal.StatusCode)))));   // (the same two keys as the upload client's message: "Copium rejected the token (HTTP 401)")
             }
             else Problem(L.T("Screenshot not uploaded"), L.T("Saved locally. {error}", ("error", userText)), userText);
             return false;

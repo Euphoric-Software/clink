@@ -488,7 +488,7 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
                 case ShareChoice.ShareFile:
                     if (Entry == null) break;
                     if (AppController.Instance.ShareFile(Entry)) { Dismiss(); break; }   // the share window took over
-                    string noWindow = L.T("Could not open the share window");   // (AppController.ShareWindowFailedText is the same English, kept for the trim window)
+                    string noWindow = L.T("Could not open the share window");   // (AppController.ShareWindowFailedText is the same key, for the clip list)
                     ShowShareFailure(L.T("Share failed"), noWindow, noWindow);
                     _hide.Interval = TimeSpan.FromSeconds(8);
                     _hide.Start();

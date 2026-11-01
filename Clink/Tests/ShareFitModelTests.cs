@@ -1,4 +1,5 @@
 using Clink.Services;
+using Clink.Services.Localization;
 
 namespace Clink.Tests;
 
@@ -8,6 +9,12 @@ internal static class ShareFitModelTests
     private const string Dot = " \u00B7 ";   // the middle dot between the details
 
     private static ShareFitTarget Free => ShareFitModel.ForPlan("free");
+
+    // The product formats numbers with the Windows regional format (L.FormatCulture) by design, so the expected texts are built with it too:
+    // "42%" is "42 %" on de-DE, "3.1" is "3,1", "19.1 MB" is "19,1 MB".
+    private static string Pct(double fraction) => fraction.ToString("P0", L.FormatCulture);
+    private static string One(double value) => value.ToString("0.#", L.FormatCulture);
+    private static string Tenths(double value) => value.ToString("0.0", L.FormatCulture);
 
     /// <summary>The plan the design document uses: 20 MB, 45 s, a 46 MB 1080p60 clip with one audio track = 720p60 at 3.1 Mbps.</summary>
     private static ShareFitPlan DesignPlan()
@@ -75,13 +82,13 @@ internal static class ShareFitModelTests
         Check.Equal("Make a 20 MB copy", ShareFitModel.MakeCopyText(Free));
         Check.Equal("Make a 50 MB copy", ShareFitModel.MakeCopyText(ShareFitModel.ForPlan("basic")));
         Check.Equal("Make a 1 GB copy", ShareFitModel.MakeCopyText(ShareFitModel.ForPlan("nitro")));
-        Check.Equal("Making a 20 MB copy for Discord: 720p60 at 3.1 Mbps... 42%", ShareFitModel.WorkingText(Free, DesignPlan(), 0.42));
-        Check.Equal("Making a 20 MB copy for Discord... 3%", ShareFitModel.WorkingText(Free, null, 0.03), "before the clip has been planned");
-        Check.Equal("Making a 20 MB copy for Discord... 100%", ShareFitModel.WorkingText(Free, null, 7), "clamped");
+        Check.Equal($"Making a 20 MB copy for Discord: 720p60 at {One(3.1)} Mbps... {Pct(0.42)}", ShareFitModel.WorkingText(Free, DesignPlan(), 0.42));
+        Check.Equal($"Making a 20 MB copy for Discord... {Pct(0.03)}", ShareFitModel.WorkingText(Free, null, 0.03), "before the clip has been planned");
+        Check.Equal($"Making a 20 MB copy for Discord... {Pct(1)}", ShareFitModel.WorkingText(Free, null, 7), "clamped");
         Check.Equal("Waiting...", ShareFitModel.WaitingText);
         Check.Equal("Use the original", ShareFitModel.UseOriginalText);
-        Check.Equal("19.1 MB" + Dot + "0:45" + Dot + "720p60", ShareFitModel.DoneDetails(19_100_000, 45, "720p60"));
-        Check.Equal("19.1 MB" + Dot + "0:45", ShareFitModel.DoneDetails(19_100_000, 45, ""), "without a label");
+        Check.Equal(Tenths(19.1) + " MB" + Dot + "0:45" + Dot + "720p60", ShareFitModel.DoneDetails(19_100_000, 45, "720p60"));
+        Check.Equal(Tenths(19.1) + " MB" + Dot + "0:45", ShareFitModel.DoneDetails(19_100_000, 45, ""), "without a label");
         Check.Equal("820 kB" + Dot + "1:05", ShareFitModel.DoneDetails(820_000, 65, null), "below 1 MB it is kB");
         Check.Equal("Trim it to about 0:55", ShareFitModel.TrimHint(55));
         Check.Equal("Trim it to about 1:05:00", ShareFitModel.TrimHint(3900), "an hour or more reads h:mm:ss");
@@ -91,11 +98,11 @@ internal static class ShareFitModelTests
         Check.Equal("Couldn't make a smaller copy: the copy stayed too big. The original is 46 MB, over Discord free (20 MB). Trim it to about 0:30.",
             ShareFitModel.StayedTooBigText(Free, 46_000_000, 30));
         Check.Equal("Smaller copies are not available while Clink runs as administrator. The original is 46 MB, over Discord free (20 MB).",
-            ShareFitModel.UnavailableText(Free, ShareCache.ElevatedReason, 46_000_000));
+            ShareFitModel.UnavailableText(Free, ShareUnavailableKind.Elevated, 46_000_000));
         Check.Equal("Too big for Discord free (20 MB): open Clink to make a smaller copy", ShareFitModel.GameRefusalText(Free));
         Check.Equal("Too big for Copium: open Clink to make a smaller copy", ShareFitModel.GameRefusalText(ShareFitModel.ForCopium(false)));
         Check.Equal("Too big for Copium Plus: open Clink to make a smaller copy", ShareFitModel.GameRefusalText(ShareFitModel.ForCopium(true)));
-        Check.Equal("Making a smaller copy for Copium... 40%", ShareFitModel.WorkingText(ShareFitModel.ForCopium(false), DesignPlan(), 0.4));
+        Check.Equal($"Making a smaller copy for Copium... {Pct(0.4)}", ShareFitModel.WorkingText(ShareFitModel.ForCopium(false), DesignPlan(), 0.4));
         Check.Equal("2 files are over Discord free (20 MB): share them one at a time.", ShareFitModel.MultiFileNote(Free, 2));
         Check.Equal("3 files are over Discord Nitro Basic (50 MB): share them one at a time.", ShareFitModel.MultiFileNote(ShareFitModel.ForPlan("basic"), 3));
         Check.Equal("1 file is over Discord free (20 MB): share it on its own.", ShareFitModel.MultiFileNote(Free, 1), "one file gets a note too");
@@ -115,7 +122,7 @@ internal static class ShareFitModelTests
         Check.True(ShareFitModel.CanMakeCopy(ShareFitState.Failed("something odd")), "Failed with no kind given: another try");
         Check.False(ShareFitModel.CanMakeCopy(ShareFitState.Failed(ShareFitModel.StayedTooBigReason)), "stayed too big: the same again, trim the clip");
         Check.False(ShareFitModel.CanMakeCopy(ShareFitState.CantFit(55)), "CantFit");
-        Check.False(ShareFitModel.CanMakeCopy(ShareFitState.Unavailable(ShareCache.ElevatedReason)), "Unavailable");
+        Check.False(ShareFitModel.CanMakeCopy(ShareFitState.Unavailable(ShareUnavailableKind.Elevated)), "Unavailable");
         foreach (var s in new[] { ShareFitState.Fits, ShareFitState.Preparing, ShareFitState.Waiting, ShareFitState.Working(0.2, null) })
             Check.False(ShareFitModel.CanMakeCopy(s), s.Kind + ": busy or nothing to make");
     }
@@ -154,14 +161,14 @@ internal static class ShareFitModelTests
         Check.Equal(ShareFitStateKind.Working, working.Kind);
         Check.Near(0.42, working.Progress);
         Check.Equal("720p60", working.Plan!.Label);
-        Check.Equal("Making a 20 MB copy for Discord: 720p60 at 3.1 Mbps... 42%", ShareFitModel.Text(working, Free, 46_000_000, 45));
+        Check.Equal($"Making a 20 MB copy for Discord: 720p60 at {One(3.1)} Mbps... {Pct(0.42)}", ShareFitModel.Text(working, Free, 46_000_000, 45));
         Check.Equal("Waiting...", ShareFitModel.Text(ShareFitState.Waiting, Free, 46_000_000, 45));
         Check.Null(ShareFitModel.Text(ShareFitState.Fits, Free, 1, 1), "a clip that fits says nothing");
         Check.Equal("Too big for Discord free (20 MB): this clip is 46 MB", ShareFitModel.Text(ShareFitState.Over, Free, 46_000_000, 45));
 
         var original = new ShareCopyResult(ShareCopyOutcome.UseOriginal, @"C:\a.mp4", 46_000_000) { OriginalBytes = 46_000_000 };
         Check.Equal(ShareFitStateKind.Fits, ShareFitModel.StateFor(original).Kind, "the original, no reason: it fits");
-        var unavailable = ShareFitModel.StateFor(original with { ErrorKind = ShareCopyError.CacheUnavailable, Error = ShareCache.ElevatedReason });
+        var unavailable = ShareFitModel.StateFor(original with { ErrorKind = ShareCopyError.CacheUnavailable, Error = ShareCache.ElevatedReason, Unavailable = ShareUnavailableKind.Elevated });
         Check.Equal(ShareFitStateKind.Unavailable, unavailable.Kind);
         Check.Equal("Smaller copies are not available while Clink runs as administrator. The original is 46 MB, over Discord free (20 MB).", ShareFitModel.Text(unavailable, Free, 46_000_000, 45));
 
@@ -169,7 +176,7 @@ internal static class ShareFitModelTests
         var done = ShareFitModel.StateFor(copy);
         Check.Equal(ShareFitStateKind.Done, done.Kind);
         Check.True(ReferenceEquals(copy, done.Copy));
-        Check.Equal("19.1 MB" + Dot + "0:45" + Dot + "720p60", ShareFitModel.Text(done, Free, 46_000_000, 45));
+        Check.Equal(Tenths(19.1) + " MB" + Dot + "0:45" + Dot + "720p60", ShareFitModel.Text(done, Free, 46_000_000, 45));
 
         var cant = ShareFitModel.StateFor(original with { Outcome = ShareCopyOutcome.CantFit, MaxSeconds = 55 });
         Check.Equal((ShareFitStateKind.CantFit, 55), (cant.Kind, cant.MaxSeconds));
@@ -178,7 +185,7 @@ internal static class ShareFitModelTests
         var failed = ShareFitModel.StateFor(original with { Outcome = ShareCopyOutcome.Failed, Error = "the disk is full" });
         Check.Equal(ShareFitStateKind.Failed, failed.Kind);
         Check.Equal("Couldn't make a smaller copy: the disk is full. The original is 46 MB, over Discord free (20 MB).", ShareFitModel.Text(failed, Free, 46_000_000, 45));
-        var tooBig = ShareFitModel.StateFor(original with { Outcome = ShareCopyOutcome.Failed, Error = ShareFitModel.StayedTooBigReason, MaxSeconds = 30 });
+        var tooBig = ShareFitModel.StateFor(original with { Outcome = ShareCopyOutcome.Failed, ErrorKind = ShareCopyError.StayedTooBig, Error = ShareFitModel.StayedTooBigReason, MaxSeconds = 30 });
         Check.Equal("Couldn't make a smaller copy: the copy stayed too big. The original is 46 MB, over Discord free (20 MB). Trim it to about 0:30.",
             ShareFitModel.Text(tooBig, Free, 46_000_000, 45), "stayed too big is a failure with a trim hint, not a can't-fit");
 

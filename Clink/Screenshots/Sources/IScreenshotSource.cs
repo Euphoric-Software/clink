@@ -1,4 +1,5 @@
 using Clink.Native;
+using Clink.Services;
 
 namespace Clink.Screenshots.Sources;
 
@@ -21,14 +22,12 @@ internal interface IScreenshotSource
 /// </summary>
 internal sealed class ScreenshotCaptureException : Exception
 {
-    private readonly string? _userText;
-
     public ScreenshotCaptureException(string message) : base(message) { }
     public ScreenshotCaptureException(string message, Exception inner) : base(message, inner) { }
     /// <param name="message">The English text for the log.</param>
-    /// <param name="userText">The text to show the user (built with <c>L.T</c> at the throw site).</param>
-    public ScreenshotCaptureException(string message, string userText) : base(message) { _userText = userText; }
+    /// <param name="note">The sentence for the user (catalog key + arguments): translated when it is shown (<see cref="Clink.Services.Localization.UserText"/>).</param>
+    public ScreenshotCaptureException(string message, Note note) : base(message) { Clink.Services.Localization.UserText.Attach(this, note); }
 
-    /// <summary>What to tell the user: the translated text when the thrower gave one, else <see cref="Exception.Message"/>.</summary>
-    public string UserText => _userText ?? Message;
+    /// <summary>What to tell the user: the attached note in the language of the UI, else <see cref="Exception.Message"/>.</summary>
+    public string UserText => Clink.Services.Localization.UserText.Of(this);
 }
