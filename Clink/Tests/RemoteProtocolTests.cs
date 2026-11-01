@@ -79,6 +79,43 @@ internal static class RemoteProtocolTests
         Check.True(j.GetProperty("elevated").GetBoolean());
     }
 
+    /// <summary>The shared vector (the Node tests use the same): key 00..1f, nonce 20..3f, pipe "Clink.Remote.s1".</summary>
+    internal const string GoldenProof = "lOKtG+FastgN749UlxcLSdaZKnAFLrkQ3fdrJEgjeuw=";   // hex 94e2ad1be15ab2d80def8f5497170b49d6992a70052eb910ddf76b2448237aec
+
+    [UnitTest]
+    public static void Remote_the_proof_matches_the_golden_vector()
+    {
+        byte[] key = Enumerable.Range(0, 32).Select(i => (byte)i).ToArray();
+        byte[] nonce = Enumerable.Range(32, 32).Select(i => (byte)i).ToArray();
+        Check.Equal(GoldenProof, RemoteProtocol.Proof(key, "Clink.Remote.s1", nonce));
+        Check.Equal("94e2ad1be15ab2d80def8f5497170b49d6992a70052eb910ddf76b2448237aec", Convert.ToHexString(Convert.FromBase64String(GoldenProof)).ToLowerInvariant());
+        Check.True(RemoteProtocol.Proof(key, "Clink.Remote.s2", nonce) != GoldenProof, "the pipe name is part of it");
+        Check.True(RemoteProtocol.Proof(key, "Clink.Remote.s1", nonce.Reverse().ToArray()) != GoldenProof, "so is the nonce");
+        Check.True(RemoteProtocol.Proof(key.Reverse().ToArray(), "Clink.Remote.s1", nonce) != GoldenProof, "and the key");
+    }
+
+    [UnitTest]
+    public static void Remote_a_nonce_is_base64_of_16_to_64_bytes_and_nothing_else_gets_a_proof()
+    {
+        string B(int n) => Convert.ToBase64String(Enumerable.Range(0, n).Select(i => (byte)(i + 1)).ToArray());
+        Check.Equal(16, RemoteProtocol.ParseNonce(B(16))!.Length);
+        Check.Equal(32, RemoteProtocol.ParseNonce(B(32))!.Length);
+        Check.Equal(64, RemoteProtocol.ParseNonce(B(64))!.Length);
+        Check.Null(RemoteProtocol.ParseNonce(null), "missing");
+        Check.Null(RemoteProtocol.ParseNonce(""), "empty");
+        Check.Null(RemoteProtocol.ParseNonce(B(15)), "too short");
+        Check.Null(RemoteProtocol.ParseNonce(B(65)), "too long");
+        Check.Null(RemoteProtocol.ParseNonce(new string('A', 4000)), "far too long");
+        Check.Null(RemoteProtocol.ParseNonce("not base64 at all!!"), "not base64");
+        Check.Null(RemoteProtocol.ParseNonce(B(32).Insert(8, " ")), "whitespace");
+        Check.Null(RemoteProtocol.ParseNonce(B(32).Substring(0, 43)), "bad padding");
+        var h = RemoteProtocol.Parse("{\"t\":\"hello\",\"proto\":1,\"nonce\":\"" + B(32) + "\"}")!;
+        Check.Equal(B(32), h.Nonce);
+        Check.Null(RemoteProtocol.Parse("{\"t\":\"hello\",\"nonce\":5}")!.Nonce, "a nonce that is not a string is none");
+        Check.False(J(RemoteProtocol.Welcome("1", false, false)).TryGetProperty("proof", out _), "no proof by default");
+        Check.Equal("abc", J(RemoteProtocol.Welcome("1", false, false, "abc")).GetProperty("proof").GetString());
+    }
+
     [UnitTest]
     public static void Remote_snapshots_with_the_same_values_are_equal()
     {

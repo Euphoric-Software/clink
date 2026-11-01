@@ -1130,6 +1130,7 @@ internal sealed partial class AppController : IDisposable
     {
         // Monitor handles can change across sleep (a monitor that did not wake up, a dock): restart on fresh ones.
         if (e.Mode == PowerModes.Suspend) _ui.BeginInvoke(MarkTechnicalRestart);
+        if (e.Mode == PowerModes.Resume) RefreshRemoteKey();   // the plugin's staleness clock ran on while we slept: touched at once, not in up to a minute
         if (e.Mode == PowerModes.Resume) _ui.BeginInvoke(async () => { BeginTechnicalRestart(TimeSpan.FromMilliseconds(3000)); await Task.Delay(3000); Monitors = Native.Monitors.Enumerate(); MarkTechnicalRestart(); StartEngine(); });
     }
 
@@ -2156,6 +2157,20 @@ internal sealed partial class AppController : IDisposable
         // A throw while cleaning up must not leave a process with no tray icon running on.
         try { StopRecordingForExit(); Dispose(); }
         finally { System.Windows.Application.Current.Shutdown(); }
+    }
+
+    /// <summary>
+    /// Windows is signing out or shutting down (App's SessionEnding): the remote key file goes first (a few milliseconds, no wait for the
+    /// pipe; the process may be ended at any point from here, and a key must not outlive the session), then a manual recording is finished
+    /// (an unfinished recording is worth more than edits; up to ~4 s), then the remote pipe stops, then unsaved screenshot edits are saved
+    /// as a copy.
+    /// </summary>
+    internal void OnSessionEnding()
+    {
+        WithdrawRemoteKey();
+        StopRecordingForExit(final: false);
+        StopRemote();
+        SaveEditorForSessionEnd();
     }
 
     /// <summary>Windows is ending the session (cannot be refused): unsaved screenshot edits are saved as a copy, waiting at most ~3 s with the UI still pumping.</summary>

@@ -4,6 +4,7 @@ using System.IO;
 using System.IO.Pipes;
 using System.Runtime.InteropServices;
 using System.Security.AccessControl;
+using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
 using Microsoft.Win32.SafeHandles;
@@ -24,8 +25,18 @@ internal interface IRemoteHost
 }
 
 /// <summary>Limits of a <see cref="RemoteServer"/>; the defaults are the protocol's, a test shortens the timeouts.</summary>
-internal sealed class RemoteServerOptions
+internal sealed record RemoteServerOptions
 {
+    /// <summary>
+    /// Where the key file of the handshake goes (<see cref="RemoteKeyFile"/>). Null: none is written (what a test gets unless it names a
+    /// temp folder; Clink passes <see cref="RemoteKeyFile.DefaultDir"/>).
+    /// </summary>
+    public string? KeyDir { get; init; }
+    /// <summary>How often a published key file is checked and touched (the plugin's staleness check reads its last write time).</summary>
+    public TimeSpan KeyRefresh { get; init; } = RemoteKeyFile.RefreshInterval;
+    /// <summary>A key file that could not be written is tried again after this, doubling up to <see cref="KeyRetryMax"/>.</summary>
+    public TimeSpan KeyRetryStart { get; init; } = RemoteKeyFile.RetryStart;
+    public TimeSpan KeyRetryMax { get; init; } = RemoteKeyFile.RetryMax;
     public TimeSpan HelloTimeout { get; init; } = RemoteProtocol.HelloTimeout;
     public TimeSpan WriteTimeout { get; init; } = RemoteProtocol.WriteTimeout;
     public int MaxClients { get; init; } = RemoteProtocol.MaxClients;
@@ -72,6 +83,17 @@ internal sealed class RemoteServer : IDisposable
     private volatile bool _nameInUse;
     private int _nameInUseRefusals;
     private int _disposed;
+    private readonly byte[] _key = RandomNumberGenerator.GetBytes(32);   // per run; the proof in each welcome is made with it
+    private readonly object _keyLock = new();
+    // Under _keyLock, never held over any I/O:
+    private bool _keyWanted;                   // we own the pipe name (an instance passed its read-back): the key should be in the file
+    private bool _keyPublished;                // the key file is written and we own the pipe name
+    private bool _keyWriting;                  // a write or refresh is going: only one at a time (the accept loop or the upkeep)
+    private bool _keyWithdrawn;                // WithdrawKey ran: never published again
+    private bool _keyRefreshAsked;             // RefreshKeyNow: the upkeep refreshes at once
+    private string? _keyFailure;               // the last key-file problem logged (by the one writer); null once a write succeeds
+    private readonly SemaphoreSlim _keyWake = new(0, 1);
+    private Task? _keyUpkeep;
 
     public RemoteServer(IRemoteHost host, string pipeName, RemoteServerOptions? options = null)
     {
@@ -99,18 +121,183 @@ internal sealed class RemoteServer : IDisposable
     /// <summary>How many times an instance was refused because the name was in use (tests: it keeps trying).</summary>
     public int NameInUseRefusals => Volatile.Read(ref _nameInUseRefusals);
 
-    public void Start() => _loop = Task.Run(() => AcceptLoopAsync(_cts.Token));
+    public void Start()
+    {
+        if (_o.KeyDir is { Length: > 0 }) _keyUpkeep = Task.Run(() => KeyUpkeepAsync(_cts.Token));
+        _loop = Task.Run(() => AcceptLoopAsync(_cts.Token));
+    }
 
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) == 1) return;
-        _cts.Cancel();   // every client's token is linked to it, and the accept loop re-checks it before it adds a client
+        RemoveKey();   // first, while we still own the pipe name
+        _cts.Cancel();  // every client's token is linked to it, and the accept loop re-checks it before it adds a client
+        // The key upkeep is not waited for (a write may be slow, and this can be the UI thread): it does nothing once _disposed is set, and
+        // undoes a write that was going when Dispose came.
         Client[] clients;
         lock (_gate) clients = _clients.ToArray();
         foreach (var c in clients) c.Drop("shutdown");
         try { _loop?.Wait(1000); } catch (Exception) { }
         var deadline = Stopwatch.StartNew();
         while (ClientCount > 0 && deadline.ElapsedMilliseconds < 1000) Thread.Sleep(10);
+    }
+
+    // ------------------------------------------------------------------ key file
+
+    private enum KeyResult { Published, Failed, Skipped }
+
+    /// <summary>
+    /// Writes the key file unless it is there already (<paramref name="refresh"/> false: what the accept loop asks before it waits for a
+    /// client), or also checks and touches a published one (<paramref name="refresh"/> true: the upkeep; one that is missing or holds
+    /// something else is written again). One writer at a time: a call while another write is going is skipped. A failure is one warning
+    /// and nothing else: the server runs, the plugin just cannot verify it; the first write that works after one says so.
+    /// </summary>
+    private KeyResult PublishKey(bool refresh)
+    {
+        if (_o.KeyDir is not { Length: > 0 } dir) return KeyResult.Skipped;
+        bool wasPublished;
+        lock (_keyLock)
+        {
+            if (_keyWriting || !_keyWanted || _keyWithdrawn || Volatile.Read(ref _disposed) == 1) return KeyResult.Skipped;
+            if (_keyPublished && !refresh) return KeyResult.Published;
+            _keyWriting = true;
+            wasPublished = _keyPublished;
+        }
+        try
+        {
+            // The I/O (a flush, perhaps an antivirus scan) runs outside the lock, so Dispose on the UI thread never waits for it.
+            Exception? failure = null;
+            bool rewritten = false;
+            try
+            {
+                if (!wasPublished || !RemoteKeyFile.Refresh(dir, _pipeName, _key))
+                {
+                    RemoteKeyFile.Write(dir, _pipeName, _key, _host.Elevated);
+                    rewritten = wasPublished;
+                }
+            }
+            catch (Exception ex) { failure = ex; }
+            bool undo;
+            lock (_keyLock)
+            {
+                // Dispose, WithdrawKey or a lost name came meanwhile: the file just written is this server's to take back.
+                bool keep = _keyWanted && !_keyWithdrawn && Volatile.Read(ref _disposed) == 0;
+                undo = !keep && failure == null;
+                _keyPublished = keep && failure == null;
+            }
+            if (undo) { try { RemoteKeyFile.Delete(dir, _pipeName, _key); } catch (Exception) { } return KeyResult.Skipped; }
+            if (Volatile.Read(ref _disposed) == 1) return KeyResult.Skipped;   // nothing is said after Dispose
+            if (failure == null)
+            {
+                if (rewritten) LogOnce("remote: the key file was missing or changed: written again");
+                if (_keyFailure != null)
+                {
+                    lock (_loggedErrors) _loggedErrors.Remove(_keyFailure);   // so the same problem is said again if it comes back
+                    _keyFailure = null;
+                    Log.Info("remote: key file written");
+                }
+                return KeyResult.Published;
+            }
+            // No path in the text (the temp name differs each time): the same problem is said once.
+            _keyFailure = failure is RemoteKeyFolderUntrustedException
+                ? "remote: " + failure.Message
+                : "remote: key file not written: " + (failure is RemoteKeyFileSecurityException or Win32Exception ? failure.Message : failure.GetType().Name + " 0x" + failure.HResult.ToString("x8"));
+            LogOnce(_keyFailure);
+            return KeyResult.Failed;
+        }
+        finally { lock (_keyLock) _keyWriting = false; }
+    }
+
+    /// <summary>
+    /// The key file's upkeep, independent of clients (the plugin never connects without a usable key, so the accept loop alone would never
+    /// try again): while the key is wanted but not published, a write is tried after <see cref="RemoteServerOptions.KeyRetryStart"/>,
+    /// doubling up to <see cref="RemoteServerOptions.KeyRetryMax"/>; once published, the file is checked and touched every
+    /// <see cref="RemoteServerOptions.KeyRefresh"/>, and at once on <see cref="RefreshKeyNow"/>. Never touches a pipe instance.
+    /// </summary>
+    private async Task KeyUpkeepAsync(CancellationToken ct)
+    {
+        TimeSpan retry = TimeSpan.Zero;
+        bool due = false;   // the last wait ran out (not woken)
+        while (!ct.IsCancellationRequested)
+        {
+            bool wanted, published, now;
+            lock (_keyLock)
+            {
+                wanted = _keyWanted && !_keyWithdrawn && Volatile.Read(ref _disposed) == 0;
+                published = _keyPublished;
+                now = _keyRefreshAsked;
+                _keyRefreshAsked = false;
+            }
+            TimeSpan wait;
+            if (!wanted) { retry = TimeSpan.Zero; wait = Timeout.InfiniteTimeSpan; }   // the accept loop wakes it when it owns the name
+            else if (published && !due && !now) { retry = TimeSpan.Zero; wait = _o.KeyRefresh; }   // just published: the first refresh an interval later
+            else
+            {
+                if (now) retry = TimeSpan.Zero;
+                // No instance of ours: the name may be someone else's right now (the accept loop finds out), so the file is not touched.
+                var r = Volatile.Read(ref _owned) > 0 ? PublishKey(refresh: true) : KeyResult.Skipped;
+                Interlocked.Increment(ref _keyUpkeepRuns);
+                if (r == KeyResult.Published) { retry = TimeSpan.Zero; wait = _o.KeyRefresh; }
+                else
+                {
+                    retry = retry == TimeSpan.Zero ? _o.KeyRetryStart : TimeSpan.FromTicks(Math.Min(retry.Ticks * 2, _o.KeyRetryMax.Ticks));
+                    wait = retry;
+                }
+            }
+            try { due = !await _keyWake.WaitAsync(wait, ct).ConfigureAwait(false); }
+            catch (OperationCanceledException) { return; }
+            catch (ObjectDisposedException) { return; }
+        }
+    }
+
+    private int _keyUpkeepRuns;
+
+    /// <summary>Test only: how many passes of the key upkeep did work; and whether it has ended (it ends with Dispose).</summary>
+    internal int KeyUpkeepRuns => Volatile.Read(ref _keyUpkeepRuns);
+    internal bool KeyUpkeepEnded => _keyUpkeep?.IsCompleted ?? true;
+
+    private void WakeKeyUpkeep()
+    {
+        try { _keyWake.Release(); } catch (SemaphoreFullException) { } catch (ObjectDisposedException) { }
+    }
+
+    /// <summary>Checks and touches the key file at once (Clink calls it on resume from sleep: the plugin's staleness clock kept running). Any thread; never blocks.</summary>
+    public void RefreshKeyNow()
+    {
+        lock (_keyLock) _keyRefreshAsked = true;
+        WakeKeyUpkeep();
+    }
+
+    /// <summary>
+    /// Deletes the key file now and never publishes it again, while the pipe still runs (session end: the key goes first, before the
+    /// recording is finished and the pipe stopped; also a crash's last act). A few milliseconds, never waits for a write that is going
+    /// (that one undoes itself). Any thread; never throws.
+    /// </summary>
+    public void WithdrawKey()
+    {
+        try
+        {
+            lock (_keyLock) _keyWithdrawn = true;
+            RemoveKey();
+        }
+        catch (Exception) { }
+    }
+
+    /// <summary>
+    /// The key is no longer wanted: deletes the file if this server published it (or is writing it), and only while it still holds this
+    /// server's key: a server that took the pipe name over (an update's new Clink) has written its own by then, and that one stays.
+    /// </summary>
+    private void RemoveKey()
+    {
+        if (_o.KeyDir is not { Length: > 0 } dir) return;
+        lock (_keyLock)
+        {
+            _keyWanted = false;
+            bool any = _keyPublished || _keyWriting;
+            _keyPublished = false;
+            if (!any) return;
+        }
+        try { RemoteKeyFile.Delete(dir, _pipeName, _key); } catch (Exception) { }
     }
 
     // ------------------------------------------------------------------ security
@@ -200,7 +387,7 @@ internal sealed class RemoteServer : IDisposable
     }
 
     /// <summary>What Windows holds for a pipe instance: owner, DACL and mandatory label (no SeSecurityPrivilege needed for those).</summary>
-    internal static RawSecurityDescriptor ReadSecurity(SafePipeHandle handle)
+    internal static RawSecurityDescriptor ReadSecurity(SafeHandle handle)
     {
         const int SeKernelObject = 6;
         const uint Owner = 0x1, Dacl = 0x4, Label = 0x10;
@@ -248,8 +435,9 @@ internal sealed class RemoteServer : IDisposable
         return true;
     }
 
+    /// <summary>SECURITY_ATTRIBUTES, for CreateNamedPipe here and CreateFile / CreateDirectory in <see cref="RemoteKeyFile"/>.</summary>
     [StructLayout(LayoutKind.Sequential)]
-    private struct SecurityAttributes
+    internal struct SecurityAttributes
     {
         public int Length;
         public IntPtr Descriptor;
@@ -324,6 +512,14 @@ internal sealed class RemoteServer : IDisposable
                 }
                 if (!inUse && !ownMismatch)
                 {
+                    // The pipe is ours and has exactly our security: only now is the key published. A client may already be opening this
+                    // instance (it exists since CreateInstance), but nothing is read from it, and so no welcome with its proof is sent,
+                    // until WaitForConnectionAsync below returns, which is after this write. (A write that failed leaves a proof nobody
+                    // can check: the plugin fails closed, and the key upkeep tries again, backing off, with no client needed.)
+                    bool owningAgain;
+                    lock (_keyLock) { owningAgain = !_keyWanted; _keyWanted = true; }
+                    PublishKey(refresh: false);
+                    if (owningAgain) WakeKeyUpkeep();   // after the write above, so the upkeep never takes this first one over
                     NameFree();
                     delay = TimeSpan.Zero;
                     await pipe!.WaitForConnectionAsync(ct).ConfigureAwait(false);
@@ -363,10 +559,14 @@ internal sealed class RemoteServer : IDisposable
     private void NameTaken(string? differs)
     {
         Interlocked.Increment(ref _nameInUseRefusals);
+        RemoveKey();   // someone else holds the name: a key file of ours would point the plugin at their pipe
         if (_nameInUse) return;
         _nameInUse = true;
         Log.Warn("remote: pipe name in use (" + _pipeName + (differs != null ? ", security differs: " + differs : "") + "): not serving until it is free");
     }
+
+    /// <summary>Test only: what the accept loop does when it finds the name taken (a server that lost its name, as in an update's handover).</summary>
+    internal void NameTakenForTests() => NameTaken(null);
 
     private void NameFree()
     {
@@ -602,7 +802,9 @@ internal sealed class RemoteServer : IDisposable
                 {
                     lock (_q)
                     {
-                        _out.Enqueue(RemoteProtocol.Welcome(_s._host.Version, _s._host.IsDev, _s._host.Elevated));
+                        byte[]? nonce = RemoteProtocol.ParseNonce(hello.Nonce);
+                        string? proof = nonce == null ? null : RemoteProtocol.Proof(_s._key, _s._pipeName, nonce);
+                        _out.Enqueue(RemoteProtocol.Welcome(_s._host.Version, _s._host.IsDev, _s._host.Elevated, proof));
                         _state = _s._latest;
                         _stateDirty = _state != null;
                         _ready = true;

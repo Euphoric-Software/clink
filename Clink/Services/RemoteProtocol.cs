@@ -5,7 +5,7 @@ using System.Text.Json;
 namespace Clink.Services;
 
 /// <summary>A line a client sent, as far as the server cares: its type and the few fields it reads. Everything else is ignored.</summary>
-internal sealed record RemoteMessage(string Type, long? Id, int? Proto, string? Client, string? Version, string? Verb);
+internal sealed record RemoteMessage(string Type, long? Id, int? Proto, string? Client, string? Version, string? Verb, string? Nonce = null);
 
 /// <summary>
 /// The wire format of the remote status pipe (protocol 1): UTF-8 JSON, one message per line. Pure: parsing, serialising, the verb
@@ -76,7 +76,7 @@ internal static class RemoteProtocol
             if (!root.TryGetProperty("t", out var t) || t.ValueKind != JsonValueKind.String) return null;
             long? id = root.TryGetProperty("id", out var i) && i.ValueKind == JsonValueKind.Number && i.TryGetInt64(out long idv) ? idv : null;
             int? proto = root.TryGetProperty("proto", out var p) && p.ValueKind == JsonValueKind.Number && p.TryGetInt32(out int pv) ? pv : null;
-            return new RemoteMessage(t.GetString() ?? "", id, proto, Str(root, "client"), Str(root, "v"), Str(root, "verb"));
+            return new RemoteMessage(t.GetString() ?? "", id, proto, Str(root, "client"), Str(root, "v"), Str(root, "verb"), Str(root, "nonce"));
         }
         catch (JsonException) { return null; }
     }
@@ -97,6 +97,35 @@ internal static class RemoteProtocol
         return sb.ToString();
     }
 
+    // ------------------------------------------------------------------ key-file handshake
+
+    public const int NonceMin = 16, NonceMax = 64;
+    private const string ProofContext = "clink-remote-proof-v1";
+
+    /// <summary>The bytes of a hello nonce: base64 of 16 to 64 bytes (no whitespace). Anything else is null: the welcome then carries no proof.</summary>
+    public static byte[]? ParseNonce(string? nonce)
+    {
+        if (string.IsNullOrEmpty(nonce) || nonce.Length > 88) return null;
+        foreach (char c in nonce) if (!(char.IsAsciiLetterOrDigit(c) || c is '+' or '/' or '=')) return null;
+        Span<byte> buf = stackalloc byte[NonceMax + 3];
+        if (!Convert.TryFromBase64String(nonce, buf, out int n) || n < NonceMin || n > NonceMax) return null;
+        return buf[..n].ToArray();
+    }
+
+    /// <summary>base64 of HMAC-SHA256(key, UTF-8 "clink-remote-proof-v1" || 0x00 || UTF-8 pipeName (without the \\.\pipe\ prefix) || 0x00 || nonce). Pure; the plugin computes the same from the key file.</summary>
+    public static string Proof(byte[] key, string pipeName, byte[] nonce)
+    {
+        byte[] context = Encoding.UTF8.GetBytes(ProofContext), name = Encoding.UTF8.GetBytes(pipeName);
+        var message = new byte[context.Length + 1 + name.Length + 1 + nonce.Length];
+        int at = 0;
+        context.CopyTo(message, at); at += context.Length;
+        message[at++] = 0;
+        name.CopyTo(message, at); at += name.Length;
+        message[at++] = 0;
+        nonce.CopyTo(message, at);
+        return Convert.ToBase64String(System.Security.Cryptography.HMACSHA256.HashData(key, message));
+    }
+
     // ------------------------------------------------------------------ serialising
 
     private static string Build(Action<Utf8JsonWriter> write)
@@ -106,7 +135,8 @@ internal static class RemoteProtocol
         return Encoding.UTF8.GetString(buffer.WrittenSpan);
     }
 
-    public static string Welcome(string version, bool dev, bool elevated) => Build(w =>
+    /// <param name="proof">The key-file proof (<see cref="Proof"/>) for the nonce of the client's hello; null leaves the field out.</param>
+    public static string Welcome(string version, bool dev, bool elevated, string? proof = null) => Build(w =>
     {
         w.WriteStartObject();
         w.WriteString("t", "welcome");
@@ -115,6 +145,7 @@ internal static class RemoteProtocol
         w.WriteString("version", version);
         w.WriteBoolean("dev", dev);
         w.WriteBoolean("elevated", elevated);
+        if (proof != null) w.WriteString("proof", proof);
         w.WriteStartArray("verbs");
         foreach (string v in Verbs) w.WriteStringValue(v);
         w.WriteEndArray();

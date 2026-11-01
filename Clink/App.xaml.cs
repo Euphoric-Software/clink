@@ -45,7 +45,11 @@ public partial class App : System.Windows.Application
             return;
         }
 
-        AppDomain.CurrentDomain.UnhandledException += (_, a) => Log.Error("Unhandled", (a.ExceptionObject as Exception) ?? new Exception(a.ExceptionObject?.ToString()));
+        AppDomain.CurrentDomain.UnhandledException += (_, a) =>
+        {
+            _controller?.WithdrawRemoteKey();   // best effort, never throws: the process is going, and its key must not stay behind
+            Log.Error("Unhandled", (a.ExceptionObject as Exception) ?? new Exception(a.ExceptionObject?.ToString()));
+        };
         DispatcherUnhandledException += (_, a) => { Log.Error("UI exception", a.Exception); a.Handled = true; };
         TaskScheduler.UnobservedTaskException += (_, a) => { Log.Error("Task exception", a.Exception); a.SetObserved(); };
 
@@ -262,12 +266,9 @@ public partial class App : System.Windows.Application
 
         _controller = new AppController(settings, updater);
         // Windows signing out / shutting down: finish a manual recording (up to ~4 s) before the process is ended, so its file is
-        // complete. (Not final: another program may still cancel the session end.)
-        SessionEnding += (_, _) =>
-        {
-            _controller?.StopRecordingForExit(final: false);   // first: an unfinished recording is worth more than edits
-            _controller?.SaveEditorForSessionEnd();            // unsaved screenshot edits: a copy is saved
-        };
+        // complete, stop the remote pipe (its key file goes), save unsaved screenshot edits as a copy. Not cancelled here, so WPF then
+        // shuts Clink down itself (Application.Shutdown, then OnExit), even if another program cancels the session end.
+        SessionEnding += (_, _) => _controller?.OnSessionEnding();
         var main = new MainWindow();
         if (dev != null && AppController.ShowsDevMarker)   // --dev-no-marker: no TEST in any title
         {

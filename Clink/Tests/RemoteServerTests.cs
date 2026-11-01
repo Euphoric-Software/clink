@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
 using System.Security.AccessControl;
+using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
@@ -101,18 +102,34 @@ internal static class RemoteServerTests
         public readonly FakeHost Host = new();
         public readonly RemoteServer Server;
         public readonly string Name;
+        private readonly TempDir _keys = new();
+        /// <summary>The key folder of this rig: always a folder under the temp folder (never the real %LOCALAPPDATA%\Clink\remote); made by the server.</summary>
+        public string KeyDir => _keys.File("remote");
+        public string KeyPath => RemoteKeyFile.PathFor(KeyDir, Name);
 
-        public Rig(RemoteServerOptions? options = null, RemoteSnapshot? first = null)
+        /// <summary>The key file (written by the accept loop a moment after Start): waits for it, and returns its path.</summary>
+        public string WaitForKey()
+        {
+            Check.True(Until(() => File.Exists(KeyPath)), "the key file was published");
+            return KeyPath;
+        }
+
+        public Rig(RemoteServerOptions? options = null, RemoteSnapshot? first = null, bool keyFile = true)
         {
             AppController.InstanceSuffix = ".dev.unittest-" + Guid.NewGuid().ToString("N");
             Name = AppController.RemotePipeName;
-            Server = new RemoteServer(Host, Name, options);
+            Server = new RemoteServer(Host, Name, (options ?? new RemoteServerOptions()) with { KeyDir = keyFile ? KeyDir : null });
             if (first != null) Server.Publish(first);
             Server.Start();
         }
 
         public TestClient Connect(bool read = true) => new(Name, read);
-        public void Dispose() => Server.Dispose();
+
+        public void Dispose()
+        {
+            Server.Dispose();
+            _keys.Dispose();
+        }
     }
 
     private static bool Until(Func<bool> condition, int ms = 5000)
@@ -755,5 +772,665 @@ internal static class RemoteServerTests
             squatter.Dispose();
             server.Dispose();
         }
+    }
+
+    // ------------------------------------------------------------------ the key-file handshake
+
+    private static byte[] KeyFrom(string path)
+    {
+        byte[] key = Convert.FromBase64String(ReadShared(path).Trim());
+        Check.Equal(32, key.Length, "the key is 32 bytes");
+        return key;
+    }
+
+    /// <summary>Reads as the plugin does (sharing read, write and delete), so a rename or refresh going on does not get in the way.</summary>
+    private static string ReadShared(string path)
+    {
+        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        using var r = new StreamReader(fs, Encoding.ASCII);
+        return r.ReadToEnd();
+    }
+
+    /// <summary>The key in the file, or null while it is missing or cannot be read right now (for waits).</summary>
+    private static byte[]? TryKeyFrom(string path)
+    {
+        try { return Convert.FromBase64String(ReadShared(path).Trim()); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or FormatException) { return null; }
+    }
+
+    private static string Nonce(int bytes = 32) => Convert.ToBase64String(Enumerable.Range(0, bytes).Select(i => (byte)(i * 7 + 3)).ToArray());
+
+    [UnitTest]
+    public static void Remote_the_welcome_carries_a_proof_only_for_a_valid_nonce()
+    {
+        using var rig = new Rig(first: Sample());
+        byte[] key = KeyFrom(rig.WaitForKey());
+        string nonce = Nonce(32);
+        string expected = RemoteProtocol.Proof(key, rig.Name, Convert.FromBase64String(nonce));
+        var bad = new Dictionary<string, string>
+        {
+            ["missing"] = "",
+            ["not base64"] = ",\"nonce\":\"not base64!!\"",
+            ["too short"] = ",\"nonce\":\"" + Nonce(15) + "\"",
+            ["too long"] = ",\"nonce\":\"" + Nonce(65) + "\"",
+            ["a number"] = ",\"nonce\":7",
+        };
+        foreach (var (what, field) in bad)
+        {
+            using var c = rig.Connect();
+            c.Send("{\"t\":\"hello\",\"proto\":1,\"client\":\"unittest\"" + field + "}");
+            var w = c.NextJson();
+            Check.Equal("welcome", w.GetProperty("t").GetString(), what);
+            Check.False(w.TryGetProperty("proof", out _), "no proof: " + what);
+        }
+        foreach (int n in new[] { 16, 32, 64 })
+        {
+            using var c = rig.Connect();
+            string nn = Nonce(n);
+            c.Send("{\"t\":\"hello\",\"proto\":1,\"nonce\":\"" + nn + "\"}");
+            var w = c.NextJson();
+            Check.Equal(RemoteProtocol.Proof(key, rig.Name, Convert.FromBase64String(nn)), w.GetProperty("proof").GetString(), "a " + n + " byte nonce");
+        }
+        using (var c = rig.Connect())
+        {
+            c.Send("{\"t\":\"hello\",\"proto\":1,\"nonce\":\"" + nonce + "\"}");
+            Check.Equal(expected, c.NextJson().GetProperty("proof").GetString());
+        }
+        using var other = new Rig(first: Sample());   // another server, another key: its proof is not this one's
+        using var oc = other.Connect();
+        oc.Send("{\"t\":\"hello\",\"proto\":1,\"nonce\":\"" + nonce + "\"}");
+        Check.True(oc.NextJson().GetProperty("proof").GetString() != expected, "a key per server");
+        Check.True(!KeyFrom(other.WaitForKey()).SequenceEqual(key), "a key per server");
+    }
+
+    [UnitTest]
+    public static void Remote_the_key_file_exists_before_the_first_welcome_and_goes_with_dispose()
+    {
+        var rig = new Rig(first: Sample());
+        try
+        {
+            using var c = rig.Connect();
+            c.Hello();
+            Check.Equal("welcome", c.NextJson().GetProperty("t").GetString());
+            Check.True(File.Exists(rig.KeyPath), "and when the welcome arrives");
+            // The server alone, not the rig (whose Dispose removes the temp folder, file and all, so the check below could not fail).
+            rig.Server.Dispose();
+            Check.False(File.Exists(rig.KeyPath), "deleted by the server's Dispose");
+            Check.True(Directory.Exists(rig.KeyDir), "the folder stays (only the file goes)");
+            Check.Equal(0, Directory.GetFileSystemEntries(rig.KeyDir).Length, "nothing else left in the folder");
+        }
+        finally { rig.Dispose(); }
+    }
+
+    [UnitTest]
+    public static void Remote_without_a_key_folder_no_file_is_written()
+    {
+        using var rig = new Rig(first: Sample(), keyFile: false);
+        using var c = rig.Connect();
+        c.Hello();
+        var w = c.NextJson();
+        Check.Equal("welcome", w.GetProperty("t").GetString());
+        Check.False(Directory.Exists(rig.KeyDir), "no folder either");
+    }
+
+    [UnitTest]
+    public static void Remote_the_key_file_has_the_owner_dacl_and_label_asked_for()
+    {
+        using var rig = new Rig(first: Sample());
+        rig.WaitForKey();
+        var user = WindowsIdentity.GetCurrent().User!;
+        string sddl = "O:" + user.Value + "D:P(A;;FA;;;" + user.Value + ")S:(ML;;NWNR;;;ME)";   // written out here, not taken from the product
+        var expected = new RawSecurityDescriptor(RemoteServer.SddlToBinary(sddl), 0);
+        var actual = RemoteKeyFile.ReadSecurity(rig.KeyPath);
+        Check.Null(RemoteServer.SecurityDifference(expected, actual), "owner, DACL and label read back exactly");
+        Check.Equal(user, actual.Owner, "owner = the user SID");
+        Check.True(actual.ControlFlags.HasFlag(ControlFlags.DiscretionaryAclProtected), "protected: nothing inherited");
+        Check.Equal(1, actual.DiscretionaryAcl!.Count, "one ACE");
+        var ace = (CommonAce)actual.DiscretionaryAcl[0];
+        Check.Equal(AceType.AccessAllowed, ace.AceType);
+        Check.Equal(user, ace.SecurityIdentifier, "the user, nobody else");
+        Check.Equal(0x1F01FF, ace.AccessMask, "full control");
+        Check.Equal(1, actual.SystemAcl!.Cast<GenericAce>().Count(a => (byte)a.AceType == 0x11), "one mandatory label");
+        // the folder was made by the server too: the same owner-only descriptor, a label, and it inherits to what is inside
+        var dir = new DirectoryInfo(rig.KeyDir).GetAccessControl();
+        Check.True(dir.AreAccessRulesProtected, "the folder is protected");
+        Check.Equal(user, dir.GetOwner(typeof(SecurityIdentifier)), "the folder's owner");
+        var rules = dir.GetAccessRules(true, false, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>().ToArray();
+        Check.Equal(1, rules.Length, "the folder has one rule");
+        Check.Equal(user, rules[0].IdentityReference, "the user");
+    }
+
+    [UnitTest]
+    public static void Remote_a_key_file_is_replaced_in_one_step_and_leaves_no_temp_file()
+    {
+        using var dir = new TempDir();
+        string folder = dir.File("remote");
+        string pipe = "Clink.Remote.dev.unittest";
+        string path = RemoteKeyFile.PathFor(folder, pipe);
+        byte[] a = Enumerable.Range(0, 32).Select(i => (byte)i).ToArray(), b = Enumerable.Range(0, 32).Select(i => (byte)(i + 100)).ToArray();
+        RemoteKeyFile.Write(folder, pipe, a);
+        Check.Equal(Convert.ToBase64String(a), File.ReadAllText(path));
+        RemoteKeyFile.Write(folder, pipe, b);   // over an existing file (a stale one of a crashed run)
+        Check.Equal(Convert.ToBase64String(b), File.ReadAllText(path));
+        Check.Equal(new[] { path }, Directory.GetFileSystemEntries(folder), "only the key file");
+        Check.Null(RemoteServer.SecurityDifference(new RawSecurityDescriptor(RemoteServer.SddlToBinary(RemoteKeyFile.FileSddl(WindowsIdentity.GetCurrent().User!)), 0), RemoteKeyFile.ReadSecurity(path)), "the replacement has the security too");
+        // a move that cannot happen (the name is a folder) throws and still leaves no temp file
+        string blocked = RemoteKeyFile.PathFor(folder, "Clink.Remote.dev.blocked");
+        Directory.CreateDirectory(blocked);
+        Check.Throws<Win32Exception>(() => RemoteKeyFile.Write(folder, "Clink.Remote.dev.blocked", a), "moving over a folder");
+        Check.Equal(0, Directory.GetFiles(folder, "*.tmp").Length, "no temp file");
+        Check.False(RemoteKeyFile.Delete(folder, pipe, a), "another key than the one it holds: not deleted");
+        Check.Equal(Convert.ToBase64String(b), File.ReadAllText(path), "still there");
+        Check.True(RemoteKeyFile.Delete(folder, pipe, b), "its own key: deleted");
+        Check.False(File.Exists(path));
+        Check.False(RemoteKeyFile.Delete(folder, pipe, b), "nothing there: nothing to say");
+        Check.Throws<ArgumentException>(() => RemoteKeyFile.Write(folder, "..\\evil", a), "a pipe name is a file name");
+    }
+
+    [UnitTest]
+    public static void Remote_the_key_file_is_written_when_a_squatter_lets_go_of_the_name_and_goes_with_dispose()
+    {
+        string name = UniqueName();
+        using var dir = new TempDir();
+        string folder = dir.File("remote");
+        string path = RemoteKeyFile.PathFor(folder, name);
+        var squatter = new NamedPipeServerStream(name, PipeDirection.InOut, 4, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+        var server = new RemoteServer(new FakeHost(), name, new RemoteServerOptions { KeyDir = folder, BackoffStart = TimeSpan.FromMilliseconds(20), BackoffMax = TimeSpan.FromMilliseconds(100) });
+        try
+        {
+            server.Start();
+            Check.True(Until(() => server.NameInUseRefusals >= 3), "it keeps trying");
+            Check.False(File.Exists(path), "no key file for a pipe we do not own");
+            squatter.Dispose();
+            Check.True(Until(() => File.Exists(path)), "the name is free: the key is published");
+            Check.True(Until(() => !server.NameInUse));
+            using var c = new TestClient(name);
+            c.Join(state: false);
+            Check.True(File.Exists(path));
+        }
+        finally
+        {
+            squatter.Dispose();
+            server.Dispose();
+        }
+        Check.False(File.Exists(path), "deleted by Dispose");
+    }
+
+    [UnitTest]
+    public static void Remote_a_server_that_cannot_write_its_key_file_still_serves_and_says_so_once()
+    {
+        using var dir = new TempDir();
+        File.WriteAllText(dir.File("blocker"), "a file where the folder would go");
+        var lines = new List<string>();
+        void Collect(string line) { lock (lines) lines.Add(line); }
+        int Said() { lock (lines) return lines.Count(l => l.Contains("remote: key file not written", StringComparison.Ordinal)); }
+        int Recovered() { lock (lines) return lines.Count(l => l.Contains("remote: key file written", StringComparison.Ordinal)); }
+        Log.Line += Collect;
+        string name = UniqueName();
+        string folder = dir.File("blocker\\sub");
+        var server = new RemoteServer(new FakeHost(), name, new RemoteServerOptions { KeyDir = folder });
+        try
+        {
+            server.Start();
+            for (int i = 0; i < 3; i++)
+            {
+                using var c = new TestClient(name);
+                c.Join(state: false);   // served all the same, each time (every connect is another try to write)
+            }
+            Check.Equal(1, Said(), "one warning, not one per try");
+            Check.Equal(0, Recovered());
+            // the blocker goes: the next try (after the next connect) writes the file, and says so once
+            File.Delete(dir.File("blocker"));
+            using (var c = new TestClient(name)) c.Join(state: false);
+            Check.True(Until(() => File.Exists(RemoteKeyFile.PathFor(folder, name))), "written once the folder can be made");
+            Check.True(Until(() => Recovered() == 1), "the recovery is said");
+            using (var c = new TestClient(name)) c.Join(state: false);
+            Check.Equal(1, Recovered(), "once");
+            Check.Equal(1, Said());
+        }
+        finally
+        {
+            Log.Line -= Collect;
+            server.Dispose();
+        }
+    }
+
+    [UnitTest]
+    public static void Remote_a_server_that_never_got_the_name_leaves_the_owners_key_file_alone()
+    {
+        string name = UniqueName();
+        using var dir = new TempDir();
+        string folder = dir.File("remote");
+        string path = RemoteKeyFile.PathFor(folder, name);
+        var owner = new RemoteServer(new FakeHost(), name, new RemoteServerOptions { KeyDir = folder });
+        RemoteServer? other = null;
+        try
+        {
+            owner.Start();
+            Check.True(Until(() => File.Exists(path)), "the owner published its key");
+            byte[] key = KeyFrom(path);
+            other = new RemoteServer(new FakeHost(), name, new RemoteServerOptions { KeyDir = folder, BackoffStart = TimeSpan.FromMilliseconds(20), BackoffMax = TimeSpan.FromMilliseconds(100) });
+            other.Start();
+            Check.True(Until(() => other.NameInUseRefusals >= 3), "the other server keeps finding the name taken");
+            Check.True(KeyFrom(path).SequenceEqual(key), "its refusals left the owner's file alone");
+            other.Dispose();
+            Check.True(KeyFrom(path).SequenceEqual(key), "and so did its Dispose");
+            using var c = new TestClient(name);   // the owner still serves, with the key in the file
+            string nonce = Nonce();
+            c.Send("{\"t\":\"hello\",\"proto\":1,\"nonce\":\"" + nonce + "\"}");
+            Check.Equal(RemoteProtocol.Proof(key, name, Convert.FromBase64String(nonce)), c.NextJson().GetProperty("proof").GetString());
+        }
+        finally
+        {
+            other?.Dispose();
+            owner.Dispose();
+        }
+        Check.False(File.Exists(path), "the owner's Dispose deletes its own");
+    }
+
+    [UnitTest]
+    public static void Remote_a_server_that_lost_the_name_never_deletes_the_new_owners_key_file()
+    {
+        // An update's handover: the old Clink published, lost the name, and the new one wrote its own key over the file.
+        var rig = new Rig(first: Sample());
+        try
+        {
+            byte[] old = KeyFrom(rig.WaitForKey());
+            byte[] fresh = RandomNumberGenerator.GetBytes(32);
+            RemoteKeyFile.Write(rig.KeyDir, rig.Name, fresh);   // what the new owner's server does
+            Check.True(!old.SequenceEqual(fresh));
+            rig.Server.NameTakenForTests();
+            Check.True(rig.Server.NameInUse);
+            Check.True(KeyFrom(rig.KeyPath).SequenceEqual(fresh), "finding the name taken does not delete the new owner's file");
+            rig.Server.Dispose();
+            Check.True(KeyFrom(rig.KeyPath).SequenceEqual(fresh), "nor does Dispose");
+        }
+        finally { rig.Dispose(); }
+    }
+
+    [UnitTest]
+    public static void Remote_the_session_ending_stops_the_pipe_and_deletes_the_key_file()
+    {
+        using var dir = new TempDir();
+        Settings.DirOverride = dir.Path;
+        var settings = Settings.FromJson("{}");
+        AppController.InstanceSuffix = ".dev.unittest-" + Guid.NewGuid().ToString("N");
+        string name = AppController.RemotePipeName;
+        string folder = dir.File("remote");
+        string path = RemoteKeyFile.PathFor(folder, name);
+        using var app = new AppController(settings, new Updater(settings));
+        app.StartRemoteForTests(folder);
+        Check.True(Until(() => File.Exists(path)), "published");
+        using var c = new TestClient(name);
+        c.Join(state: false);
+        app.OnSessionEnding();   // what App's SessionEnding runs
+        Check.False(File.Exists(path), "the key file went with the session end, before OnExit");
+        Check.True(c.Closed(), "the client was closed");
+        Check.Throws<TimeoutException>(() => { using var late = new TestClient(name, connectMs: 300); }, "nothing accepts any more");
+    }
+
+    [UnitTest]
+    public static void Remote_the_key_folder_must_be_the_users_and_only_the_user_SYSTEM_and_Administrators_may_write_to_it()
+    {
+        var user = WindowsIdentity.GetCurrent().User!;
+        string u = user.Value;
+        string? Problem(string sddl) => RemoteKeyFile.FolderProblem(new RawSecurityDescriptor(RemoteServer.SddlToBinary(sddl), 0), user);
+        Check.Null(Problem(RemoteKeyFile.DirSddl(user)), "the folder Clink makes");
+        Check.Null(Problem("O:" + u + "D:P(A;OICI;FA;;;" + u + ")(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"), "the user, SYSTEM and Administrators (what a profile folder inherits)");
+        Check.Null(Problem("O:" + u + "D:P(A;;FA;;;" + u + ")(A;;FR;;;WD)"), "others may read");
+        Check.Null(Problem("O:" + u + "D:P(A;;FA;;;" + u + ")(D;;FA;;;WD)"), "a deny entry only takes rights away");
+        Check.Null(Problem("O:" + u + "D:P(A;;FA;;;" + u + ")S:(ML;;NW;;;HI)"), "a High label");
+        Check.Equal("owner", Problem("O:BAD:P(A;;FA;;;" + u + ")"), "someone else's");
+        Check.Equal("others can write", Problem("O:" + u + "D:P(A;;FA;;;" + u + ")(A;OICI;0x1301bf;;;WD)"), "Everyone: modify");
+        Check.Equal("others can write", Problem("O:" + u + "D:P(A;;FA;;;" + u + ")(A;;GW;;;AU)"), "Authenticated Users: generic write");
+        Check.Equal("others can write", Problem("O:" + u + "D:P(A;;FA;;;" + u + ")(A;;0x40;;;BU)"), "Users: delete child alone");
+        Check.Equal("no dacl", Problem("O:" + u + "D:NO_ACCESS_CONTROL"), "a null DACL lets everyone in");
+        Check.Equal("label", Problem("O:" + u + "D:P(A;;FA;;;" + u + ")S:(ML;;NW;;;LW)"), "a Low label lets the user's Low processes write");
+    }
+
+    [UnitTest]
+    public static void Remote_a_key_folder_of_ours_that_others_can_write_to_gets_our_security_again()
+    {
+        using var dir = new TempDir();
+        var user = WindowsIdentity.GetCurrent().User!;
+        string folder = dir.File("remote");
+        var weak = new DirectorySecurity();
+        weak.SetSecurityDescriptorSddlForm("O:" + user.Value + "D:P(A;OICI;FA;;;" + user.Value + ")(A;OICI;0x1301bf;;;WD)");   // ours, Everyone: modify
+        new DirectoryInfo(folder).Create(weak);
+        RawSecurityDescriptor Held() => new(new DirectoryInfo(folder).GetAccessControl(AccessControlSections.Owner | AccessControlSections.Access).GetSecurityDescriptorBinaryForm(), 0);
+        Check.Equal("others can write", RemoteKeyFile.FolderProblem(Held(), user), "made weak");
+        string pipe = "Clink.Remote.dev.unittest";
+        byte[] key = Enumerable.Range(0, 32).Select(i => (byte)(i + 7)).ToArray();
+        RemoteKeyFile.Write(folder, pipe, key);
+        Check.Equal(Convert.ToBase64String(key), File.ReadAllText(RemoteKeyFile.PathFor(folder, pipe)), "published");
+        Check.Null(RemoteKeyFile.FolderProblem(Held(), user), "only the user may write now");
+        var acl = new DirectoryInfo(folder).GetAccessControl();
+        Check.True(acl.AreAccessRulesProtected, "protected");
+        Check.Equal(user, acl.GetOwner(typeof(SecurityIdentifier)));
+        var rules = acl.GetAccessRules(true, true, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>().ToArray();
+        Check.Equal(1, rules.Length, "Everyone is gone");
+        Check.Equal(user, rules[0].IdentityReference);
+    }
+
+    [UnitTest]
+    public static void Remote_a_key_folder_that_is_a_junction_is_refused_and_said_once()
+    {
+        using var dir = new TempDir();
+        string target = dir.File("elsewhere");
+        Directory.CreateDirectory(target);
+        string link = dir.File("remote");
+        if (!TestJunction.TryMake(link, target, out string why)) TestJunction.Skipped(nameof(Remote_a_key_folder_that_is_a_junction_is_refused_and_said_once), why);
+        var lines = new List<string>();
+        void Collect(string line) { lock (lines) lines.Add(line); }
+        int Said() { lock (lines) return lines.Count(l => l.Contains("remote: key folder not trusted: a link or other reparse point", StringComparison.Ordinal)); }
+        string name = UniqueName();
+        RemoteServer? server = null;
+        Log.Line += Collect;
+        try
+        {
+            var refused = Check.Throws<RemoteKeyFolderUntrustedException>(() => RemoteKeyFile.Write(link, name, new byte[32]), "a junction");
+            Check.Contains(refused.Message, "key folder not trusted");
+            Check.Equal(0, Directory.GetFileSystemEntries(target).Length, "nothing was written through it");
+            server = new RemoteServer(new FakeHost(), name, new RemoteServerOptions { KeyDir = link });
+            server.Start();
+            for (int i = 0; i < 3; i++)
+            {
+                using var c = new TestClient(name);
+                c.Join(state: false);   // served all the same
+            }
+            Check.True(Until(() => Said() == 1), "said");
+            Check.Equal(1, Said(), "once, not at every try");
+            Check.Equal(0, Directory.GetFileSystemEntries(target).Length, "the server wrote nothing through it either");
+        }
+        finally
+        {
+            Log.Line -= Collect;
+            server?.Dispose();
+            TestJunction.Remove(link);
+        }
+    }
+
+    [UnitTest]
+    public static void Remote_a_write_sweeps_the_temp_files_a_crash_left_and_nothing_else()
+    {
+        using var dir = new TempDir();
+        string folder = dir.File("remote");
+        string pipe = "Clink.Remote.dev.unittest";
+        byte[] key = Enumerable.Range(0, 32).Select(i => (byte)(i * 3)).ToArray();
+        RemoteKeyFile.Write(folder, pipe, key);   // makes the folder
+        string path = RemoteKeyFile.PathFor(folder, pipe);
+        string stale = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        string[] kept = { path + ".notes.tmp", RemoteKeyFile.PathFor(folder, "Clink.Remote.dev.other") + "." + Guid.NewGuid().ToString("N") + ".tmp", Path.Combine(folder, "readme.txt") };
+        File.WriteAllText(stale, "a crashed run's");
+        foreach (string k in kept) File.WriteAllText(k, "not a temp file of this pipe's");
+        RemoteKeyFile.Write(folder, pipe, key);
+        Check.False(File.Exists(stale), "the crashed run's temp file is gone");
+        foreach (string k in kept) Check.True(File.Exists(k), "kept: " + Path.GetFileName(k));
+        Check.Equal(Convert.ToBase64String(key), File.ReadAllText(path));
+    }
+
+    [UnitTest]
+    public static void Remote_the_key_file_never_goes_to_the_real_local_folder_in_a_test()
+    {
+        string real = RemoteKeyFile.DefaultDir;
+        Check.True(TestGuard.IsUnderTrueRealDir(real, TestGuard.TrueLocalDir), "the product's folder is the one the guard protects");
+        string name = "Clink.Remote.dev.guardtest-" + Guid.NewGuid().ToString("N");
+        Check.Throws<InvalidOperationException>(() => RemoteKeyFile.Write(real, name, new byte[32]), "refused");
+        Check.Throws<InvalidOperationException>(() => RemoteKeyFile.Delete(real, name, new byte[32]), "refused");
+        Check.Equal(2, TestGuard.TakeViolations().Length, "this test provoked exactly these two refusals");
+        Check.False(File.Exists(RemoteKeyFile.PathFor(real, name)), "nothing was written");
+    }
+
+    // ------------------------------------------------------------------ the key file's upkeep
+
+    [UnitTest]
+    public static void Remote_the_key_upkeep_writes_the_file_once_a_blocker_goes_with_no_client_connecting()
+    {
+        using var dir = new TempDir();
+        File.WriteAllText(dir.File("blocker"), "a file where the folder would go");
+        var lines = new List<string>();
+        void Collect(string line) { lock (lines) lines.Add(line); }
+        int Said() { lock (lines) return lines.Count(l => l.Contains("remote: key file not written", StringComparison.Ordinal)); }
+        int Recovered() { lock (lines) return lines.Count(l => l.Contains("remote: key file written", StringComparison.Ordinal)); }
+        Log.Line += Collect;
+        string name = UniqueName();
+        string folder = dir.File("blocker\\sub");
+        string path = RemoteKeyFile.PathFor(folder, name);
+        var server = new RemoteServer(new FakeHost(), name, new RemoteServerOptions
+        {
+            KeyDir = folder, KeyRetryStart = TimeSpan.FromMilliseconds(20), KeyRetryMax = TimeSpan.FromMilliseconds(80),
+        });
+        try
+        {
+            server.Start();
+            Check.True(Until(() => Said() == 1), "the failure is said");
+            Check.True(Until(() => server.KeyUpkeepRuns >= 3), "the upkeep keeps trying, with no client");
+            Check.Equal(1, Said(), "once, not at every try");
+            File.Delete(dir.File("blocker"));
+            Check.True(Until(() => File.Exists(path)), "written once the folder can be made, with no client connecting");
+            Check.True(Until(() => Recovered() == 1), "the recovery is said");
+            // the key in the file is the one the welcome proves with
+            using var c = new TestClient(name);
+            string nonce = Nonce();
+            c.Send("{\"t\":\"hello\",\"proto\":1,\"nonce\":\"" + nonce + "\"}");
+            Check.Equal(RemoteProtocol.Proof(KeyFrom(path), name, Convert.FromBase64String(nonce)), c.NextJson().GetProperty("proof").GetString());
+        }
+        finally
+        {
+            Log.Line -= Collect;
+            server.Dispose();
+        }
+        Check.False(File.Exists(path), "deleted by Dispose");
+    }
+
+    [UnitTest]
+    public static void Remote_a_key_file_deleted_or_changed_from_outside_is_written_again()
+    {
+        using var rig = new Rig(new RemoteServerOptions
+        {
+            KeyRefresh = TimeSpan.FromMilliseconds(50), KeyRetryStart = TimeSpan.FromMilliseconds(20), KeyRetryMax = TimeSpan.FromMilliseconds(50),
+        }, Sample());
+        string path = rig.WaitForKey();
+        byte[] key = KeyFrom(path);
+        File.Delete(path);
+        Check.True(Until(() => TryKeyFrom(path) is { } k && k.SequenceEqual(key)), "deleted from outside: it reappears, with the same key");
+        RemoteKeyFile.Write(rig.KeyDir, rig.Name, RandomNumberGenerator.GetBytes(32));   // something else in its place
+        Check.True(Until(() => TryKeyFrom(path) is { } k && k.SequenceEqual(key)), "changed from outside: our key again");
+        using var c = rig.Connect();
+        string nonce = Nonce();
+        c.Send("{\"t\":\"hello\",\"proto\":1,\"nonce\":\"" + nonce + "\"}");
+        Check.Equal(RemoteProtocol.Proof(key, rig.Name, Convert.FromBase64String(nonce)), c.NextJson().GetProperty("proof").GetString(), "the server's key did not change");
+    }
+
+    [UnitTest]
+    public static void Remote_the_key_upkeep_touches_the_file_every_interval_and_at_once_on_RefreshKeyNow()
+    {
+        // The contract with streamdeck/src/handshake.ts: the plugin calls a key file stale after StaleAfter without a touch.
+        Check.Equal(60.0, RemoteKeyFile.RefreshInterval.TotalSeconds, "refresh interval (contract)");
+        Check.Equal(300.0, RemoteKeyFile.StaleAfter.TotalSeconds, "staleness limit (contract)");
+        Check.True(RemoteKeyFile.StaleAfter >= 2 * RemoteKeyFile.RefreshInterval + RemoteKeyFile.RetryMax, "a missed refresh and a retry never make it stale");
+        DateTime old = DateTime.UtcNow - TimeSpan.FromHours(1);
+        bool Fresh(string p) { try { return File.GetLastWriteTimeUtc(p) > DateTime.UtcNow - TimeSpan.FromMinutes(5); } catch (IOException) { return false; } }
+        using (var rig = new Rig(new RemoteServerOptions { KeyRefresh = TimeSpan.FromMilliseconds(100) }, Sample()))
+        {
+            string path = rig.WaitForKey();
+            byte[] key = KeyFrom(path);
+            File.SetLastWriteTimeUtc(path, old);
+            Check.False(Fresh(path), "made old");
+            Check.True(Until(() => Fresh(path)), "touched on the interval");
+            Check.True(KeyFrom(path).SequenceEqual(key), "touched, the key is the same");
+        }
+        using (var rig = new Rig(new RemoteServerOptions { KeyRefresh = TimeSpan.FromHours(1) }, Sample()))
+        {
+            string path = rig.WaitForKey();
+            File.SetLastWriteTimeUtc(path, old);
+            rig.Server.RefreshKeyNow();   // what a resume from sleep does
+            Check.True(Until(() => Fresh(path)), "touched at once, not an interval later");
+        }
+    }
+
+    [UnitTest]
+    public static void Remote_no_key_upkeep_runs_after_dispose()
+    {
+        var rig = new Rig(new RemoteServerOptions
+        {
+            KeyRefresh = TimeSpan.FromMilliseconds(20), KeyRetryStart = TimeSpan.FromMilliseconds(10), KeyRetryMax = TimeSpan.FromMilliseconds(20),
+        }, Sample());
+        try
+        {
+            string path = rig.WaitForKey();
+            Check.True(Until(() => rig.Server.KeyUpkeepRuns >= 2), "the upkeep runs");
+            rig.Server.Dispose();
+            Check.False(File.Exists(path), "deleted by Dispose");
+            Check.True(Until(() => rig.Server.KeyUpkeepEnded), "the upkeep ended with Dispose");
+            int runs = rig.Server.KeyUpkeepRuns;
+            rig.Server.RefreshKeyNow();   // a resume after Dispose: nothing is there to do it
+            Check.Equal(runs, rig.Server.KeyUpkeepRuns, "no pass after it ended");
+            Check.False(File.Exists(path), "not written again");
+            Check.Equal(0, Directory.GetFileSystemEntries(rig.KeyDir).Length, "nothing left in the folder");
+        }
+        finally { rig.Dispose(); }
+    }
+
+    [UnitTest]
+    public static void Remote_WithdrawKey_deletes_the_key_at_once_and_it_is_never_published_again()
+    {
+        using var rig = new Rig(new RemoteServerOptions
+        {
+            KeyRefresh = TimeSpan.FromMilliseconds(20), KeyRetryStart = TimeSpan.FromMilliseconds(10), KeyRetryMax = TimeSpan.FromMilliseconds(20),
+        }, Sample());
+        string path = rig.WaitForKey();
+        rig.Server.WithdrawKey();   // what the session end does first
+        Check.False(File.Exists(path), "gone at once, while the pipe still runs");
+        for (int i = 0; i < 3; i++)
+        {
+            using var c = rig.Connect();
+            c.Join();   // still served: every accept would publish again, and does not
+        }
+        rig.Server.RefreshKeyNow();
+        using (var c = rig.Connect()) c.Join();
+        Check.False(File.Exists(path), "never published again");
+        rig.Server.WithdrawKey();   // twice is fine
+    }
+
+    // ------------------------------------------------------------------ the key folder's parents (elevated Clink)
+
+    private static readonly byte[] SomeKey = Enumerable.Range(0, 32).Select(i => (byte)(i * 5 + 1)).ToArray();
+
+    private static SecurityIdentifier? RealOwner(string folder) =>
+        new DirectoryInfo(folder).GetAccessControl(AccessControlSections.Owner).GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier;
+
+    [UnitTest]
+    public static void Remote_elevated_the_key_folder_is_only_made_inside_a_folder_the_user_owns()
+    {
+        using var dir = new TempDir();
+        var user = WindowsIdentity.GetCurrent().User!;
+        var system = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
+        var someoneElses = new RemoteKeyFileHooks { Owner = _ => system };
+        const string pipe = "Clink.Remote.dev.unittest";
+        // the parent (Clink) is there and someone else's: remote is not made
+        string parent = dir.File("Clink");
+        Directory.CreateDirectory(parent);
+        string folder = Path.Combine(parent, "remote");
+        var refused = Check.Throws<RemoteKeyFolderUntrustedException>(() => RemoteKeyFile.Write(folder, pipe, SomeKey, elevated: true, hooks: someoneElses), "a parent that is not the user's");
+        Check.Contains(refused.Message, "the folder above it is not the user's");
+        Check.False(Directory.Exists(folder), "remote was not made");
+        Check.Equal(0, Directory.GetFileSystemEntries(parent).Length, "nothing at all was made in it");
+        // the parent is missing and the folder above it is someone else's: neither is made
+        string missing = dir.File("Clink2");
+        string folder2 = Path.Combine(missing, "remote");
+        Check.Throws<RemoteKeyFolderUntrustedException>(() => RemoteKeyFile.Write(folder2, pipe, SomeKey, elevated: true, hooks: someoneElses), "the folder above the missing parent is not the user's");
+        Check.False(Directory.Exists(missing), "the parent was not made");
+        // not elevated, the user's own token makes them (nothing it could not make anyway): the seam is not asked
+        string folder3 = Path.Combine(dir.File("Clink3"), "remote");
+        RemoteKeyFile.Write(folder3, pipe, SomeKey, elevated: false, hooks: someoneElses);
+        Check.True(File.Exists(RemoteKeyFile.PathFor(folder3, pipe)), "not elevated: written");
+        // the user's own folders pass, and a missing parent is made with the user as owner
+        if (RealOwner(dir.Path) != user) { Log.Warn("[unittest] the temp folder is not the user's: the positive elevated case is not checked here"); return; }
+        RemoteKeyFile.Write(folder, pipe, SomeKey, elevated: true);
+        Check.Equal(Convert.ToBase64String(SomeKey), ReadShared(RemoteKeyFile.PathFor(folder, pipe)), "a user-owned parent: written");
+        RemoteKeyFile.Write(folder2, pipe, SomeKey, elevated: true);
+        Check.Equal(Convert.ToBase64String(SomeKey), ReadShared(RemoteKeyFile.PathFor(folder2, pipe)), "a missing parent in a user-owned folder: made, and written");
+        Check.Equal(user, RealOwner(missing), "the parent made elevated is the user's");
+        Check.Equal(user, RealOwner(folder2), "and so is remote");
+    }
+
+    [UnitTest]
+    public static void Remote_elevated_a_parent_junction_is_judged_where_it_points()
+    {
+        using var dir = new TempDir();
+        var user = WindowsIdentity.GetCurrent().User!;
+        const string pipe = "Clink.Remote.dev.unittest";
+        // a moved AppData: the parent is a junction to a folder of the user's elsewhere
+        string moved = dir.File("moved");
+        Directory.CreateDirectory(moved);
+        string link = dir.File("Clink");
+        if (!TestJunction.TryMake(link, moved, out string why)) TestJunction.Skipped(nameof(Remote_elevated_a_parent_junction_is_judged_where_it_points), why);
+        string system32 = Environment.GetFolderPath(Environment.SpecialFolder.System);
+        string sysLink = dir.File("ClinkSys");
+        try
+        {
+            if (RealOwner(moved) == user)
+            {
+                RemoteKeyFile.Write(Path.Combine(link, "remote"), pipe, SomeKey, elevated: true);
+                Check.Equal(Convert.ToBase64String(SomeKey), ReadShared(RemoteKeyFile.PathFor(Path.Combine(moved, "remote"), pipe)), "a moved, user-owned parent passes");
+                Check.True(RemoteKeyFile.Delete(Path.Combine(link, "remote"), pipe, SomeKey), "and the file is deleted through it");
+            }
+            else Log.Warn("[unittest] the temp folder is not the user's: the moved-AppData case is not checked here");
+            // a junction to a system folder: judged where it points (not the user's), and nothing is made there. Only when not elevated,
+            // so that even a broken check could not make a folder in it.
+            if (ProcessElevated()) return;
+            Check.True(TestJunction.TryMake(sysLink, system32, out string why2), "a junction to the system folder: " + why2);
+            var refused = Check.Throws<RemoteKeyFolderUntrustedException>(() => RemoteKeyFile.Write(Path.Combine(sysLink, "remote"), pipe, SomeKey, elevated: true), "a parent that points to a system folder");
+            Check.Contains(refused.Message, "the folder above it is not the user's");
+            Check.False(Directory.Exists(Path.Combine(system32, "remote")), "nothing was made there");
+        }
+        finally
+        {
+            TestJunction.Remove(link);
+            TestJunction.Remove(sysLink);
+        }
+    }
+
+    [UnitTest]
+    public static void Remote_a_parent_re_pointed_after_the_check_does_not_divert_the_write()
+    {
+        using var dir = new TempDir();
+        const string pipe = "Clink.Remote.dev.unittest";
+        string a = dir.File("a"), b = dir.File("b");
+        Directory.CreateDirectory(a);
+        Directory.CreateDirectory(Path.Combine(b, "remote"));
+        string link = dir.File("Clink");
+        if (!TestJunction.TryMake(link, a, out string why)) TestJunction.Skipped(nameof(Remote_a_parent_re_pointed_after_the_check_does_not_divert_the_write), why);
+        try
+        {
+            string folder = Path.Combine(link, "remote");
+            RemoteKeyFile.Write(folder, pipe, SomeKey);   // makes a\remote
+            byte[] next = RandomNumberGenerator.GetBytes(32);
+            bool repointed = false;
+            var hooks = new RemoteKeyFileHooks { AfterCheck = () => { TestJunction.Remove(link); repointed = TestJunction.TryMake(link, b, out _); } };
+            RemoteKeyFile.Write(folder, pipe, next, hooks: hooks);
+            Check.True(repointed, "the parent junction was re-pointed between the check and the write");
+            Check.Equal(Convert.ToBase64String(next), ReadShared(RemoteKeyFile.PathFor(Path.Combine(a, "remote"), pipe)), "written into the folder that was checked");
+            Check.Equal(0, Directory.GetFileSystemEntries(Path.Combine(b, "remote")).Length, "nothing went where the link points now");
+            Check.Equal(1, Directory.GetFileSystemEntries(Path.Combine(a, "remote")).Length, "no temp file left");
+        }
+        finally { TestJunction.Remove(link); }
+    }
+
+    [UnitTest]
+    public static void Remote_a_temp_file_that_lands_outside_the_key_folder_is_refused_and_removed()
+    {
+        using var dir = new TempDir();
+        const string pipe = "Clink.Remote.dev.unittest";
+        string folder = dir.File("remote"), elsewhere = dir.File("elsewhere");
+        Directory.CreateDirectory(elsewhere);
+        RemoteKeyFile.Write(folder, pipe, SomeKey);   // an older file of ours, to see it is not replaced
+        var hooks = new RemoteKeyFileHooks { TempPath = p => Path.Combine(elsewhere, Path.GetFileName(p)) };   // as a link swapped in at the last moment would
+        var refused = Check.Throws<RemoteKeyFolderUntrustedException>(() => RemoteKeyFile.Write(folder, pipe, RandomNumberGenerator.GetBytes(32), hooks: hooks), "a temp file outside the folder");
+        Check.Contains(refused.Message, "did not land in the key folder");
+        Check.Equal(0, Directory.GetFileSystemEntries(elsewhere).Length, "the stray file was removed");
+        Check.Equal(Convert.ToBase64String(SomeKey), ReadShared(RemoteKeyFile.PathFor(folder, pipe)), "the file in place is untouched");
+        Check.Equal(1, Directory.GetFileSystemEntries(folder).Length, "nothing else in the folder");
     }
 }

@@ -27,11 +27,15 @@ internal sealed partial class AppController : IRemoteHost
     bool IRemoteHost.ClipsEnabled => Settings.ClipsEnabled;
     void IRemoteHost.Run(string command) => _ui.BeginInvoke(() => RunCommand(command));
 
-    private void StartRemote()
+    /// <param name="keyDir">Null: <see cref="RemoteKeyFile.DefaultDir"/>. A test names a temp folder (<see cref="StartRemoteForTests"/>).</param>
+    private void StartRemote(string? keyDir = null)
     {
         try
         {
-            var server = new RemoteServer(this, RemotePipeName);
+            // The key file for the handshake goes to the real %LOCALAPPDATA%\Clink\remote, dev instances included: the pipe name carries the
+            // dev suffix, so files never collide. A deliberate carve-out from the DevOptions rule that a dev run keeps its files in its own data folder
+            // (the Stream Deck plugin looks in one place only).
+            var server = new RemoteServer(this, RemotePipeName, new RemoteServerOptions { KeyDir = keyDir ?? RemoteKeyFile.DefaultDir });
             _remote = server;
             _remoteClipNotSaved = reason => server.PublishEvent(RemoteProtocol.ClipNotSaved(reason));
             ClipNotSaved += _remoteClipNotSaved;
@@ -46,6 +50,18 @@ internal sealed partial class AppController : IRemoteHost
         var server = _remote;
         _remote = null;
         try { server?.Dispose(); } catch (Exception ex) { Log.Warn("remote: stop: " + ex.Message); }
+    }
+
+    /// <summary>Deletes the remote key file now, for good, without stopping the pipe (session end, a crash). Any thread; never throws.</summary>
+    internal void WithdrawRemoteKey()
+    {
+        try { _remote?.WithdrawKey(); } catch (Exception) { }
+    }
+
+    /// <summary>Checks and touches the remote key file at once (resume from sleep). Any thread; never blocks, never throws.</summary>
+    private void RefreshRemoteKey()
+    {
+        try { _remote?.RefreshKeyNow(); } catch (Exception) { }
     }
 
     /// <summary>What a remote client sees now. UI thread. Booleans, whole numbers and fixed codes only.</summary>
@@ -175,6 +191,9 @@ internal sealed partial class AppController : IRemoteHost
     }
 
     // ---- test seams (no engine runs in a unit test)
+
+    /// <summary>Starts the pipe server as <see cref="Start"/> does, with its key file in <paramref name="keyDir"/> (a temp folder).</summary>
+    internal void StartRemoteForTests(string keyDir) => StartRemote(keyDir);
 
     /// <summary>A start was asked for while the recorder was not ready (what <see cref="RecordingQueued"/> reads).</summary>
     internal void QueueRecordingForTests() => _recordWhenReadyUntil = DateTime.UtcNow + TimeSpan.FromSeconds(30);

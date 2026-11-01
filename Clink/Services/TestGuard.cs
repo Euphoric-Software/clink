@@ -56,7 +56,7 @@ internal static class TestGuard
             || full.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
     }
 
-    /// <summary>The other folder a user's Clink keeps files in, <c>%LOCALAPPDATA%\Clink</c> (the updates), ignoring every override.</summary>
+    /// <summary>The other folder a user's Clink keeps files in, <c>%LOCALAPPDATA%\Clink</c> (the updates, the remote key files), ignoring every override.</summary>
     internal static string TrueLocalDir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Clink");
 
     /// <summary>The default clips folder, <c>Videos\Clink</c> (the default screenshots folder, <c>Screenshots</c>, is inside it), ignoring every override. The archive has no default folder: it is off until the user picks one.</summary>
@@ -68,7 +68,7 @@ internal static class TestGuard
         if (!Active) return;
         string what;
         if (IsUnderTrueRealDir(path)) what = "a write to the real settings folder";
-        else if (IsUnderTrueRealDir(path, TrueLocalDir)) what = "a write to the real local Clink folder (updates)";
+        else if (IsUnderTrueRealDir(path, TrueLocalDir)) what = "a write to the real local Clink folder (%LOCALAPPDATA%\\Clink)";
         else if (IsUnderTrueRealDir(path, TrueClipsDir)) what = "a write to the real clips or screenshots folder";
         else return;
         Refuse(what + " was refused: " + path, "write to the real settings folder");
