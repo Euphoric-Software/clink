@@ -374,6 +374,45 @@ internal static class SettingsTests
         Check.False(s.MainHotkeyNeedsSetup);
     }
 
+    [UnitTest]
+    public static void A_saved_bitrate_loads_unchanged_whatever_the_codec()
+    {
+        // Codec-aware preset defaults never rewrite a file: a v0.4.x HEVC file that holds 20 keeps 20.
+        using var dir = new TempDir();
+        var s = LoadFrom(dir, """{ "Resolution": "1080p", "Fps": 60, "BitrateMbps": 20, "Codec": "hevc" }""");
+        Check.Equal(20, s.BitrateMbps);
+        Check.Equal("hevc", s.Codec);
+        using var dir2 = new TempDir();
+        Check.Equal(14, LoadFrom(dir2, """{ "BitrateMbps": 14, "Codec": "h264" }""").BitrateMbps);
+    }
+
+    [UnitTest]
+    public static void BitrateChosen_defaults_to_false_and_round_trips_through_save_and_load()
+    {
+        using var dir = new TempDir();
+        var legacy = LoadFrom(dir, """{ "BitrateMbps": 14, "Codec": "h264" }""");
+        Check.False(legacy.BitrateChosen, "a file without the flag loads as false");
+        Check.False(new Settings().BitrateChosen);
+        legacy.BitrateChosen = true;
+        legacy.Save();
+        using var saved = JsonDocument.Parse(File.ReadAllText(dir.File("settings.json")));
+        Check.True(saved.RootElement.GetProperty("BitrateChosen").GetBoolean(), "written");
+        Check.True(Settings.Load().BitrateChosen, "read back");
+        Check.True(Settings.FromJson("""{ "BitrateChosen": true, "BitrateMbps": 14 }""").BitrateChosen);
+    }
+
+    [UnitTest]
+    public static void BitrateChosen_alone_is_no_import_offer_but_travels_with_one()
+    {
+        Check.True(SettingsImport.HasLabelOrIsVolatile(nameof(Settings.BitrateChosen)));
+        var flagOnly = SettingsImport.Differences("""{ "BitrateMbps": 14 }""", """{ "BitrateMbps": 14, "BitrateChosen": true }""");
+        Check.Equal(0, flagOnly.Count);
+        var withBitrate = SettingsImport.Differences("""{ "BitrateMbps": 14 }""", """{ "BitrateMbps": 20, "BitrateChosen": true }""");
+        Check.Equal(new[] { "video quality" }, withBitrate.ToArray());
+        string taken = SettingsImport.KeepOurOwn("""{ "BitrateMbps": 20, "BitrateChosen": true }""", """{ "BitrateMbps": 14 }""", keepOurToken: false);
+        Check.True(Settings.FromJson(taken).BitrateChosen, "the flag is taken over with the import");
+    }
+
     // ------------------------------------------------------------------ older files
 
     [UnitTest]

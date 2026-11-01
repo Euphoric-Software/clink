@@ -480,9 +480,11 @@ internal static class SettingsImport
     internal static bool IsTokenUnusable(Settings s) => !string.IsNullOrEmpty(s.CopiumTokenProtected) && s.CopiumToken == null;
 
     // Differences that say nothing: this installation's own settings (above), the schema number, whether the audio banner was
-    // dismissed, and the protected Copium token (its DPAPI text differs on every save: the token is compared decrypted).
+    // dismissed, whether the bitrate was picked (it travels with an import but is never a reason for an offer), and the
+    // protected Copium token (its DPAPI text differs on every save: the token is compared decrypted).
     private static bool IsVolatile(string key) =>
         IsOwnKey(key)
+        || key.Equals(nameof(Settings.BitrateChosen), StringComparison.OrdinalIgnoreCase)
         || key.Equals(nameof(Settings.SchemaVersion), StringComparison.OrdinalIgnoreCase)
         || key.Equals(nameof(Settings.AudioSetupSeen), StringComparison.OrdinalIgnoreCase)
         || key.Equals(nameof(Settings.SeededHotkeyDefaults), StringComparison.OrdinalIgnoreCase)

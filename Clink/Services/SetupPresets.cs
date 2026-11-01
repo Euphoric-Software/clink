@@ -24,6 +24,75 @@ internal static class SetupPresets
         _ => null,
     };
 
+    /// <summary>The bitrates (Mbps) the Capture page's bitrate box offers, ascending. Every <see cref="DefaultBitrateMbps"/> is one of them.</summary>
+    public static readonly IReadOnlyList<int> BitrateChoices = new[] { 4, 6, 8, 10, 12, 14, 16, 20, 25, 30, 40, 50, 60, 80, 100 };
+
+    /// <summary>
+    /// The bitrate a preset's resolution and frame rate start at for a codec, as percent of the preset's H.264 value: H.264 100,
+    /// HEVC 65, AV1 50 (the same picture quality in fewer bits). Rounded to <see cref="BitrateChoices"/>: the nearest entry, a tie
+    /// going to the higher one (so quality, not size, wins a doubt). Light 8 -> 6 / 4, Balanced 20 -> 14 / 10 (13 is 12 or 14: 14),
+    /// High 40 -> 25 / 20. Null when the resolution and frame rate are none of the presets (Native, 1080p30, ...): there is no
+    /// default to follow, so a codec change leaves the bitrate alone. Unknown codecs count as H.264, like the engine does.
+    /// </summary>
+    public static int? DefaultBitrateMbps(string? resolution, int fps, string? codec)
+    {
+        foreach (var p in new[] { QualityPreset.Light, QualityPreset.Balanced, QualityPreset.High })
+        {
+            var v = ValuesOf(p)!.Value;
+            if (!string.Equals(v.Resolution, resolution, StringComparison.OrdinalIgnoreCase) || v.Fps != fps) continue;
+            int percent = Clink.Engine.EngineConfig.NormalizeCodec(codec) switch { "hevc" => 65, "av1" => 50, _ => 100 };
+            return NearestChoice(v.BitrateMbps * percent);
+        }
+        return null;
+    }
+
+    // hundredths of a Mbps -> the nearest BitrateChoices entry; whole-number arithmetic so 13.00 is exactly a tie, ties go up
+    private static int NearestChoice(int hundredths)
+    {
+        int best = BitrateChoices[0];
+        foreach (int c in BitrateChoices)
+            if (Math.Abs(c * 100 - hundredths) <= Math.Abs(best * 100 - hundredths)) best = c;
+        return best;
+    }
+
+    /// <summary>
+    /// A codec change on the Capture page: when the bitrate is still the default of the old codec at this resolution and frame rate it
+    /// becomes the new codec's default, so the combo follows the codec; any other bitrate (a custom one, or a non-preset
+    /// resolution / frame rate) is kept. Returns whether it changed the bitrate. Switching back returns to the original value.
+    /// </summary>
+    public static bool FollowCodec(Settings s, string? oldCodec, string? newCodec)
+    {
+        if (s.BitrateChosen) return false;   // the user picked this bitrate: never overridden
+        if (DefaultBitrateMbps(s.Resolution, s.Fps, oldCodec) is not { } was || was != s.BitrateMbps) return false;
+        if (DefaultBitrateMbps(s.Resolution, s.Fps, newCodec) is not { } now || now == s.BitrateMbps) return false;
+        s.BitrateMbps = now;
+        return true;
+    }
+
+    /// <summary>
+    /// The bitrate combo reported <paramref name="picked"/> (0 or less = nothing). Stores it; when it differs from the stored value
+    /// and <paramref name="byUser"/> (the user changed the bitrate box, not some other box or a programmatic fill) it also marks the
+    /// bitrate as chosen, which <see cref="FollowCodec"/> then never overrides. Returns whether the value changed.
+    /// </summary>
+    public static bool PickBitrate(Settings s, int picked, bool byUser)
+    {
+        if (picked <= 0 || picked == s.BitrateMbps) return false;
+        s.BitrateMbps = picked;
+        if (byUser) s.BitrateChosen = true;
+        return true;
+    }
+
+    /// <summary>Whether two codec names are different codecs once normalized ("H.265" and "hevc" are the same; unknown counts as h264).</summary>
+    public static bool IsCodecChange(string? oldCodec, string? newCodec) =>
+        Clink.Engine.EngineConfig.NormalizeCodec(oldCodec) != Clink.Engine.EngineConfig.NormalizeCodec(newCodec);
+
+    /// <summary>The bitrates the box lists for a stored value: <see cref="BitrateChoices"/>, plus the stored value (a hand edit, e.g. 13) in its place when it is not one of them.</summary>
+    public static IReadOnlyList<int> BitrateItems(int stored)
+    {
+        if (stored <= 0 || BitrateChoices.Contains(stored)) return BitrateChoices;
+        return BitrateChoices.Append(stored).OrderBy(x => x).ToArray();
+    }
+
     /// <summary>The preset the values are exactly, otherwise Custom.</summary>
     public static QualityPreset PresetOf(string? resolution, int fps, int bitrateMbps)
     {
@@ -35,15 +104,28 @@ internal static class SetupPresets
         return QualityPreset.Custom;
     }
 
-    public static QualityPreset PresetOf(Settings s) => PresetOf(s.Resolution, s.Fps, s.BitrateMbps);
+    /// <summary>The preset the settings are: its H.264 values, or its default bitrate for the settings' codec.</summary>
+    public static QualityPreset PresetOf(Settings s)
+    {
+        var p = PresetOf(s.Resolution, s.Fps, s.BitrateMbps);
+        if (p != QualityPreset.Custom) return p;
+        if (DefaultBitrateMbps(s.Resolution, s.Fps, s.Codec) != s.BitrateMbps) return QualityPreset.Custom;
+        foreach (var q in new[] { QualityPreset.Light, QualityPreset.Balanced, QualityPreset.High })
+        {
+            var v = ValuesOf(q)!.Value;
+            if (string.Equals(v.Resolution, s.Resolution, StringComparison.OrdinalIgnoreCase) && v.Fps == s.Fps) return q;
+        }
+        return QualityPreset.Custom;
+    }
 
-    /// <summary>Writes a preset's resolution, frame rate and bitrate into the settings. Custom changes nothing.</summary>
+    /// <summary>Writes a preset's resolution, frame rate and bitrate (the default for the settings' current codec) into the settings. Custom changes nothing.</summary>
     public static void Apply(Settings s, QualityPreset preset)
     {
         if (ValuesOf(preset) is not { } v) return;
         s.Resolution = v.Resolution;
         s.Fps = v.Fps;
-        s.BitrateMbps = v.BitrateMbps;
+        s.BitrateMbps = DefaultBitrateMbps(v.Resolution, v.Fps, s.Codec) ?? v.BitrateMbps;
+        s.BitrateChosen = false;   // a preset's bitrate is a default again
     }
 
     /// <summary>True when the seconds are one of <see cref="ReplayChoices"/> (otherwise the setting is a custom length and the page keeps it).</summary>
