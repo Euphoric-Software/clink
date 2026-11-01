@@ -594,6 +594,8 @@ internal sealed partial class AppController : IDisposable
         else if (GameOnly) { Log.Info("Recording mode: only while a game or custom app runs"); PollGame(); }
         else StartEngine();
         Archive.Start();
+        try { ShareCache.Current.StartSchedule(); }   // smaller share copies: cleaned up shortly after start and hourly, on a pool thread
+        catch (Exception ex) { Log.Warn("share cache: cleanup not scheduled: " + ex.Message); }   // a bad root must not stop the start
         ScheduleAccountRefresh();   // Copium account name / Copium+ read once, a few seconds from now, in the background
         ApplyStatusDot();
         if (!IsDev) Updater.StartBackgroundChecks();   // a --dev instance never contacts the update feed (and a build without one never contacts anything)
@@ -2163,6 +2165,7 @@ internal sealed partial class AppController : IDisposable
         SystemEvents.PowerModeChanged -= OnPowerModeChanged;
         try { Hotkeys.Uninstall(); } catch { }
         try { Archive.Stop(); } catch { }
+        try { ShareCache.DisposeCurrent(); } catch { }
         try { _screenshots?.CancelUploads(ExitStopLimit); } catch (Exception ex) { Log.Warn("Exit: screenshot uploads: " + ex.Message); }   // a running upload ends within 4 s (the HTTP call is cancelled)
         try { Toasts.CloseAll(); } catch { }
         try { _dot?.Close(); _dot = null; } catch { }
