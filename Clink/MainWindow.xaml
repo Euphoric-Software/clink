@@ -374,6 +374,26 @@
                                         </WrapPanel>
                                     </StackPanel>
                                 </Border>
+
+                                <!-- Sharing: what Share does with a clip that is over Discord's upload limit (the Share window offers a smaller copy). -->
+                                <TextBlock Style="{StaticResource H}" Text="{l:T 'SHARING'}" Margin="0,16,0,6" />
+                                <Border Style="{StaticResource Card}">
+                                    <StackPanel>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Style="{StaticResource MutedText}" Text="{l:T 'My Discord plan'}" VerticalAlignment="Center" Margin="2,0,0,0" />
+                                            <ComboBox x:Name="DiscordPlanCombo" Grid.Column="1" Margin="10,0,0,0" SelectionChanged="DiscordPlanChanged"
+                                                      AutomationProperties.Name="{l:T 'My Discord plan'}"
+                                                      ToolTip="{l:T 'The upload limit of your Discord account. For a clip over it, the Share window can make a smaller copy that fits; the clip itself is never changed'}" />
+                                        </Grid>
+                                        <CheckBox x:Name="ShareCopiesDuringGamesCheck" Content="{l:T 'Make smaller copies during games'}" Margin="2,12,0,0"
+                                                  Checked="ShareCopiesDuringGamesChanged" Unchecked="ShareCopiesDuringGamesChanged"
+                                                  ToolTip="{l:T 'Making a copy uses your GPU for a little while, at low priority. Off: while a game is in front no copy is made; open Clink and make it after the game'}" />
+                                    </StackPanel>
+                                </Border>
                             </StackPanel>
                         </ScrollViewer>
                     </TabItem>

@@ -293,12 +293,11 @@ internal static class L10nEngineStatusTests
         var used = hits.Select(h => h.Key).ToHashSet(StringComparer.Ordinal);
         Check.Equal(Array.Empty<string>(), engineKeys.Where(k => !used.Contains(k)).OrderBy(k => k, StringComparer.Ordinal).ToArray(), "engine.json keys nothing asks for");
         // the track names of the checkboxes are reused, not copied (a key in two files must not differ, and none is added twice)
-        foreach (string k in new[] { "track|Mix", "track|Game", "track|Mic", "track|Desktop" })
+        foreach (string k in new[] { "track|Mix", "track|Game", "track|Mic", "track|Desktop", "track|Voice" })   // (track|Voice: the status line's own word for the voice-chat track; the checkbox says "Voice chat". One copy, in main.json)
         {
             Check.True(main.Contains(k) && !engineKeys.Contains(k), k + " lives in main.json only");
             Check.True(used.Contains(k), k + " is used");
         }
-        Check.True(engineKeys.Contains("track|Voice") && !main.Contains("track|Voice"), "\"Voice\" is the status line's own word (the checkbox says \"Voice chat\")");
 
         // each key's English is the text the code shows: the part after the context (or the key itself)
         var english = L.Catalogs.English.Entries;

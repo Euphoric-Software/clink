@@ -566,7 +566,7 @@ public partial class ClipsPane : UserControl
             if (!await EnsureFileAsync(row)) { row.IsUploading = false; return; }
         }
         row.Status = row.HasLink ? null : L.T("Uploading…");
-        var progress = new Progress<double>(p => { row.Progress = p; row.Status = L.T("Uploading… {percent}", ("percent", p.ToString("P0", L.FormatCulture))); });
+        var progress = new Progress<double>(p => { row.Progress = p; row.Status = App.ShareProgressText(row.Entry, p); });
         bool ok = await App.ShareAsync(row.Entry, progress);
         row.IsUploading = false;
         var (status, problem) = ShareStatusFor(ok, App.LastShareOutcome, App.ShareRefusal, App.ShareError, App.Settings.CloudSharingEnabled);

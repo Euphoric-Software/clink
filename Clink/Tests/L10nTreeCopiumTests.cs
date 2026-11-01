@@ -596,9 +596,9 @@ internal static class L10nTreeCopiumTests
         {
             @"UI\ShareWindow.xaml.cs", @"UI\CopiumConsentWindow.xaml.cs", @"UI\CopiumWelcomeWindow.xaml.cs", @"UI\CopiumPlusTick.cs", @"UI\ShareMenu.cs",
             @"Services\ShareChoices.cs", @"Services\ConsentGate.cs", @"Services\CopiumPopupModel.cs", @"Services\CopiumWelcomeModel.cs", @"Services\CopiumClient.cs",
-            @"Services\CopiumConnect.cs", @"Services\CopiumSignInSession.cs", @"Screenshots\CopiumNudge.cs",
+            @"Services\CopiumConnect.cs", @"Services\CopiumSignInSession.cs", @"Screenshots\CopiumNudge.cs", @"Services\ShareFitModel.cs",
         };
-        var hits = L10nSourceScan.CSharp(root, csFiles, new[] { L10nSourceScan.T, L10nSourceScan.Plural, L10nSourceScan.TrLocale });
+        var hits = L10nSourceScan.CSharp(root, csFiles, new[] { L10nSourceScan.T, L10nSourceScan.Plural, L10nSourceScan.TrLocale, "Note.Of(" });   // (Note.Of: ConsentGate and ShareFitModel keep their sentences as notes)
         hits.AddRange(L10nSourceScan.Xaml(root, new[] { @"UI\ShareWindow.xaml", @"UI\CopiumConsentWindow.xaml", @"UI\CopiumWelcomeWindow.xaml" }));
         var used = hits.Select(h => h.Key).ToHashSet(StringComparer.Ordinal);
         var problems = hits.Where(h => !copium.Contains(h.Key) && !core.Contains(h.Key) && !others.Contains(h.Key)).Select(h => h.File + ": " + h.Key).Distinct().ToArray();

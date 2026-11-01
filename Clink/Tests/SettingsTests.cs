@@ -265,6 +265,112 @@ internal static class SettingsTests
         Check.Null(Missing(fixture.RootElement, again.ToElement(), "$"), "and reads back the same");
     }
 
+    [UnitTest]
+    public static void A_file_with_the_sharing_keys_loads_whole_and_every_key_survives_a_save()
+    {
+        // The v0.4.1 fixture with the two sharing keys added, neither at its default: nothing in the file is lost or reset.
+        Settings.SeedDefaults = true;
+        string json = V041.Replace("\"SizeTarget\": \"discord50\",", "\"SizeTarget\": \"discord50\",\n  \"DiscordPlan\": \"nitro\",\n  \"ShareCopiesDuringGames\": false,");
+        Check.True(json.Contains("\"DiscordPlan\": \"nitro\""), "the fixture has the new keys");
+        using var dir = new TempDir();
+        using var fixture = JsonDocument.Parse(json);
+        var s = LoadFrom(dir, json);
+        Check.Equal(Array.Empty<string>(), s.UnreadableValues.ToArray(), "nothing unreadable");
+        Check.True(s.Unknown == null || s.Unknown.Count == 0, "both keys are settings: " + string.Join(", ", s.Unknown?.Keys ?? Enumerable.Empty<string>()));
+        Check.Equal("nitro", s.DiscordPlan, "the plan is not derived again from the size target (discord50 = basic)");
+        Check.False(s.ShareCopiesDuringGames);
+        Check.Null(Missing(fixture.RootElement, s.ToElement(), "$"), "loaded as written");
+        s.Save();
+        using var saved = JsonDocument.Parse(File.ReadAllText(dir.File("settings.json")));
+        Check.Null(Missing(fixture.RootElement, saved.RootElement, "$"), "every key is in the saved file, with its value");
+        var again = Settings.Load();
+        Check.Equal("nitro", again.DiscordPlan);
+        Check.False(again.ShareCopiesDuringGames);
+        Check.Null(Missing(fixture.RootElement, again.ToElement(), "$"), "and reads back the same");
+    }
+
+    [UnitTest]
+    public static void The_Discord_plan_starts_from_the_recording_size_target_and_an_unknown_one_is_free()
+    {
+        string PlanOf(string? sizeTarget, string? plan)
+        {
+            string target = sizeTarget == null ? "" : $"\"SizeTarget\": \"{sizeTarget}\"";
+            string p = plan == null ? "" : $"\"DiscordPlan\": {(plan == "<null>" ? "null" : "\"" + plan + "\"")}";
+            return Settings.FromJson("{ " + string.Join(", ", new[] { target, p }.Where(x => x != "")) + " }").DiscordPlan!;
+        }
+
+        // No plan in the file (an older Clink): the plan follows the size target.
+        Check.Equal("free", PlanOf(null, null), "no keys at all");
+        Check.Equal("free", PlanOf("none", null));
+        Check.Equal("free", PlanOf("discord10", null));
+        Check.Equal("basic", PlanOf("discord50", null));
+        Check.Equal("nitro", PlanOf("discord500", null));
+        Check.Equal("free", PlanOf("copium200", null), "a Copium target says nothing about Discord");
+        Check.Equal("free", PlanOf("copiumplus", null));
+        Check.Equal("free", PlanOf("nonsense", null), "an unknown size target is none");
+        Check.Equal("nitro", PlanOf("discord500", "<null>"), "an explicit null is the same as missing");
+        // A plan in the file is kept, whatever the size target says.
+        Check.Equal("free", PlanOf("discord500", "free"));
+        Check.Equal("basic", PlanOf("none", "basic"));
+        Check.Equal("nitro", PlanOf("discord10", "nitro"));
+        Check.Equal("nitro", PlanOf(null, "Nitro"), "any case");
+        Check.Equal("basic", PlanOf(null, " BASIC "), "and surrounding spaces");
+        // An unknown plan is free (not derived: the file said something).
+        Check.Equal("free", PlanOf("discord500", "gold"));
+        Check.Equal("free", PlanOf("discord50", ""));
+        Check.Equal("free", PlanOf("discord50", "discord50"), "a target id is not a plan id");
+
+        // The plan maps to the target ids, so bytes and labels come only from Capabilities.
+        Check.Equal(new[] { "free", "basic", "nitro" }, Settings.DiscordPlans);
+        Check.Equal(new long[] { 20_000_000, 50_000_000, 1_000_000_000 }, Settings.DiscordPlans.Select(p => ShareFitModel.ForPlan(p).LimitBytes).ToArray());
+    }
+
+    [UnitTest]
+    public static void The_sharing_settings_round_trip_and_a_file_without_them_gets_the_defaults()
+    {
+        using var dir = new TempDir();
+        var fresh = LoadFrom(dir, null);
+        Check.Equal("free", fresh.DiscordPlan, "a fresh install starts at free");
+        Check.True(fresh.ShareCopiesDuringGames, "copies during games are on by default");
+        Check.True(new Settings().ShareCopiesDuringGames);
+
+        foreach (string plan in new[] { "free", "basic", "nitro" })
+        {
+            using var d = new TempDir();
+            var s = LoadFrom(d, "{}");
+            s.DiscordPlan = plan;
+            s.ShareCopiesDuringGames = plan != "basic";
+            s.Save();
+            var back = Settings.Load();
+            Check.Equal(plan, back.DiscordPlan);
+            Check.Equal(plan != "basic", back.ShareCopiesDuringGames);
+            using var doc = JsonDocument.Parse(File.ReadAllText(d.File("settings.json")));
+            Check.Equal(plan, doc.RootElement.GetProperty("DiscordPlan").GetString(), "the key is written");
+            Check.Equal(plan != "basic", doc.RootElement.GetProperty("ShareCopiesDuringGames").GetBoolean());
+        }
+
+        // The migration is saved with the file: a v0.4.1 file with discord50 gets "basic" and keeps it when the size target changes later.
+        using var old = new TempDir();
+        var migrated = LoadFrom(old, V041);
+        Check.Equal("basic", migrated.DiscordPlan, "discord50 = Nitro Basic");
+        Check.True(migrated.ShareCopiesDuringGames);
+        migrated.SizeTarget = "none";
+        migrated.Save();
+        Check.Equal("basic", Settings.Load().DiscordPlan, "no longer follows the size target once it has been written");
+    }
+
+    [UnitTest]
+    public static void The_import_calls_the_sharing_settings_by_their_names()
+    {
+        var plan = SettingsImport.Differences("""{ "DiscordPlan": "free" }""", """{ "DiscordPlan": "nitro" }""");
+        Check.Equal(new[] { "Discord plan" }, plan.ToArray());
+        var games = SettingsImport.Differences("""{ "ShareCopiesDuringGames": true }""", """{ "ShareCopiesDuringGames": false }""");
+        Check.Equal(new[] { "sharing" }, games.ToArray());
+        Check.Equal(Array.Empty<string>(), SettingsImport.Differences("""{ "DiscordPlan": "Nitro" }""", """{ "DiscordPlan": "nitro" }""").ToArray(), "the same plan");
+        Check.Equal(Array.Empty<string>(), SettingsImport.Differences("""{ "SizeTarget": "discord50" }""", """{ "SizeTarget": "discord50", "DiscordPlan": "basic" }""").ToArray(),
+            "a file without the plan and one that says what that file would have made it are the same");
+    }
+
     // ------------------------------------------------------------------ fresh install, defaults
 
     [UnitTest]

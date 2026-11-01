@@ -189,7 +189,7 @@ internal sealed partial class AppController
 
     private async Task<Step> UploadClipStepAsync(ClipEntry entry, IProgress<double>? progress, Action release)
     {
-        bool ok = await ShareAsync(entry, progress, context: ConsentContext.ClipShare, quiet: true, released: release);
+        bool ok = await ShareAsync(entry, progress, context: ConsentContext.ClipShare, quiet: true, released: release, allowFit: false);   // bulk keeps refusing over-limit clips: no smaller copies in v1
         if (ok) return new Step(StepKind.Uploaded);
         if (_cts.IsCancellationRequested) return new Step(StepKind.Stop, L.T("Clink is closing"));
         // No token (the quiet path) or a rejected token: every further clip would fail the same way, so the batch stops.
@@ -227,13 +227,13 @@ internal sealed partial class AppController
             Say(why);
             return new BulkShareResult(0, 0, total, links, 0, 0, 0, why.Shown, declined, false);
         }
-        if (!Settings.CloudSharingEnabled) return Early(Note.Verbatim(CloudOffText));   // (worded by ConsentGate: slice S3b)
+        if (!Settings.CloudSharingEnabled) return Early(CloudOffNote);   // (worded by ConsentGate: slice S3b)
         if (string.IsNullOrWhiteSpace(Settings.CopiumToken)) return Early(BulkNoTokenNote);
         bool needsUpload = false;   // the question is asked only when something will actually be uploaded (not linked already, not over the limit)
         foreach (var item in items) if (string.IsNullOrEmpty(linkOf(item)) && !refused(item)) { needsUpload = true; break; }
         if (needsUpload && !await EnsureCopiumConsentAsync(context))
         {
-            if (Settings.CloudSharingEnabled) SayT("Not uploaded: sharing with Copium is not enabled"); else Say(CloudOffText);
+            if (Settings.CloudSharingEnabled) SayT("Not uploaded: sharing with Copium is not enabled"); else Say(CloudOffNote);
             return new BulkShareResult(0, 0, total, links, 0, 0, 0, null, true, false);
         }
         int uploaded = 0, already = 0, refusedN = 0, busy = 0, failed = 0;

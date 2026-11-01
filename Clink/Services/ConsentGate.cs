@@ -37,7 +37,9 @@ internal readonly record struct ConsentAnswer(ConsentChoice Choice, bool AutoUpl
 internal sealed class ConsentGate
 {
     public static string CloudOffTitle => L.T("Cloud sharing is off");
-    public static string CloudOffText => L.T("Cloud sharing is off — enable it under App → Cloud sharing");
+    public static string CloudOffText => CloudOffNote.Shown;
+    /// <summary>The same sentence as a <see cref="Note"/>: shown translated, logged in English (use it with <c>Say</c>; <see cref="CloudOffText"/> is for display only).</summary>
+    public static Note CloudOffNote => Note.Of("Cloud sharing is off — enable it under App → Cloud sharing");
 
     private readonly Settings _settings;
     private TaskCompletionSource<bool>? _asking;

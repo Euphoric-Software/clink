@@ -6,7 +6,6 @@
 
   "engine-error|The GPU was reset (graphics driver crash or TDR)": "The GPU was reset (graphics driver crash or TDR)",
 
-  "track|Voice": "Voice",
 
   "audio-line|{name} ({detail})": "{name} ({detail})",
 

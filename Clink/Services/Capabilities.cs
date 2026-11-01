@@ -164,7 +164,7 @@ internal static unsafe class Capabilities
     }
 
     /// <summary>LUID and name of the DXGI adapter whose output is this monitor (what <c>D3DDevice.CreateForMonitor</c> picks).</summary>
-    private static bool TryGetAdapterLuid(nint hmonitor, out LUID luid, out string name)
+    internal static bool TryGetAdapterLuid(nint hmonitor, out LUID luid, out string name)
     {
         luid = default; name = "";
         Guid iidFactory = IDXGIFactory1.IID_Guid;

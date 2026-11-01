@@ -33,5 +33,11 @@
   "unit|{n} MB": "{n} MB",
   "unit|{n} GB": "{n} GB",
   "unit|{n} s": "{n} s",
-  "unit|{n} h": "{n} h"
+  "unit|{n} h": "{n} h",
+  "Cancelling…": "Cancelling…",
+  "Cloud sharing is off": "Cloud sharing is off",
+  "Recording stopped": "Recording stopped",
+  "Saving a copy…": "Saving a copy…",
+  "Share to Copium": "Share to Copium",
+  "Uploaded, link copied": "Uploaded, link copied"
 }

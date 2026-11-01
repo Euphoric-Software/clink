@@ -37,6 +37,7 @@
   "Also save voice chat as its own track (it is always part of the mix)": "Also save voice chat as its own track (it is always part of the mix)",
   "Where voice chat comes from. Auto = the first of Discord, TeamSpeak, Slack, Mumble, Zoom or Skype found running; or a running app; or an audio device": "Where voice chat comes from. Auto = the first of Discord, TeamSpeak, Slack, Mumble, Zoom or Skype found running; or a running app; or an audio device",
   "track|Desktop": "Desktop",
+  "track|Voice": "Voice",
   "Extra track: everything you hear from an output device (music, browser, other apps), or an audio input such as a Wave Link mix": "Extra track: everything you hear from an output device (music, browser, other apps), or an audio input such as a Wave Link mix",
   "What the Desktop track records: whatever plays on an output device, or an audio input (a Wave Link / VoiceMeeter mix, a virtual cable)": "What the Desktop track records: whatever plays on an output device, or an audio input (a Wave Link / VoiceMeeter mix, a virtual cable)",
   "Every clip carries the mix as track 1 plus each enabled part as its own track (192 kbps AAC each), so the trim editor can drop or turn down any of them later.": "Every clip carries the mix as track 1 plus each enabled part as its own track (192 kbps AAC each), so the trim editor can drop or turn down any of them later.",
@@ -396,5 +397,12 @@
   "setting|other settings": "other settings",
   "setting|screenshots folder": "screenshots folder",
   "setting|archive location": "archive location",
-  "FPS": "FPS"
+  "FPS": "FPS",
+  "SHARING": "SHARING",
+  "My Discord plan": "My Discord plan",
+  "The upload limit of your Discord account. For a clip over it, the Share window can make a smaller copy that fits; the clip itself is never changed": "The upload limit of your Discord account. For a clip over it, the Share window can make a smaller copy that fits; the clip itself is never changed",
+  "Make smaller copies during games": "Make smaller copies during games",
+  "Making a copy uses your GPU for a little while, at low priority. Off: while a game is in front no copy is made; open Clink and make it after the game": "Making a copy uses your GPU for a little while, at low priority. Off: while a game is in front no copy is made; open Clink and make it after the game",
+  "setting|Discord plan": "Discord plan",
+  "setting|sharing": "sharing"
 }
