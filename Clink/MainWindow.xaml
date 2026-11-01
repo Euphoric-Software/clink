@@ -2,6 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:ui="clr-namespace:Clink.UI"
+        xmlns:l="clr-namespace:Clink.UI"
         Title="Clink" Width="470" Height="780" MinWidth="470" MinHeight="700"
         WindowStyle="None" ResizeMode="CanResizeWithGrip" AllowsTransparency="True" Background="Transparent"
         WindowStartupLocation="CenterScreen" ShowInTaskbar="True" FontFamily="{StaticResource UiFont}" TextOptions.TextFormattingMode="Display">
@@ -45,17 +46,17 @@
                         </TextBlock.Style>
                     </TextBlock>
                     <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="8,0,0,0">
-                        <Button x:Name="UpdateButton" Style="{StaticResource LinkButton}" Content="Update" Click="Update_Click" FontSize="12" FontWeight="SemiBold"
-                                Visibility="Collapsed" Margin="0,0,4,0" ToolTip="Restart Clink to install the downloaded update" />
+                        <Button x:Name="UpdateButton" Style="{StaticResource LinkButton}" Content="{l:T 'verb|Update'}" Click="Update_Click" FontSize="12" FontWeight="SemiBold"
+                                Visibility="Collapsed" Margin="0,0,4,0" ToolTip="{l:T 'Restart Clink to install the downloaded update'}" />
                         <ui:InvokableTextBlock x:Name="VersionText" Style="{StaticResource MutedText}" Text="" VerticalAlignment="Center" TextWrapping="NoWrap" Cursor="Hand" Invoked="Version_Invoked"
-                                   Margin="4,0,8,0" MouseLeftButtonUp="Version_Click" ToolTip="Click for update options" />
+                                   Margin="4,0,8,0" MouseLeftButtonUp="Version_Click" ToolTip="{l:T 'Click for update options'}" />
                         <Popup x:Name="VersionPopup" PlacementTarget="{Binding ElementName=VersionText}" Placement="Top" StaysOpen="False" AllowsTransparency="True" PopupAnimation="Fade" Closed="VersionPopup_Closed">
                             <Border Background="{DynamicResource Panel2}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="6" Padding="10" Margin="0,0,0,2">
                                 <StackPanel>
                                     <TextBlock x:Name="VersionPopupText" Style="{StaticResource MutedText}" Margin="0,0,0,8" />
-                                    <CheckBox x:Name="DevBuildCheck" Content="Dev Build" Checked="DevBuildChanged" Unchecked="DevBuildChanged" Margin="0,0,0,8" ToolTipService.ShowOnDisabled="True"
-                                              ToolTip="Use the latest build from the dev branch instead of the latest release. Dev builds may be unstable; untick to go back to the latest release." />
-                                    <Button x:Name="VersionCheckButton" Style="{StaticResource LinkButton}" Content="Check for updates" Click="CheckUpdate_Click" HorizontalAlignment="Left" ToolTipService.ShowOnDisabled="True" />
+                                    <CheckBox x:Name="DevBuildCheck" Content="{l:T 'Dev Build'}" Checked="DevBuildChanged" Unchecked="DevBuildChanged" Margin="0,0,0,8" ToolTipService.ShowOnDisabled="True"
+                                              ToolTip="{l:T 'Use the latest build from the dev branch instead of the latest release. Dev builds may be unstable; untick to go back to the latest release.'}" />
+                                    <Button x:Name="VersionCheckButton" Style="{StaticResource LinkButton}" Content="{l:T 'Check for updates'}" Click="CheckUpdate_Click" HorizontalAlignment="Left" ToolTipService.ShowOnDisabled="True" />
                                     <!-- Copium: the account line and the automatic-upload box (the Screenshots tab's box in a second place), or the sign-in link. Set from CopiumPopupModel. -->
                                     <StackPanel x:Name="CopiumPopupSection" Margin="0,8,0,0" MaxWidth="300">
                                         <Border BorderBrush="{DynamicResource Border}" BorderThickness="0,1,0,0" Margin="0,0,0,8" />
@@ -66,7 +67,7 @@
                                 </StackPanel>
                             </Border>
                         </Popup>
-                        <Button x:Name="FolderButton" Style="{StaticResource LinkButton}" Content="Clips folder" Click="Folder_Click" FontSize="12" />
+                        <Button x:Name="FolderButton" Style="{StaticResource LinkButton}" Content="{l:T 'Clips folder'}" Click="Folder_Click" FontSize="12" />
                     </StackPanel>
                 </Grid>
             </Border>
@@ -123,23 +124,23 @@
                         <Border x:Name="TestBadge" Grid.Column="1" Visibility="Collapsed" Background="#FFD400" CornerRadius="9" Padding="8,1" Margin="9,0,0,0" VerticalAlignment="Center">
                             <TextBlock x:Name="TestBadgeText" Foreground="#000000" FontWeight="Bold" FontSize="11" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
                         </Border>
-                        <TextBlock x:Name="StatusText" Grid.Column="2" Style="{StaticResource MutedText}" Margin="10,1,0,0" VerticalAlignment="Center" Text="Starting…" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
+                        <TextBlock x:Name="StatusText" Grid.Column="2" Style="{StaticResource MutedText}" Margin="10,1,0,0" VerticalAlignment="Center" Text="{l:T 'Starting…'}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
                                    ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
                     </Grid>
                     <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,8,0">
-                        <Button Style="{StaticResource IconButton}" Content="–" Click="Minimize_Click" ToolTip="Minimize" />
-                        <Button Style="{StaticResource IconButton}" Content="✕" Click="Close_Click" ToolTip="Hide to tray (keeps recording)" />
+                        <Button Style="{StaticResource IconButton}" Content="–" Click="Minimize_Click" ToolTip="{l:T 'Minimize'}" />
+                        <Button Style="{StaticResource IconButton}" Content="✕" Click="Close_Click" ToolTip="{l:T 'Hide to tray (keeps recording)'}" />
                     </StackPanel>
                 </Grid>
 
                 <TabControl x:Name="Tabs" Grid.Row="1" Grid.Column="1">
                     <!-- ===================================================== Capture -->
-                    <TabItem x:Name="CaptureTab" Header="Capture">
+                    <TabItem x:Name="CaptureTab" Header="{l:T 'tab|Capture'}">
                         <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,0,4,0">
                             <StackPanel Margin="0,0,0,4">
                                 <!-- the recorder's settings: collapsed while the Clips feature is off, so only HOTKEYS (screenshots need them) remains -->
                                 <StackPanel x:Name="ClipSettingsPanel">
-                                <TextBlock Style="{StaticResource H}" Text="CAPTURING" Margin="0,10,0,6" />
+                                <TextBlock Style="{StaticResource H}" Text="{l:T 'CAPTURING'}" Margin="0,10,0,6" />
                                 <Border Style="{StaticResource Card}">
                                     <StackPanel>
                                         <ui:MonitorMap x:Name="MonitorMap" />
@@ -147,19 +148,19 @@
                                         <TextBlock x:Name="MonitorDetail" Style="{StaticResource MutedText}" Margin="2,2,0,0" Text="" />
                                         <UniformGrid Columns="4" Margin="0,10,0,0">
                                             <StackPanel Margin="0,0,6,0">
-                                                <TextBlock Style="{StaticResource FieldLabel}" Text="Resolution" />
+                                                <TextBlock Style="{StaticResource FieldLabel}" Text="{l:T 'Resolution'}" />
                                                 <ComboBox x:Name="ResolutionCombo" SelectionChanged="QualityChanged" />
                                             </StackPanel>
                                             <StackPanel Margin="0,0,6,0">
-                                                <TextBlock Style="{StaticResource FieldLabel}" Text="FPS" />
+                                                <TextBlock Style="{StaticResource FieldLabel}" Text="{l:T 'FPS'}" />
                                                 <ComboBox x:Name="FpsCombo" SelectionChanged="QualityChanged" />
                                             </StackPanel>
                                             <StackPanel Margin="0,0,6,0">
-                                                <TextBlock Style="{StaticResource FieldLabel}" Text="Bitrate" />
+                                                <TextBlock Style="{StaticResource FieldLabel}" Text="{l:T 'Bitrate'}" />
                                                 <ComboBox x:Name="BitrateCombo" SelectionChanged="QualityChanged" ItemTemplate="{StaticResource SourceLabel}" />
                                             </StackPanel>
                                             <StackPanel>
-                                                <TextBlock Style="{StaticResource FieldLabel}" Text="Codec" />
+                                                <TextBlock Style="{StaticResource FieldLabel}" Text="{l:T 'Codec'}" />
                                                 <ComboBox x:Name="CodecCombo" SelectionChanged="QualityChanged" ItemContainerStyle="{StaticResource ChoiceItem}" ItemTemplate="{StaticResource SourceLabel}" />
                                             </StackPanel>
                                         </UniformGrid>
@@ -169,12 +170,12 @@
                                                 <ColumnDefinition Width="Auto" />
                                                 <ColumnDefinition Width="*" />
                                             </Grid.ColumnDefinitions>
-                                            <TextBlock Style="{StaticResource MutedText}" Text="Size target" VerticalAlignment="Center" Margin="2,0,0,0" />
+                                            <TextBlock Style="{StaticResource MutedText}" Text="{l:T 'Size target'}" VerticalAlignment="Center" Margin="2,0,0,0" />
                                             <ComboBox x:Name="SizeTargetCombo" Grid.Column="1" Margin="10,0,0,0" SelectionChanged="SizeTargetChanged"
                                                       DropDownOpened="SizeTargetCombo_DropDownOpened" DropDownClosed="SizeTargetCombo_DropDownClosed" IsKeyboardFocusWithinChanged="SizeTargetCombo_FocusWithinChanged"
-                                                      ToolTip="Lowers the bitrate when needed so a clip of the replay length fits the limit (audio tracks counted); never raises it. None = always the bitrate above. Copium and Copium Plus also limit how long a clip may be, and picking Copium Plus ticks &quot;I have Copium+&quot;" />
+                                                      ToolTip="{l:T 'Lowers the bitrate when needed so a clip of the replay length fits the limit (audio tracks counted); never raises it. None = always the bitrate above. Copium and Copium Plus also limit how long a clip may be, and picking Copium Plus ticks &quot;I have Copium+&quot;'}" />
                                         </Grid>
-                                        <TextBlock Style="{StaticResource FieldLabel}" Text="Replay length" Margin="2,12,0,3" />
+                                        <TextBlock Style="{StaticResource FieldLabel}" Text="{l:T 'Replay length'}" Margin="2,12,0,3" />
                                         <ui:ReplayLengthSlider x:Name="ReplaySlider" Margin="0,2,0,0" />
                                         <!-- The one place size and RAM are shown (§10): per minute · per clip of this length ("per hour" at 1 h), the RAM the
                                              buffer takes (Danger over half of it), and what the size target did (Warn when no bitrate can make the clip fit).
@@ -184,11 +185,11 @@
                                             <TextBlock x:Name="RamText" Style="{StaticResource MutedText}" Margin="0,3,0,0" Text="" />
                                             <TextBlock x:Name="SizeNote" Style="{StaticResource Hint}" Margin="0,3,0,0" Text="" Visibility="Collapsed" />
                                         </StackPanel>
-                                        <CheckBox x:Name="CursorCheck" Content="Capture cursor" Margin="2,12,0,0" Checked="QualityChanged" Unchecked="QualityChanged" ToolTip="Record the mouse pointer too" />
+                                        <CheckBox x:Name="CursorCheck" Content="{l:T 'Capture cursor'}" Margin="2,12,0,0" Checked="QualityChanged" Unchecked="QualityChanged" ToolTip="{l:T 'Record the mouse pointer too'}" />
                                         <StackPanel x:Name="BorderPanel" Margin="2,8,0,0" Visibility="Collapsed"
-                                                    ToolTip="Windows draws a yellow border around any screen being captured. It is never in your clips. Another app capturing the same screen with the border on can bring it back.">
+                                                    ToolTip="{l:T 'Windows draws a yellow border around any screen being captured. It is never in your clips. Another app capturing the same screen with the border on can bring it back.'}">
                                             <TextBlock x:Name="BorderText" Style="{StaticResource MutedText}" Text="" TextWrapping="Wrap" />
-                                            <Button x:Name="BorderSettingsLink" Style="{StaticResource LinkButton}" Content="Open Windows setting" HorizontalAlignment="Left"
+                                            <Button x:Name="BorderSettingsLink" Style="{StaticResource LinkButton}" Content="{l:T 'Open Windows setting'}" HorizontalAlignment="Left"
                                                     Margin="-4,2,0,0" FontSize="12" Visibility="Collapsed" Click="BorderSettingsLink_Click" />
                                         </StackPanel>
                                     </StackPanel>
@@ -198,13 +199,13 @@
                                 <Border x:Name="AudioSetupBanner" Margin="0,14,0,0" Padding="10,8" CornerRadius="8" BorderThickness="1"
                                         BorderBrush="{DynamicResource Warn}" Background="{DynamicResource WarnTint}">
                                     <StackPanel>
-                                        <TextBlock Text="Set up your audio" FontWeight="Bold" Foreground="{DynamicResource Warn}" />
+                                        <TextBlock Text="{l:T 'Set up your audio'}" FontWeight="Bold" Foreground="{DynamicResource Warn}" />
                                         <TextBlock Margin="0,3,0,0" FontSize="12"
-                                                   Text="Check which app is the game, which mic you talk into and where voice chat comes from. Hover or change any option below to dismiss this." />
+                                                   Text="{l:T 'Check which app is the game, which mic you talk into and where voice chat comes from. Hover or change any option below to dismiss this.'}" />
                                     </StackPanel>
                                 </Border>
 
-                                <TextBlock Style="{StaticResource H}" Text="AUDIO TRACKS" Margin="0,14,0,6" />
+                                <TextBlock Style="{StaticResource H}" Text="{l:T 'AUDIO TRACKS'}" Margin="0,14,0,6" />
                                 <Border x:Name="AudioGroup" Style="{StaticResource Card}" MouseEnter="AudioGroup_MouseEnter" MouseLeave="AudioGroup_MouseLeave">
                                     <StackPanel>
                                         <!-- one row per track: [x] name | source -->
@@ -238,37 +239,37 @@
                                                 <RowDefinition Height="Auto" />
                                             </Grid.RowDefinitions>
 
-                                            <CheckBox x:Name="MixCheck" Grid.Row="0" Content="Mix" IsChecked="True" IsEnabled="False" ToolTip="Track 1 is always game + mic + voice chat mixed together, so every player hears everything" />
+                                            <CheckBox x:Name="MixCheck" Grid.Row="0" Content="{l:T 'track|Mix'}" IsChecked="True" IsEnabled="False" ToolTip="{l:T 'Track 1 is always game + mic + voice chat mixed together, so every player hears everything'}" />
                                             <TextBlock Grid.Row="0" Grid.Column="1" Style="{StaticResource MutedText}" VerticalAlignment="Center" Margin="9,4" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
-                                                       Text="Game + mic + voice chat (always track 1)" />
+                                                       Text="{l:T 'Game + mic + voice chat (always track 1)'}" />
 
-                                            <CheckBox x:Name="TrackGameCheck" Grid.Row="1" Content="Game" Checked="AudioChanged" Unchecked="AudioChanged" ToolTip="Also save the game audio as its own track (it is always part of the mix)" />
+                                            <CheckBox x:Name="TrackGameCheck" Grid.Row="1" Content="{l:T 'track|Game'}" Checked="AudioChanged" Unchecked="AudioChanged" ToolTip="{l:T 'Also save the game audio as its own track (it is always part of the mix)'}" />
                                             <ComboBox x:Name="GameCombo" Grid.Row="1" Grid.Column="1" SelectionChanged="AudioSourceChanged" DropDownOpened="GameCombo_DropDownOpened"
-                                                      ToolTip="Where game audio comes from: detect the fullscreen app on the captured monitor, pick a running app, or pick an audio device (an input like Wave Link's Game mix, or what plays on an output)" />
+                                                      ToolTip="{l:T 'Where game audio comes from: detect the fullscreen app on the captured monitor, pick a running app, or pick an audio device (an input like Wave Link\'s Game mix, or what plays on an output)'}" />
 
-                                            <CheckBox x:Name="TrackMicCheck" Grid.Row="2" Content="Mic" Checked="AudioChanged" Unchecked="AudioChanged" ToolTip="Also save the mic as its own track (it is always part of the mix)" />
-                                            <ComboBox x:Name="MicCombo" Grid.Row="2" Grid.Column="1" SelectionChanged="AudioSourceChanged" DropDownOpened="MicCombo_DropDownOpened" ToolTip="Microphone to record" />
+                                            <CheckBox x:Name="TrackMicCheck" Grid.Row="2" Content="{l:T 'track|Mic'}" Checked="AudioChanged" Unchecked="AudioChanged" ToolTip="{l:T 'Also save the mic as its own track (it is always part of the mix)'}" />
+                                            <ComboBox x:Name="MicCombo" Grid.Row="2" Grid.Column="1" SelectionChanged="AudioSourceChanged" DropDownOpened="MicCombo_DropDownOpened" ToolTip="{l:T 'Microphone to record'}" />
 
-                                            <CheckBox x:Name="TrackVoiceCheck" Grid.Row="3" Content="Voice chat" Checked="AudioChanged" Unchecked="AudioChanged" ToolTip="Also save voice chat as its own track (it is always part of the mix)" />
+                                            <CheckBox x:Name="TrackVoiceCheck" Grid.Row="3" Content="{l:T 'track|Voice chat'}" Checked="AudioChanged" Unchecked="AudioChanged" ToolTip="{l:T 'Also save voice chat as its own track (it is always part of the mix)'}" />
                                             <ComboBox x:Name="VoiceCombo" Grid.Row="3" Grid.Column="1" SelectionChanged="AudioSourceChanged" DropDownOpened="VoiceCombo_DropDownOpened"
-                                                      ToolTip="Where voice chat comes from. Auto = the first of Discord, TeamSpeak, Slack, Mumble, Zoom or Skype found running; or a running app; or an audio device" />
+                                                      ToolTip="{l:T 'Where voice chat comes from. Auto = the first of Discord, TeamSpeak, Slack, Mumble, Zoom or Skype found running; or a running app; or an audio device'}" />
 
-                                            <CheckBox x:Name="TrackDesktopCheck" Grid.Row="4" Content="Desktop" Checked="AudioChanged" Unchecked="AudioChanged" ToolTip="Extra track: everything you hear from an output device (music, browser, other apps), or an audio input such as a Wave Link mix" />
-                                            <ComboBox x:Name="AllDeviceCombo" Grid.Row="4" Grid.Column="1" SelectionChanged="AudioSourceChanged" DropDownOpened="AllDeviceCombo_DropDownOpened" ToolTip="What the Desktop track records: whatever plays on an output device, or an audio input (a Wave Link / VoiceMeeter mix, a virtual cable)" />
+                                            <CheckBox x:Name="TrackDesktopCheck" Grid.Row="4" Content="{l:T 'track|Desktop'}" Checked="AudioChanged" Unchecked="AudioChanged" ToolTip="{l:T 'Extra track: everything you hear from an output device (music, browser, other apps), or an audio input such as a Wave Link mix'}" />
+                                            <ComboBox x:Name="AllDeviceCombo" Grid.Row="4" Grid.Column="1" SelectionChanged="AudioSourceChanged" DropDownOpened="AllDeviceCombo_DropDownOpened" ToolTip="{l:T 'What the Desktop track records: whatever plays on an output device, or an audio input (a Wave Link / VoiceMeeter mix, a virtual cable)'}" />
                                         </Grid>
                                         <TextBlock x:Name="AudioStatus" Style="{StaticResource MutedText}" Margin="2,6,0,0" Text="" TextWrapping="Wrap" />
                                     </StackPanel>
                                 </Border>
                                 <TextBlock Style="{StaticResource Hint}" Margin="2,8,0,0"
-                                           Text="Every clip carries the mix as track 1 plus each enabled part as its own track (192 kbps AAC each), so the trim editor can drop or turn down any of them later." />
+                                           Text="{l:T 'Every clip carries the mix as track 1 plus each enabled part as its own track (192 kbps AAC each), so the trim editor can drop or turn down any of them later.'}" />
 
-                                <TextBlock Style="{StaticResource H}" Text="RECORDING" Margin="0,14,0,6" />
+                                <TextBlock Style="{StaticResource H}" Text="{l:T 'RECORDING'}" Margin="0,14,0,6" />
                                 <Border Style="{StaticResource Card}">
                                     <StackPanel>
                                         <ComboBox x:Name="ModeCombo" SelectionChanged="ModeChanged" ItemTemplate="{StaticResource SourceLabel}"
-                                                  ToolTip="Game-only stops the capture, encoder and RAM buffer while no game runs" />
+                                                  ToolTip="{l:T 'Game-only stops the capture, encoder and RAM buffer while no game runs'}" />
                                         <TextBlock x:Name="ModeStatus" Style="{StaticResource MutedText}" Margin="2,6,0,0" Text="" />
-                                        <TextBlock Style="{StaticResource FieldLabel}" Text="Custom apps (always count as a game, windowed or not)" Margin="2,10,0,4" />
+                                        <TextBlock Style="{StaticResource FieldLabel}" Text="{l:T 'Custom apps (always count as a game, windowed or not)'}" Margin="2,10,0,4" />
                                         <ItemsControl x:Name="CustomAppsList">
                                             <ItemsControl.ItemsPanel>
                                                 <ItemsPanelTemplate>
@@ -280,7 +281,7 @@
                                                     <Border Style="{StaticResource Chip}">
                                                         <StackPanel Orientation="Horizontal">
                                                             <TextBlock Text="{Binding}" VerticalAlignment="Center" FontSize="12" />
-                                                            <Button Style="{StaticResource IconButton}" Content="✕" FontSize="11" Padding="6,0" Click="RemoveApp_Click" ToolTip="Remove" />
+                                                            <Button Style="{StaticResource IconButton}" Content="✕" FontSize="11" Padding="6,0" Click="RemoveApp_Click" ToolTip="{l:T 'Remove'}" />
                                                         </StackPanel>
                                                     </Border>
                                                 </DataTemplate>
@@ -292,83 +293,83 @@
                                                 <ColumnDefinition Width="Auto" />
                                                 <ColumnDefinition Width="Auto" />
                                             </Grid.ColumnDefinitions>
-                                            <TextBox x:Name="CustomAppBox" KeyDown="CustomAppBox_KeyDown" ToolTip="Exe name, e.g. overwatch or RocketLeague.exe · Enter adds it" />
-                                            <Button Grid.Column="1" Content="Add" Margin="6,0,0,0" Click="AddApp_Click" />
+                                            <TextBox x:Name="CustomAppBox" KeyDown="CustomAppBox_KeyDown" ToolTip="{l:T 'Exe name, e.g. overwatch or RocketLeague.exe · Enter adds it'}" />
+                                            <Button Grid.Column="1" Content="{l:T 'Add'}" Margin="6,0,0,0" Click="AddApp_Click" />
                                             <ComboBox x:Name="RunningAppsCombo" Grid.Column="2" Margin="6,0,0,0" MinWidth="150" MaxWidth="190" DropDownOpened="RunningAppsCombo_DropDownOpened" DropDownClosed="RunningAppsCombo_DropDownClosed" SelectionChanged="RunningAppsCombo_SelectionChanged"
-                                                      ItemContainerStyle="{StaticResource ChoiceItem}" ItemTemplate="{StaticResource SourceLabel}" ToolTip="Pick one of the apps running right now" />
+                                                      ItemContainerStyle="{StaticResource ChoiceItem}" ItemTemplate="{StaticResource SourceLabel}" ToolTip="{l:T 'Pick one of the apps running right now'}" />
                                         </Grid>
                                     </StackPanel>
                                 </Border>
                                 </StackPanel>
 
                                 <Grid x:Name="HotkeysHeader" Margin="0,14,0,6">
-                                    <TextBlock Style="{StaticResource H}" Text="HOTKEYS" Margin="0" VerticalAlignment="Center" />
-                                    <Button x:Name="ClipNowButton" Style="{StaticResource AccentButton}" Content="Clip now" Click="ClipNow_Click" Padding="12,4" HorizontalAlignment="Right" />
+                                    <TextBlock Style="{StaticResource H}" Text="{l:T 'HOTKEYS'}" Margin="0" VerticalAlignment="Center" />
+                                    <Button x:Name="ClipNowButton" Style="{StaticResource AccentButton}" Content="{l:T 'Clip now'}" Click="ClipNow_Click" Padding="12,4" HorizontalAlignment="Right" />
                                 </Grid>
                                 <Border Style="{StaticResource Card}">
                                     <StackPanel>
                                         <ui:HotkeyListEditor x:Name="HotkeyEditor" />
-                                        <CheckBox x:Name="ClickSoundCheck" Content="Click sound" Margin="2,10,0,0" Checked="MiscChanged" Unchecked="MiscChanged" ToolTip="A short click when a hotkey saves a clip" />
+                                        <CheckBox x:Name="ClickSoundCheck" Content="{l:T 'Click sound'}" Margin="2,10,0,0" Checked="MiscChanged" Unchecked="MiscChanged" ToolTip="{l:T 'A short click when a hotkey saves a clip'}" />
                                     </StackPanel>
                                 </Border>
                                 <TextBlock x:Name="ClipsOffHotkeyHint" Style="{StaticResource Hint}" Margin="2,8,0,0" TextWrapping="Wrap" Visibility="Collapsed"
-                                           Text="Clips are off (App → Features): the clip, record and share rows do nothing until you turn them on again." />
+                                           Text="{l:T 'Clips are off (App → Features): the clip, record and share rows do nothing until you turn them on again.'}" />
                             </StackPanel>
                         </ScrollViewer>
                     </TabItem>
 
                     <!-- ===================================================== Clips (the Copium and Storage settings; the list of clips is the Library) -->
-                    <TabItem x:Name="CopiumTab" Header="Clips">
+                    <TabItem x:Name="CopiumTab" Header="{l:T 'Clips'}">
                         <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,0,4,0">
                             <StackPanel Margin="0,0,0,4">
-                                <TextBlock Style="{StaticResource H}" Text="STORAGE" Margin="0,10,0,6" />
+                                <TextBlock Style="{StaticResource H}" Text="{l:T 'STORAGE'}" Margin="0,10,0,6" />
                                 <Border Style="{StaticResource Card}">
                                     <StackPanel>
-                                        <TextBlock Style="{StaticResource FieldLabel}" Text="Local clips folder (clips are always written here first)" />
+                                        <TextBlock Style="{StaticResource FieldLabel}" Text="{l:T 'Local clips folder (clips are always written here first)'}" />
                                         <Grid>
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="*" />
                                                 <ColumnDefinition Width="Auto" />
                                                 <ColumnDefinition Width="Auto" />
                                             </Grid.ColumnDefinitions>
-                                            <TextBox x:Name="ClipsFolderBox" LostFocus="ClipsFolderBox_LostFocus" KeyDown="PathBox_KeyDown" ToolTip="Where new clips are saved" />
-                                            <Button Grid.Column="1" Content="Browse…" Margin="6,0,0,0" Click="BrowseClips_Click" />
-                                            <Button Grid.Column="2" Style="{StaticResource GlyphButton}" Content="&#xE8B7;" Margin="6,0,0,0" Click="Folder_Click" ToolTip="Open the folder" />
+                                            <TextBox x:Name="ClipsFolderBox" LostFocus="ClipsFolderBox_LostFocus" KeyDown="PathBox_KeyDown" ToolTip="{l:T 'Where new clips are saved'}" />
+                                            <Button Grid.Column="1" Content="{l:T 'Browse…'}" Margin="6,0,0,0" Click="BrowseClips_Click" />
+                                            <Button Grid.Column="2" Style="{StaticResource GlyphButton}" Content="&#xE8B7;" Margin="6,0,0,0" Click="Folder_Click" ToolTip="{l:T 'Open the folder'}" />
                                         </Grid>
                                         <!-- Where clips can be archived to: always available, whether or not the automatic moves are on. -->
-                                        <TextBlock Style="{StaticResource FieldLabel}" Margin="2,12,0,3" Text="Archive location (NAS share, drive or folder)" />
+                                        <TextBlock Style="{StaticResource FieldLabel}" Margin="2,12,0,3" Text="{l:T 'Archive location (NAS share, drive or folder)'}" />
                                         <Grid>
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="*" />
                                                 <ColumnDefinition Width="Auto" />
                                                 <ColumnDefinition Width="Auto" />
                                             </Grid.ColumnDefinitions>
-                                            <TextBox x:Name="ArchivePathBox" LostFocus="ArchivePathBox_LostFocus" KeyDown="PathBox_KeyDown" ToolTip="\\nas\clips, D:\Clips, … Sign in to a share once in Explorer; Clink never asks for credentials" />
-                                            <Button Grid.Column="1" Content="Browse…" Margin="6,0,0,0" Click="BrowseArchive_Click" />
-                                            <Button x:Name="ArchiveTestButton" Grid.Column="2" Content="Test" Margin="6,0,0,0" Click="ArchiveTest_Click" ToolTip="Reachable? Writable? Free space?" />
+                                            <TextBox x:Name="ArchivePathBox" LostFocus="ArchivePathBox_LostFocus" KeyDown="PathBox_KeyDown" ToolTip="{l:T '\\\\nas\\clips, D:\\Clips, … Sign in to a share once in Explorer; Clink never asks for credentials'}" />
+                                            <Button Grid.Column="1" Content="{l:T 'Browse…'}" Margin="6,0,0,0" Click="BrowseArchive_Click" />
+                                            <Button x:Name="ArchiveTestButton" Grid.Column="2" Content="{l:T 'verb|Test'}" Margin="6,0,0,0" Click="ArchiveTest_Click" ToolTip="{l:T 'Reachable? Writable? Free space?'}" />
                                         </Grid>
                                         <Grid Margin="2,6,0,0">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="*" />
                                                 <ColumnDefinition Width="Auto" />
                                             </Grid.ColumnDefinitions>
-                                            <TextBlock x:Name="ArchiveStatus" Style="{StaticResource MutedText}" Text="Archive off" VerticalAlignment="Center" />
-                                            <Button x:Name="ArchiveNowButton" Grid.Column="1" Style="{StaticResource LinkButton}" Content="Archive now…" FontSize="12" Margin="8,0,0,0" Click="ArchiveNow_Click"
-                                                    IsEnabled="False" ToolTipService.ShowOnDisabled="True" ToolTip="Set an archive location first" />
+                                            <TextBlock x:Name="ArchiveStatus" Style="{StaticResource MutedText}" Text="{l:T 'Archive off'}" VerticalAlignment="Center" />
+                                            <Button x:Name="ArchiveNowButton" Grid.Column="1" Style="{StaticResource LinkButton}" Content="{l:T 'Archive now…'}" FontSize="12" Margin="8,0,0,0" Click="ArchiveNow_Click"
+                                                    IsEnabled="False" ToolTipService.ShowOnDisabled="True" ToolTip="{l:T 'Set an archive location first'}" />
                                         </Grid>
                                         <!-- The automatic part: the rules below apply only while this is ticked. -->
-                                        <CheckBox x:Name="ArchiveCheck" Content="Move clips there automatically" Margin="2,12,0,0" Checked="ArchiveChanged" Unchecked="ArchiveChanged"
-                                                  ToolTip="Clips move to the archive location in the background, slowly, by the rules below; the library keeps working from there. Archive now… moves clips by hand, whatever these rules say" />
+                                        <CheckBox x:Name="ArchiveCheck" Content="{l:T 'Move clips there automatically'}" Margin="2,12,0,0" Checked="ArchiveChanged" Unchecked="ArchiveChanged"
+                                                  ToolTip="{l:T 'Clips move to the archive location in the background, slowly, by the rules below; the library keeps working from there. Archive now… moves clips by hand, whatever these rules say'}" />
                                         <!-- Each box stays on one line with its unit: the rule wraps between the two parts only. -->
                                         <WrapPanel x:Name="ArchiveRulesPanel" Margin="2,8,0,0">
-                                            <TextBlock Style="{StaticResource MutedText}" Text="Move clips older than" VerticalAlignment="Center" Margin="0,0,6,4" />
+                                            <TextBlock Style="{StaticResource MutedText}" Text="{l:T 'Move clips older than'}" VerticalAlignment="Center" Margin="0,0,6,4" />
                                             <StackPanel Orientation="Horizontal">
-                                                <TextBox x:Name="ArchiveDaysBox" Width="46" Padding="6,4" TextAlignment="Center" Margin="0,0,6,4" LostFocus="ArchiveRulesChanged" KeyDown="PathBox_KeyDown" ToolTip="0 = off" />
-                                                <TextBlock Style="{StaticResource MutedText}" Text="days, or when the local folder exceeds" VerticalAlignment="Center" Margin="0,0,6,4" />
+                                                <TextBox x:Name="ArchiveDaysBox" Width="46" Padding="6,4" TextAlignment="Center" Margin="0,0,6,4" LostFocus="ArchiveRulesChanged" KeyDown="PathBox_KeyDown" ToolTip="{l:T '0 = off'}" />
+                                                <TextBlock Style="{StaticResource MutedText}" Text="{l:T 'days, or when the local folder exceeds'}" VerticalAlignment="Center" Margin="0,0,6,4" />
                                             </StackPanel>
                                             <StackPanel Orientation="Horizontal">
-                                                <TextBox x:Name="ArchiveGbBox" Width="54" Padding="6,4" TextAlignment="Center" Margin="0,0,6,4" LostFocus="ArchiveRulesChanged" KeyDown="PathBox_KeyDown" ToolTip="0 = off" />
-                                                <TextBlock Style="{StaticResource MutedText}" Text="GB · whichever comes first" VerticalAlignment="Center" Margin="0,0,0,4" />
+                                                <TextBox x:Name="ArchiveGbBox" Width="54" Padding="6,4" TextAlignment="Center" Margin="0,0,6,4" LostFocus="ArchiveRulesChanged" KeyDown="PathBox_KeyDown" ToolTip="{l:T '0 = off'}" />
+                                                <TextBlock Style="{StaticResource MutedText}" Text="{l:T 'GB · whichever comes first'}" VerticalAlignment="Center" Margin="0,0,0,4" />
                                             </StackPanel>
                                         </WrapPanel>
                                     </StackPanel>
@@ -378,14 +379,14 @@
                     </TabItem>
 
                     <!-- ===================================================== Screenshots (a separate subsystem: its own folder and history, never a clip) -->
-                    <TabItem x:Name="ScreenshotsTab" Header="Screenshots">
+                    <TabItem x:Name="ScreenshotsTab" Header="{l:T 'Screenshots'}">
                         <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,0,4,0">
                             <StackPanel Margin="0,0,0,4">
-                                <TextBlock Style="{StaticResource H}" Text="SCREENSHOTS" Margin="0,10,0,6" />
+                                <TextBlock Style="{StaticResource H}" Text="{l:T 'SCREENSHOTS'}" Margin="0,10,0,6" />
                                 <Border Style="{StaticResource Card}">
                                     <StackPanel>
                                         <StackPanel x:Name="ScreenshotOptions">
-                                            <TextBlock Style="{StaticResource FieldLabel}" Margin="2,0,0,3" Text="Screenshots folder" />
+                                            <TextBlock Style="{StaticResource FieldLabel}" Margin="2,0,0,3" Text="{l:T 'Screenshots folder'}" />
                                             <Grid>
                                                 <Grid.ColumnDefinitions>
                                                     <ColumnDefinition Width="*" />
@@ -393,31 +394,31 @@
                                                     <ColumnDefinition Width="Auto" />
                                                 </Grid.ColumnDefinitions>
                                                 <TextBox x:Name="ScreenshotFolderBox" LostFocus="ScreenshotFolderBox_LostFocus" KeyDown="PathBox_KeyDown"
-                                                         ToolTip="Where screenshots are saved (PNG). Empty = a Screenshots folder inside the clips folder" />
-                                                <Button Grid.Column="1" Content="Browse…" Margin="6,0,0,0" Click="BrowseScreenshots_Click" />
-                                                <Button Grid.Column="2" Style="{StaticResource GlyphButton}" Content="&#xE8B7;" Margin="6,0,0,0" Click="OpenScreenshots_Click" ToolTip="Open the folder" />
+                                                         ToolTip="{l:T 'Where screenshots are saved (PNG). Empty = a Screenshots folder inside the clips folder'}" />
+                                                <Button Grid.Column="1" Content="{l:T 'Browse…'}" Margin="6,0,0,0" Click="BrowseScreenshots_Click" />
+                                                <Button Grid.Column="2" Style="{StaticResource GlyphButton}" Content="&#xE8B7;" Margin="6,0,0,0" Click="OpenScreenshots_Click" ToolTip="{l:T 'Open the folder'}" />
                                             </Grid>
-                                            <CheckBox x:Name="ScreenshotCopyCheck" Content="Copy the image to the clipboard" Margin="2,12,0,0" Checked="ScreenshotOptionChanged" Unchecked="ScreenshotOptionChanged"
-                                                      ToolTip="Paste it straight into Paint, Discord, Word or a browser" />
-                                            <CheckBox x:Name="ScreenshotLoupeCheck" Content="Show a magnifier while choosing the area" Margin="2,10,0,0" Checked="ScreenshotOptionChanged" Unchecked="ScreenshotOptionChanged"
-                                                      ToolTip="An 8x zoom of the pixels around the pointer, with their position and colour" />
-                                            <TextBlock Style="{StaticResource FieldLabel}" Margin="2,12,0,3" Text="After capture" />
+                                            <CheckBox x:Name="ScreenshotCopyCheck" Content="{l:T 'Copy the image to the clipboard'}" Margin="2,12,0,0" Checked="ScreenshotOptionChanged" Unchecked="ScreenshotOptionChanged"
+                                                      ToolTip="{l:T 'Paste it straight into Paint, Discord, Word or a browser'}" />
+                                            <CheckBox x:Name="ScreenshotLoupeCheck" Content="{l:T 'Show a magnifier while choosing the area'}" Margin="2,10,0,0" Checked="ScreenshotOptionChanged" Unchecked="ScreenshotOptionChanged"
+                                                      ToolTip="{l:T 'An 8x zoom of the pixels around the pointer, with their position and colour'}" />
+                                            <TextBlock Style="{StaticResource FieldLabel}" Margin="2,12,0,3" Text="{l:T 'After capture'}" />
                                             <ComboBox x:Name="ScreenshotModeCombo" SelectionChanged="ScreenshotModeChanged" HorizontalAlignment="Left" MinWidth="240"
-                                                      AutomationProperties.Name="After capture" ToolTip="What happens when you have chosen the area" />
+                                                      AutomationProperties.Name="{l:T 'After capture'}" ToolTip="{l:T 'What happens when you have chosen the area'}" />
                                             <!-- (the items come from ScreenshotModes.Choices) -->
-                                            <CheckBox x:Name="ScreenshotUploadCheck" Content="Upload every screenshot to Copium automatically" Margin="2,14,0,0" Checked="ScreenshotOptionChanged" Unchecked="ScreenshotOptionChanged"
-                                                      ToolTipService.ShowOnDisabled="True" AutomationProperties.Name="Upload every screenshot to Copium automatically"
-                                                      ToolTip="Off by default. After a screenshot is saved (and copied), upload it to Copium; the link is public. Turning this on asks for your OK first. The file is always saved here first; a failed upload loses nothing" />
+                                            <CheckBox x:Name="ScreenshotUploadCheck" Content="{l:T 'Upload every screenshot to Copium automatically'}" Margin="2,14,0,0" Checked="ScreenshotOptionChanged" Unchecked="ScreenshotOptionChanged"
+                                                      ToolTipService.ShowOnDisabled="True" AutomationProperties.Name="{l:T 'Upload every screenshot to Copium automatically'}"
+                                                      ToolTip="{l:T 'Off by default. After a screenshot is saved (and copied), upload it to Copium; the link is public. Turning this on asks for your OK first. The file is always saved here first; a failed upload loses nothing'}" />
                                             <TextBlock x:Name="ScreenshotCloudOffHint" Style="{StaticResource Hint}" Margin="26,2,0,0" TextWrapping="Wrap" Visibility="Collapsed"
-                                                       Text="Cloud sharing is off — enable it under App → Cloud sharing" />
+                                                       Text="{l:T 'Cloud sharing is off — enable it under App → Cloud sharing'}" />
                                             <StackPanel x:Name="ScreenshotTokenHint" Orientation="Horizontal" Margin="26,2,0,0">
-                                                <TextBlock Style="{StaticResource Hint}" Text="Not signed in to Copium." VerticalAlignment="Center" />
-                                                <Button Style="{StaticResource LinkButton}" Content="Sign in with Copium under App → Copium" Click="ScreenshotTokenLink_Click" Margin="6,0,0,0" FontSize="12" />
+                                                <TextBlock Style="{StaticResource Hint}" Text="{l:T 'Not signed in to Copium.'}" VerticalAlignment="Center" />
+                                                <Button Style="{StaticResource LinkButton}" Content="{l:T 'Sign in with Copium under App → Copium'}" Click="ScreenshotTokenLink_Click" Margin="6,0,0,0" FontSize="12" />
                                             </StackPanel>
-                                            <CheckBox x:Name="ScreenshotCopyLinkCheck" Content="Copy the link to the clipboard after uploading" Margin="26,10,0,0" Checked="ScreenshotOptionChanged" Unchecked="ScreenshotOptionChanged"
-                                                      ToolTipService.ShowOnDisabled="True" AutomationProperties.Name="Copy the link to the clipboard after uploading"
-                                                      ToolTip="The link replaces the image on the clipboard once the upload is done" />
-                                            <TextBlock Style="{StaticResource Hint}" Margin="2,10,0,0" TextWrapping="Wrap" Text="Screenshots are always saved locally. Nothing is uploaded unless you ask for it with a notification's Upload button or switch on automatic upload above." />
+                                            <CheckBox x:Name="ScreenshotCopyLinkCheck" Content="{l:T 'Copy the link to the clipboard after uploading'}" Margin="26,10,0,0" Checked="ScreenshotOptionChanged" Unchecked="ScreenshotOptionChanged"
+                                                      ToolTipService.ShowOnDisabled="True" AutomationProperties.Name="{l:T 'Copy the link to the clipboard after uploading'}"
+                                                      ToolTip="{l:T 'The link replaces the image on the clipboard once the upload is done'}" />
+                                            <TextBlock Style="{StaticResource Hint}" Margin="2,10,0,0" TextWrapping="Wrap" Text="{l:T 'Screenshots are always saved locally. Nothing is uploaded unless you ask for it with a notification\'s Upload button or switch on automatic upload above.'}" />
                                             <TextBlock x:Name="ScreenshotHotkeyHint" Style="{StaticResource Hint}" Margin="2,12,0,0" TextWrapping="Wrap" />
                                         </StackPanel>
                                     </StackPanel>
@@ -427,10 +428,10 @@
                     </TabItem>
 
                     <!-- ===================================================== Alerts -->
-                    <TabItem Header="Alerts">
+                    <TabItem Header="{l:T 'Alerts'}">
                         <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,0,4,0">
                             <StackPanel Margin="0,0,0,4">
-                                <TextBlock Style="{StaticResource H}" Text="TOASTS" Margin="0,10,0,6" />
+                                <TextBlock Style="{StaticResource H}" Text="{l:T 'TOASTS'}" Margin="0,10,0,6" />
                                 <Border Style="{StaticResource Card}">
                                     <StackPanel>
                                         <Grid>
@@ -438,8 +439,8 @@
                                                 <ColumnDefinition Width="Auto" />
                                                 <ColumnDefinition Width="*" />
                                             </Grid.ColumnDefinitions>
-                                            <TextBlock Style="{StaticResource MutedText}" Text="Position" VerticalAlignment="Center" Margin="2,0,0,0" />
-                                            <ComboBox x:Name="ToastPositionCombo" Grid.Column="1" Margin="10,0,0,0" SelectionChanged="ToastChanged" ToolTip="On the captured monitor, 16 px from the edge; several toasts stack" />
+                                            <TextBlock Style="{StaticResource MutedText}" Text="{l:T 'Position'}" VerticalAlignment="Center" Margin="2,0,0,0" />
+                                            <ComboBox x:Name="ToastPositionCombo" Grid.Column="1" Margin="10,0,0,0" SelectionChanged="ToastChanged" ToolTip="{l:T 'On the captured monitor, 16 px from the edge; several toasts stack'}" />
                                         </Grid>
                                         <Grid Margin="0,10,0,0">
                                             <Grid.ColumnDefinitions>
@@ -454,39 +455,39 @@
                                                 <RowDefinition Height="34" />
                                                 <RowDefinition Height="34" />
                                             </Grid.RowDefinitions>
-                                            <CheckBox x:Name="ToastClipCheck" Grid.Row="0" Content="Clip saved" VerticalAlignment="Center" Checked="ToastChanged" Unchecked="ToastChanged" />
+                                            <CheckBox x:Name="ToastClipCheck" Grid.Row="0" Content="{l:T 'Clip saved'}" VerticalAlignment="Center" Checked="ToastChanged" Unchecked="ToastChanged" />
                                             <Slider x:Name="ToastClipSlider" Grid.Row="0" Grid.Column="1" Style="{StaticResource ToastSlider}" ValueChanged="ToastChanged" />
-                                            <TextBlock x:Name="ToastClipLabel" Grid.Row="0" Grid.Column="2" Style="{StaticResource MutedText}" VerticalAlignment="Center" Text="7 s" />
-                                            <Button Grid.Row="0" Grid.Column="3" Style="{StaticResource SmallButton}" Content="Preview" Tag="clip" Click="ToastPreview_Click" VerticalAlignment="Center" />
+                                            <TextBlock x:Name="ToastClipLabel" Grid.Row="0" Grid.Column="2" Style="{StaticResource MutedText}" VerticalAlignment="Center" Text="" />
+                                            <Button Grid.Row="0" Grid.Column="3" Style="{StaticResource SmallButton}" Content="{l:T 'verb|Preview'}" Tag="clip" Click="ToastPreview_Click" VerticalAlignment="Center" />
 
-                                            <CheckBox x:Name="ToastSharedCheck" Grid.Row="1" Content="Shared (link copied)" VerticalAlignment="Center" Checked="ToastChanged" Unchecked="ToastChanged" />
+                                            <CheckBox x:Name="ToastSharedCheck" Grid.Row="1" Content="{l:T 'Shared (link copied)'}" VerticalAlignment="Center" Checked="ToastChanged" Unchecked="ToastChanged" />
                                             <Slider x:Name="ToastSharedSlider" Grid.Row="1" Grid.Column="1" Style="{StaticResource ToastSlider}" ValueChanged="ToastChanged" />
-                                            <TextBlock x:Name="ToastSharedLabel" Grid.Row="1" Grid.Column="2" Style="{StaticResource MutedText}" VerticalAlignment="Center" Text="4 s" />
-                                            <Button Grid.Row="1" Grid.Column="3" Style="{StaticResource SmallButton}" Content="Preview" Tag="shared" Click="ToastPreview_Click" VerticalAlignment="Center" />
+                                            <TextBlock x:Name="ToastSharedLabel" Grid.Row="1" Grid.Column="2" Style="{StaticResource MutedText}" VerticalAlignment="Center" Text="" />
+                                            <Button Grid.Row="1" Grid.Column="3" Style="{StaticResource SmallButton}" Content="{l:T 'verb|Preview'}" Tag="shared" Click="ToastPreview_Click" VerticalAlignment="Center" />
 
-                                            <CheckBox x:Name="ToastScreenshotCheck" Grid.Row="3" Content="Screenshot saved" VerticalAlignment="Center" Checked="ToastChanged" Unchecked="ToastChanged" />
+                                            <CheckBox x:Name="ToastScreenshotCheck" Grid.Row="3" Content="{l:T 'Screenshot saved'}" VerticalAlignment="Center" Checked="ToastChanged" Unchecked="ToastChanged" />
                                             <Slider x:Name="ToastScreenshotSlider" Grid.Row="3" Grid.Column="1" Style="{StaticResource ToastSlider}" ValueChanged="ToastChanged" />
-                                            <TextBlock x:Name="ToastScreenshotLabel" Grid.Row="3" Grid.Column="2" Style="{StaticResource MutedText}" VerticalAlignment="Center" Text="6 s" />
-                                            <Button Grid.Row="3" Grid.Column="3" Style="{StaticResource SmallButton}" Content="Preview" Tag="screenshot" Click="ToastPreview_Click" VerticalAlignment="Center" />
+                                            <TextBlock x:Name="ToastScreenshotLabel" Grid.Row="3" Grid.Column="2" Style="{StaticResource MutedText}" VerticalAlignment="Center" Text="" />
+                                            <Button Grid.Row="3" Grid.Column="3" Style="{StaticResource SmallButton}" Content="{l:T 'verb|Preview'}" Tag="screenshot" Click="ToastPreview_Click" VerticalAlignment="Center" />
 
-                                            <CheckBox x:Name="ToastRecordingCheck" Grid.Row="2" Content="Recording started" VerticalAlignment="Center" Checked="ToastChanged" Unchecked="ToastChanged" />
+                                            <CheckBox x:Name="ToastRecordingCheck" Grid.Row="2" Content="{l:T 'Recording started'}" VerticalAlignment="Center" Checked="ToastChanged" Unchecked="ToastChanged" />
                                             <Slider x:Name="ToastRecordingSlider" Grid.Row="2" Grid.Column="1" Style="{StaticResource ToastSlider}" ValueChanged="ToastChanged" />
-                                            <TextBlock x:Name="ToastRecordingLabel" Grid.Row="2" Grid.Column="2" Style="{StaticResource MutedText}" VerticalAlignment="Center" Text="4 s" />
-                                            <Button Grid.Row="2" Grid.Column="3" Style="{StaticResource SmallButton}" Content="Preview" Tag="recording" Click="ToastPreview_Click" VerticalAlignment="Center" />
+                                            <TextBlock x:Name="ToastRecordingLabel" Grid.Row="2" Grid.Column="2" Style="{StaticResource MutedText}" VerticalAlignment="Center" Text="" />
+                                            <Button Grid.Row="2" Grid.Column="3" Style="{StaticResource SmallButton}" Content="{l:T 'verb|Preview'}" Tag="recording" Click="ToastPreview_Click" VerticalAlignment="Center" />
                                         </Grid>
-                                        <TextBlock Style="{StaticResource Hint}" Margin="2,4,0,0" Text="Each toast has its own switch and how long it stays (1–30 s). Hovering a toast keeps it open." />
+                                        <TextBlock Style="{StaticResource Hint}" Margin="2,4,0,0" Text="{l:T 'Each toast has its own switch and how long it stays (1–30 s). Hovering a toast keeps it open.'}" />
                                         <Grid Margin="0,10,0,0">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="Auto" />
                                                 <ColumnDefinition Width="*" />
                                             </Grid.ColumnDefinitions>
-                                            <Button Style="{StaticResource SmallButton}" Content="Reset &quot;Don't show again&quot;" Click="ResetNotices_Click" VerticalAlignment="Center" />
-                                            <TextBlock Grid.Column="1" Style="{StaticResource MutedText}" Margin="10,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap" Text="Shows dismissed warnings and questions, such as the yellow capture border notice and the delete clip pop-up, again." />
+                                            <Button Style="{StaticResource SmallButton}" Content="{l:T 'Reset &quot;Don\'t show again&quot;'}" Click="ResetNotices_Click" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Column="1" Style="{StaticResource MutedText}" Margin="10,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap" Text="{l:T 'Shows dismissed warnings and questions, such as the yellow capture border notice and the delete clip pop-up, again.'}" />
                                         </Grid>
                                     </StackPanel>
                                 </Border>
 
-                                <TextBlock Style="{StaticResource H}" Text="STATUS DOT" Margin="0,14,0,6" />
+                                <TextBlock Style="{StaticResource H}" Text="{l:T 'STATUS DOT'}" Margin="0,14,0,6" />
                                 <Border Style="{StaticResource Card}">
                                     <StackPanel>
                                         <Grid>
@@ -494,10 +495,10 @@
                                                 <ColumnDefinition Width="*" />
                                                 <ColumnDefinition Width="Auto" />
                                             </Grid.ColumnDefinitions>
-                                            <CheckBox x:Name="DotCheck" Content="Status dot on the captured monitor" VerticalAlignment="Center" Checked="DotChanged" Unchecked="DotChanged" />
+                                            <CheckBox x:Name="DotCheck" Content="{l:T 'Status dot on the captured monitor'}" VerticalAlignment="Center" Checked="DotChanged" Unchecked="DotChanged" />
                                             <ComboBox x:Name="DotPositionCombo" Grid.Column="1" Width="128" Margin="10,0,0,0" SelectionChanged="DotChanged" />
                                         </Grid>
-                                        <TextBlock Style="{StaticResource Hint}" Margin="2,6,0,0" Text="A 12 px click-through dot: green = recording, amber = waiting for a game, red = error, grey = paused." />
+                                        <TextBlock Style="{StaticResource Hint}" Margin="2,6,0,0" Text="{l:T 'A 12 px click-through dot: green = recording, amber = waiting for a game, red = error, grey = paused.'}" />
                                     </StackPanel>
                                 </Border>
                             </StackPanel>
@@ -505,40 +506,40 @@
                     </TabItem>
 
                     <!-- ===================================================== App (how Clink looks, how it updates, where it keeps its settings) -->
-                    <TabItem x:Name="AppTab" Header="App">
+                    <TabItem x:Name="AppTab" Header="{l:T 'App'}">
                         <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,0,4,0">
                             <StackPanel Margin="0,0,0,4">
-                                <TextBlock Style="{StaticResource H}" Text="FEATURES" Margin="0,10,0,6" />
+                                <TextBlock Style="{StaticResource H}" Text="{l:T 'FEATURES'}" Margin="0,10,0,6" />
                                 <Border Style="{StaticResource Card}">
                                     <StackPanel>
-                                        <CheckBox x:Name="FeatureClipsCheck" Content="Clips" Margin="2,0,0,0" Checked="FeatureChanged" Unchecked="FeatureChanged"
-                                                  ToolTipService.ShowOnDisabled="True" AutomationProperties.Name="Clips"
-                                                  ToolTip="Replay buffer, recording, clip library. Off: the recorder is not started and its hotkeys, tray items and tabs are hidden" />
-                                        <TextBlock Style="{StaticResource Hint}" Margin="26,1,0,0" Text="replay buffer, recording, clip library" />
-                                        <CheckBox x:Name="FeatureScreenshotsCheck" Content="Screenshots" Margin="2,10,0,0" Checked="FeatureChanged" Unchecked="FeatureChanged"
-                                                  ToolTipService.ShowOnDisabled="True" AutomationProperties.Name="Screenshots"
-                                                  ToolTip="Off: the screenshot hotkeys are not bound (the keys go back to Windows), the tray items and the Screenshots tab are hidden, and --screenshot does nothing" />
-                                        <TextBlock Style="{StaticResource Hint}" Margin="26,1,0,0" Text="region capture, editor, screenshot library" />
+                                        <CheckBox x:Name="FeatureClipsCheck" Content="{l:T 'Clips'}" Margin="2,0,0,0" Checked="FeatureChanged" Unchecked="FeatureChanged"
+                                                  ToolTipService.ShowOnDisabled="True" AutomationProperties.Name="{l:T 'Clips'}"
+                                                  ToolTip="{l:T 'Replay buffer, recording, clip library. Off: the recorder is not started and its hotkeys, tray items and tabs are hidden'}" />
+                                        <TextBlock Style="{StaticResource Hint}" Margin="26,1,0,0" Text="{l:T 'replay buffer, recording, clip library'}" />
+                                        <CheckBox x:Name="FeatureScreenshotsCheck" Content="{l:T 'Screenshots'}" Margin="2,10,0,0" Checked="FeatureChanged" Unchecked="FeatureChanged"
+                                                  ToolTipService.ShowOnDisabled="True" AutomationProperties.Name="{l:T 'Screenshots'}"
+                                                  ToolTip="{l:T 'Off: the screenshot hotkeys are not bound (the keys go back to Windows), the tray items and the Screenshots tab are hidden, and --screenshot does nothing'}" />
+                                        <TextBlock Style="{StaticResource Hint}" Margin="26,1,0,0" Text="{l:T 'region capture, editor, screenshot library'}" />
                                         <TextBlock x:Name="FeaturesHint" Style="{StaticResource Hint}" Margin="2,8,0,0" TextWrapping="Wrap" Visibility="Collapsed"
-                                                   Text="At least one feature has to stay on, so the last one cannot be turned off." />
+                                                   Text="{l:T 'At least one feature has to stay on, so the last one cannot be turned off.'}" />
                                     </StackPanel>
                                 </Border>
 
-                                <TextBlock Style="{StaticResource H}" Text="CLOUD SHARING" Margin="0,14,0,6" />
+                                <TextBlock Style="{StaticResource H}" Text="{l:T 'CLOUD SHARING'}" Margin="0,14,0,6" />
                                 <Border Style="{StaticResource Card}">
                                     <StackPanel>
-                                        <CheckBox x:Name="CloudSharingCheck" Content="Allow cloud sharing (Copium uploads for clips and screenshots)" Margin="2,0,0,0"
-                                                  Checked="CloudSharingChanged" Unchecked="CloudSharingChanged" AutomationProperties.Name="Allow cloud sharing"
-                                                  ToolTip="Off: nothing is uploaded, the sharing buttons are hidden and the Copium token section is replaced by a note. Turning it back on asks you to confirm" />
+                                        <CheckBox x:Name="CloudSharingCheck" Content="{l:T 'Allow cloud sharing (Copium uploads for clips and screenshots)'}" Margin="2,0,0,0"
+                                                  Checked="CloudSharingChanged" Unchecked="CloudSharingChanged" AutomationProperties.Name="{l:T 'Allow cloud sharing'}"
+                                                  ToolTip="{l:T 'Off: nothing is uploaded, the sharing buttons are hidden and the Copium token section is replaced by a note. Turning it back on asks you to confirm'}" />
                                         <TextBlock Style="{StaticResource Hint}" Margin="26,4,0,0" TextWrapping="Wrap"
-                                                   Text="Turn this off on a work or shared computer. Screenshots and clips are still saved locally and copied to the clipboard. Turning it off also stops uploads that are running." />
+                                                   Text="{l:T 'Turn this off on a work or shared computer. Screenshots and clips are still saved locally and copied to the clipboard. Turning it off also stops uploads that are running.'}" />
                                     </StackPanel>
                                 </Border>
 
-                                <TextBlock Style="{StaticResource H}" Text="COPIUM" Margin="0,14,0,6" />
+                                <TextBlock Style="{StaticResource H}" Text="{l:T 'COPIUM'}" Margin="0,14,0,6" />
                                 <!-- cloud sharing off (above): the token section is replaced by one line; the token itself is kept, not shown or editable -->
                                 <Border x:Name="CopiumCloudOffCard" Style="{StaticResource Card}" Visibility="Collapsed">
-                                    <TextBlock Style="{StaticResource MutedText}" TextWrapping="Wrap" Text="Cloud sharing is off — enable it under App → Cloud sharing" />
+                                    <TextBlock Style="{StaticResource MutedText}" TextWrapping="Wrap" Text="{l:T 'Cloud sharing is off — enable it under App → Cloud sharing'}" />
                                 </Border>
                                 <Border x:Name="CopiumCard" Style="{StaticResource Card}">
                                     <StackPanel>
@@ -548,20 +549,20 @@
                                             <TextBlock x:Name="CopiumSignedInText" FlowDirection="LeftToRight" TextTrimming="CharacterEllipsis" FontWeight="SemiBold" AutomationProperties.LiveSetting="Polite" />
                                             <TextBlock x:Name="CopiumUnverifiedNote" Style="{StaticResource Hint}" Margin="0,2,0,0" TextWrapping="Wrap" Visibility="Collapsed" AutomationProperties.LiveSetting="Polite" />
                                             <Button x:Name="CopiumSignOutButton" HorizontalAlignment="Left" Margin="0,8,0,0" Click="CopiumSignOut_Click"
-                                                    AutomationProperties.Name="Sign out of Copium" />
+                                                    AutomationProperties.Name="{l:T 'Sign out of Copium'}" />
                                         </StackPanel>
                                         <!-- starting / waiting for the approval / finishing -->
                                         <StackPanel x:Name="CopiumWaitingPanel" Visibility="Collapsed" Margin="0,0,0,10">
                                             <TextBox x:Name="CopiumCodeBox" IsReadOnly="True" FontFamily="Consolas" FontSize="26" FontWeight="SemiBold" FlowDirection="LeftToRight"
                                                      HorizontalAlignment="Left" BorderThickness="0" Padding="0,2" IsTabStop="True" Visibility="Collapsed"
-                                                     AutomationProperties.Name="Sign-in code" />
+                                                     AutomationProperties.Name="{l:T 'Sign-in code'}" />
                                             <TextBlock x:Name="CopiumCodeHint" Style="{StaticResource Hint}" Margin="0,2,0,0" TextWrapping="Wrap" Visibility="Collapsed" />
                                             <TextBlock x:Name="CopiumProgressText" Style="{StaticResource MutedText}" Margin="0,6,0,0" TextWrapping="Wrap"
                                                        AutomationProperties.LiveSetting="Polite" />
                                             <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
                                                 <Button x:Name="CopiumOpenAgainButton" Click="CopiumOpenAgain_Click" Visibility="Collapsed"
-                                                        AutomationProperties.Name="Open the Copium page again" />
-                                                <Button x:Name="CopiumCancelButton" Click="CopiumCancel_Click" Margin="8,0,0,0" AutomationProperties.Name="Cancel signing in" />
+                                                        AutomationProperties.Name="{l:T 'Open the Copium page again'}" />
+                                                <Button x:Name="CopiumCancelButton" Click="CopiumCancel_Click" Margin="8,0,0,0" AutomationProperties.Name="{l:T 'Cancel signing in'}" />
                                             </StackPanel>
                                         </StackPanel>
                                         <!-- signed out, or a pasted token: start a sign-in -->
@@ -569,7 +570,7 @@
                                             <Button x:Name="CopiumSignInButton" Style="{StaticResource AccentButton}" HorizontalAlignment="Left"
                                                     Click="CopiumSignIn_Click" ToolTipService.ShowOnDisabled="True" />
                                             <Button x:Name="CopiumStartCancelButton" Click="CopiumCancel_Click" Margin="8,0,0,0" Visibility="Collapsed"
-                                                    AutomationProperties.Name="Cancel signing in" />
+                                                    AutomationProperties.Name="{l:T 'Cancel signing in'}" />
                                         </StackPanel>
                                         <!-- the answer to a sign-in (a failure, or what Sign out said): right under the button; warning look for failures -->
                                         <Border x:Name="CopiumMessagePanel" Visibility="Collapsed" Margin="0,8,0,0" Padding="10,8" BorderThickness="1" CornerRadius="6"
@@ -580,7 +581,7 @@
                                             <TextBlock x:Name="CopiumSignInHint" Style="{StaticResource Hint}" Margin="0,4,0,0" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
                                             <TextBlock x:Name="CopiumNameLabel" Style="{StaticResource FieldLabel}" Margin="0,8,0,2" />
                                             <TextBox x:Name="CopiumNameBox" MaxLength="40" FlowDirection="LeftToRight"
-                                                     ToolTip="The name this PC's connection gets on copium.pics under ShareX &amp; API" />
+                                                     ToolTip="{l:T 'The name this PC\'s connection gets on copium.pics under ShareX &amp; API'}" />
                                             <Button x:Name="CopiumUseTokenLink" Style="{StaticResource LinkButton}" HorizontalAlignment="Left" Margin="0,8,0,0"
                                                     Click="CopiumUseToken_Click" FontSize="12" />
                                         </StackPanel>
@@ -591,7 +592,7 @@
                                                 <TextBlock x:Name="CopiumCleanupText" TextWrapping="Wrap" FlowDirection="LeftToRight" AutomationProperties.LiveSetting="Polite" />
                                                 <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
                                                     <Button x:Name="CopiumCleanupOpenButton" Click="CopiumCleanupOpen_Click" />
-                                                    <Button x:Name="CopiumCleanupDismissButton" Click="CopiumCleanupDismiss_Click" Margin="8,0,0,0" AutomationProperties.Name="Dismiss this note" />
+                                                    <Button x:Name="CopiumCleanupDismissButton" Click="CopiumCleanupDismiss_Click" Margin="8,0,0,0" AutomationProperties.Name="{l:T 'Dismiss this note'}" />
                                                 </StackPanel>
                                             </StackPanel>
                                         </Border>
@@ -602,59 +603,59 @@
                                                 <ColumnDefinition Width="*" />
                                                 <ColumnDefinition Width="Auto" />
                                             </Grid.ColumnDefinitions>
-                                            <PasswordBox x:Name="TokenBox" PasswordChanged="Token_Changed" AutomationProperties.Name="Copium API token" ToolTip="Upload token (starts with eup_) from copium.pics → ShareX &amp; API" />
-                                            <Button x:Name="TokenSaveButton" Grid.Column="1" Content="Save" Margin="8,0,0,0" Click="TokenSave_Click" AutomationProperties.Name="Save API token" />
+                                            <PasswordBox x:Name="TokenBox" PasswordChanged="Token_Changed" AutomationProperties.Name="{l:T 'Copium API token'}" ToolTip="{l:T 'Upload token (starts with eup_) from copium.pics → ShareX &amp; API'}" />
+                                            <Button x:Name="TokenSaveButton" Grid.Column="1" Content="{l:T 'Save'}" Margin="8,0,0,0" Click="TokenSave_Click" AutomationProperties.Name="{l:T 'Save API token'}" />
                                         </Grid>
                                         <StackPanel Orientation="Horizontal" Margin="2,8,0,0">
-                                            <TextBlock x:Name="CopiumStatus" Style="{StaticResource MutedText}" Text="Not connected" VerticalAlignment="Center" />
-                                            <Button Style="{StaticResource LinkButton}" Content="Get a token" Click="CopiumSite_Click" Margin="8,0,0,0" FontSize="12" AutomationProperties.Name="Get a token" />
+                                            <TextBlock x:Name="CopiumStatus" Style="{StaticResource MutedText}" Text="{l:T 'Not connected'}" VerticalAlignment="Center" />
+                                            <Button Style="{StaticResource LinkButton}" Content="{l:T 'Get a token'}" Click="CopiumSite_Click" Margin="8,0,0,0" FontSize="12" AutomationProperties.Name="{l:T 'Get a token'}" />
                                         </StackPanel>
                                         </StackPanel>
-                                        <CheckBox x:Name="CopiumPlusCheck" Content="I have Copium+ (bigger uploads)" Margin="2,10,0,0" Checked="CopiumPlusChanged" Unchecked="CopiumPlusChanged"
-                                                  AutomationProperties.Name="I have Copium+"
-                                                  ToolTip="Copium free uploads may be at most 200 MB and 10 min long, Copium Plus uploads 2 GB and 60 min. Share checks a clip against the limits of the account you tick here and refuses a bigger one" />
+                                        <CheckBox x:Name="CopiumPlusCheck" Content="{l:T 'I have Copium+ (bigger uploads)'}" Margin="2,10,0,0" Checked="CopiumPlusChanged" Unchecked="CopiumPlusChanged"
+                                                  AutomationProperties.Name="{l:T 'I have Copium+'}"
+                                                  ToolTip="{l:T 'Copium free uploads may be at most 200 MB and 10 min long, Copium Plus uploads 2 GB and 60 min. Share checks a clip against the limits of the account you tick here and refuses a bigger one'}" />
                                         <TextBlock x:Name="CopiumPlusNote" Style="{StaticResource Hint}" Margin="26,2,0,0" Visibility="Collapsed" />
                                         <TextBlock Style="{StaticResource Hint}" Margin="2,6,0,0"
-                                                   Text="Nothing is uploaded until you say yes the first time you share, and cloud sharing can be turned off above. Anything you upload is public to anyone who has the link. Share uploads the clip and copies the link. By default the link is the raw video file (plays inline in Discord, no embed card) unless you turn on custom embeds on copium.pics. Copium free uploads are limited to 200 MB and 10 min, Copium Plus to 2 GB and 60 min; the size targets under Capture keep clips under those." />
+                                                   Text="{l:T 'Nothing is uploaded until you say yes the first time you share, and cloud sharing can be turned off above. Anything you upload is public to anyone who has the link. Share uploads the clip and copies the link. By default the link is the raw video file (plays inline in Discord, no embed card) unless you turn on custom embeds on copium.pics. Copium free uploads are limited to 200 MB and 10 min, Copium Plus to 2 GB and 60 min; the size targets under Capture keep clips under those.'}" />
                                         <TextBlock x:Name="CopiumNoTokenHint" Style="{StaticResource Hint}" Margin="2,4,0,0" />
                                     </StackPanel>
                                 </Border>
 
-                                <TextBlock Style="{StaticResource H}" Text="APPEARANCE" Margin="0,14,0,6" />
+                                <TextBlock Style="{StaticResource H}" Text="{l:T 'APPEARANCE'}" Margin="0,14,0,6" />
                                 <Border Style="{StaticResource Card}">
                                     <StackPanel>
                                         <!-- The choices are built in code from ThemeManager.Themes / Accents (MainWindow.BuildAppearanceChoices), so the ids and labels live in one place -->
-                                        <TextBlock Style="{StaticResource FieldLabel}" Text="Theme" />
+                                        <TextBlock Style="{StaticResource FieldLabel}" Text="{l:T 'Theme'}" />
                                         <StackPanel x:Name="ThemeChoices" Orientation="Horizontal" />
-                                        <TextBlock Style="{StaticResource FieldLabel}" Text="Accent" Margin="2,12,0,3" />
+                                        <TextBlock Style="{StaticResource FieldLabel}" Text="{l:T 'Accent'}" Margin="2,12,0,3" />
                                         <StackPanel x:Name="AccentChoices" Orientation="Horizontal" />
-                                        <TextBlock Style="{StaticResource Hint}" Margin="2,8,0,0" Text="The accent colours buttons, toggles, sliders and the selected tab." />
+                                        <TextBlock Style="{StaticResource Hint}" Margin="2,8,0,0" Text="{l:T 'The accent colours buttons, toggles, sliders and the selected tab.'}" />
                                     </StackPanel>
                                 </Border>
 
-                                <TextBlock Style="{StaticResource H}" Text="UPDATES" Margin="0,14,0,6" />
+                                <TextBlock Style="{StaticResource H}" Text="{l:T 'UPDATES'}" Margin="0,14,0,6" />
                                 <Border Style="{StaticResource Card}">
                                     <StackPanel>
-                                        <CheckBox x:Name="AutoUpdateCheck" Content="Install updates automatically (checks every 6 hours)" Checked="AutoUpdateChanged" Unchecked="AutoUpdateChanged"
+                                        <CheckBox x:Name="AutoUpdateCheck" Content="{l:T 'Install updates automatically (checks every 6 hours)'}" Checked="AutoUpdateChanged" Unchecked="AutoUpdateChanged"
                                                   ToolTipService.ShowOnDisabled="True"
-                                                  ToolTip="Checks the Euphoric Software update server on start and every 6 hours; a newer Clink.exe is downloaded, verified and installed on the next start" />
-                                        <CheckBox x:Name="StartupCheck" Content="Run at startup" Margin="0,8,0,0" Checked="StartupChanged" Unchecked="StartupChanged"
-                                                  ToolTip="Start Clink in the tray when you sign in to Windows (a downloaded update is installed then)" />
+                                                  ToolTip="{l:T 'Checks the Euphoric Software update server on start and every 6 hours; a newer Clink.exe is downloaded, verified and installed on the next start'}" />
+                                        <CheckBox x:Name="StartupCheck" Content="{l:T 'Run at startup'}" Margin="0,8,0,0" Checked="StartupChanged" Unchecked="StartupChanged"
+                                                  ToolTip="{l:T 'Start Clink in the tray when you sign in to Windows (a downloaded update is installed then)'}" />
                                         <StackPanel Orientation="Horizontal" Margin="2,8,0,0">
                                             <TextBlock x:Name="UpdateVersionText" Style="{StaticResource MutedText}" VerticalAlignment="Center" Text="" />
-                                            <Button x:Name="CheckUpdateButton" Style="{StaticResource LinkButton}" Content="Check now" FontSize="12" Margin="8,0,0,0" Click="CheckUpdate_Click" />
-                                            <Button x:Name="UpdateNowButton" Style="{StaticResource AccentButton}" Content="Update" Padding="10,3" Margin="8,0,0,0" Click="Update_Click" Visibility="Collapsed" ToolTip="Restart Clink to install the downloaded update" />
+                                            <Button x:Name="CheckUpdateButton" Style="{StaticResource LinkButton}" Content="{l:T 'Check now'}" FontSize="12" Margin="8,0,0,0" Click="CheckUpdate_Click" />
+                                            <Button x:Name="UpdateNowButton" Style="{StaticResource AccentButton}" Content="{l:T 'verb|Update'}" Padding="10,3" Margin="8,0,0,0" Click="Update_Click" Visibility="Collapsed" ToolTip="{l:T 'Restart Clink to install the downloaded update'}" />
                                         </StackPanel>
                                         <TextBlock x:Name="UpdateProblemText" Style="{StaticResource Hint}" Foreground="{DynamicResource Warn}" Margin="2,6,0,0" Text="" Visibility="Collapsed" />
                                     </StackPanel>
                                 </Border>
 
-                                <TextBlock Style="{StaticResource H}" Text="SETTINGS" Margin="0,14,0,6" />
+                                <TextBlock Style="{StaticResource H}" Text="{l:T 'SETTINGS'}" Margin="0,14,0,6" />
                                 <Border Style="{StaticResource Card}">
                                     <StackPanel>
                                         <TextBlock x:Name="SettingsDirText" Style="{StaticResource MutedText}" Margin="2,0,0,0" Text="" />
-                                        <Button x:Name="SettingsFolderButton" Style="{StaticResource LinkButton}" Content="Open folder" FontSize="12" HorizontalAlignment="Left" Margin="0,4,0,0"
-                                                Click="SettingsFolder_Click" ToolTip="Open the folder that holds settings.json, the clip index and the log in Explorer" />
+                                        <Button x:Name="SettingsFolderButton" Style="{StaticResource LinkButton}" Content="{l:T 'Open folder'}" FontSize="12" HorizontalAlignment="Left" Margin="0,4,0,0"
+                                                Click="SettingsFolder_Click" ToolTip="{l:T 'Open the folder that holds settings.json, the clip index and the log in Explorer'}" />
                                         <!-- Clink was started from inside a packaged app (an MSIX/Store desktop app, say): Windows keeps a private copy of AppData for it (AppDataRedirect) -->
                                         <Border x:Name="RedirectBanner" Margin="0,10,0,0" Padding="10,8" CornerRadius="8" BorderThickness="1" Visibility="Collapsed"
                                                 BorderBrush="{DynamicResource Warn}" Background="{DynamicResource WarnTint}">
@@ -665,29 +666,29 @@
                                                 BorderBrush="{DynamicResource Warn}" Background="{DynamicResource WarnTint}">
                                             <StackPanel>
                                                 <TextBlock x:Name="ImportText" FontSize="12" Text="" />
-                                                <TextBlock Style="{StaticResource Hint}" Margin="0,4,0,0" Text="Using them restarts Clink; your current settings are kept as settings.pre-import.json." />
+                                                <TextBlock Style="{StaticResource Hint}" Margin="0,4,0,0" Text="{l:T 'Using them restarts Clink; your current settings are kept as settings.pre-import.json.'}" />
                                                 <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
-                                                    <Button x:Name="ImportUseButton" Style="{StaticResource AccentButton}" Content="Use those settings" Padding="10,4" Click="ImportUse_Click"
-                                                            ToolTip="Take over the settings that copy saved and restart Clink" />
-                                                    <Button x:Name="ImportDismissButton" Content="Dismiss" Padding="10,4" Margin="8,0,0,0" Click="ImportDismiss_Click"
-                                                            ToolTip="Keep these settings and stop asking about that copy" />
+                                                    <Button x:Name="ImportUseButton" Style="{StaticResource AccentButton}" Content="{l:T 'Use those settings'}" Padding="10,4" Click="ImportUse_Click"
+                                                            ToolTip="{l:T 'Take over the settings that copy saved and restart Clink'}" />
+                                                    <Button x:Name="ImportDismissButton" Content="{l:T 'Dismiss'}" Padding="10,4" Margin="8,0,0,0" Click="ImportDismiss_Click"
+                                                            ToolTip="{l:T 'Keep these settings and stop asking about that copy'}" />
                                                 </StackPanel>
                                             </StackPanel>
                                         </Border>
                                     </StackPanel>
                                 </Border>
 
-                                <TextBlock Style="{StaticResource H}" Text="ABOUT" Margin="0,14,0,6" />
+                                <TextBlock Style="{StaticResource H}" Text="{l:T 'ABOUT'}" Margin="0,14,0,6" />
                                 <Border Style="{StaticResource Card}">
                                     <Button x:Name="ThirdPartyNoticesButton" Style="{StaticResource LinkButton}" Content="Third-party notices" FontSize="12" HorizontalAlignment="Left"
-                                            Click="ThirdPartyNotices_Click" ToolTip="The licences of the software Clink includes" />
+                                            Click="ThirdPartyNotices_Click" ToolTip="{l:T 'The licences of the software Clink includes'}" />
                                 </Border>
                             </StackPanel>
                         </ScrollViewer>
                     </TabItem>
 
                     <!-- ===================================================== Library (the clips pane when the window is narrow; the pane moves to the right column when wide) -->
-                    <TabItem x:Name="ClipsTab" Header="Library">
+                    <TabItem x:Name="ClipsTab" Header="{l:T 'Library'}">
                         <ui:ClipsPane x:Name="Clips" Margin="0,8,0,0" />
                     </TabItem>
                 </TabControl>

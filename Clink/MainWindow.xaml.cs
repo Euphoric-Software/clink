@@ -14,6 +14,7 @@ using Clink.Capture;
 using Clink.Native;
 using Clink.Screenshots;
 using Clink.Services;
+using Clink.Services.Localization;
 using Clink.UI;
 
 namespace Clink;
@@ -56,6 +57,8 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        // ThirdPartyNoticesTests reads this button's literal English Content from the XAML source, so the catalog text is put on it here.
+        ThirdPartyNoticesButton.Content = L.T("Third-party notices");
         AppIcons.Attach(this);   // the taskbar button's own icon size, not WPF's default 32 px frame shrunk to it
         ApplyDevMarker();
         StatusHost.SizeChanged += (_, _) => UpdateHeaderFit();
@@ -101,7 +104,7 @@ public partial class MainWindow : Window
             // (not a recording: hours long, and the trimmer loads its selection into memory; the path test comes first, it costs nothing)
             try { newest = await Task.Run(() => entries.FirstOrDefault(e => !_app.IsRecordingEntry(e) && e.Exists)); }
             catch (Exception ex) { Log.Warn("trim last: " + ex.Message); }
-            if (newest != null) OpenTrim(newest); else _app.Say("No clips to trim yet");
+            if (newest != null) OpenTrim(newest); else _app.Say(L.T("No clips to trim yet"));
         });
         _app.TrimRequested += entry => Dispatcher.BeginInvoke(() => OpenTrim(entry));
         _app.Library.Changed += () => Dispatcher.BeginInvoke(() => Clips.Refresh());
@@ -461,12 +464,12 @@ public partial class MainWindow : Window
         MonitorMap.Selected += m => { s.MonitorDevice = m.DeviceName; s.Save(); UpdateMonitorLabel(); FillCodecs(); UpdateEstimates(); _app.ApplyStatusDot(); ScheduleRestart(); };
         UpdateMonitorLabel();
 
-        Fill(ResolutionCombo, new[] { new Choice("Native", "native"), new Choice("1440p", "1440p"), new Choice("1080p", "1080p"), new Choice("720p", "720p") }, s.Resolution);
+        Fill(ResolutionCombo, new[] { new Choice(L.T("resolution|Native"), "native"), new Choice("1440p", "1440p"), new Choice("1080p", "1080p"), new Choice("720p", "720p") }, s.Resolution);
         Fill(FpsCombo, new[] { new Choice("30", 30), new Choice("60", 60), new Choice("120", 120) }, s.Fps);
         FillBitrate(s);
         FillCodecs();
         Fill(SizeTargetCombo, Capabilities.SizeTargets.Select(t => new Choice(t.Name, t.Id)).ToArray(), s.SizeTarget);
-        Fill(ModeCombo, new[] { new Choice("Only while a game or custom app is running", "game"), new Choice("Always (whenever Clink runs)", "always") }, s.RecordingMode);
+        Fill(ModeCombo, new[] { new Choice(L.T("Only while a game or custom app is running"), "game"), new Choice(L.T("Always (whenever Clink runs)"), "always") }, s.RecordingMode);
         _customApps.Clear();
         foreach (var a in (s.CustomApps ?? new()).Select(GameProcessTracker.NormalizeName).Where(a => a.Length > 0 && !IsAuto(a)).Distinct(StringComparer.OrdinalIgnoreCase)) _customApps.Add(a);
         FillRunningApps();
@@ -510,7 +513,7 @@ public partial class MainWindow : Window
         ScreenshotCopyLinkCheck.IsChecked = shotCopyLink;
         if (ScreenshotModeCombo.Items.Count == 0)
             foreach (var (value, label, tip) in ScreenshotModes.Choices)
-                ScreenshotModeCombo.Items.Add(new ComboBoxItem { Content = label, Tag = value, ToolTip = tip });
+                ScreenshotModeCombo.Items.Add(new ComboBoxItem { Content = L.T(label), Tag = value, ToolTip = L.T(tip) });   // ScreenshotModes.Choices holds the English keys
         ScreenshotModeCombo.SelectedItem = ScreenshotModeCombo.Items.OfType<ComboBoxItem>().FirstOrDefault(i => (string?)i.Tag == s.ScreenshotMode)
             ?? ScreenshotModeCombo.Items[0];
         UpdateScreenshotTab();
@@ -519,9 +522,9 @@ public partial class MainWindow : Window
 
         Fill(ToastPositionCombo, new[]
         {
-            new Choice("Top left", "top-left"), new Choice("Top", "top"), new Choice("Top right", "top-right"),
-            new Choice("Left", "left"), new Choice("Right", "right"),
-            new Choice("Bottom left", "bottom-left"), new Choice("Bottom", "bottom"), new Choice("Bottom right", "bottom-right"),
+            new Choice(L.T("position|Top left"), "top-left"), new Choice(L.T("position|Top"), "top"), new Choice(L.T("position|Top right"), "top-right"),
+            new Choice(L.T("position|Left"), "left"), new Choice(L.T("position|Right"), "right"),
+            new Choice(L.T("position|Bottom left"), "bottom-left"), new Choice(L.T("position|Bottom"), "bottom"), new Choice(L.T("position|Bottom right"), "bottom-right"),
         }, s.ToastPosition);
         ToastClipCheck.IsChecked = s.ToastClip.Enabled; ToastClipSlider.Value = Math.Clamp(s.ToastClip.Seconds, 1, 30);
         ToastSharedCheck.IsChecked = s.ToastShared.Enabled; ToastSharedSlider.Value = Math.Clamp(s.ToastShared.Seconds, 1, 30);
@@ -529,17 +532,17 @@ public partial class MainWindow : Window
         ToastScreenshotCheck.IsChecked = s.ToastScreenshot.Enabled; ToastScreenshotSlider.Value = Math.Clamp(s.ToastScreenshot.Seconds, 1, 30);
         UpdateToastLabels();
         DotCheck.IsChecked = s.StatusDot;
-        Fill(DotPositionCombo, new[] { new Choice("Top left", "top-left"), new Choice("Top right", "top-right"), new Choice("Bottom left", "bottom-left"), new Choice("Bottom right", "bottom-right") }, s.StatusDotPosition);
+        Fill(DotPositionCombo, new[] { new Choice(L.T("position|Top left"), "top-left"), new Choice(L.T("position|Top right"), "top-right"), new Choice(L.T("position|Bottom left"), "bottom-left"), new Choice(L.T("position|Bottom right"), "bottom-right") }, s.StatusDotPosition);
         DotPositionCombo.IsEnabled = s.StatusDot;
 
         AutoUpdateCheck.IsChecked = s.AutoUpdate;
         VersionText.Text = FooterVersion;
-        UpdateVersionText.Text = "Clink v" + _app.Updater.VersionDisplay;
+        UpdateVersionText.Text = L.T("Clink v{version}", ("version", L.Ltr(_app.Updater.VersionDisplay)));
         VersionText.ToolTip = _app.Updater.UpdatesEnabled
-            ? "Updates come from the Euphoric Software update server · click for update options"
+            ? L.T("Updates come from the Euphoric Software update server · click for update options")
             : NoUpdatesText;
         RefreshUpdateState();
-        SettingsDirText.Text = "Saved in " + QuietMode.Shown(AppController.DocShots, Settings.Dir, QuietMode.DocSettingsDir);
+        SettingsDirText.Text = L.T("Saved in {folder}", ("folder", L.Ltr(QuietMode.Shown(AppController.DocShots, Settings.Dir, QuietMode.DocSettingsDir))));
         RefreshSettingsBanners();
         SettingsImport.PendingChanged -= OnImportPendingChanged;
         SettingsImport.PendingChanged += OnImportPendingChanged;
@@ -564,7 +567,7 @@ public partial class MainWindow : Window
         _filling = true;
         try
         {
-            Fill(BitrateCombo, SetupPresets.BitrateItems(s.BitrateMbps).Select(b => new Choice($"{b} Mbps", b)).ToArray(), s.BitrateMbps);
+            Fill(BitrateCombo, SetupPresets.BitrateItems(s.BitrateMbps).Select(b => new Choice(L.T("unit|{n} Mbps", ("n", b)), b)).ToArray(), s.BitrateMbps);
         }
         finally { _filling = was; }
     }
@@ -587,7 +590,7 @@ public partial class MainWindow : Window
     private void FillCodecs()
     {
         var items = Capabilities.Codecs
-            .Select(c => new Choice(c.Supported ? c.Name + (c.Experimental ? " (experimental)" : "") : $"{c.Name} — {c.Reason}", c.Id, Disabled: !c.Supported))
+            .Select(c => new Choice(c.Supported ? (c.Experimental ? L.T("{name} (experimental)", ("name", c.Name)) : c.Name) : L.T("{name} — not supported by this GPU", ("name", c.Name)), c.Id, Disabled: !c.Supported))
             .ToList();
         Refill(CodecCombo, items, Clink.Engine.EngineConfig.NormalizeCodec(_app.Settings.Codec));
         UpdateCodecDescription();
@@ -600,18 +603,20 @@ public partial class MainWindow : Window
         if (info == null) { CodecDescription.Text = ""; return; }
         if (!Capabilities.Codecs.Any(c => c.Supported))
         {
-            CodecDescription.Text = "No hardware video encoder found on this GPU – update the GPU driver; recording is not possible.";
+            CodecDescription.Text = L.T("No hardware video encoder found on this GPU – update the GPU driver; recording is not possible.");
             return;
         }
         var mon = _app.SelectedMonitor;
         var (w, h) = mon != null ? AppController.OutputSize(mon, _app.Settings.Resolution) : (0u, 0u);
         var fallback = Capabilities.Codec(Capabilities.EffectiveCodec(id, w, h));
         if (info.Supported && fallback != null && fallback.Id != info.Id)
-            CodecDescription.Text = $"{info.Name} cannot encode {w}×{h}; recording uses {fallback.Name} instead. {info.Name} – {info.Description}";
+            CodecDescription.Text = L.T("{codec} cannot encode {width}×{height}; recording uses {fallback} instead. {codec} – {description}", ("codec", info.Name), ("width", w), ("height", h), ("fallback", fallback.Name), ("description", info.Description));
         else if (info.Supported)
-            CodecDescription.Text = $"{info.Name} – {info.Description}{(info.EncoderName != null ? $"  ·  {info.EncoderName.Replace(" Encoder MFT", "")}" : "")}";   // "NVIDIA H.264", as in the footer
+            CodecDescription.Text = info.EncoderName != null   // "NVIDIA H.264", as in the footer
+                ? L.T("{codec} – {description}  ·  {encoder}", ("codec", info.Name), ("description", info.Description), ("encoder", info.EncoderName.Replace(" Encoder MFT", "")))
+                : L.T("{codec} – {description}", ("codec", info.Name), ("description", info.Description));
         else
-            CodecDescription.Text = $"{info.Name} is {info.Reason}; recording uses {fallback?.Name ?? "H.264"} instead. {info.Name} – {info.Description}";
+            CodecDescription.Text = L.T("{codec} is not supported by this GPU; recording uses {fallback} instead. {codec} – {description}", ("codec", info.Name), ("fallback", fallback?.Name ?? "H.264"), ("description", info.Description));
     }
 
     private int AudioTrackCount() => _app.AudioTrackCount;   // the mix is always track 1; the same count the engine's bitrate is resolved with
@@ -627,7 +632,7 @@ public partial class MainWindow : Window
         var s = _app.Settings;
         int seconds = Math.Clamp(previewSeconds ?? s.BufferSeconds, 1, 3600);
         int tracks = AudioTrackCount();
-        var (mbps, note) = Capabilities.ResolveBitrate(s, tracks, seconds);
+        var (mbps, note, noteIsWarning) = Capabilities.ResolveBitrateChecked(s, tracks, seconds);
         bool targeted = Capabilities.SizeTargetBytes(s.SizeTarget) > 0;
 
         bool was = _filling;
@@ -637,7 +642,7 @@ public partial class MainWindow : Window
             // The chosen bitrate stays editable; a size target only lowers the encode bitrate when a clip would not fit.
             BitrateCombo.IsEnabled = true;
             BitrateCombo.ToolTip = targeted && mbps < s.BitrateMbps
-                ? $"Encoding at {mbps:0.#} Mbps so a {Capabilities.FormatDuration(Capabilities.FitSeconds(s.SizeTarget, seconds))} clip fits the size target; set the target to None to use the full {s.BitrateMbps} Mbps"
+                ? L.T("Encoding at {mbps} Mbps so a {length} clip fits the size target; set the target to None to use the full {bitrate} Mbps", ("mbps", mbps.ToString("0.#", L.FormatCulture)), ("length", Capabilities.FormatDuration(Capabilities.FitSeconds(s.SizeTarget, seconds))), ("bitrate", s.BitrateMbps))
                 : null;
         }
         finally { _filling = was; }
@@ -646,7 +651,7 @@ public partial class MainWindow : Window
         SizeNote.Visibility = note != null ? Visibility.Visible : Visibility.Collapsed;
         // Warn colour when no bitrate can make the clip fit, or when the replay reaches the target's length limit (Copium's 10 min,
         // Copium Plus's 60: no bitrate fixes that either).
-        SizeNote.SetResourceReference(TextBlock.ForegroundProperty, Capabilities.IsWarningNote(note) ? "Warn" : "Muted");
+        SizeNote.SetResourceReference(TextBlock.ForegroundProperty, noteIsWarning ? "Warn" : "Muted");
         EstimateText.Text = Capabilities.DescribeEstimate(mbps, tracks, seconds);
 
         var (ramText, tooMuch) = Capabilities.DescribeRing(mbps, seconds);
@@ -698,7 +703,7 @@ public partial class MainWindow : Window
         _filling = true;
         try { CopiumPlusCheck.IsChecked = true; }
         finally { _filling = was; }
-        _app.Say("Copium Plus size target: ticked I have Copium+");
+        _app.Say(L.T("Copium Plus size target: ticked I have Copium+"));
     }
 
     // ------------------------------------------------------------------ capture: recording mode & custom apps (§5)
@@ -716,10 +721,10 @@ public partial class MainWindow : Window
 
     private void FillRunningApps()
     {
-        var items = new List<Choice> { new("Add running app…", "", true) };
+        var items = new List<Choice> { new(L.T("Add running app…"), "", true) };
         var apps = RunningApps().Where(c => !_customApps.Contains(c.Name, StringComparer.OrdinalIgnoreCase)).ToList();
         items.AddRange(apps.Select(c => new Choice(AppLabel(c), c.Name)));
-        if (apps.Count == 0) items.Add(new Choice("No other windowed apps running", "", true));
+        if (apps.Count == 0) items.Add(new Choice(L.T("No other windowed apps running"), "", true));
         bool was = _filling;
         _filling = true;
         try { RunningAppsCombo.ItemsSource = items; RunningAppsCombo.SelectedIndex = 0; }
@@ -785,7 +790,7 @@ public partial class MainWindow : Window
     /// </summary>
     private void FillDeviceCombo(ComboBox combo, bool capture, string? current)
     {
-        var items = new List<Choice> { new(capture ? "Default microphone" : "Default output", "") };
+        var items = new List<Choice> { new(capture ? L.T("Default microphone") : L.T("Default output"), "") };
         List<AudioDeviceInfo> devices;
         try { devices = WasapiSource.ListDevices(capture, includeInactive: true); } catch { devices = new(); }
         items.AddRange(devices.Where(d => d.Problem == null).Select(d => new Choice(d.Name, d.Id)));
@@ -793,7 +798,7 @@ public partial class MainWindow : Window
         if (id.Length > 0 && !items.Any(i => Same(i.Value, id)))
         {
             var known = devices.FirstOrDefault(d => Same(d.Id, id));
-            items.Add(new Choice(known != null ? $"{known.Name} ({known.Problem})" : "Saved device (not connected)", id));
+            items.Add(new Choice(known != null ? L.T("{name} ({problem})", ("name", known.Name), ("problem", known.Problem)) : L.T("Saved device (not connected)"), id));
         }
         Refill(combo, items, id);
     }
@@ -807,7 +812,7 @@ public partial class MainWindow : Window
     {
         string title = c.Title.Trim();
         if (title.Length > 48) title = title[..47] + "…";
-        return title.Length == 0 ? c.Name : $"{c.Name} — {title}";
+        return title.Length == 0 ? c.Name : L.T("{name} — {title}", ("name", c.Name), ("title", title));
     }
 
     /// <summary>Game track: auto-detect or a running app; a configured name that is not running stays selectable so it is not lost.</summary>
@@ -815,12 +820,12 @@ public partial class MainWindow : Window
     {
         current = GameProcessTracker.NormalizeName(current);   // "auto" in any case, ".exe" dropped: matches the way the engine reads it
         // Short enough to fit the closed box at the window's width, like the Voice picker's; the tooltip explains the detection.
-        var items = new List<Choice> { new("Auto (fullscreen app)", "auto") };
+        var items = new List<Choice> { new(L.T("Auto (fullscreen app)"), "auto") };
         var apps = RunningApps();
-        if (apps.Count > 0) items.Add(new Choice("Running apps", "", true));
+        if (apps.Count > 0) items.Add(new Choice(L.T("Running apps"), "", true));
         items.AddRange(apps.Select(c => new Choice(AppLabel(c), c.Name)));
         AddDeviceChoices(items, current);
-        if (!IsAuto(current) && !IsDeviceValue(current) && !items.Any(i => Same(i.Value, current))) items.Add(new Choice($"{current} (not running)", current));
+        if (!IsAuto(current) && !IsDeviceValue(current) && !items.Any(i => Same(i.Value, current))) items.Add(new Choice(L.T("{name} (not running)", ("name", current)), current));
         Refill(GameCombo, items, current);
     }
 
@@ -829,13 +834,13 @@ public partial class MainWindow : Window
     {
         current = GameProcessTracker.NormalizeName(current);
         // Short enough to fit the closed box at the window's width; the full list is in the combo's tooltip.
-        var items = new List<Choice> { new("Auto (Discord, TeamSpeak, …)", "auto") };
+        var items = new List<Choice> { new(L.T("Auto (Discord, TeamSpeak, …)"), "auto") };
         items.AddRange(GameProcessTracker.VoiceAppNames.Select(n => new Choice(n, n)));
         var others = RunningApps().Where(c => !items.Any(i => Same(i.Value, c.Name))).ToList();
-        if (others.Count > 0) items.Add(new Choice("Other running apps", "", true));
+        if (others.Count > 0) items.Add(new Choice(L.T("Other running apps"), "", true));
         items.AddRange(others.Select(c => new Choice(AppLabel(c), c.Name)));
         AddDeviceChoices(items, current);
-        if (!IsAuto(current) && !IsDeviceValue(current) && !items.Any(i => Same(i.Value, current))) items.Add(new Choice($"{current} (not running)", current));
+        if (!IsAuto(current) && !IsDeviceValue(current) && !items.Any(i => Same(i.Value, current))) items.Add(new Choice(L.T("{name} (not running)", ("name", current)), current));
         Refill(VoiceCombo, items, current);
     }
 
@@ -852,14 +857,16 @@ public partial class MainWindow : Window
     private void FillDesktopCombo(string? current)
     {
         string id = current ?? "";
-        var items = new List<Choice> { new("Default output (what you hear)", "") };
+        var items = new List<Choice> { new(L.T("Default output (what you hear)"), "") };
         AddDeviceChoices(items, id);
         if (id.Length > 0 && !items.Any(i => Same(i.Value, id)))
         {
             List<AudioDeviceInfo> outputs;
             try { outputs = WasapiSource.ListDevices(false, includeInactive: true); } catch { outputs = new(); }
             var known = outputs.FirstOrDefault(d => Same(d.Id, id));   // v1 value: a bare render endpoint id
-            items.Add(new Choice(known != null ? "Output: " + known.Name + (known.Problem != null ? $" ({known.Problem})" : "") : "Saved device (not connected)", id));
+            items.Add(new Choice(known == null ? L.T("Saved device (not connected)")
+                : known.Problem != null ? L.T("Output: {name} ({problem})", ("name", known.Name), ("problem", known.Problem))
+                : L.T("Output: {name}", ("name", known.Name)), id));
         }
         Refill(AllDeviceCombo, items, id);
     }
@@ -888,26 +895,66 @@ public partial class MainWindow : Window
         try { outputs = WasapiSource.ListDevices(false); } catch { outputs = new(); }
         if (inputs.Count > 0)
         {
-            items.Add(new Choice("Audio inputs", "", true));
-            items.AddRange(inputs.Select(d => new Choice("Input: " + d.Name, "in:" + d.Id)));
+            items.Add(new Choice(L.T("Audio inputs"), "", true));
+            items.AddRange(inputs.Select(d => new Choice(L.T("Input: {name}", ("name", d.Name)), "in:" + d.Id)));
         }
         if (outputs.Count > 0)
         {
-            items.Add(new Choice("Outputs (whatever plays on them)", "", true));
-            items.AddRange(outputs.Select(d => new Choice("Output: " + d.Name, "out:" + d.Id)));
+            items.Add(new Choice(L.T("Outputs (whatever plays on them)"), "", true));
+            items.AddRange(outputs.Select(d => new Choice(L.T("Output: {name}", ("name", d.Name)), "out:" + d.Id)));
         }
         if (IsDeviceValue(current) && !items.Any(i => Same(i.Value, current)))
-            items.Add(new Choice("Saved device (not connected)", current));
+            items.Add(new Choice(L.T("Saved device (not connected)"), current));
     }
 
     private void UpdateMonitorLabel()
     {
         var m = _app.SelectedMonitor;
-        if (m == null) { MonitorLabel.Text = "No monitor"; return; }
-        MonitorLabel.Text = $"{(string.IsNullOrEmpty(m.FriendlyName) ? m.ShortName : m.FriendlyName)}  ·  {m.Width}×{m.Height}{(m.IsPrimary ? "  ·  primary" : "")}";
+        MonitorLabel.Text = MonitorLabelText(m);
+        if (m == null) return;
         MonitorDetail.Text = m.IsHdr
-            ? $"HDR on · tone-mapped to SDR (SDR white {m.SdrWhiteNits:0} nits) · {m.AdapterName}"
-            : $"SDR · {m.AdapterName}";
+            ? L.T("HDR on · tone-mapped to SDR (SDR white {nits} nits) · {adapter}", ("nits", m.SdrWhiteNits.ToString("0", L.FormatCulture)), ("adapter", L.Ltr(m.AdapterName)))
+            : L.T("SDR · {adapter}", ("adapter", L.Ltr(m.AdapterName)));
+    }
+
+    /// <summary>The monitor line of the Capture tab: name, size and whether it is the primary one ("No monitor" for none). No window needed.</summary>
+    internal static string MonitorLabelText(Clink.Native.MonitorInfo? m)
+    {
+        if (m == null) return L.T("No monitor");
+        string monitorName = L.Ltr(string.IsNullOrEmpty(m.FriendlyName) ? m.ShortName : m.FriendlyName);
+        return m.IsPrimary
+            ? L.T("{name}  ·  {width}×{height}  ·  primary", ("name", monitorName), ("width", m.Width), ("height", m.Height))
+            : L.T("{name}  ·  {width}×{height}", ("name", monitorName), ("width", m.Width), ("height", m.Height));
+    }
+
+    /// <summary>The footer while the engine runs: the game (when there is one), the encoder, the buffer and the dropped frames.</summary>
+    internal static string FooterLine(string? game, string encoder, double bufferedSeconds, long dropped)
+    {
+        encoder = encoder.Replace(" Encoder MFT", "");
+        string buffered = bufferedSeconds.ToString("0", L.FormatCulture);
+        return game != null
+            ? L.T("{game} · {encoder} · buffer {seconds}s · {dropped} dropped", ("game", L.Ltr(game)), ("encoder", encoder), ("seconds", buffered), ("dropped", dropped))
+            : L.T("{encoder} · buffer {seconds}s · {dropped} dropped", ("encoder", encoder), ("seconds", buffered), ("dropped", dropped));
+    }
+
+    /// <summary>The footer while the engine does not run (clips on, no demo): the error, why nothing records, or the engine's own status.</summary>
+    internal static string IdleFooterLine(RecordingState state, string? engineError, string engineStatus) => state switch
+    {
+        RecordingState.Error => engineError ?? L.T("Error"),
+        RecordingState.WaitingForGame => L.T("Not recording until a game or custom app runs (Capture → Recording)"),
+        RecordingState.Paused => L.T("Recording paused"),
+        _ => engineStatus,
+    };
+
+    /// <summary>The line under the recording mode: the detected game and how it was found, or what is being waited for.</summary>
+    internal static string ModeStatusText(bool gameOnly, string? game, string? sourceId)
+    {
+        string source = sourceId switch { "fullscreen" => L.T("fullscreen window"), "library" => L.T("game library folder"), "custom" => L.T("custom app"), _ => "" };
+        return gameOnly
+            ? game != null
+                ? (source.Length > 0 ? L.T("Detected: {game} ({source})", ("game", L.Ltr(game)), ("source", source)) : L.T("Detected: {game}", ("game", L.Ltr(game))))
+                : L.T("Waiting for a game… detected by a fullscreen window on the captured monitor, a known game-library folder (Steam, Epic, Riot, Battle.net, Ubisoft, EA, GOG, Xbox, Rockstar) or a custom app below.")
+            : game != null ? L.T("Recording whenever Clink runs · game: {game}", ("game", L.Ltr(game))) : L.T("Recording whenever Clink runs.");
     }
 
     // ------------------------------------------------------------------ status
@@ -939,40 +986,33 @@ public partial class MainWindow : Window
         {
             var st = eng.GetStats();
             // The game first: at the default width the line is cut at its end, and the stats are the part that can go.
-            string game = st.Game != null ? $"{st.Game} · " : "";
-            if (!noticeShowing) FooterText.Text = $"{game}{st.Encoder.Replace(" Encoder MFT", "")} · buffer {st.BufferedSeconds:0}s · {st.Dropped} dropped";
+            if (!noticeShowing)
+            {
+                FooterText.Text = FooterLine(st.Game, st.Encoder, st.BufferedSeconds, st.Dropped);
+            }
             // Each entry says what the track is actually capturing ("● Game (Overwatch)", "● Game (everything except Discord)",
             // "● Mic (USB Microphone)") or why it is not ("○ Voice (waiting for app)"), so a pick is confirmed here and the
             // fallback is not mistaken for the real thing. Non-breaking spaces inside an entry: the line wraps between tracks only.
-            AudioStatus.Text = st.Audio.Count == 0 ? "No audio tracks" :
+            AudioStatus.Text = st.Audio.Count == 0 ? L.T("No audio tracks") :
                 string.Join("   ", st.Audio.Select(a => $"{(a.Running ? "●" : "○")} {a.Name}{(a.Detail != null ? $" ({a.Detail})" : "")}".Replace(' ', ' ')));
         }
         else
         {
             if (!noticeShowing)
-                FooterText.Text = !_app.Settings.ClipsEnabled || demo != null ? "" : state switch
-                {
-                    RecordingState.Error => eng.Error ?? "Error",
-                    RecordingState.WaitingForGame => "Not recording until a game or custom app runs (Capture → Recording)",
-                    RecordingState.Paused => "Recording paused",
-                    _ => eng.Status,
-                };
+                FooterText.Text = !_app.Settings.ClipsEnabled || demo != null ? "" : IdleFooterLine(state, eng.Error, eng.Status);
             // Never leave the previous run's "● Mix   ● Game" line under a Paused / Error / Starting header: with the pickers
             // right above it, that reads as "my new selection is active".
             AudioStatus.Text = demo != null ? "" : state switch   // the demo status: nothing is really captured, so no audio line
             {
-                RecordingState.Paused => "Paused",
-                RecordingState.WaitingForGame => "Starts with the game",
-                RecordingState.Error => "Not recording",
+                RecordingState.Paused => L.T("Paused"),
+                RecordingState.WaitingForGame => L.T("Starts with the game"),
+                RecordingState.Error => L.T("Not recording"),
                 _ => eng.Status,
             };
         }
 
         string? game2 = demo != null ? AppController.DemoGame : _app.CurrentGame;   // the demo game reads as detected
-        string source = _app.CurrentGameSource switch { "fullscreen" => "fullscreen window", "library" => "game library folder", "custom" => "custom app", _ => "" };
-        ModeStatus.Text = _app.GameOnly
-            ? game2 != null ? $"Detected: {game2}{(source.Length > 0 ? $" ({source})" : "")}" : "Waiting for a game… detected by a fullscreen window on the captured monitor, a known game-library folder (Steam, Epic, Riot, Battle.net, Ubisoft, EA, GOG, Xbox, Rockstar) or a custom app below."
-            : game2 != null ? $"Recording whenever Clink runs · game: {game2}" : "Recording whenever Clink runs.";
+        ModeStatus.Text = ModeStatusText(_app.GameOnly, game2, _app.CurrentGameSource);
     }
 
     // ------------------------------------------------------------------ app tab: appearance, settings folder
@@ -1000,9 +1040,9 @@ public partial class MainWindow : Window
                 var swatch = new RadioButton
                 {
                     Tag = accent.Id, GroupName = "AppAccent", Style = (Style)FindResource("SwatchRadio"), Margin = new Thickness(0, 0, 8, 0),
-                    ToolTip = accent.Label + (accent.Id == SettingsDefaults.Accent ? " (default)" : ""),
+                    ToolTip = accent.Id == SettingsDefaults.Accent ? L.T("{name} (default)", ("name", accent.Label)) : accent.Label,
                 };
-                System.Windows.Automation.AutomationProperties.SetName(swatch, accent.Label + " accent");
+                System.Windows.Automation.AutomationProperties.SetName(swatch, L.T("{name} accent", ("name", accent.Label)));
                 swatch.Checked += AccentChoice_Checked;
                 AccentChoices.Children.Add(swatch);
             }
@@ -1059,7 +1099,7 @@ public partial class MainWindow : Window
             Directory.CreateDirectory(Settings.Dir);
             Process.Start(new ProcessStartInfo(Settings.Dir) { UseShellExecute = true });
         }
-        catch (Exception ex) { _app.Say("Could not open the folder: " + ex.Message); }
+        catch (Exception ex) { _app.Say(L.T("Could not open the folder: {error}", ("error", ex.Message))); }
     }
 
     /// <summary>
@@ -1086,8 +1126,9 @@ public partial class MainWindow : Window
     /// <summary>"Clink also has settings saved 2026-10-21 14:32 by a copy started from inside <app> (video quality, hotkeys)".</summary>
     internal static string ImportBannerText(ForeignSettings copy)
     {
-        string what = copy.Differences.Count > 0 ? $" ({string.Join(", ", copy.Differences)})" : "";
-        return $"Clink also has settings saved {copy.SavedLocalText} by a copy started from inside {copy.FriendlyName}{what}";
+        return copy.Differences.Count > 0
+            ? L.T("Clink also has settings saved {saved} by a copy started from inside {app} ({changes})", ("saved", copy.SavedLocalText), ("app", L.Ltr(copy.FriendlyName ?? "")), ("changes", SettingsImport.LabelList(copy.Differences)))
+            : L.T("Clink also has settings saved {saved} by a copy started from inside {app}", ("saved", copy.SavedLocalText), ("app", L.Ltr(copy.FriendlyName ?? "")));
     }
 
     private void ImportUse_Click(object sender, RoutedEventArgs e)
@@ -1110,11 +1151,11 @@ public partial class MainWindow : Window
         string d = _app.CaptureBorderDetail;
         string? text = !_app.CaptureBorderKnown ? null : _app.CaptureBorder switch
         {
-            CaptureBorderState.Hidden => "Yellow capture border: hidden by Clink.",
-            CaptureBorderState.UnsupportedOs => "Yellow capture border: shown. Windows 11 or newer is needed to hide it.",
-            CaptureBorderState.Denied => "Yellow capture border: shown. Windows didn't let Clink hide it. In Settings > Privacy & security > Screenshot borders, turn on \"Screenshot border settings access\", \"Let apps turn off the screenshot border\" and \"Let desktop apps turn off the screenshot border\", then pause and resume recording from the tray.",
-            CaptureBorderState.Unconfirmed => $"Yellow capture border: probably hidden (could not confirm: {d}).",
-            _ => $"Yellow capture border: could not be hidden ({d}).",
+            CaptureBorderState.Hidden => L.T("Yellow capture border: hidden by Clink."),
+            CaptureBorderState.UnsupportedOs => L.T("Yellow capture border: shown. Windows 11 or newer is needed to hide it."),
+            CaptureBorderState.Denied => L.T("Yellow capture border: shown. Windows didn't let Clink hide it. In Settings > Privacy & security > Screenshot borders, turn on \"Screenshot border settings access\", \"Let apps turn off the screenshot border\" and \"Let desktop apps turn off the screenshot border\", then pause and resume recording from the tray."),
+            CaptureBorderState.Unconfirmed => L.T("Yellow capture border: probably hidden (could not confirm: {detail}).", ("detail", d)),
+            _ => L.T("Yellow capture border: could not be hidden ({detail}).", ("detail", d)),
         };
         BorderText.Text = text ?? "";
         BorderPanel.Visibility = text == null ? Visibility.Collapsed : Visibility.Visible;
@@ -1130,16 +1171,11 @@ public partial class MainWindow : Window
     private void RefreshUpdateState()
     {
         var v = _app.PendingVersion;
-        UpdateButton.Content = v != null ? $"Update to v{v}" : "Update";
+        UpdateButton.Content = UpdateButtonText(v?.ToString() ?? "", v != null);
         UpdateButton.Visibility = v != null ? Visibility.Visible : Visibility.Collapsed;
-        UpdateNowButton.Content = v != null ? $"Update to v{v}" : "Update";
+        UpdateNowButton.Content = UpdateButtonText(v?.ToString() ?? "", v != null);
         UpdateNowButton.Visibility = v != null ? Visibility.Visible : Visibility.Collapsed;
-        // LastError also holds a download / install failure after a check that worked: only a failed check is called one.
-        // A --dev instance never looks for updates: the version line below says so, so the "last check failed: updates are off in dev
-        // mode" the updater leaves as its status (Updater.LastError) is not shown a second time as a problem.
-        string? problem = _app.Updater.InstallProblem
-            ?? (_app.Updater.LastError is string err && !(AppController.IsDev && string.Equals(err, Updater.DevModeNote, StringComparison.OrdinalIgnoreCase))
-                ? (_app.Updater.CheckFailed ? "Last check failed: " : "Update problem: ") + err : null);
+        string? problem = UpdateProblemLine(_app.Updater.InstallProblem, _app.Updater.LastError, _app.Updater.CheckFailed, AppController.IsDev);
         UpdateProblemText.Text = problem ?? "";
         UpdateProblemText.Visibility = problem != null ? Visibility.Visible : Visibility.Collapsed;
         bool canUpdate = _app.Updater.UpdatesEnabled;
@@ -1149,7 +1185,7 @@ public partial class MainWindow : Window
         // the box shows unticked (only on screen: under _loading the setting itself is not touched, so a later build with updates keeps it).
         if (!canUpdate && !AppController.DocShots)
         {
-            UpdateVersionText.Text = $"Clink v{_app.Updater.VersionDisplay} · {NoUpdatesText}";
+            UpdateVersionText.Text = L.T("Clink v{version} · {note}", ("version", L.Ltr(_app.Updater.VersionDisplay)), ("note", NoUpdatesText));
             bool wasLoading = _loading;
             _loading = true;
             try { AutoUpdateCheck.IsChecked = false; }
@@ -1158,6 +1194,20 @@ public partial class MainWindow : Window
             AutoUpdateCheck.ToolTip = NoUpdatesText;
         }
     }
+
+    /// <summary>The update button: "Update to v1.2.3" when a version is pending, else "Update".</summary>
+    internal static string UpdateButtonText(string version, bool pending) =>
+        pending ? L.T("Update to v{version}", ("version", L.Ltr(version))) : L.T("verb|Update");
+
+    /// <summary>
+    /// The update problem line, or null for none. LastError also holds a download / install failure after a check that worked: only a
+    /// failed check is called one. A --dev instance never looks for updates: the version line says so, so the "last check failed:
+    /// updates are off in dev mode" the updater leaves as its status (Updater.LastError) is not shown a second time as a problem.
+    /// </summary>
+    internal static string? UpdateProblemLine(string? installProblem, string? lastError, bool checkFailed, bool isDev) =>
+        installProblem
+            ?? (lastError is string err && !(isDev && string.Equals(err, Updater.DevModeNote, StringComparison.OrdinalIgnoreCase))
+                ? (checkFailed ? L.T("Last check failed: {error}", ("error", err)) : L.T("Update problem: {error}", ("error", err))) : null);
 
     /// <summary>Why there is nothing to check: a --dev instance never looks for updates; a build without a signed update feed has no updates at all.</summary>
     private static string NoUpdatesText => AppController.IsDev ? Updater.DevModeNote : Updater.NoUpdatesNote;
@@ -1187,7 +1237,9 @@ public partial class MainWindow : Window
     private void OpenVersionPopup()
     {
         var up = _app.Updater;
-        VersionPopupText.Text = $"Clink v{up.VersionDisplay}" + (up.Current.IsDevBuild ? " · dev build" : "");
+        VersionPopupText.Text = up.Current.IsDevBuild
+            ? L.T("Clink v{version} · dev build", ("version", L.Ltr(up.VersionDisplay)))
+            : L.T("Clink v{version}", ("version", L.Ltr(up.VersionDisplay)));
         bool wasLoading = _loading;
         _loading = true;
         try { DevBuildCheck.IsChecked = _app.Settings.UseDevBuilds; }
@@ -1196,7 +1248,7 @@ public partial class MainWindow : Window
         DevBuildCheck.IsEnabled = canCheck;
         VersionCheckButton.IsEnabled = canCheck;
         DevBuildCheck.ToolTip = canCheck
-            ? "Use the latest build from the dev branch instead of the latest release. Dev builds may be unstable; untick to go back to the latest release."
+            ? L.T("Use the latest build from the dev branch instead of the latest release. Dev builds may be unstable; untick to go back to the latest release.")
             : NoUpdatesText;
         VersionCheckButton.ToolTip = canCheck ? null : NoUpdatesText;
         RefreshCopiumPopup();
@@ -1280,7 +1332,7 @@ public partial class MainWindow : Window
         if (_loading) return;
         _app.Settings.UseDevBuilds = DevBuildCheck.IsChecked == true;
         _app.Settings.Save();
-        _app.Say(_app.Settings.UseDevBuilds ? "Switched to dev builds - checking…" : "Switched to releases - checking…");
+        _app.Say(_app.Settings.UseDevBuilds ? L.T("Switched to dev builds - checking…") : L.T("Switched to releases - checking…"));
         VersionPopup.IsOpen = false;
         VersionText.Text = FooterVersion;
         // A check (and its download) already running looked on the old channel: check again on this one once it is done.
@@ -1289,7 +1341,9 @@ public partial class MainWindow : Window
     }
 
     /// <summary>The footer version; " · dev builds" only where updates exist at all (a --dev instance or a build without a signed feed has no channel).</summary>
-    private string FooterVersion => "v" + _app.Updater.VersionDisplay + (_app.Updater.UpdatesEnabled && _app.Settings.UseDevBuilds ? " · dev builds" : "");
+    private string FooterVersion => _app.Updater.UpdatesEnabled && _app.Settings.UseDevBuilds
+        ? L.T("v{version} · dev builds", ("version", L.Ltr(_app.Updater.VersionDisplay)))
+        : L.T("v{version}", ("version", L.Ltr(_app.Updater.VersionDisplay)));
 
     private async void CheckUpdate_Click(object sender, RoutedEventArgs e)
     {
@@ -1303,7 +1357,7 @@ public partial class MainWindow : Window
         var up = _app.Updater;
         if (!up.UpdatesEnabled) { _app.Say(NoUpdatesText); return; }
         _checkingUpdate = true;
-        _app.Say("Checking…");
+        _app.Say(L.T("Checking…"));
         try
         {
             var check = up.CheckNowAsync();
@@ -1311,26 +1365,28 @@ public partial class MainWindow : Window
             // progress: keep the footer honest instead of letting the stats line take it back after 4 s.
             while (await Task.WhenAny(check, Task.Delay(2000)) != check)
             {
-                string text = up.IsDownloading ? "Downloading update…" : "Still checking…";
+                string text = up.IsDownloading ? L.T("Downloading update…") : L.T("Still checking…");
                 if (_app.LastNotice != text) _app.Say(text); else _noticeUntil = DateTime.UtcNow.AddSeconds(4);
             }
             var info = await check;
             // The release notes page is the signed manifest's notesUrl, opened only when it is https and under the base of the feed it came
             // from (Updater.OpenReleasePage), else a fixed page: no other text of a manifest ever reaches the shell.
-            if (info == null) _app.Say(up.LastError != null ? "Update check failed: " + up.LastError : $"You're up to date (v{up.VersionDisplay})");
-            else if (_app.PendingVersion is ReleaseVersion pending && pending >= info.Version) _app.Say($"Update v{info.Version} is ready - click 'Update to v{pending}' to restart");
+            if (info == null) _app.Say(up.LastError != null ? L.T("Update check failed: {error}", ("error", up.LastError)) : L.T("You're up to date (v{version})", ("version", L.Ltr(up.VersionDisplay))));
+            else if (_app.PendingVersion is ReleaseVersion pending && pending >= info.Version) _app.Say(L.T("Update v{version} is ready - click 'Update to v{pending}' to restart", ("version", L.Ltr(info.Version.ToString())), ("pending", L.Ltr(pending.ToString()))));
             else if (!_app.Settings.AutoUpdate)
             {
                 // Nothing is downloaded with auto-update off, so make the answer actionable: show the release.
-                _app.Say($"Clink v{info.Version} is available (auto-update is off) - opening the release page");
+                _app.Say(L.T("Clink v{version} is available (auto-update is off) - opening the release page", ("version", L.Ltr(info.Version.ToString()))));
                 OpenReleasePage(info);
             }
             else
             {
                 // Auto-update is on but nothing is ready to install (the download failed, Updater.LastError says why): an
                 // "available" with nothing to click would be a dead end, so say why and show the release instead.
-                string why = up.LastError?.TrimEnd('.') ?? "it could not be downloaded";
-                _app.Say($"Update v{info.Version} found, but {why} - opening the release page");
+                string? why = up.LastError?.TrimEnd('.');
+                _app.Say(why != null
+                    ? L.T("Update v{version} found, but {reason} - opening the release page", ("version", L.Ltr(info.Version.ToString())), ("reason", why))
+                    : L.T("Update v{version} found, but it could not be downloaded - opening the release page", ("version", L.Ltr(info.Version.ToString()))));
                 OpenReleasePage(info);
             }
         }
@@ -1674,9 +1730,9 @@ public partial class MainWindow : Window
     private void UpdateTokenStatus(string? justSaved)
     {
         string? t = justSaved ?? _app.Settings.CopiumToken;
-        if (string.IsNullOrEmpty(t)) { CopiumStatus.Text = "Not connected"; CopiumStatus.SetResourceReference(TextBlock.ForegroundProperty, "Muted"); }
-        else if (!t.StartsWith("eup_")) { CopiumStatus.Text = "Saved (tokens usually start with eup_)"; CopiumStatus.SetResourceReference(TextBlock.ForegroundProperty, "Warn"); }
-        else { CopiumStatus.Text = "Token saved"; CopiumStatus.SetResourceReference(TextBlock.ForegroundProperty, "Good"); }
+        if (string.IsNullOrEmpty(t)) { CopiumStatus.Text = L.T("Not connected"); CopiumStatus.SetResourceReference(TextBlock.ForegroundProperty, "Muted"); }
+        else if (!t.StartsWith("eup_")) { CopiumStatus.Text = L.T("Saved (tokens usually start with eup_)"); CopiumStatus.SetResourceReference(TextBlock.ForegroundProperty, "Warn"); }
+        else { CopiumStatus.Text = L.T("Token saved"); CopiumStatus.SetResourceReference(TextBlock.ForegroundProperty, "Good"); }
     }
 
     /// <summary>Re-draws the card from the session's latest state (after a local change such as the busy flag).</summary>
@@ -1756,10 +1812,10 @@ public partial class MainWindow : Window
     private void UpdateToastLabels()
     {
         if (ToastRecordingLabel == null || ToastScreenshotLabel == null) return;   // a slider's Minimum coerces its Value while the XAML is still loading
-        ToastClipLabel.Text = $"{(int)ToastClipSlider.Value} s";
-        ToastSharedLabel.Text = $"{(int)ToastSharedSlider.Value} s";
-        ToastRecordingLabel.Text = $"{(int)ToastRecordingSlider.Value} s";
-        ToastScreenshotLabel.Text = $"{(int)ToastScreenshotSlider.Value} s";
+        ToastClipLabel.Text = L.Duration((int)ToastClipSlider.Value);
+        ToastSharedLabel.Text = L.Duration((int)ToastSharedSlider.Value);
+        ToastRecordingLabel.Text = L.Duration((int)ToastRecordingSlider.Value);
+        ToastScreenshotLabel.Text = L.Duration((int)ToastScreenshotSlider.Value);
     }
 
     private void ToastChanged(object sender, RoutedEventArgs e)
@@ -1812,23 +1868,23 @@ public partial class MainWindow : Window
         {
             // A relative path would resolve against whatever the current directory is (the exe's folder from Explorer, another
             // one when started at sign-in), so clips would land in different places.
-            _app.Say(@"Use a full path for the clips folder, e.g. D:\Clips");
+            _app.Say(L.T("Use a full path for the clips folder, e.g. {example}", ("example", L.Ltr(@"D:\Clips"))));
             ClipsFolderBox.Text = s.ClipsFolder;
             return;
         }
         if (!string.IsNullOrWhiteSpace(s.ArchivePath) && ArchiveService.IsSameFolder(path, s.ArchivePath))
         {
-            _app.Say("The clips folder cannot be the archive location");
+            _app.Say(L.T("The clips folder cannot be the archive location"));
             ClipsFolderBox.Text = s.ClipsFolder;
             return;
         }
         try { Directory.CreateDirectory(path); }
-        catch (Exception ex) { _app.Say("Cannot use that folder: " + ex.Message); ClipsFolderBox.Text = s.ClipsFolder; return; }
+        catch (Exception ex) { _app.Say(L.T("Cannot use that folder: {error}", ("error", ex.Message))); ClipsFolderBox.Text = s.ClipsFolder; return; }
         s.ClipsFolder = path;
         s.Save();
         _app.Library.Load(path);
         _app.RecoverRecordingsAsync();   // unfinished recordings the new folder may hold
-        _app.Say("Clips folder changed");
+        _app.Say(L.T("Clips folder changed"));
         // The default screenshots folder lives inside the clips folder: show the new one, or leaving that box later would pin the old default.
         ScreenshotFolderBox.Text = ScreenshotService.FolderFor(s);
         ScheduleRestart();   // the engine writes clips to its configured folder
@@ -1836,7 +1892,7 @@ public partial class MainWindow : Window
 
     private void BrowseClips_Click(object sender, RoutedEventArgs e)
     {
-        string? picked = PickFolder("Local clips folder", _app.Settings.ClipsFolder);
+        string? picked = PickFolder(L.T("Local clips folder"), _app.Settings.ClipsFolder);
         if (picked == null) return;
         ClipsFolderBox.Text = picked;
         ClipsFolderBox_LostFocus(sender, e);
@@ -1858,10 +1914,12 @@ public partial class MainWindow : Window
         ScreenshotTokenHint.Visibility = linked || !cloud ? Visibility.Collapsed : Visibility.Visible;
         ScreenshotCopyLinkCheck.IsEnabled = linked && cloud && ScreenshotUploadCheck.IsChecked == true;
         if (VersionPopup.IsOpen) RefreshCopiumPopup();   // the popup's box follows this tab's
-        ScreenshotHotkeyHint.Text = (keys != null ? $"Hotkey: {keys} takes a screenshot. " : "No hotkey is set for screenshots. ")
-            + (editKeys != null ? $"{editKeys} edits the last one. " : "No hotkey is set for editing the last one. ")
-            + "The defaults are PrintScreen and Shift+PrintScreen. Change them under Capture → Hotkeys. "
-            + "With Edit on screen, draw on the chosen area and press Enter or Done to save; Esc steps back, then throws it away.";
+        // Four complete sentences, put side by side by one template (a language may write them without the spaces).
+        ScreenshotHotkeyHint.Text = L.T("{first} {second} {third} {fourth}",
+            ("first", keys != null ? L.T("Hotkey: {keys} takes a screenshot.", ("keys", L.Ltr(keys))) : L.T("No hotkey is set for screenshots.")),
+            ("second", editKeys != null ? L.T("{keys} edits the last one.", ("keys", L.Ltr(editKeys))) : L.T("No hotkey is set for editing the last one.")),
+            ("third", L.T("The defaults are {screenshotKeys} and {editKeys}. Change them under Capture → Hotkeys.", ("screenshotKeys", L.Ltr("PrintScreen")), ("editKeys", L.Ltr("Shift+PrintScreen")))),
+            ("fourth", L.T("With Edit on screen, draw on the chosen area and press Enter or Done to save; Esc steps back, then throws it away.")));
     }
     private void ScreenshotModeChanged(object sender, SelectionChangedEventArgs e)
     {
@@ -1942,28 +2000,28 @@ public partial class MainWindow : Window
         if (path.Length == 0)
         {
             // Empty = back to the default, a Screenshots folder inside the clips folder.
-            if (s.ScreenshotsFolder != null) { s.ScreenshotsFolder = null; s.Save(); _app.Say("Screenshots folder reset"); }
+            if (s.ScreenshotsFolder != null) { s.ScreenshotsFolder = null; s.Save(); _app.Say(L.T("Screenshots folder reset")); }
             ScreenshotFolderBox.Text = ScreenshotService.FolderFor(s);
             return;
         }
         if (string.Equals(path, ScreenshotService.FolderFor(s), StringComparison.OrdinalIgnoreCase)) { ScreenshotFolderBox.Text = ScreenshotService.FolderFor(s); return; }
         if (!Path.IsPathFullyQualified(path))
         {
-            _app.Say(@"Use a full path for the screenshots folder, e.g. D:\Screenshots");
+            _app.Say(L.T("Use a full path for the screenshots folder, e.g. {example}", ("example", L.Ltr(@"D:\Screenshots"))));
             ScreenshotFolderBox.Text = ScreenshotService.FolderFor(s);
             return;
         }
         try { Directory.CreateDirectory(path); }
-        catch (Exception ex) { _app.Say("Cannot use that folder: " + ex.Message); ScreenshotFolderBox.Text = ScreenshotService.FolderFor(s); return; }
+        catch (Exception ex) { _app.Say(L.T("Cannot use that folder: {error}", ("error", ex.Message))); ScreenshotFolderBox.Text = ScreenshotService.FolderFor(s); return; }
         s.ScreenshotsFolder = path;
         s.Save();
         ScreenshotFolderBox.Text = path;
-        _app.Say("Screenshots folder changed");
+        _app.Say(L.T("Screenshots folder changed"));
     }
 
     private void BrowseScreenshots_Click(object sender, RoutedEventArgs e)
     {
-        string? picked = PickFolder("Screenshots folder", ScreenshotService.FolderFor(_app.Settings));
+        string? picked = PickFolder(L.T("Screenshots folder"), ScreenshotService.FolderFor(_app.Settings));
         if (picked == null) return;
         ScreenshotFolderBox.Text = picked;
         ScreenshotFolderBox_LostFocus(sender, e);
@@ -1973,7 +2031,7 @@ public partial class MainWindow : Window
 
     private void BrowseArchive_Click(object sender, RoutedEventArgs e)
     {
-        string? picked = PickFolder("Archive location (NAS share, mapped drive or folder)", _app.Settings.ArchivePath);
+        string? picked = PickFolder(L.T("Archive location (NAS share, mapped drive or folder)"), _app.Settings.ArchivePath);
         if (picked == null) return;
         ArchivePathBox.Text = picked;
         ArchivePathBox_LostFocus(sender, e);
@@ -1992,7 +2050,7 @@ public partial class MainWindow : Window
             }
             return dlg.ShowDialog(this) == true ? dlg.FolderName : null;
         }
-        catch (Exception ex) { _app.Say("Folder picker failed: " + ex.Message); return null; }
+        catch (Exception ex) { _app.Say(L.T("Folder picker failed: {error}", ("error", ex.Message))); return null; }
     }
 
     /// <summary>The days / GB rules apply only to the automatic moves, so only they follow the switch; the location, Test and Archive now… are always there.</summary>
@@ -2053,8 +2111,8 @@ public partial class MainWindow : Window
         if (value != null && ArchiveService.IsSameFolder(value, s.ClipsFolder))
         {
             // Moving a clip onto itself would be "copy verified, delete local": the one copy gone. Refused here and in the service.
-            _app.Say("The archive location cannot be the clips folder itself");
-            RefuseArchivePath("Archive location is the clips folder: pick another folder, share or drive");
+            _app.Say(L.T("The archive location cannot be the clips folder itself"));
+            RefuseArchivePath(L.T("Archive location is the clips folder: pick another folder, share or drive"));
             return;
         }
         _archiveRefusal = null;
@@ -2101,7 +2159,7 @@ public partial class MainWindow : Window
         }
         string path = ArchivePathBox.Text.Trim().Trim('"');
         ArchiveTestButton.IsEnabled = false;
-        ArchiveStatus.Text = "Testing…";
+        ArchiveStatus.Text = L.T("Testing…");
         ArchiveStatus.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
         try
         {
@@ -2134,7 +2192,7 @@ public partial class MainWindow : Window
             ArchiveStatus.SetResourceReference(TextBlock.ForegroundProperty, "Warn");
             return;
         }
-        if (string.IsNullOrWhiteSpace(_app.Settings.ArchivePath)) { _app.Say("Set an archive location first"); return; }
+        if (string.IsNullOrWhiteSpace(_app.Settings.ArchivePath)) { _app.Say(L.T("Set an archive location first")); return; }
         new ArchiveWindow(_app) { Owner = this }.ShowDialog();
         RefreshArchiveStatus();
     }
@@ -2155,7 +2213,7 @@ public partial class MainWindow : Window
         // Archive now… works with any location set, whether or not the automatic moves are on.
         bool hasLocation = !string.IsNullOrWhiteSpace(_app.Settings.ArchivePath);
         ArchiveNowButton.IsEnabled = hasLocation;
-        ArchiveNowButton.ToolTip = hasLocation ? "Choose which clips to move to the archive location now" : "Set an archive location first";
+        ArchiveNowButton.ToolTip = hasLocation ? L.T("Choose which clips to move to the archive location now") : L.T("Set an archive location first");
     }
 
     // ------------------------------------------------------------------ window chrome
@@ -2194,8 +2252,10 @@ public partial class MainWindow : Window
         if (!_hintShown)
         {
             _hintShown = true;
-            string how = _app.ClipHotkeyLabel is string key ? $"Press {key} to save a clip." : "Add a hotkey under Capture → Hotkeys to save clips.";
-            _app.ShowBalloon("Clink is still running", how + " Right-click the tray icon to quit.");
+            string how = _app.ClipHotkeyLabel is string key
+                ? L.T("Press {keys} to save a clip. Right-click the tray icon to quit.", ("keys", L.Ltr(key)))
+                : L.T("Add a hotkey under Capture → Hotkeys to save clips. Right-click the tray icon to quit.");
+            _app.ShowBalloon(L.T("Clink is still running"), how);
         }
     }
 

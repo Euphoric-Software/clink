@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using Clink.Services;
+using Clink.Services.Localization;
 
 namespace Clink.UI;
 
@@ -17,7 +18,7 @@ public partial class HotkeyListEditor : UserControl
 {
     private static readonly (string label, string value)[] s_actions =
     {
-        ("Clip", "clip"), ("Pause / resume", "pause"), ("Share last clip", "share-last"),
+        ("hotkey-action|Clip", "clip"), ("Pause / resume", "pause"), ("Share last clip", "share-last"),
         ("Start / stop recording", "record"), ("Take screenshot", "screenshot"),
         ("Edit last screenshot", "screenshot-edit-last"),
     };
@@ -38,6 +39,7 @@ public partial class HotkeyListEditor : UserControl
     {
         InitializeComponent();
         WireCapture(MainKeys, () => Main);
+        AddButton.ToolTip = L.T("Another key combo, e.g. {keys} for a shorter clip (the last 15 s)", ("keys", L.Ltr("Shift+F9")));
         // An armed capture takes the next key pressed anywhere on the system: it must not outlive the window being the
         // active one (Alt+Tab to the game, a click on Discord) or the editor being on screen.
         Loaded += (_, _) =>
@@ -118,12 +120,12 @@ public partial class HotkeyListEditor : UserControl
     internal static List<(int Value, string Label)> LengthChoices(int replaySeconds, int current)
     {
         var items = AdditionalLengths(replaySeconds).Select(l => (Value: l, Label: Capabilities.FormatDuration(l))).ToList();
-        string full = $"Full replay ({Capabilities.FormatClipLength(replaySeconds)})";
+        string full = L.T("Full replay ({length})", ("length", Capabilities.FormatClipLength(replaySeconds)));
         if (current <= 0) items.Add((0, full));
         else if (items.All(i => i.Value != current))
         {
             bool capped = current >= replaySeconds;
-            items.Add((current, items.Count == 0 && capped ? full : capped ? $"{Capabilities.FormatDuration(current)} (capped to replay)" : Capabilities.FormatDuration(current)));
+            items.Add((current, items.Count == 0 && capped ? full : capped ? L.T("{length} (capped to replay)", ("length", Capabilities.FormatDuration(current))) : Capabilities.FormatDuration(current)));
         }
         return items.OrderBy(i => i.Value == 0 ? int.MaxValue : i.Value).ToList();
     }
@@ -132,9 +134,9 @@ public partial class HotkeyListEditor : UserControl
     internal static string LengthTip(int replaySeconds, int current)
     {
         string replay = Capabilities.FormatClipLength(replaySeconds);
-        if (current <= 0) return $"Saves the full replay ({replay}), like the main hotkey. Pick a length to make it a shorter clip";
-        if (current >= replaySeconds) return $"The replay is {replay} long, so this hotkey saves all of it; the {Capabilities.FormatDuration(current)} you set counts again once the replay is longer";
-        return "How much this hotkey saves: a fixed length shorter than the replay length (the main hotkey saves the whole replay)";
+        if (current <= 0) return L.T("Saves the full replay ({replay}), like the main hotkey. Pick a length to make it a shorter clip", ("replay", replay));
+        if (current >= replaySeconds) return L.T("The replay is {replay} long, so this hotkey saves all of it; the {length} you set counts again once the replay is longer", ("replay", replay), ("length", Capabilities.FormatDuration(current)));
+        return L.T("How much this hotkey saves: a fixed length shorter than the replay length (the main hotkey saves the whole replay)");
     }
 
     // ------------------------------------------------------------------ rows
@@ -157,10 +159,10 @@ public partial class HotkeyListEditor : UserControl
     private void RefreshMain()
     {
         var m = Main;
-        MainKeys.Content = m == null ? "Not set" : KeysLabel(m);
+        MainKeys.Content = m == null ? L.T("Not set") : KeysLabel(m);
         MainKeys.IsEnabled = m != null;
         MainClear.IsEnabled = m?.Keys is { Vk: > 0 };
-        MainHint.Text = $"saves the full replay ({Capabilities.FormatClipLength(_defaultSeconds)})";
+        MainHint.Text = L.T("saves the full replay ({length})", ("length", Capabilities.FormatClipLength(_defaultSeconds)));
     }
 
     private void MainClear_Click(object sender, RoutedEventArgs e)
@@ -196,15 +198,15 @@ public partial class HotkeyListEditor : UserControl
             Padding = new Thickness(8, 6, 8, 6),   // "Press keys" stays on one line down to the column's MinWidth: the row does not jump when a capture starts
             HorizontalContentAlignment = HorizontalAlignment.Left,
             FontWeight = FontWeights.SemiBold,
-            ToolTip = "Click, then press the key combo you want (Esc cancels)",
+            ToolTip = L.T("Click, then press the key combo you want (Esc cancels)"),
             Tag = a,
         };
         WireCapture(keys, () => a);
         grid.Children.Add(keys);
 
         var oneLine = TryFindResource("OneLine") as DataTemplate;
-        var action = new ComboBox { Margin = new Thickness(8, 0, 0, 0), Width = 156, ToolTip = "What the keys do", ItemTemplate = oneLine };
-        action.ItemsSource = s_actions.Select(x => new Choice(x.label, x.value)).ToArray();
+        var action = new ComboBox { Margin = new Thickness(8, 0, 0, 0), Width = 156, ToolTip = L.T("What the keys do"), ItemTemplate = oneLine };
+        action.ItemsSource = s_actions.Select(x => new Choice(L.T(x.label), x.value)).ToArray();
         action.SelectedItem = ((Choice[])action.ItemsSource).FirstOrDefault(c => string.Equals((string)c.Value, Normalize(a.Action), StringComparison.OrdinalIgnoreCase)) ?? ((Choice[])action.ItemsSource)[0];
         Grid.SetColumn(action, 1);
         grid.Children.Add(action);
@@ -220,7 +222,7 @@ public partial class HotkeyListEditor : UserControl
             Style = TryFindResource("GlyphButton") as Style,
             Content = "",
             Margin = new Thickness(8, 0, 0, 0),
-            ToolTip = "Remove this hotkey",
+            ToolTip = L.T("Remove this hotkey"),
         };
         Grid.SetColumn(remove, 3);
         grid.Children.Add(remove);
@@ -273,7 +275,7 @@ public partial class HotkeyListEditor : UserControl
         return a == "share" ? "share-last" : a.Length == 0 ? "clip" : a;
     }
 
-    private static string KeysLabel(HotkeyAction a) => a.Keys == null || a.Keys.Vk <= 0 ? "Not set" : a.Keys.ToString();
+    private static string KeysLabel(HotkeyAction a) => a.Keys == null || a.Keys.Vk <= 0 ? L.T("Not set") : a.Keys.ToString();
 
     // ------------------------------------------------------------------ capture
 
@@ -282,7 +284,7 @@ public partial class HotkeyListEditor : UserControl
         CancelCapture();
         _capturing = button;
         _capturingLabel = button.Content as string;
-        button.Content = "Press keys";
+        button.Content = L.T("Press keys");
         button.Focus();   // so clicking anywhere else (LostKeyboardFocus) disarms the capture
         if (!Arm(button, a)) { _capturing = null; button.Content = _capturingLabel; }   // a quiet instance does not capture
     }
@@ -297,7 +299,7 @@ public partial class HotkeyListEditor : UserControl
             // Only the first row with a combo ever fires: a second one would look set up and do nothing. Still listening.
             if (_actions.Any(o => !ReferenceEquals(o, a) && o.Keys is { } k && k.Vk == vk && k.Ctrl == ctrl && k.Alt == alt && k.Shift == shift && k.Win == win))
             {
-                Hint($"{keys} is already used by another hotkey. Press other keys, or Esc.");
+                Hint(DuplicateKeysHint(keys));
                 Arm(button, a);
                 return;
             }
@@ -311,8 +313,14 @@ public partial class HotkeyListEditor : UserControl
         // A bare letter, digit or editing key would be eaten in every program from then on: not taken, still listening.
         () => Dispatcher.BeginInvoke(() =>
         {
-            if (ReferenceEquals(_capturing, button)) Hint("Letters, digits and editing keys need Ctrl or Alt; F-keys, PrintScreen, ScrollLock and Pause work alone.");
+            if (ReferenceEquals(_capturing, button)) Hint(BareKeyHint());
         }));
+
+    /// <summary>The hint when the keys just pressed belong to another row.</summary>
+    internal static string DuplicateKeysHint(HotkeyBinding keys) => L.T("{keys} is already used by another hotkey. Press other keys, or Esc.", ("keys", L.Ltr(keys.ToString())));
+
+    /// <summary>The hint when a bare letter, digit or editing key was pressed.</summary>
+    internal static string BareKeyHint() => L.T("Letters, digits and editing keys need Ctrl or Alt; F-keys, PrintScreen, ScrollLock and Pause work alone.");
 
     /// <summary>Shows why the last keys were not taken, under the row being captured (the main hotkey's, or the rows'), or hides it (null).</summary>
     private void Hint(string? text)

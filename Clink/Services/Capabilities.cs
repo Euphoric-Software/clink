@@ -5,27 +5,36 @@ using Windows.Win32.Media.MediaFoundation;
 using Clink.Encode;
 using Clink.Engine;
 using Clink.Native;
+using Clink.Services.Localization;
 
 namespace Clink.Services;
 
 /// <summary>One video codec choice for the UI.</summary>
 /// <param name="Id">"h264" | "hevc" | "av1" (the Settings.Codec value).</param>
 /// <param name="Name">"H.264" | "HEVC" | "AV1".</param>
-/// <param name="Description">One line for the UI (from the spec).</param>
+/// <param name="DescriptionKey">One line for the UI (from the spec): the English catalog key of <see cref="Description"/>.</param>
 /// <param name="Supported">A hardware encoder MFT exists for it.</param>
 /// <param name="EncoderName">Friendly name of the MFT that would be used, when supported.</param>
-/// <param name="Reason">Why it is not supported ("not supported by this GPU"), when it is not.</param>
-internal sealed record CodecInfo(string Id, string Name, string Description, bool Supported, string? EncoderName, string? Reason)
+/// <param name="ReasonKey">Why it is not supported ("not supported by this GPU"), when it is not: the English catalog key of <see cref="Reason"/>.</param>
+internal sealed record CodecInfo(string Id, string Name, string DescriptionKey, bool Supported, string? EncoderName, string? ReasonKey)
 {
     public bool Experimental => Id == "av1";
+    /// <summary>The one-line description in the active language.</summary>
+    public string Description => L.T(DescriptionKey);
+    /// <summary>Why the codec is not supported, in the active language; null when it is.</summary>
+    public string? Reason => ReasonKey == null ? null : L.T(ReasonKey);
 }
 
 /// <summary>One size target for the Capture tab's combo: a limit a clip is made to fit (a Discord upload size, a Copium account).</summary>
 /// <param name="Id">The Settings.SizeTarget value: "none" | "discord10" | "discord50" | "copium200" | "discord500" | "copiumplus".</param>
-/// <param name="Name">What the combo shows ("Copium (200 MB, 10 min)").</param>
+/// <param name="NameKey">What the combo shows ("Copium (200 MB, 10 min)"): the English catalog key of <see cref="Name"/>.</param>
 /// <param name="Bytes">The size limit in bytes (decimal units, like the services' own), 0 = no limit.</param>
 /// <param name="MaxSeconds">The longest clip the service takes, 0 = no length limit.</param>
-internal sealed record SizeTargetInfo(string Id, string Name, long Bytes, int MaxSeconds);
+internal sealed record SizeTargetInfo(string Id, string NameKey, long Bytes, int MaxSeconds)
+{
+    /// <summary>The combo's text in the active language.</summary>
+    public string Name => L.T(NameKey);
+}
 
 /// <summary>
 /// What this machine can do (hardware encoders, RAM) and the size arithmetic the Capture tab shows: per-minute / per-clip
@@ -33,6 +42,7 @@ internal sealed record SizeTargetInfo(string Id, string Name, long Bytes, int Ma
 /// </summary>
 internal static unsafe class Capabilities
 {
+    /// <summary>The English catalog key of <see cref="CodecInfo.Reason"/> for a codec the GPU has no encoder for.</summary>
     public const string NotSupportedReason = "not supported by this GPU";
     /// <summary>
     /// Copium's limits per upload without Copium+: 200 MB and 10 minutes (the "copium200" size target, and what Share checks).
@@ -45,10 +55,13 @@ internal static unsafe class Capabilities
     /// <summary>Copium Plus's limits per upload (the "copiumplus" size target): 2 GB and 60 minutes, decimal like the free ones.</summary>
     public const long CopiumPlusBytes = 2_000_000_000;
     public const int CopiumPlusSeconds = 3600;
-    /// <summary>Appended to the size-target note when the replay length is 10 min or more (a full 10:00 clip runs a moment over); the UI shows it in Warn colour.</summary>
-    public const string CopiumLengthNote = " - Copium free uploads are limited to 10 min: trim a full-length clip before sharing it, or shorten the replay length";
+    // The length limits as complete sentences (English catalog keys); the note joins one to the status sentence with the "{status} - {limit}" template.
+    private const string FreeLimitText = "Copium free uploads are limited to 10 min: trim a full-length clip before sharing it, or shorten the replay length";
+    private const string PlusLimitText = "Copium Plus uploads are limited to 60 min: trim a full-length clip before sharing it, or shorten the replay length";
+    /// <summary>Appended to the size-target note when the replay length is 10 min or more (a full 10:00 clip runs a moment over); the UI shows it in Warn colour. English text, as the note reads under English.</summary>
+    public const string CopiumLengthNote = " - " + FreeLimitText;
     /// <summary>The same for the Copium Plus target, from a replay length of 60 min up.</summary>
-    public const string CopiumPlusLengthNote = " - Copium Plus uploads are limited to 60 min: trim a full-length clip before sharing it, or shorten the replay length";
+    public const string CopiumPlusLengthNote = " - " + PlusLimitText;
     // What every length note has in common, and so what IsWarningNote looks for besides "does not fit".
     private const string LengthLimitMarker = " uploads are limited to ";
     /// <summary>Each enabled audio track is AAC at this rate.</summary>
@@ -60,7 +73,7 @@ internal static unsafe class Capabilities
 
     private static readonly (string id, string name, string description)[] s_known =
     {
-        ("h264", "H.264", "plays everywhere, incl. Discord inline and every browser; biggest files."),
+        ("h264", "H.264", "plays everywhere, incl. Discord inline and every browser; biggest files."),   // the descriptions are English catalog keys (CodecInfo.Description)
         ("hevc", "HEVC", "~40 % smaller at the same quality; Discord/Chrome may not play it inline, fine for local/archive."),
         ("av1", "AV1", "smallest; needs RTX 40 / RX 7000 / Arc to encode and a recent player. Experimental."),
     };
@@ -269,7 +282,7 @@ internal static unsafe class Capabilities
     // The size targets in the order the combo lists them. Copium and Discord limits are decimal MB (20 MB = 20 000 000 bytes), the safe reading.
     private static readonly SizeTargetInfo[] s_sizeTargets =
     {
-        new("none", "None", 0, 0),
+        new("none", "size-target|None", 0, 0),
         // The id "discord10" is historical (the free limit was 10 MB): it is kept because saved settings store it, and a new id would silently reset them to "none" (older builds too).
         // Source: Discord "File Attachments FAQ" https://support.discord.com/hc/en-us/articles/25444343291031 - "For non-Nitro subscribers, the maximum file upload is 20MB" (updated 2026-10-29).
         new("discord10", "Discord free (20 MB)", 20_000_000, 0),
@@ -303,8 +316,8 @@ internal static unsafe class Capabilities
     /// "Copium's free limit (200 MB / 10 min)" without Copium+, "Copium Plus's limit (2 GB / 60 min)" with it.
     /// </summary>
     public static (long Bytes, int Seconds, string Label) CopiumLimits(bool plus) => plus
-        ? (CopiumPlusBytes, CopiumPlusSeconds, $"Copium Plus's limit ({FormatBytes(CopiumPlusBytes)} / {CopiumPlusSeconds / 60} min)")
-        : (CopiumFreeBytes, CopiumFreeSeconds, $"Copium's free limit ({FormatBytes(CopiumFreeBytes)} / {CopiumFreeSeconds / 60} min)");
+        ? (CopiumPlusBytes, CopiumPlusSeconds, L.T("Copium Plus's limit ({size} / {minutes} min)", ("size", FormatBytes(CopiumPlusBytes)), ("minutes", CopiumPlusSeconds / 60)))
+        : (CopiumFreeBytes, CopiumFreeSeconds, L.T("Copium's free limit ({size} / {minutes} min)", ("size", FormatBytes(CopiumFreeBytes)), ("minutes", CopiumFreeSeconds / 60)));
 
     /// <summary>One of the Copium targets ("copium200", "copiumplus"): both limit the clip length as well as its size.</summary>
     public static bool IsCopiumTarget(string? target) => SizeTargetFor(target).Id is "copium200" or "copiumplus";
@@ -328,17 +341,22 @@ internal static unsafe class Capabilities
     public static bool IsWarningNote(string? note) =>
         note != null && (note.Contains("does not fit", StringComparison.Ordinal) || note.Contains(LengthLimitMarker, StringComparison.Ordinal));
 
-    /// <summary>The note a target with a length limit appends once the replay is at or over it (a full clip is then over the limit); "" below it or without a limit.</summary>
-    private static string LengthNote(SizeTargetInfo target, int seconds)
+    /// <summary>
+    /// The sentence a target with a length limit adds once the replay is at or over it (a full clip is then over the limit); null below it or
+    /// without a limit. Only the two Copium targets have a length limit. Whole sentences, so a language can order them as it needs.
+    /// </summary>
+    private static string? LengthLimit(SizeTargetInfo target, int seconds)
     {
-        if (target.MaxSeconds <= 0 || seconds < target.MaxSeconds) return "";
-        string note = target.Id == "copium200" ? CopiumLengthNote
-            : target.Id == "copiumplus" ? CopiumPlusLengthNote
-            : $" - {target.Name} uploads are limited to {target.MaxSeconds / 60} min: trim a full-length clip before sharing it, or shorten the replay length";
+        if (target.MaxSeconds <= 0 || seconds < target.MaxSeconds) return null;
         // A full-length clip starts on the keyframe before the cut, so it runs a moment past the replay length: exactly the limit is over too.
-        int min = target.MaxSeconds / 60;
-        return seconds > target.MaxSeconds ? note : note + $" (a {min}:00 replay saves a hair over {min} min)";
+        bool hair = seconds == target.MaxSeconds;
+        return target.Id == "copiumplus"
+            ? (hair ? L.T("Copium Plus uploads are limited to 60 min: trim a full-length clip before sharing it, or shorten the replay length (a 60:00 replay saves a hair over 60 min)") : L.T(PlusLimitText))
+            : (hair ? L.T("Copium free uploads are limited to 10 min: trim a full-length clip before sharing it, or shorten the replay length (a 10:00 replay saves a hair over 10 min)") : L.T(FreeLimitText));
     }
+
+    /// <summary>The status sentence, then the length limit when there is one: "{status} - {limit}".</summary>
+    private static string WithLimit(string status, string? limit) => limit == null ? status : L.T("{status} - {limit}", ("status", status), ("limit", limit));
 
     /// <summary>
     /// The bitrate to encode at: the chosen Settings.BitrateMbps (and no note) without a size target; otherwise lowered (never
@@ -353,46 +371,41 @@ internal static unsafe class Capabilities
     /// </summary>
     public static (double bitrateMbps, string? note) ResolveBitrate(Settings s, int audioTracks, int seconds)
     {
+        var (mbps, note, _) = ResolveBitrateChecked(s, audioTracks, seconds);
+        return (mbps, note);
+    }
+
+    /// <summary>
+    /// <see cref="ResolveBitrate"/> plus whether the note is a warning (no bitrate makes the clip fit, or the replay reaches the target's
+    /// length limit): decided here from the numbers, not from the note's words, so it holds in every language. The window uses this.
+    /// </summary>
+    public static (double bitrateMbps, string? note, bool warning) ResolveBitrateChecked(Settings s, int audioTracks, int seconds)
+    {
         double chosen = Math.Max(MinTargetMbps, s.BitrateMbps);
         var target = SizeTargetFor(s.SizeTarget);
         long limit = target.Bytes;
-        if (limit <= 0) return (chosen, null);
+        if (limit <= 0) return (chosen, null, false);
         seconds = Math.Max(1, seconds);
         int fit = FitSeconds(s.SizeTarget, seconds);
         double cap = BitrateMbpsFor((long)(limit * TargetHeadroom), audioTracks, fit + Math.Clamp(s.KeyframeSeconds, 0.25f, 5f));   // the engine's GOP clamp
         string len = FormatDuration(fit), lim = FormatBytes(limit);
-        string tail = LengthNote(target, seconds);
+        string? lengthLimit = LengthLimit(target, seconds);
+        var fc = L.FormatCulture;
         if (cap < MinTargetMbps)
-            return (MinTargetMbps, $"a {len} clip does not fit in {lim} even at {MinTargetMbps:0.#} Mbps; shorten the replay length{tail}");
+            return (MinTargetMbps, WithLimit(L.T("a {length} clip does not fit in {size} even at {mbps} Mbps; shorten the replay length", ("length", len), ("size", lim), ("mbps", MinTargetMbps.ToString("0.#", fc))), lengthLimit), true);
         cap = Math.Min(MaxTargetMbps, Math.Floor(cap * 10) / 10);
-        if (cap >= chosen) return (chosen, $"a {len} clip at {chosen:0.#} Mbps fits {lim}{tail}");
-        return (cap, $"lowered to {cap:0.#} Mbps so a {len} clip fits {lim}{tail}");
+        if (cap >= chosen) return (chosen, WithLimit(L.T("a {length} clip at {mbps} Mbps fits {size}", ("length", len), ("mbps", chosen.ToString("0.#", fc)), ("size", lim)), lengthLimit), lengthLimit != null);
+        return (cap, WithLimit(L.T("lowered to {mbps} Mbps so a {length} clip fits {size}", ("mbps", cap.ToString("0.#", fc)), ("length", len), ("size", lim)), lengthLimit), lengthLimit != null);
     }
 
-    /// <summary>"820 kB", "9.5 MB", "190 MB", "1.2 GB" (decimal units, like the Discord limits).</summary>
-    public static string FormatBytes(long bytes)
-    {
-        if (bytes < 0) bytes = 0;
-        if (bytes < 1_000_000) return $"{bytes / 1_000.0:0} kB";
-        if (bytes < 10_000_000) return $"{bytes / 1_000_000.0:0.#} MB";
-        if (bytes < 1_000_000_000) return $"{bytes / 1_000_000.0:0} MB";
-        if (bytes < 10_000_000_000) return $"{bytes / 1_000_000_000.0:0.#} GB";
-        return $"{bytes / 1_000_000_000.0:0} GB";
-    }
+    /// <summary>"820 kB", "9.5 MB", "190 MB", "1.2 GB" (decimal units, like the Discord limits): <see cref="L.Bytes"/>.</summary>
+    public static string FormatBytes(long bytes) => L.Bytes(bytes);
 
-    /// <summary>"15 s", "1:30", "10:00", "1 h", "1:05:00".</summary>
-    public static string FormatDuration(int seconds)
-    {
-        seconds = Math.Max(0, seconds);
-        if (seconds < 60) return $"{seconds} s";
-        if (seconds < 3600) return $"{seconds / 60}:{seconds % 60:00}";
-        if (seconds % 3600 == 0) return $"{seconds / 3600} h";
-        return $"{seconds / 3600}:{seconds / 60 % 60:00}:{seconds % 60:00}";
-    }
+    /// <summary>"15 s", "1:30", "10:00", "1 h", "1:05:00": <see cref="L.Duration"/>.</summary>
+    public static string FormatDuration(int seconds) => L.Duration(seconds);
 
-    /// <summary>A clip's length as players show it: "0:42", "12:05", and h:mm:ss from an hour up ("1:00:03"; m:ss would read "0:03").</summary>
-    public static string FormatClipLength(double seconds) =>
-        TimeSpan.FromSeconds(Math.Max(0, seconds)).ToString(seconds >= 3600 ? @"h\:mm\:ss" : @"m\:ss");
+    /// <summary>A clip's length as players show it: "0:42", "12:05", and h:mm:ss from an hour up ("1:00:03"; m:ss would read "0:03"): <see cref="L.ClipLength"/>.</summary>
+    public static string FormatClipLength(double seconds) => L.ClipLength(seconds);
 
     /// <summary>
     /// "≈ 190 MB per minute · ≈ 380 MB per 2:00 clip". At 1 h (the slider's maximum) the clip figure is the hour figure, so it reads
@@ -402,8 +415,9 @@ internal static unsafe class Capabilities
     {
         string perMinute = FormatBytes(EstimateBytes(bitrateMbps, audioTracks, 60));
         string perClip = FormatBytes(EstimateBytes(bitrateMbps, audioTracks, clipSeconds));
-        string per = clipSeconds == 3600 ? "hour" : $"{FormatDuration(clipSeconds)} clip";
-        return $"≈ {perMinute} per minute · ≈ {perClip} per {per}";
+        return clipSeconds == 3600
+            ? L.T("≈ {perMinute} per minute · ≈ {perClip} per hour", ("perMinute", perMinute), ("perClip", perClip))
+            : L.T("≈ {perMinute} per minute · ≈ {perClip} per {length} clip", ("perMinute", perMinute), ("perClip", perClip), ("length", FormatDuration(clipSeconds)));
     }
 
     /// <summary>"≈ 450 MB of RAM" and whether that is over half of the machine's RAM (the UI turns red and warns).</summary>
@@ -411,10 +425,14 @@ internal static unsafe class Capabilities
     {
         long bytes = RingBytesFor(bitrateMbps, seconds);
         bool tooMuch = bytes > MaxRingBytes();
-        string text = $"≈ {FormatBytes(bytes)} of RAM for {FormatDuration(seconds)} at {bitrateMbps:0.#} Mbps";
+        var fc = L.FormatCulture;
+        string size = FormatBytes(bytes), length = FormatDuration(seconds), mbps = bitrateMbps.ToString("0.#", fc);
         // The RAM Windows can use (what the limit is half of), in binary GB as Settings › About shows it: "31.1 GB usable" on a
         // 32 GB machine whose iGPU reserves some, not the decimal "33 GB installed".
-        if (tooMuch) text += $" (more than half of the {PhysicalRamBytes() / (double)(1L << 30):0.#} GB usable RAM; the buffer will be shortened)";
+        string text = tooMuch
+            ? L.T("≈ {size} of RAM for {length} at {mbps} Mbps (more than half of the {ram} GB usable RAM; the buffer will be shortened)",
+                ("size", size), ("length", length), ("mbps", mbps), ("ram", (PhysicalRamBytes() / (double)(1L << 30)).ToString("0.#", fc)))
+            : L.T("≈ {size} of RAM for {length} at {mbps} Mbps", ("size", size), ("length", length), ("mbps", mbps));
         return (text, tooMuch);
     }
 }
