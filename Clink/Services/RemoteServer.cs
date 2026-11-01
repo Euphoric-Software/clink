@@ -37,7 +37,11 @@ internal sealed class RemoteServerOptions
     public TimeSpan BackoffStart { get; init; } = RemoteProtocol.BackoffStart;
     public TimeSpan BackoffMax { get; init; } = RemoteProtocol.BackoffMax;
     /// <summary>Whether the client on this pipe handle is in our Windows session (null: asks Windows). A test fakes a client in another session.</summary>
-    public Func<SafePipeHandle, bool>? SessionCheck { get; init; }
+    internal Func<SafePipeHandle, bool>? SessionCheck { get; init; }
+    /// <summary>Seconds on a steady clock, for the token buckets and the connect-log throttle (null: the real one). A test drives it.</summary>
+    internal Func<double>? Clock { get; init; }
+    /// <summary>Test only: the descriptor instances are created with, instead of the computed one (the read-back is still checked against the computed one).</summary>
+    internal byte[]? CreateSecurity { get; init; }
 }
 
 /// <summary>
@@ -58,7 +62,7 @@ internal sealed class RemoteServer : IDisposable
     private readonly object _gate = new();
     private readonly List<Client> _clients = new();
     private readonly Bucket _commands;       // one for the whole server: a reconnect does not reset it
-    private readonly Bucket _connectionLog = new(0.2, 10);   // connect / disconnect lines: 10, then one per 5 s
+    private readonly Bucket _connectionLog;   // connect / disconnect lines: 10, then one per 5 s
     private int _connectionLogSkipped;
     private readonly HashSet<string> _loggedErrors = new(StringComparer.Ordinal);
     private RemoteSnapshot? _latest;
@@ -75,8 +79,13 @@ internal sealed class RemoteServer : IDisposable
         _pipeName = pipeName;
         _o = options ?? new RemoteServerOptions();
         _slots = new SemaphoreSlim(_o.MaxClients, _o.MaxClients);
-        _commands = new Bucket(_o.CommandsPerSecond, _o.CommandBurst);
+        _clock = _o.Clock ?? RealClock;
+        _commands = new Bucket(_o.CommandsPerSecond, _o.CommandBurst, _clock);
+        _connectionLog = new Bucket(0.2, 10, _clock);
     }
+
+    private readonly Func<double> _clock;
+    private static double RealClock() => Stopwatch.GetTimestamp() / (double)Stopwatch.Frequency;
 
     /// <summary>Clients connected now (before or after their hello).</summary>
     public int ClientCount { get { lock (_gate) return _clients.Count; } }
@@ -174,14 +183,18 @@ internal sealed class RemoteServer : IDisposable
     internal static unsafe NamedPipeServerStream CreateInstance(string name, byte[] security, int maxInstances, bool first)
     {
         uint openMode = PipeAccessDuplex | (uint)PipeOptions.Asynchronous | (first ? (uint)PipeOptions.FirstPipeInstance : 0);
-        IntPtr h;
+        SafePipeHandle handle;
         fixed (byte* sd = security)
         {
             var sa = new SecurityAttributes { Length = sizeof(SecurityAttributes), Descriptor = (IntPtr)sd, Inherit = 0 };
-            h = CreateNamedPipe(@"\\.\pipe\" + name, openMode, PipeRejectRemoteClients, (uint)maxInstances, 4096, 4096, 0, ref sa);
+            handle = CreateNamedPipe(@"\\.\pipe\" + name, openMode, PipeRejectRemoteClients, (uint)maxInstances, 4096, 4096, 0, ref sa);
         }
-        if (h == new IntPtr(-1)) throw new Win32Exception(Marshal.GetLastWin32Error());
-        var handle = new SafePipeHandle(h, ownsHandle: true);
+        if (handle.IsInvalid)
+        {
+            int err = Marshal.GetLastWin32Error();
+            handle.Dispose();
+            throw new Win32Exception(err);
+        }
         try { return new NamedPipeServerStream(PipeDirection.InOut, isAsync: true, isConnected: false, handle); }
         catch { handle.Dispose(); throw; }
     }
@@ -244,7 +257,7 @@ internal sealed class RemoteServer : IDisposable
     }
 
     [DllImport("kernel32.dll", EntryPoint = "CreateNamedPipeW", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern IntPtr CreateNamedPipe(string name, uint openMode, uint pipeMode, uint maxInstances, uint outBuffer, uint inBuffer, uint defaultTimeout, ref SecurityAttributes security);
+    private static extern SafePipeHandle CreateNamedPipe(string name, uint openMode, uint pipeMode, uint maxInstances, uint outBuffer, uint inBuffer, uint defaultTimeout, ref SecurityAttributes security);
 
     [DllImport("advapi32.dll", EntryPoint = "ConvertStringSecurityDescriptorToSecurityDescriptorW", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern bool ConvertStringSecurityDescriptorToSecurityDescriptor(string sddl, uint revision, out IntPtr sd, out uint size);
@@ -264,7 +277,13 @@ internal sealed class RemoteServer : IDisposable
     private bool SessionOk(SafePipeHandle handle)
     {
         if (_o.SessionCheck is { } check) return check(handle);
-        try { return GetNamedPipeClientSessionId(handle, out uint sid) && sid == (uint)AppController.CurrentSessionId; }
+        return SameSession(handle, (uint)AppController.CurrentSessionId);
+    }
+
+    /// <summary>The client on this pipe handle is in session <paramref name="ours"/>. Fails closed: an error asking Windows means no.</summary>
+    internal static bool SameSession(SafePipeHandle handle, uint ours)
+    {
+        try { return GetNamedPipeClientSessionId(handle, out uint sid) && sid == ours; }
         catch (Exception) { return false; }   // cannot tell: not ours
     }
 
@@ -283,8 +302,8 @@ internal sealed class RemoteServer : IDisposable
         TimeSpan delay = TimeSpan.Zero;
         while (!ct.IsCancellationRequested)
         {
-            bool haveSlot = false, counted = false, inUse = false;
-            string? problem = null;
+            bool haveSlot = false, counted = false, inUse = false, ownMismatch = false;
+            string? problem = null, differs = null;
             NamedPipeServerStream? pipe = null;
             try
             {
@@ -292,16 +311,18 @@ internal sealed class RemoteServer : IDisposable
                 haveSlot = true;
                 // No instance of ours exists: this one must be the pipe's first, or another process got the name first.
                 bool first = Volatile.Read(ref _owned) == 0;
-                try { pipe = CreateInstance(_pipeName, security, _o.MaxClients, first); }
+                try { pipe = CreateInstance(_pipeName, _o.CreateSecurity ?? security, _o.MaxClients, first); }
                 catch (Win32Exception ex) when (first && ex.NativeErrorCode is ErrorAccessDenied or ErrorPipeBusy) { inUse = true; }
                 if (pipe != null)
                 {
                     Interlocked.Increment(ref _owned);
                     counted = true;
                     // Whatever the flag said, an instance that does not have exactly our security is not ours to serve on.
-                    if (SecurityDifference(expected, ReadSecurity(pipe.SafePipeHandle)) != null) inUse = true;
+                    // A first instance we just made that differs has our own descriptor (not a squatter); any other instance that differs joined someone else's pipe.
+                    differs = SecurityDifference(expected, ReadSecurity(pipe.SafePipeHandle));
+                    if (differs != null) { if (first) ownMismatch = true; else inUse = true; }
                 }
-                if (!inUse)
+                if (!inUse && !ownMismatch)
                 {
                     NameFree();
                     delay = TimeSpan.Zero;
@@ -330,7 +351,8 @@ internal sealed class RemoteServer : IDisposable
                 if (counted) Interlocked.Decrement(ref _owned);
                 if (haveSlot) _slots.Release();
             }
-            if (inUse) NameTaken();
+            if (ownMismatch) LogOnce("remote: instance security differs: " + differs);
+            else if (inUse) NameTaken(differs);
             else if (problem != null) LogOnce("remote: accept: " + problem);
             else continue;
             delay = delay == TimeSpan.Zero ? _o.BackoffStart : TimeSpan.FromTicks(Math.Min(delay.Ticks * 2, _o.BackoffMax.Ticks));
@@ -338,12 +360,12 @@ internal sealed class RemoteServer : IDisposable
         }
     }
 
-    private void NameTaken()
+    private void NameTaken(string? differs)
     {
         Interlocked.Increment(ref _nameInUseRefusals);
         if (_nameInUse) return;
         _nameInUse = true;
-        Log.Warn("remote: pipe name in use (" + _pipeName + "): not serving until it is free");
+        Log.Warn("remote: pipe name in use (" + _pipeName + (differs != null ? ", security differs: " + differs : "") + "): not serving until it is free");
     }
 
     private void NameFree()
@@ -449,16 +471,17 @@ internal sealed class RemoteServer : IDisposable
     {
         private readonly double _rate, _burst;
         private double _tokens;
-        private long _at = Stopwatch.GetTimestamp();
+        private readonly Func<double> _clock;
+        private double _at;
 
-        public Bucket(double rate, double burst) { _rate = rate; _burst = burst; _tokens = burst; }
+        public Bucket(double rate, double burst, Func<double> clock) { _rate = rate; _burst = burst; _tokens = burst; _clock = clock; _at = clock(); }
 
         public bool TryTake()
         {
             lock (this)
             {
-                long now = Stopwatch.GetTimestamp();
-                _tokens = Math.Min(_burst, _tokens + (now - _at) / (double)Stopwatch.Frequency * _rate);
+                double now = _clock();
+                _tokens = Math.Min(_burst, _tokens + Math.Max(0, now - _at) * _rate);
                 _at = now;
                 if (_tokens < 1) return false;
                 _tokens -= 1;
@@ -485,7 +508,7 @@ internal sealed class RemoteServer : IDisposable
             _s = s;
             _pipe = pipe;
             _cts = CancellationTokenSource.CreateLinkedTokenSource(s._cts.Token);
-            _lines = new Bucket(s._o.LinesPerSecond, s._o.LineBurst);
+            _lines = new Bucket(s._o.LinesPerSecond, s._o.LineBurst, s._clock);
         }
 
         public void Start() => _ = Task.Run(RunAsync);

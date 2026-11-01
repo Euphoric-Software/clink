@@ -993,16 +993,18 @@ internal sealed class Updater : IDisposable
     private const string ElevatedNote = "Clink is running as administrator and does not install updates from an elevated process";
 
     /// <summary>This process runs as administrator (an elevated token); <see cref="IsElevatedOverride"/> in a test.</summary>
-    internal static bool IsElevated()
+    internal static bool IsElevated() => IsElevatedOverride is bool forced ? forced : ProcessElevated.Value;
+
+    /// <summary>Asked once per process (the token does not change; the remote snapshot asks on every build).</summary>
+    private static readonly Lazy<bool> ProcessElevated = new(() =>
     {
-        if (IsElevatedOverride is bool forced) return forced;
         try
         {
             using var id = WindowsIdentity.GetCurrent();
             return new WindowsPrincipal(id).IsInRole(WindowsBuiltInRole.Administrator);
         }
         catch { return false; }
-    }
+    });
 
     /// <summary>
     /// Newest downloaded <c>Clink-&lt;ver&gt;.exe</c> that is newer than the running exe and still matches what was verified at

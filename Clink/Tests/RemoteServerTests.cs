@@ -126,6 +126,14 @@ internal static class RemoteServerTests
         return true;
     }
 
+    /// <summary>A clock a test moves by hand (seconds); the buckets and the connect-log throttle read it, so no machine speed matters.</summary>
+    private sealed class FakeClock
+    {
+        private long _ms;
+        public double Now => Interlocked.Read(ref _ms) / 1000.0;
+        public void Advance(double seconds) => Interlocked.Add(ref _ms, (long)(seconds * 1000));
+    }
+
     private static RemoteSnapshot Sample(string state = "recording", int s = 12) => RemoteProtocolTests.Sample(state, s);
 
     // ------------------------------------------------------------------ the conversation
@@ -363,7 +371,8 @@ internal static class RemoteServerTests
         var lines = new List<string>();
         void Collect(string line) { lock (lines) lines.Add(line); }
         string[] Remote() { lock (lines) return lines.Where(l => l.Contains(" remote: client ", StringComparison.Ordinal)).ToArray(); }
-        using var rig = new Rig(first: Sample());
+        var clock = new FakeClock();   // frozen: no token comes back by itself
+        using var rig = new Rig(new RemoteServerOptions { Clock = () => clock.Now }, Sample());
         Log.Line += Collect;
         try
         {
@@ -381,8 +390,11 @@ internal static class RemoteServerTests
                 c.Join();
             }
             Check.True(Until(() => rig.Server.ClientCount == 0));
-            int written = Remote().Length;
-            Check.True(written <= 12, "26 connect / disconnect lines, the first 10 (and what refilled) written: " + written);
+            Check.True(Until(() => Remote().Length == 10), "26 connect / disconnect lines, exactly the first 10 written: " + Remote().Length);
+            Check.Equal(10, Remote().Length, "no more while the clock stands still");
+            clock.Advance(5);   // one token back: the next line says how many were left out
+            using (var again = rig.Connect()) again.Join();
+            Check.True(Until(() => Remote().Any(l => l.Contains("connect / disconnect lines left out", StringComparison.Ordinal))), "the line after the pause counts the ones left out");
         }
         finally { Log.Line -= Collect; }
     }
@@ -400,7 +412,7 @@ internal static class RemoteServerTests
         var sw = Stopwatch.StartNew();
         rig.Dispose();
         Check.True(sw.ElapsedMilliseconds < 4000, "Dispose returned in " + sw.ElapsedMilliseconds + " ms");
-        Check.Equal(0, rig.Server.ClientCount);
+        Check.True(Until(() => rig.Server.ClientCount == 0), "every client is gone");
         Check.True(a.Closed(), "a closed");
         Check.True(b.Closed(), "b closed");
         Check.True(waiting.Closed(), "the one before its hello closed");
@@ -429,7 +441,8 @@ internal static class RemoteServerTests
     [UnitTest]
     public static void Remote_commands_are_rate_limited()
     {
-        using var rig = new Rig(first: Sample());
+        var clock = new FakeClock();
+        using var rig = new Rig(new RemoteServerOptions { Clock = () => clock.Now }, Sample());
         using var c = rig.Connect();
         c.Join();
         var batch = new StringBuilder();
@@ -442,16 +455,17 @@ internal static class RemoteServerTests
             if (ack.GetProperty("ok").GetBoolean()) ok++;
             else { Check.Equal("rateLimited", ack.GetProperty("error").GetString()); limited++; }
         }
-        Check.True(ok >= 5 && ok <= 8, "the burst of 5 (plus what refilled meanwhile) went through, ok=" + ok);
-        Check.True(limited >= 12, "the rest was limited, limited=" + limited);
+        Check.Equal(5, ok, "exactly the burst of 5 went through");
+        Check.Equal(15, limited, "the rest was limited");
         Check.True(Until(() => rig.Host.Commands.Length == ok));
     }
 
     [UnitTest]
     public static void Remote_the_command_limit_is_the_servers_so_a_reconnect_gets_no_new_burst()
     {
-        // One command a second refills: a reconnect within a second or two finds the bucket the first client emptied.
-        using var rig = new Rig(new RemoteServerOptions { CommandsPerSecond = 1, CommandBurst = 5 }, Sample());
+        // One command a second refills: a reconnect finds the bucket the first client emptied (the clock is moved by hand).
+        var clock = new FakeClock();
+        using var rig = new Rig(new RemoteServerOptions { CommandsPerSecond = 1, CommandBurst = 5, Clock = () => clock.Now }, Sample());
         int Burst(TestClient c, int from, int n)
         {
             var batch = new StringBuilder();
@@ -464,13 +478,14 @@ internal static class RemoteServerTests
         using (var first = rig.Connect())
         {
             first.Join();
-            Check.True(Burst(first, 1, 10) is >= 5 and <= 6, "the first client used the burst");
+            Check.Equal(5, Burst(first, 1, 10), "the first client used the burst");
         }
         Check.True(Until(() => rig.Server.ClientCount == 0), "the first left");
         using var second = rig.Connect();
         second.Join();
-        int again = Burst(second, 100, 5);
-        Check.True(again <= 3, "a new connection does not get a new burst, ok=" + again);
+        Check.Equal(0, Burst(second, 100, 5), "a new connection does not get a new burst");
+        clock.Advance(2);
+        Check.Equal(2, Burst(second, 200, 5), "two seconds refill two commands");
     }
 
     [UnitTest]
@@ -665,6 +680,48 @@ internal static class RemoteServerTests
         // joining it (not first: what the server never does while it has no instance) gets the squatter's security, which the check catches
         using var joined = RemoteServer.CreateInstance(name, sd, 4, first: false);
         Check.NotNull(RemoteServer.SecurityDifference(new RawSecurityDescriptor(sd, 0), RemoteServer.ReadSecurity(joined.SafePipeHandle)), "a joined instance has the squatter's");
+    }
+
+    [UnitTest]
+    public static void Remote_an_own_first_instance_that_reads_back_differently_logs_the_difference_once()
+    {
+        // Created with the elevated descriptor while the server expects the normal one: a mismatch of our own making, not a squatter.
+        var user = WindowsIdentity.GetCurrent().User!;
+        byte[] other = RemoteServer.SddlToBinary(RemoteServer.PipeSddl(user, elevated: true));
+        var lines = new List<string>();
+        void Collect(string line) { lock (lines) lines.Add(line); }
+        int Said() { lock (lines) return lines.Count(l => l.Contains("remote: instance security differs: dacl", StringComparison.Ordinal)); }
+        int Squatted() { lock (lines) return lines.Count(l => l.Contains("pipe name in use", StringComparison.Ordinal)); }
+        Log.Line += Collect;
+        try
+        {
+            using var rig = new Rig(new RemoteServerOptions { CreateSecurity = other, BackoffStart = TimeSpan.FromMilliseconds(10), BackoffMax = TimeSpan.FromMilliseconds(30) }, Sample());
+            Check.True(Until(() => Said() == 1), "said");
+            Thread.Sleep(300);   // several more tries at 10 to 30 ms
+            Check.Equal(1, Said(), "once, not at every try");
+            Check.Equal(0, Squatted(), "not reported as another process holding the name");
+            Check.True(!rig.Server.NameInUse);
+            Check.Equal(0, rig.Server.NameInUseRefusals);
+        }
+        finally { Log.Line -= Collect; }
+    }
+
+    [UnitTest]
+    public static void Remote_without_a_session_check_the_real_one_runs_and_fails_closed()
+    {
+        string name = UniqueName();
+        byte[] sd = RemoteServer.PipeSecurity(elevated: false);
+        using var instance = RemoteServer.CreateInstance(name, sd, 4, first: true);
+        var accepted = instance.WaitForConnectionAsync();
+        using var client = new NamedPipeClientStream(".", name, PipeDirection.InOut, PipeOptions.Asynchronous);
+        client.Connect(5000);
+        Check.True(accepted.Wait(5000), "accepted");
+        uint ours = (uint)AppController.CurrentSessionId;
+        Check.True(RemoteServer.SameSession(instance.SafePipeHandle, ours), "a client in our session");
+        Check.True(!RemoteServer.SameSession(instance.SafePipeHandle, ours + 1), "a client in another session is refused");
+        var gone = instance.SafePipeHandle;
+        instance.Dispose();
+        Check.True(!RemoteServer.SameSession(gone, ours), "a handle Windows cannot answer for is refused");
     }
 
     [UnitTest]
