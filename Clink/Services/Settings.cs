@@ -218,8 +218,8 @@ internal sealed class Settings
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? FeedFloorFailingSince { get; set; }
     /// <summary>
     /// Hidden developer switch (no UI, never written by default): asks the recording's encoder for off | vbr | lowlatency-off |
-    /// vbr-lowlatency-off | vbr-bframes (<see cref="Clink.Encode.EncoderExperiments.Parse"/>). Null or "off" is the normal setup; an unknown value
-    /// is kept as written and treated as off (with a log warning). A size target keeps the encoder CBR. Per installation: never imported.
+    /// vbr-lowlatency-off (<see cref="Clink.Encode.EncoderExperiments.Parse"/>). Null or "off" is the normal setup; an unknown value, or the
+    /// retired vbr-bframes, is kept as written and treated as off (with a log warning). A size target keeps the encoder CBR. Per installation: never imported.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? EncoderExperiment { get; set; }
 

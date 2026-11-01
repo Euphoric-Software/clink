@@ -22,16 +22,14 @@ internal enum EncoderMode
     LowLatencyOff,
     /// <summary>Peak-constrained VBR, low latency off.</summary>
     VbrLowLatencyOff,
-    /// <summary>VBR, low latency off and B-frames. The B-frames are not built yet (step 3 / 4b): for now this applies as <see cref="VbrLowLatencyOff"/> with none.</summary>
-    VbrBframes,
 }
 
 /// <summary>The requested live tuning. Null (rather than Off) is what the encoder gets when nothing is asked for.</summary>
 /// <param name="ForceCbr">A size target is active: its clip size is only guaranteed by CBR, so a VBR mode is applied as CBR.</param>
-/// <param name="BFrames">The B-picture count to ask for. 0 always, except for the capability probe test.</param>
+/// <param name="BFrames">The B-picture count to ask for. 0 always, except for the GPU capability probe test (a measurement: B-frames are retired as a mode).</param>
 internal sealed record LiveEncoderTuning(EncoderMode Mode, bool ForceCbr = false, uint BFrames = 0)
 {
-    public bool WantsVbr => Mode is EncoderMode.Vbr or EncoderMode.VbrLowLatencyOff or EncoderMode.VbrBframes;
+    public bool WantsVbr => Mode is EncoderMode.Vbr or EncoderMode.VbrLowLatencyOff;
     public bool LowLatency => Mode is EncoderMode.Off or EncoderMode.Vbr;
     public override string ToString() => $"{EncoderExperiments.Name(Mode)}{(ForceCbr && WantsVbr ? " (size target: CBR)" : "")}";
 }
@@ -79,7 +77,6 @@ internal static class EncoderExperiments
         EncoderMode.Vbr => "vbr",
         EncoderMode.LowLatencyOff => "lowlatency-off",
         EncoderMode.VbrLowLatencyOff => "vbr-lowlatency-off",
-        EncoderMode.VbrBframes => "vbr-bframes",
         _ => "off",
     };
 
@@ -93,7 +90,8 @@ internal static class EncoderExperiments
             case "vbr": return (EncoderMode.Vbr, null);
             case "lowlatency-off": return (EncoderMode.LowLatencyOff, null);
             case "vbr-lowlatency-off": return (EncoderMode.VbrLowLatencyOff, null);
-            case "vbr-bframes": return (EncoderMode.VbrBframes, null);
+            case "vbr-bframes":   // retired: NVENC's Media Foundation encoder has no B-frame count (E_NOTIMPL) and never reorders
+                return (EncoderMode.Off, "Encoder experiment 'vbr-bframes' was retired (B-frames are not available); using off. Use vbr-lowlatency-off instead");
             default:
                 string shown = v.Length > 40 ? v[..40] + "..." : v;
                 return (EncoderMode.Off, $"Unknown encoder experiment '{shown}'; using off");
@@ -207,11 +205,6 @@ internal static class EncoderExperiments
             else appliedLl = false;
         }
         Checked(port, KnownGuids.CODECAPI_AVEncCommonQualityVsSpeed, QualityVsSpeed);
-
-        if (tuning.Mode == EncoderMode.VbrBframes)
-        {
-            fallbacks.Add("B-frames not built yet");
-        }
 
         string? fb = fallbacks.Count == 0 ? null : string.Join("; ", fallbacks);
         var applied = new AppliedTuning(tuning.Mode, vbr, bitrate, vbr ? peak : bitrate, appliedLl, bfApplied, QualityVsSpeed, gop, fb, report, bfState);

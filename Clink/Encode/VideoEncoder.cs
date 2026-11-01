@@ -433,6 +433,18 @@ internal sealed unsafe class VideoEncoder : IDisposable
         }
     }
 
+    /// <summary>
+    /// Whether <see cref="Submit"/> would take one more frame without dropping any: the encoder has a credit, or fewer than four frames are
+    /// waiting. Read only, and valid for a live encoder (it changes nothing in it). The encoder bench, a file reader that has to lose no
+    /// frame, waits for this before each Submit: with that one producer the answer cannot turn false between the check and the call (credits
+    /// only grow on the event thread and the waiting queue only shrinks there), so a live-configured encoder is fed at full speed and
+    /// Submit's drop-the-oldest branch is never taken. The recording never calls this.
+    /// </summary>
+    internal bool HasRoomForSubmit
+    {
+        get { lock (_lock) return !_stop && (_credits > 0 || _pending.Count < MaxPending); }
+    }
+
     // ------------------------------------------------------------------ offline use (VideoEncoderOptions.Offline only)
 
     /// <summary>How long an offline wait for the encoder may take before it counts as stalled.</summary>

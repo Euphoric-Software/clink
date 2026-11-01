@@ -7,7 +7,7 @@ using Clink.Services;
 namespace Clink;
 
 /// <summary>
-/// `Clink.exe --selftest [seconds] [outFolder] [--codec h264|hevc|av1] [--encoder-experiment off|vbr|lowlatency-off|vbr-lowlatency-off|vbr-bframes] [--quiet] [--record]`: runs the pipeline headless, saves a clip,
+/// `Clink.exe --selftest [seconds] [outFolder] [--codec h264|hevc|av1] [--encoder-experiment off|vbr|lowlatency-off|vbr-lowlatency-off] [--quiet] [--record]`: runs the pipeline headless, saves a clip,
 /// prints what happened. --record also records for the whole length (a clip halfway), stops, and probes both files. The clip goes to outFolder (default: the clips folder from settings); --codec overrides the codec
 /// setting; --quiet skips the click sound.
 /// </summary>

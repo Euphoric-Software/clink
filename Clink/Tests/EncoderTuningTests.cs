@@ -101,7 +101,6 @@ internal static unsafe class EncoderTuningTests
         Check.Equal((EncoderMode.Vbr, (string?)null), EncoderExperiments.Parse("  VBR"));
         Check.Equal((EncoderMode.LowLatencyOff, (string?)null), EncoderExperiments.Parse("lowlatency-off"));
         Check.Equal((EncoderMode.VbrLowLatencyOff, (string?)null), EncoderExperiments.Parse("Vbr-LowLatency-Off"));
-        Check.Equal((EncoderMode.VbrBframes, (string?)null), EncoderExperiments.Parse("vbr-bframes"));
         foreach (string bad in new[] { "cbr", "vbr-bframes2", "true", "1", "vbr lowlatency-off", "x" })
         {
             var (mode, warning) = EncoderExperiments.Parse(bad);
@@ -130,8 +129,25 @@ internal static unsafe class EncoderTuningTests
         Check.False(EncoderExperiments.Resolve("lowlatency-off", false)!.LowLatency);
         Check.True(EncoderExperiments.Resolve("vbr-lowlatency-off", false)!.WantsVbr);
         Check.False(EncoderExperiments.Resolve("vbr-lowlatency-off", false)!.LowLatency);
-        Check.False(EncoderExperiments.Resolve("vbr-bframes", false)!.LowLatency);
-        Check.Equal(0u, EncoderExperiments.Resolve("vbr-bframes", false)!.BFrames, "B-frames are not built yet");
+        Check.Equal(0u, EncoderExperiments.Resolve("vbr-lowlatency-off", false)!.BFrames, "the live path always asks for 0 B-frames");
+    }
+
+    [UnitTest]
+    public static void The_retired_vbr_bframes_mode_is_off_with_a_warning_that_says_so_and_the_value_is_kept()
+    {
+        var (mode, warning) = EncoderExperiments.Parse("vbr-bframes");
+        Check.Equal(EncoderMode.Off, mode);
+        Check.NotNull(warning);
+        Check.Contains(warning!, "vbr-bframes");
+        Check.Contains(warning!, "retired");
+        Check.Contains(warning!, "vbr-lowlatency-off");
+        Check.Equal(EncoderMode.Off, EncoderExperiments.Parse("  VBR-BFRAMES ").Mode, "any case, spaces ignored");
+        Check.Null(EncoderExperiments.Resolve("vbr-bframes", false), "no tuning is handed to the engine: the recording is set up as before");
+        Check.False(Enum.GetNames<EncoderMode>().Any(n => n.Contains("Bframes", StringComparison.OrdinalIgnoreCase)), "no mode is left for it");
+        // The stored value is not rewritten (an unknown value is kept as it is, as for any other).
+        var kept = Settings.FromJson(new Settings { EncoderExperiment = "vbr-bframes" }.ToJson());
+        Check.Equal("vbr-bframes", kept.EncoderExperiment);
+        Check.Equal("vbr-bframes", Settings.FromJson(kept.ToJson()).EncoderExperiment, "and survives another save");
     }
 
     [UnitTest]
@@ -263,21 +279,21 @@ internal static unsafe class EncoderTuningTests
     }
 
     [UnitTest]
-    public static void Vbr_bframes_applies_as_vbr_lowlatency_off_with_no_bframes_and_says_so()
+    public static void Every_mode_asks_for_zero_bframes_and_none_reports_a_bframe_fallback()
     {
-        var p = Run(new LiveEncoderTuning(EncoderMode.VbrBframes), out var a, null);
-        Check.Equal((uint)VbrMode, p.Values["rate"]);
-        Check.Equal(0u, p.Values["bframes"]);
-        Check.False(a.LowLatency);
-        Check.True(a.Vbr);
-        Check.Equal(0u, a.BFrames);
-        Check.Contains(a.Fallback ?? "", "B-frames not built yet");
+        foreach (EncoderMode mode in Enum.GetValues<EncoderMode>().Where(m => m != EncoderMode.Off))
+        {
+            var p = Run(new LiveEncoderTuning(mode), out var a, null);
+            Check.Equal(0u, p.Values["bframes"], mode.ToString());
+            Check.Equal(0u, a.BFrames, mode.ToString());
+            Check.Null(a.Fallback, mode + ": nothing about B-frames is reported");
+        }
     }
 
     [UnitTest]
     public static void A_size_target_forces_cbr()
     {
-        foreach (var mode in new[] { EncoderMode.Vbr, EncoderMode.VbrLowLatencyOff, EncoderMode.VbrBframes })
+        foreach (var mode in new[] { EncoderMode.Vbr, EncoderMode.VbrLowLatencyOff })
         {
             var p = Run(new LiveEncoderTuning(mode, ForceCbr: true), out var a, null);
             Check.Equal((uint)CbrMode, p.Values["rate"], mode.ToString());
