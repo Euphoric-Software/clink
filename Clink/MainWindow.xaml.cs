@@ -39,7 +39,6 @@ public partial class MainWindow : Window
     private readonly AppController _app = AppController.Instance;
     private readonly ObservableCollection<string> _customApps = new();
     private readonly DispatcherTimer _restartTimer, _saveTimer, _bannerTimer;
-    private readonly Choice[] _bitratePresets = new[] { 4, 6, 8, 12, 16, 20, 25, 30, 40, 50, 60, 80, 100 }.Select(b => new Choice($"{b} Mbps", b)).ToArray();
     private bool _loading = true;
     private bool _filling;                              // a combo is being (re)populated: its SelectionChanged is not a user choice
     private bool _pickingRunningApp;                    // the "Add running app…" list was opened: a selection now is a pick, not a key on the closed box
@@ -91,7 +90,7 @@ public partial class MainWindow : Window
         _app.CopiumSetupRequested += () => Dispatcher.BeginInvoke(FocusTokenBox);   // after ShowRequested (it is raised first): the window is up by then
         _app.CopiumWelcomeNeeded += ShowCopiumWelcome;   // the UI thread: the first sign-in finished
         _app.CloudSharingChanged += () => Dispatcher.BeginInvoke(UpdateCloudUi);
-        _app.SignInChanged += state => RenderCopiumCard(state);   // the UI thread, the latest state
+        _app.SignInChanged += state => { RenderCopiumCard(state); Clips.RefreshShareButtons(); };   // the UI thread, the latest state; the Share buttons follow the token
         _app.Consent.ConsentChanged += () => Dispatcher.BeginInvoke(SyncScreenshotChecks);
         _app.FeaturesChanged += () => Dispatcher.BeginInvoke(SyncFeatureUi);
         _app.TrimLastRequested += () => Dispatcher.BeginInvoke(async () =>
@@ -464,9 +463,10 @@ public partial class MainWindow : Window
 
         Fill(ResolutionCombo, new[] { new Choice("Native", "native"), new Choice("1440p", "1440p"), new Choice("1080p", "1080p"), new Choice("720p", "720p") }, s.Resolution);
         Fill(FpsCombo, new[] { new Choice("30", 30), new Choice("60", 60), new Choice("120", 120) }, s.Fps);
-        Fill(BitrateCombo, _bitratePresets, s.BitrateMbps);
+        FillBitrate(s);
         FillCodecs();
         Fill(SizeTargetCombo, Capabilities.SizeTargets.Select(t => new Choice(t.Name, t.Id)).ToArray(), s.SizeTarget);
+        FillSharingCard(s);
         Fill(ModeCombo, new[] { new Choice("Only while a game or custom app is running", "game"), new Choice("Always (whenever Clink runs)", "always") }, s.RecordingMode);
         _customApps.Clear();
         foreach (var a in (s.CustomApps ?? new()).Select(GameProcessTracker.NormalizeName).Where(a => a.Length > 0 && !IsAuto(a)).Distinct(StringComparer.OrdinalIgnoreCase)) _customApps.Add(a);
@@ -558,6 +558,18 @@ public partial class MainWindow : Window
         combo.SelectedItem = choices.FirstOrDefault(c => !c.Header && Same(c.Value, current)) ?? choices.FirstOrDefault(c => !c.Header && !c.Disabled) ?? choices[0];
     }
 
+    // The bitrate box: the usual choices plus the stored value when it is not one of them (a hand edit), so no quality event replaces it with the first entry.
+    private void FillBitrate(Settings s)
+    {
+        bool was = _filling;
+        _filling = true;
+        try
+        {
+            Fill(BitrateCombo, SetupPresets.BitrateItems(s.BitrateMbps).Select(b => new Choice($"{b} Mbps", b)).ToArray(), s.BitrateMbps);
+        }
+        finally { _filling = was; }
+    }
+
     // string values (device ids, process names) compare case-insensitively so a hand-edited settings.json still matches
     private static bool Same(object a, object b) => a is string sa && b is string sb ? string.Equals(sa, sb, StringComparison.OrdinalIgnoreCase) : Equals(a, b);
 
@@ -578,7 +590,7 @@ public partial class MainWindow : Window
         var items = Capabilities.Codecs
             .Select(c => new Choice(c.Supported ? c.Name + (c.Experimental ? " (experimental)" : "") : $"{c.Name} — {c.Reason}", c.Id, Disabled: !c.Supported))
             .ToList();
-        Refill(CodecCombo, items, _app.Settings.Codec);
+        Refill(CodecCombo, items, Clink.Engine.EngineConfig.NormalizeCodec(_app.Settings.Codec));
         UpdateCodecDescription();
     }
 
@@ -624,7 +636,6 @@ public partial class MainWindow : Window
         try
         {
             // The chosen bitrate stays editable; a size target only lowers the encode bitrate when a clip would not fit.
-            if (!ReferenceEquals(BitrateCombo.ItemsSource, _bitratePresets)) Fill(BitrateCombo, _bitratePresets, s.BitrateMbps);
             BitrateCombo.IsEnabled = true;
             BitrateCombo.ToolTip = targeted && mbps < s.BitrateMbps
                 ? $"Encoding at {mbps:0.#} Mbps so a {Capabilities.FormatDuration(Capabilities.FitSeconds(s.SizeTarget, seconds))} clip fits the size target; set the target to None to use the full {s.BitrateMbps} Mbps"
@@ -659,6 +670,38 @@ public partial class MainWindow : Window
         s.Save();
         UpdateEstimates();
         ScheduleRestart();
+    }
+
+    /// <summary>
+    /// The SHARING card (Clips tab): "My Discord plan" (labels and limits from <see cref="ShareFitModel.DiscordPlanChoices"/>, one source)
+    /// and "Make smaller copies during games". Filling it is not a user's choice: no setting is written.
+    /// </summary>
+    internal void FillSharingCard(Settings s)
+    {
+        bool was = _filling;
+        _filling = true;
+        try
+        {
+            string plan = Settings.NormalizeDiscordPlan(s.DiscordPlan, s.SizeTarget);
+            Fill(DiscordPlanCombo, ShareFitModel.DiscordPlanChoices().Select(p => new Choice(p.Label, p.Id)).ToArray(), plan);
+            ShareCopiesDuringGamesCheck.IsChecked = s.ShareCopiesDuringGames;
+        }
+        finally { _filling = was; }
+    }
+
+    private void DiscordPlanChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_loading || _filling) return;
+        var s = _app.Settings;
+        s.DiscordPlan = Selected<string>(DiscordPlanCombo) ?? Settings.NormalizeDiscordPlan(null, s.SizeTarget);
+        s.Save();   // an open Share window sees the new plan within a second (it looks at the setting on every state tick)
+    }
+
+    private void ShareCopiesDuringGamesChanged(object sender, RoutedEventArgs e)
+    {
+        if (_loading || _filling) return;
+        _app.Settings.ShareCopiesDuringGames = ShareCopiesDuringGamesCheck.IsChecked == true;
+        _app.Settings.Save();
     }
 
     private void SizeTargetCombo_DropDownOpened(object sender, EventArgs e) => _pickingSizeTarget = true;
@@ -1046,8 +1089,9 @@ public partial class MainWindow : Window
     {
         try
         {
+            TestGuard.CheckLaunch("opening the settings folder");   // before anything is created
             Directory.CreateDirectory(Settings.Dir);
-            Process.Start(new ProcessStartInfo(Settings.Dir) { UseShellExecute = true });
+            TestGuard.Start(new ProcessStartInfo(Settings.Dir) { UseShellExecute = true });
         }
         catch (Exception ex) { _app.Say("Could not open the folder: " + ex.Message); }
     }
@@ -1247,6 +1291,7 @@ public partial class MainWindow : Window
         var model = new CopiumWelcomeModel(_app.WelcomeInitialAutoUpload, _app.ApplyWelcome);
         try
         {
+            TestGuard.CheckLaunch("the welcome window");   // before the window exists or _welcome is set
             var w = new CopiumWelcomeWindow(model, _app.SignIn.Current.Username, () => _app.IsShuttingDown);
             if (IsVisible) { w.Owner = this; w.WindowStartupLocation = WindowStartupLocation.CenterOwner; }
             else w.ShowInTaskbar = true;   // no visible owner: it must not be buried without a taskbar button
@@ -1353,6 +1398,7 @@ public partial class MainWindow : Window
     internal void OpenClip(ClipEntry entry, bool trim)
     {
         if (TrimWindow.Find(entry) is { } open) { open.Reveal(trim); return; }
+        TestGuard.CheckLaunch("the trim window");
         var w = new TrimWindow(entry, trim) { Owner = IsVisible ? this : null };
         w.Show();
     }
@@ -1376,8 +1422,11 @@ public partial class MainWindow : Window
         var s = _app.Settings;
         s.Resolution = Selected<string>(ResolutionCombo) ?? SettingsDefaults.Resolution;
         s.Fps = Selected<int>(FpsCombo) is var f && f > 0 ? f : SettingsDefaults.Fps;
-        if (BitrateCombo.IsEnabled && Selected<int>(BitrateCombo) is var b && b > 0) s.BitrateMbps = b;   // read-only while a size target picks it
-        s.Codec = Selected<string>(CodecCombo) ?? SettingsDefaults.Codec;
+        string codec = Selected<string>(CodecCombo) ?? SettingsDefaults.Codec;
+        // Switching codec never changes the bitrate. Only a change of the bitrate box itself counts as the user's pick.
+        if (BitrateCombo.IsEnabled && Selected<int>(BitrateCombo) is var b && b > 0)
+            SetupPresets.PickBitrate(s, b, ReferenceEquals(sender, BitrateCombo));   // a size target never disables the box: it only lowers the encode bitrate
+        s.Codec = codec;
         s.CaptureCursor = CursorCheck.IsChecked == true;
         s.Save();
         UpdateCodecDescription();
@@ -1527,6 +1576,7 @@ public partial class MainWindow : Window
         TokenSaveButton.IsEnabled = false;
         UpdateTokenStatus(t);
         UpdateScreenshotTab();   // the upload options follow the token
+        Clips.RefreshShareButtons();   // the Share buttons follow the token
         // A token was just saved but sharing is not agreed to yet: ask once, now, instead of at the first Share. (A cleared token asks nothing.)
         if (!string.IsNullOrEmpty(t) && _app.Settings.CloudSharingEnabled && !_app.Settings.CopiumConsent)
         {
@@ -1712,7 +1762,7 @@ public partial class MainWindow : Window
 
     private void CopiumCleanupOpen_Click(object sender, RoutedEventArgs e)
     {
-        try { Process.Start(new ProcessStartInfo(CopiumCardModel.CleanupUrl) { UseShellExecute = true })?.Dispose(); }
+        try { TestGuard.Start(new ProcessStartInfo(CopiumCardModel.CleanupUrl) { UseShellExecute = true })?.Dispose(); }
         catch (Exception ex) { Log.Warn("copium cleanup page: " + ex.Message); }
     }
 
@@ -1724,7 +1774,7 @@ public partial class MainWindow : Window
 
     private void CopiumSite_Click(object sender, RoutedEventArgs e)
     {
-        try { Process.Start(new ProcessStartInfo("https://copium.pics/") { UseShellExecute = true }); } catch { }
+        try { TestGuard.Start(new ProcessStartInfo("https://copium.pics/") { UseShellExecute = true }); } catch { }
     }
 
     private void CopiumPlusChanged(object sender, RoutedEventArgs e)
@@ -1973,6 +2023,7 @@ public partial class MainWindow : Window
                 var probe = Task.Run(() => { try { return Directory.Exists(initial); } catch { return false; } });
                 if (probe.Wait(300) && probe.Result) dlg.InitialDirectory = initial;
             }
+            TestGuard.CheckLaunch("a folder dialog: " + title);
             return dlg.ShowDialog(this) == true ? dlg.FolderName : null;
         }
         catch (Exception ex) { _app.Say("Folder picker failed: " + ex.Message); return null; }
@@ -2118,6 +2169,7 @@ public partial class MainWindow : Window
             return;
         }
         if (string.IsNullOrWhiteSpace(_app.Settings.ArchivePath)) { _app.Say("Set an archive location first"); return; }
+        TestGuard.CheckLaunch("the archive window");
         new ArchiveWindow(_app) { Owner = this }.ShowDialog();
         RefreshArchiveStatus();
     }

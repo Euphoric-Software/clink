@@ -96,6 +96,8 @@ internal sealed class Settings
     public string? MonitorDevice { get; set; }                 // "\\.\DISPLAY1"; null = primary
     public int Fps { get; set; } = SettingsDefaults.Fps;
     public int BitrateMbps { get; set; } = SettingsDefaults.BitrateMbps;
+    /// <summary>The user picked <see cref="BitrateMbps"/> in the bitrate box. Kept for settings import; no app logic reads it.</summary>
+    public bool BitrateChosen { get; set; }
     public string Codec { get; set; } = SettingsDefaults.Codec;                // h264 | hevc
     public string Resolution { get; set; } = SettingsDefaults.Resolution;      // native | 1440p | 1080p | 720p
     public int BufferSeconds { get; set; } = SettingsDefaults.BufferSeconds;
@@ -112,7 +114,13 @@ internal sealed class Settings
     public string VoiceApp { get; set; } = "auto";
     public bool ClickSound { get; set; } = true;
     public double ClickVolume { get; set; } = 0.5;
-    public string ClipsFolder { get; set; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "Clink");
+    public string ClipsFolder { get; set; } = DefaultClipsFolder;
+
+    /// <summary>Test seam: where the default clips folder (and so the default screenshots folder, inside it) points; null = <c>Videos\Clink</c>. Only the unit-test runner sets it.</summary>
+    internal static string? DefaultClipsFolderOverride { get; set; }
+
+    /// <summary>The clips folder a fresh install uses, <c>Videos\Clink</c> (<see cref="DefaultClipsFolderOverride"/> in a unit test).</summary>
+    internal static string DefaultClipsFolder => DefaultClipsFolderOverride ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "Clink");
     public string? CopiumTokenProtected { get; set; }
     /// <summary>The Copium username shown beside the linked account (a display cache of what "Sign in with Copium" or /api/me said). Follows the token: cleared without one, taken over with it by an import.</summary>
     public string? CopiumAccountName { get; set; }
@@ -159,6 +167,14 @@ internal sealed class Settings
     public string SizeTarget { get; set; } = SettingsDefaults.SizeTarget;
     /// <summary>The user has Copium+: Share no longer refuses clips over Copium's free limits (200 MB / 10 min per upload).</summary>
     public bool CopiumPlus { get; set; }
+    /// <summary>
+    /// "free" | "basic" | "nitro" (<see cref="DiscordPlans"/>): the Discord plan whose upload limit Share makes a smaller copy for (20 MB / 50 MB /
+    /// 1 GB; the bytes and labels come from <see cref="Capabilities.SizeTargets"/> only). Null in a file that never had it: <see cref="Normalize"/>
+    /// takes it from the recording size target (discord50 = basic, discord500 = nitro, anything else = free). An unknown value is "free".
+    /// </summary>
+    public string? DiscordPlan { get; set; }
+    /// <summary>Share may make a smaller copy while a game is in front (at low GPU priority). Off: it refuses with "open Clink to make a smaller copy".</summary>
+    public bool ShareCopiesDuringGames { get; set; } = true;
     /// <summary>The "Set up your audio" banner on the Capture tab was dismissed (the audio group was hovered over or an audio option changed); it never shows again.</summary>
     public bool AudioSetupSeen { get; set; }
     /// <summary>The user pressed "Don't show again" on the "yellow border" notice (the border could not be hidden). Until then it shows once per app launch; Reset in the settings clears it.</summary>
@@ -206,6 +222,12 @@ internal sealed class Settings
     /// absent. Named FeedFloor* so that a settings import treats it as this installation's own (never imported). Left out while null.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? FeedFloorFailingSince { get; set; }
+    /// <summary>
+    /// Hidden developer switch (no UI, never written by default): asks the recording's encoder for off | vbr | lowlatency-off |
+    /// vbr-lowlatency-off (<see cref="Clink.Encode.EncoderExperiments.Parse"/>). Null or "off" is the normal setup; an unknown value, or the
+    /// retired vbr-bframes, is kept as written and treated as off (with a log warning). A size target keeps the encoder CBR. Per installation: never imported.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? EncoderExperiment { get; set; }
 
     // ---- v3 (v0.2.5) ----
     /// <summary>dark | light</summary>
@@ -224,6 +246,8 @@ internal sealed class Settings
     public bool ScreenshotsEnabled { get; set; } = true;
     /// <summary>Where screenshots are saved; null = a <c>Screenshots</c> folder inside <see cref="ClipsFolder"/> (resolved when used).</summary>
     public string? ScreenshotsFolder { get; set; }
+    /// <summary>The folder the last "Save a copy…" of a clip went to (no setting UI); null = My Videos. Only a local fixed-drive folder is remembered. This machine's own: never imported.</summary>
+    public string? SaveCopyFolder { get; set; }
     /// <summary>none | before | after (<see cref="Clink.Screenshots.ScreenshotModes"/>): what happens after the region is picked. "none" saves at once; "after" opens the editor on the picture first; "before" edits the chosen area right in the capture overlay (an area over several monitors opens the editor window instead).</summary>
     public string ScreenshotMode { get; set; } = Clink.Screenshots.ScreenshotModes.None;
     /// <summary>The screenshot editor's last-used tool options (colour, width, text size / backdrop): the next editor opens the way the last one was left.</summary>
@@ -448,7 +472,7 @@ internal sealed class Settings
 
     private static bool KeepUnreadableCopy()
     {
-        try { File.Copy(FilePath, FilePath + ".unreadable", overwrite: true); return true; }
+        try { TestGuard.Check(FilePath + ".unreadable"); File.Copy(FilePath, FilePath + ".unreadable", overwrite: true); return true; }
         catch (Exception ex) { Log.Warn("settings.json: could not keep a copy: " + ex.Message); return false; }
     }
 
@@ -591,6 +615,23 @@ internal sealed class Settings
         return HasKey(obj, nameof(Hotkeys)) ? 2 : 1;
     }
 
+    /// <summary>The Discord plan ids, in the order the SHARING card lists them.</summary>
+    internal static readonly string[] DiscordPlans = { "free", "basic", "nitro" };
+
+    /// <summary>
+    /// A valid <see cref="DiscordPlan"/>: a known id in any case ("Nitro" = "nitro"); nothing (null) = the recording size target's plan
+    /// (discord50 = basic, discord500 = nitro, discord10, copium and none = free); anything else = free.
+    /// </summary>
+    internal static string NormalizeDiscordPlan(string? plan, string? sizeTarget)
+    {
+        if (plan == null)
+            return Capabilities.SizeTargetFor(sizeTarget).Id switch { "discord50" => "basic", "discord500" => "nitro", _ => "free" };
+        string p = plan.Trim();
+        foreach (string known in DiscordPlans)
+            if (string.Equals(known, p, StringComparison.OrdinalIgnoreCase)) return known;
+        return "free";
+    }
+
     /// <summary>
     /// A hand-edited or merged settings.json can carry null where an object or list is expected ("Hotkeys": null); nothing
     /// downstream null-checks these, so they are given their defaults once here instead of crashing Start() half-way. Ends with
@@ -615,13 +656,16 @@ internal sealed class Settings
         ToastPosition ??= "bottom-right";
         StatusDotPosition ??= "top-right";
         SizeTarget ??= SettingsDefaults.SizeTarget;
+        DiscordPlan = NormalizeDiscordPlan(DiscordPlan, SizeTarget);
         if (string.IsNullOrWhiteSpace(Theme)) Theme = SettingsDefaults.Theme;
         if (string.IsNullOrWhiteSpace(Accent)) Accent = SettingsDefaults.Accent;
         else Accent = Clink.UI.ThemeManager.UpgradeAccent(Accent) ?? SettingsDefaults.Accent;
-        if (string.IsNullOrWhiteSpace(ClipsFolder)) ClipsFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "Clink");
+        if (string.IsNullOrWhiteSpace(ClipsFolder)) ClipsFolder = DefaultClipsFolder;
         if (string.IsNullOrWhiteSpace(ScreenshotsFolder)) ScreenshotsFolder = null;
         // A relative path (a hand edit, an import) would resolve against the current directory, which is System32 at sign-in: the default instead.
         else if (!IsFullPath(ScreenshotsFolder.Trim())) ScreenshotsFolder = null;
+        // Same rule as the screenshots folder (no drive or network check here: that is for the save dialog's start folder).
+        if (string.IsNullOrWhiteSpace(SaveCopyFolder) || !IsFullPath(SaveCopyFolder.Trim())) SaveCopyFolder = null;
         ScreenshotMode = Clink.Screenshots.ScreenshotModes.Normalize(ScreenshotMode);
         ScreenshotEditor ??= new Clink.Screenshots.Editing.ScreenshotEditorOptions();
         ScreenshotEditor.Normalize();
@@ -814,6 +858,7 @@ internal sealed class Settings
                 if (s_frozen) return;
                 Sanitize();
                 SchemaVersion = CurrentSchema;
+                TestGuard.Check(FilePath);
                 Directory.CreateDirectory(Dir);
                 KeepPreV3Copy();
                 AtomicFile.WriteAllText(FilePath, JsonSerializer.Serialize(this, s_json));
@@ -853,6 +898,7 @@ internal sealed class Settings
         {
             string path = Path.Combine(Dir, "settings.pre-v3.json");
             if (File.Exists(path)) return;
+            TestGuard.Check(path);
             using var fs = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
             byte[] bytes = new UTF8Encoding(false).GetBytes(old);
             fs.Write(bytes, 0, bytes.Length);

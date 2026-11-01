@@ -108,6 +108,8 @@ internal enum ScreenshotDeleteResult
     EditorOpen,
     /// <summary>The file went to the Recycle Bin but the history could not be written: the entry is still listed.</summary>
     ListNotUpdated,
+    /// <summary>Asked to delete only a file (<c>requireFile</c>, the bulk delete) but there is none at the path: nothing was touched and the entry stays.</summary>
+    FileGone,
 }
 
 /// <summary>What a saved screenshot is: the entry (in the history) and the encoded PNG (also for the clipboard).</summary>
@@ -255,6 +257,10 @@ internal sealed class ScreenshotService
     /// <summary>Copium rejected the token now set (HTTP 401 / 403): automatic uploads wait until the token is changed; the toast's Upload button still tries.</summary>
     internal bool CopiumTokenRejected => _rejectedToken != null && string.Equals(_rejectedToken, _settings.CopiumToken, StringComparison.Ordinal);
 
+    private int _tokenRejections;
+    /// <summary>How many uploads Copium has turned down for the token in this process (a bulk upload compares it before and after an item: the flag above is sticky).</summary>
+    internal int TokenRejections => Volatile.Read(ref _tokenRejections);
+
     private bool AutoUploadPaused => CopiumImagesRefused || CopiumTokenRejected;
 
     private readonly object _uploadGate = new();
@@ -278,8 +284,15 @@ internal sealed class ScreenshotService
     /// the image was copied (null when it was not). UI thread. Returns true when the screenshot has a link afterwards.
     /// </summary>
     internal async Task<bool> UploadAsync(ScreenshotEntry entry, bool manual = false, uint? clipboardSequence = null,
-        ConsentContext askAs = ConsentContext.ScreenshotUploadManual)
+        ConsentContext askAs = ConsentContext.ScreenshotUploadManual, bool batch = false, IProgress<double>? batchProgress = null, Action<string>? batchProblem = null)
     {
+        // A batch (the library's bulk upload) asked for consent already and tells its problems through batchProblem (one closing notice, no toast per picture).
+        if (batch && !Consent.CloudOn)
+        {
+            Log.Info("screenshot: batch upload refused: cloud sharing is off");
+            batchProblem?.Invoke(ConsentGate.CloudOffText);
+            return false;
+        }
         // Sharing is opt-in and has a kill switch. A manual upload (the toast's Upload / Retry, the library's Upload) asks once if the user
         // has not agreed yet; an automatic one never asks: it needs the agreement and the setting already (AnnounceSaved checks; UploadCoreAsync again).
         if (manual)
@@ -298,15 +311,25 @@ internal sealed class ScreenshotService
             previous = _uploadTail;
             _uploadTail = gate.Task;   // in place before any of the work runs
         }
-        return await RunQueuedAsync(previous, gate, entry, manual, clipboardSequence);
+        return await RunQueuedAsync(previous, gate, entry, manual, clipboardSequence, batch, batchProgress, batchProblem);
     }
 
-    private async Task<bool> RunQueuedAsync(Task previous, TaskCompletionSource gate, ScreenshotEntry entry, bool manual, uint? clipboardSequence)
+    /// <summary>The upload toast of a batch upload: nothing is shown (the library's bar reports it); the service's own Cancel has nothing to stop but the HTTP call.</summary>
+    private sealed class NoUploadToast : IScreenshotUploadToast
+    {
+        public void Report(double fraction) { }
+        public Action? OnCancel { get; set; }
+        public void Succeeded(string link, bool linkCopied) { }
+        public void Failed() { }
+        public void Declined() { }
+    }
+
+    private async Task<bool> RunQueuedAsync(Task previous, TaskCompletionSource gate, ScreenshotEntry entry, bool manual, uint? clipboardSequence, bool batch, IProgress<double>? batchProgress, Action<string>? batchProblem)
     {
         try
         {
             try { await previous; } catch { }
-            try { return await UploadCoreAsync(entry, manual, clipboardSequence); }
+            try { return await UploadCoreAsync(entry, manual, clipboardSequence, batch, batchProgress, batchProblem); }
             catch (Exception ex)
             {
                 Log.Error("screenshot: upload", ex);
@@ -334,8 +357,14 @@ internal sealed class ScreenshotService
         catch (Exception ex) { return "the file could not be checked (" + ex.Message + ")"; }
     }
 
-    private async Task<bool> UploadCoreAsync(ScreenshotEntry entry, bool manual, uint? clipboardSequence)
+    private async Task<bool> UploadCoreAsync(ScreenshotEntry entry, bool manual, uint? clipboardSequence, bool batch = false, IProgress<double>? batchProgress = null, Action<string>? batchProblem = null)
     {
+        // A batch hands each problem text to its caller (one closing notice); a single upload toasts it.
+        void Problem(string title, string text, string batchText)
+        {
+            if (batch && batchProblem != null) batchProblem(batchText);
+            else _toasts.ShowProblem(title, text);
+        }
         var ct = _uploadCts.Token;
         if (ct.IsCancellationRequested) return false;
         // Only a screenshot of this app goes up: a .png inside a known screenshots folder, a regular file (the history file is data, not trusted).
@@ -349,7 +378,8 @@ internal sealed class ScreenshotService
         if (!_settings.CloudSharingEnabled)
         {
             Log.Info("screenshot: upload refused: cloud sharing is off");
-            if (!_cloudOffNoticeShown)   // once per flip, not once per queued screenshot
+            if (batch) batchProblem?.Invoke(ConsentGate.CloudOffText);
+            else if (!_cloudOffNoticeShown)   // once per flip, not once per queued screenshot
             {
                 _cloudOffNoticeShown = true;
                 _toasts.ShowNotice(ConsentGate.CloudOffTitle, ConsentGate.CloudOffText);
@@ -359,6 +389,7 @@ internal sealed class ScreenshotService
         if (!_settings.CopiumConsent)
         {
             Log.Info("screenshot: upload refused: sharing with Copium is not agreed to");
+            if (batch) batchProblem?.Invoke("Not uploaded: sharing with Copium is not enabled");
             return false;
         }
         if (!manual && AutoUploadPaused)
@@ -369,14 +400,14 @@ internal sealed class ScreenshotService
         string? token = _settings.CopiumToken;
         if (string.IsNullOrWhiteSpace(token))
         {
-            _toasts.ShowProblem("Screenshot not uploaded", "Saved locally. Sign in with Copium under App → Copium to upload screenshots.");
+            Problem("Screenshot not uploaded", "Saved locally. Sign in with Copium under App → Copium to upload screenshots.", AppController.BulkNoTokenText);
             return false;
         }
         // The size limit of the account is the only one that applies to a picture (no length).
         if (AppController.ShareRefusalFor(entry.Size, 0, _settings.CopiumPlus) != null)
         {
             var (maxBytes, _, _) = Capabilities.CopiumLimits(_settings.CopiumPlus);
-            _toasts.ShowProblem("Screenshot not uploaded", $"Saved locally. The picture is {Capabilities.FormatBytes(entry.Size)}, over your Copium upload limit of {Capabilities.FormatBytes(maxBytes)}.");
+            Problem("Screenshot not uploaded", $"Saved locally. The picture is {Capabilities.FormatBytes(entry.Size)}, over your Copium upload limit of {Capabilities.FormatBytes(maxBytes)}.", "Too large for Copium");
             return false;
         }
 
@@ -384,7 +415,7 @@ internal sealed class ScreenshotService
         if (ChangedSinceSaved(entry) is string changed)
         {
             Log.Warn($"screenshot: upload skipped for {System.IO.Path.GetFileName(entry.Path)}: {changed}");
-            _toasts.ShowProblem("Screenshot not uploaded", "Saved locally, but it was not uploaded: " + changed + ".");
+            Problem("Screenshot not uploaded", "Saved locally, but it was not uploaded: " + changed + ".", char.ToUpperInvariant(changed[0]) + changed[1..]);
             return false;
         }
 
@@ -399,11 +430,11 @@ internal sealed class ScreenshotService
         var history = History;   // the one this screenshot is listed in: the folder setting may change while it uploads
         using var one = CancellationTokenSource.CreateLinkedTokenSource(ct);   // this upload only: the toast's Cancel button
         lock (_uploadGate) _currentOne = one;   // CancelRunningUpload (the cloud kill switch)
-        var toast = _toasts.ShowScreenshotUploading(entry);
+        var toast = batch ? new NoUploadToast() : _toasts.ShowScreenshotUploading(entry);
         toast.OnCancel = () => { try { one.Cancel(); } catch (ObjectDisposedException) { } };
         string title = System.IO.Path.GetFileNameWithoutExtension(entry.Path);
         string path = entry.Path;
-        var progress = new Progress<double>(p => toast.Report(p));   // made here, on the UI thread: it reports there
+        var progress = new Progress<double>(p => { toast.Report(p); batchProgress?.Report(p); });   // made here, on the UI thread: it reports there
         var t = Stopwatch.StartNew();
         var uploadToken = one.Token;
         // Off the UI thread: opening the file can block.
@@ -426,7 +457,8 @@ internal sealed class ScreenshotService
             // user asked for the upload): a link must not overwrite something copied since.
             bool copied = false;
             string linkNote;
-            if (!_settings.ScreenshotCopyLink) linkNote = "not copied (off)";
+            if (batch) linkNote = "not copied (batch: the caller copies all the links at the end)";
+            else if (!_settings.ScreenshotCopyLink) linkNote = "not copied (off)";
             else if (!manual && clipboardSequence == null) linkNote = "not copied (the image was not put on the clipboard)";
             else if (!manual && ClipboardSequence() != clipboardSequence) linkNote = "not copied (clipboard changed)";
             else
@@ -464,15 +496,17 @@ internal sealed class ScreenshotService
             if (ex is CopiumHttpException refusal && CopiumClient.IsTypeRefusal(refusal.StatusCode, refusal.ErrorText))
             {
                 CopiumImagesRefused = true;
-                _toasts.ShowProblem("Copium did not accept the image", "Saved locally. Automatic uploads are paused until Clink restarts; the Upload button on a screenshot notification still tries. (" + ex.Message + ")");
+                Problem("Copium did not accept the image", "Saved locally. Automatic uploads are paused until Clink restarts; the Upload button on a screenshot notification still tries. (" + ex.Message + ")", "Copium doesn't accept this file type");
             }
             else if (ex is CopiumHttpException tokenRefusal && CopiumClient.IsTokenRejection(tokenRefusal.StatusCode, tokenRefusal.ErrorText))
             {
                 // Every further try would fail the same way: pause until the token is changed, and say so once.
                 _rejectedToken = token;
-                _toasts.ShowProblem("Copium token rejected", "Saved locally. Check the token in Settings → App → Copium; automatic uploads are paused until it is changed. (" + ex.Message + ")");
+                Interlocked.Increment(ref _tokenRejections);
+                Problem("Copium token rejected", "Saved locally. Check the token in Settings → App → Copium; automatic uploads are paused until it is changed. (" + ex.Message + ")",
+                    $"Copium rejected the token (HTTP {tokenRefusal.StatusCode})");
             }
-            else _toasts.ShowProblem("Screenshot not uploaded", "Saved locally. " + ex.Message);
+            else Problem("Screenshot not uploaded", "Saved locally. " + ex.Message, ex.Message);
             return false;
         }
         finally
@@ -669,9 +703,11 @@ internal sealed class ScreenshotService
     /// that is <see cref="ScreenshotDeleteResult.Refused"/> too. A screenshot with a Copium link keeps its entry (the link is the
     /// only thing left of it); one without leaves the history. An entry whose file is already gone is just taken out of the list.
     /// A Recycle Bin failure keeps the file and the entry; a file that an editor has open is not touched
-    /// (<see cref="ScreenshotDeleteResult.EditorOpen"/>). Off the UI thread; never throws.
+    /// (<see cref="ScreenshotDeleteResult.EditorOpen"/>). <paramref name="requireFile"/> (the bulk delete): only a file is deleted; when
+    /// there is none at the path (gone, or a directory / link there) the entry is NOT removed (it may hold a Copium link record) and the
+    /// result is <see cref="ScreenshotDeleteResult.FileGone"/>. Off the UI thread; never throws.
     /// </summary>
-    internal Task<ScreenshotDeleteResult> DeleteAsync(ScreenshotEntry entry, nint owner = 0) => Task.Run(() =>
+    internal Task<ScreenshotDeleteResult> DeleteAsync(ScreenshotEntry entry, nint owner = 0, bool requireFile = false) => Task.Run(() =>
     {
         string path = entry.Path;
         try
@@ -693,6 +729,11 @@ internal sealed class ScreenshotService
             {
                 if (!IsOpenableFile(path, KnownFolders()))
                 {
+                    if (requireFile)
+                    {
+                        Log.Warn("screenshot: not deleted: " + System.IO.Path.GetFileName(path) + " is not a screenshot file (directory or link); the entry stays");
+                        return ScreenshotDeleteResult.FileGone;
+                    }
                     // A directory or a link at the path: not a screenshot file, so the disk is left alone and only the list entry goes
                     // (the row offers "Remove from list" for it).
                     Log.Warn("screenshot: " + System.IO.Path.GetFileName(path) + " is not a screenshot file (directory or link); only the list entry is removed");
@@ -714,6 +755,11 @@ internal sealed class ScreenshotService
                     if (LastEdit is { } live && SamePath(live.Path, path)) ClearLastEdit("its file was deleted");
                     keep = !string.IsNullOrEmpty(History.Find(path)?.CopiumLink ?? entry.CopiumLink);
                 }
+            }
+            else if (requireFile)
+            {
+                Log.Info("screenshot: not deleted: " + System.IO.Path.GetFileName(path) + " has no file; the entry stays");
+                return ScreenshotDeleteResult.FileGone;
             }
             if (keep)
             {
@@ -1356,6 +1402,8 @@ internal sealed class ScreenshotService
         string? overwritePath = null, string? editedFrom = null)
     {
         if (image.Width <= 0 || image.Height <= 0) throw new InvalidOperationException("The picture is empty");
+        TestGuard.Check(folder);
+        if (overwritePath != null) TestGuard.Check(overwritePath);
         Directory.CreateDirectory(folder);
         byte[] png = PngFile.Encode(bitmap ?? image.ToBitmapSource());
         string baseName = ScreenshotNaming.BaseName(game, when);

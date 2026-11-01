@@ -231,7 +231,7 @@ internal sealed class CopiumSignInSession
     internal static void OpenInBrowser(Uri uri)
     {
         if (!IsApproveUri(uri)) { Log.Warn("copium sign-in: refused to open an address that is not the approve page"); return; }
-        Process.Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true })?.Dispose();
+        TestGuard.Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true })?.Dispose();
     }
 
     private void Open(Uri uri)

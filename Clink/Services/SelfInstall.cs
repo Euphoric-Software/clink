@@ -426,7 +426,7 @@ internal sealed class SelfInstallSystem : ISelfInstallSystem
     {
         var psi = new ProcessStartInfo(exePath) { UseShellExecute = false, WorkingDirectory = Path.GetDirectoryName(exePath) ?? "" };
         foreach (string a in args) psi.ArgumentList.Add(a);
-        return new Child(Process.Start(psi) ?? throw new IOException("The new copy could not be started."));
+        return new Child(TestGuard.Start(psi) ?? throw new IOException("The new copy could not be started."));
     }
 
     public void Sleep(int milliseconds) => Thread.Sleep(milliseconds);

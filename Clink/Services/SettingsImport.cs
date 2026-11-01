@@ -76,6 +76,7 @@ internal static class AppDataRedirect
         try
         {
             string dir = Settings.Dir;
+            TestGuard.Check(dir);
             Directory.CreateDirectory(dir);
             string? folder = FinalFolderOf(dir);
             if (folder == null)
@@ -372,6 +373,8 @@ internal static class SettingsImport
     {
         ("video quality", new[] { nameof(Settings.Resolution), nameof(Settings.Fps), nameof(Settings.BitrateMbps), nameof(Settings.Codec), nameof(Settings.HdrKnee), nameof(Settings.HdrPeak), nameof(Settings.KeyframeSeconds), nameof(Settings.CaptureCursor) }),
         ("size target", new[] { nameof(Settings.SizeTarget) }),
+        ("Discord plan", new[] { nameof(Settings.DiscordPlan) }),
+        ("sharing", new[] { nameof(Settings.ShareCopiesDuringGames) }),
         ("monitor", new[] { nameof(Settings.MonitorDevice) }),
         ("replay length", new[] { nameof(Settings.BufferSeconds) }),
         ("recording mode", new[] { nameof(Settings.RecordingMode), nameof(Settings.CustomApps) }),
@@ -410,6 +413,8 @@ internal static class SettingsImport
         || key.Equals(nameof(Settings.UseDevBuilds), StringComparison.OrdinalIgnoreCase)
         || key.Equals(nameof(Settings.CopiumImageUploadUrl), StringComparison.OrdinalIgnoreCase)   // where the token is sent: this machine's own choice, never another copy's
         || key.Equals(nameof(Settings.ImportDeclined), StringComparison.OrdinalIgnoreCase)
+        || key.Equals(nameof(Settings.SaveCopyFolder), StringComparison.OrdinalIgnoreCase)   // the last "Save a copy" folder on this machine
+        || key.Equals(nameof(Settings.EncoderExperiment), StringComparison.OrdinalIgnoreCase)   // a hidden per-machine experiment: never another copy's
         // consent and sharing controls: what this person agreed to on this machine is never another copy's to decide
         || key.Equals(nameof(Settings.CloudSharingEnabled), StringComparison.OrdinalIgnoreCase)
         || key.StartsWith("CopiumConsent", StringComparison.OrdinalIgnoreCase)
@@ -465,6 +470,7 @@ internal static class SettingsImport
             string path = NetworkPathsNoticePath;
             if (!File.Exists(path)) return null;
             string text = File.ReadAllText(path).Trim();
+            TestGuard.Check(path);
             File.Delete(path);
             return text.Length == 0 ? null : text;
         }
@@ -479,9 +485,11 @@ internal static class SettingsImport
     internal static bool IsTokenUnusable(Settings s) => !string.IsNullOrEmpty(s.CopiumTokenProtected) && s.CopiumToken == null;
 
     // Differences that say nothing: this installation's own settings (above), the schema number, whether the audio banner was
-    // dismissed, and the protected Copium token (its DPAPI text differs on every save: the token is compared decrypted).
+    // dismissed, whether the bitrate was picked (it travels with an import but is never a reason for an offer), and the
+    // protected Copium token (its DPAPI text differs on every save: the token is compared decrypted).
     private static bool IsVolatile(string key) =>
         IsOwnKey(key)
+        || key.Equals(nameof(Settings.BitrateChosen), StringComparison.OrdinalIgnoreCase)
         || key.Equals(nameof(Settings.SchemaVersion), StringComparison.OrdinalIgnoreCase)
         || key.Equals(nameof(Settings.AudioSetupSeen), StringComparison.OrdinalIgnoreCase)
         || key.Equals(nameof(Settings.SeededHotkeyDefaults), StringComparison.OrdinalIgnoreCase)
@@ -676,6 +684,7 @@ internal static class SettingsImport
         var incoming = Settings.FromJson(theirs);   // throws when it is not JSON, or not a JSON object
 
         string dir = Settings.Dir;
+        TestGuard.Check(dir);
         Directory.CreateDirectory(dir);
         var networkKept = new List<string>();
         string text = KeepOurOwn(theirs, ReadOurSettings(), keepOurToken: IsTokenUnusable(incoming), networkKept);
@@ -686,7 +695,7 @@ internal static class SettingsImport
         {
             string note = NetworkPathsNoticeFor(networkKept);
             Log.Warn("import: " + note);
-            try { File.WriteAllText(NetworkPathsNoticePath, note); }
+            try { TestGuard.Check(NetworkPathsNoticePath); File.WriteAllText(NetworkPathsNoticePath, note); }
             catch (Exception ex) { Log.Warn("import: could not note the network folders that were kept: " + ex.Message); }
         }
         string? clipsProblem = MergeClipIndex(copy.Folder);
@@ -797,6 +806,7 @@ internal static class SettingsImport
             if (File.Exists(path)) continue;
             try
             {
+                TestGuard.Check(path);
                 File.Copy(Settings.FilePath, path, overwrite: false);
                 return path;
             }
@@ -841,6 +851,7 @@ internal static class SettingsImport
     {
         try
         {
+            TestGuard.Check(ClipsMarkerPath);
             Directory.CreateDirectory(Settings.Dir);
             File.WriteAllText(ClipsMarkerPath, JsonSerializer.Serialize(marker));
         }
@@ -850,7 +861,7 @@ internal static class SettingsImport
     /// <summary>Drops the note about a clip merge still to do (it is done, there is nothing to merge from any more, or the import was taken back).</summary>
     internal static void ForgetPendingClipMerge()
     {
-        try { if (File.Exists(ClipsMarkerPath)) File.Delete(ClipsMarkerPath); }
+        try { if (File.Exists(ClipsMarkerPath)) { TestGuard.Check(ClipsMarkerPath); File.Delete(ClipsMarkerPath); } }
         catch (Exception ex) { Log.Warn("import: could not remove the note about a pending clip merge: " + ex.Message); }
     }
 
@@ -938,6 +949,7 @@ internal static class SettingsImport
 
         try
         {
+            TestGuard.Check(mine);
             Directory.CreateDirectory(Path.GetDirectoryName(mine) ?? Settings.Dir);
             AtomicFile.WriteAllText(mine, merged);
         }

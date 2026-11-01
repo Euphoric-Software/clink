@@ -77,7 +77,7 @@ Things that were asked for or came up while building, roughly in the order they'
 - [x] **Share without a Copium account** (v0.2.5): with no token Share opens a window with the clip's file to drag into
       Discord, a browser or a folder (copy only), or to copy and paste. Copium Plus's limits (2 GB, 60 min) are in the
       share check.
-- [ ] **Share window: make a smaller copy for Discord's 10 MB**: re-encode the clip to a size from the Share window (today
+- [ ] **Share window: make a smaller copy for Discord's 20 MB**: re-encode the clip to a size from the Share window (today
       it shares the file as it is).
 - [x] **Dark or Light, six accents** (v0.2.5): the new App tab (with Updates and where the settings are kept); every
       window follows a change at once.

@@ -87,7 +87,13 @@ function Get-FeedJsonMember {
 function Get-FeedConfig {
     param([Parameter(Mandatory)] [string]$Path, [Parameter(Mandatory)] [ValidateSet('stable', 'dev')] [string]$Channel)
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "feed.json not found: $Path" }
-    $cfg = Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json
+    try { $cfg = Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json }
+    catch {
+        # Windows PowerShell 5.1 refuses two keys that differ only in case with "duplicated keys"; pwsh 7 with "... keys with different casing ...".
+        # Give both the same wording (the client would read only the exact key, so the file is refused either way).
+        if ($_.Exception.Message -match '(?i)different casing|duplicated keys') { throw "feed.json is misconfigured: duplicated keys that differ only in case ($($_.Exception.Message))" }
+        throw
+    }
     if ($null -eq $cfg -or $cfg -isnot [pscustomobject]) { throw 'feed.json is misconfigured: it is not a JSON object' }
     $problems = New-Object System.Collections.Generic.List[string]
     foreach ($name in @($cfg.PSObject.Properties.Name)) {

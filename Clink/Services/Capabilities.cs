@@ -151,7 +151,7 @@ internal static unsafe class Capabilities
     }
 
     /// <summary>LUID and name of the DXGI adapter whose output is this monitor (what <c>D3DDevice.CreateForMonitor</c> picks).</summary>
-    private static bool TryGetAdapterLuid(nint hmonitor, out LUID luid, out string name)
+    internal static bool TryGetAdapterLuid(nint hmonitor, out LUID luid, out string name)
     {
         luid = default; name = "";
         Guid iidFactory = IDXGIFactory1.IID_Guid;
@@ -266,14 +266,18 @@ internal static unsafe class Capabilities
     /// <summary>The most the ring may take (half of physical RAM); the engine clamps to this and the UI warns above it.</summary>
     public static long MaxRingBytes() => RingStore.MaxBytes();
 
-    // The size targets in the order the combo lists them. Copium and Discord limits are decimal MB (10 MB = 10 000 000 bytes), the safe reading.
+    // The size targets in the order the combo lists them. Copium and Discord limits are decimal MB (20 MB = 20 000 000 bytes), the safe reading.
     private static readonly SizeTargetInfo[] s_sizeTargets =
     {
         new("none", "None", 0, 0),
-        new("discord10", "Discord (10 MB)", 10_000_000, 0),
+        // The id "discord10" is historical (the free limit was 10 MB): it is kept because saved settings store it, and a new id would silently reset them to "none" (older builds too).
+        // Source: Discord "File Attachments FAQ" https://support.discord.com/hc/en-us/articles/25444343291031 - "For non-Nitro subscribers, the maximum file upload is 20MB" (updated 2026-10-29).
+        new("discord10", "Discord free (20 MB)", 20_000_000, 0),
         new("discord50", "Discord Nitro Basic (50 MB)", 50_000_000, 0),
         new("copium200", "Copium (200 MB, 10 min)", CopiumFreeBytes, CopiumFreeSeconds),   // the id stays: settings files and older versions know it
-        new("discord500", "Discord Nitro (500 MB)", 500_000_000, 0),
+        // The id "discord500" is historical too (Nitro was 500 MB): kept for the same reason as "discord10".
+        // Source: https://support.discord.com/hc/en-us/articles/25444343291031 - "Nitro Basic offers 50MB and Nitro offers up to 1GB" (updated 2026-10-29).
+        new("discord500", "Discord Nitro (1 GB)", 1_000_000_000, 0),
         new("copiumplus", "Copium Plus (2 GB, 60 min)", CopiumPlusBytes, CopiumPlusSeconds),
     };
 

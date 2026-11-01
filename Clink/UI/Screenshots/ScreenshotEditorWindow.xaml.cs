@@ -147,6 +147,7 @@ public partial class ScreenshotEditorWindow : Window, ICaptureExcludedWindow
             try { canPaste = Clipboard.ContainsImage() || Clipboard.ContainsData("PNG"); } catch { }
             // the model reads the history and checks the files on a worker: nothing here touches the disk
             var picker = new InsertImagePicker(new InsertPickerModel(_request?.Recent), canPaste) { Owner = this };
+            TestGuard.CheckLaunch("the insert-image picker");
             if (picker.ShowDialog() == true && _session != null)
             {
                 var centre = Canvas.ViewCentreDoc;
@@ -307,6 +308,7 @@ public partial class ScreenshotEditorWindow : Window, ICaptureExcludedWindow
         }
         Hotkeys.GrantForeground();
         Activate();
+        TestGuard.CheckLaunch("a message box (save edits before quit)");
         var answer = MessageBox.Show(this, "Save your edits before Clink quits?\n\nYes saves the picture, No discards the edits, Cancel keeps Clink running.",
             "Clink screenshot editor", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
         if (answer == MessageBoxResult.Cancel) return false;
@@ -328,6 +330,7 @@ public partial class ScreenshotEditorWindow : Window, ICaptureExcludedWindow
         if (Canvas.IsTextEditing) Canvas.CommitText();
         if (_session.IsDirty)
         {
+            TestGuard.CheckLaunch("a message box (save edits)");
             var answer = MessageBox.Show(this, "Save your edits?\n\nYes saves the picture, No discards the edits, Cancel keeps editing.",
                 "Clink screenshot editor", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
             if (answer == MessageBoxResult.Cancel) return;

@@ -54,13 +54,40 @@ public partial class App : System.Windows.Application
             // Clink.exe --unittest [nameFilter]: the in-exe tests (Clink/Tests); exit code 0 = every test passed. They are pure: a temp
             // folder and Settings.DirOverride stand in for %APPDATA%\Clink, and the single-instance mutex and pipe are never touched,
             // so this is safe next to a running Clink. They run on this (the UI) thread, one after the other.
+            Services.TestGuard.Enable();   // first: from here on nothing may write the true real settings folder
             Log.Init(Path.Combine(Path.GetTempPath(), "clink-unittest"), Log.CliFile);
             AttachParentConsole();
             Tests.EditListEmulation.StartFromEnvironment(args);   // CLINK_EMULATE_ELST: only here, in --trim and in --probe (it checks the command line too)
             int failed;
             try { failed = Tests.TestRunner.Run(args); }
             catch (Exception ex) { Log.Error("[unittest] the runner crashed", ex); Console.WriteLine(ex); failed = 1; }
+            // After Run, which drained the UI queue at its end (after a timeout it ends the process itself and this never runs). Anything queued later (after Shutdown) may recreate a folder here: tolerated, it is only temp.
+            try { if (Services.TestGuard.StartupScratch is { } startup && Directory.Exists(startup)) Directory.Delete(startup, recursive: true); } catch { }
             Shutdown(failed == 0 ? 0 : 1);
+            return;
+        }
+
+        if (args.Length > 0 && args[0].Equals(Engine.EncoderBench.Verb, StringComparison.OrdinalIgnoreCase))
+        {
+            // Clink.exe --encoder-bench <reference.mp4> <outFolder> [...] (Engine/EncoderBench.cs): a hidden dev tool. No window, no
+            // single-instance mutex, and no Settings at all: it logs and writes into its own out folder only.
+            AttachParentConsole();
+            int code = 2;
+            var t = new Thread(() =>
+            {
+                try { code = Engine.EncoderBench.Run(args); }
+                catch (Exception ex)
+                {
+                    // Run catches its own failures; this is the last net so an unexpected one is printed, logged and exit code 1, not a crash dialog.
+                    code = 1;
+                    try { Console.WriteLine("encoder-bench: failed: " + ex.Message); } catch { }
+                    try { Log.Error("[encoder-bench] failed", ex); } catch { }
+                }
+            }) { IsBackground = false };
+            t.SetApartmentState(ApartmentState.MTA);
+            t.Start();
+            t.Join();
+            Shutdown(code);
             return;
         }
 

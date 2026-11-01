@@ -185,6 +185,7 @@ internal static class SettingsTests
           "ImportDeclined": "Some.Package_abc|638650000000000000",
           "ScreenshotsEnabled": true,
           "ScreenshotsFolder": "D:\\Pictures\\Clink Shots",
+          "SaveCopyFolder": "D:\\Videos\\Copies",
           "ScreenshotMode": "after",
           "ScreenshotEditor": {
             "Color": "#43A047", "Width": 6, "TextColor": "#000000", "FontSize": 36, "Bold": true, "TextBackdrop": "box", "BackdropColor": "#FFFFFF",
@@ -264,6 +265,112 @@ internal static class SettingsTests
         Check.Null(Missing(fixture.RootElement, again.ToElement(), "$"), "and reads back the same");
     }
 
+    [UnitTest]
+    public static void A_file_with_the_sharing_keys_loads_whole_and_every_key_survives_a_save()
+    {
+        // The v0.4.1 fixture with the two sharing keys added, neither at its default: nothing in the file is lost or reset.
+        Settings.SeedDefaults = true;
+        string json = V041.Replace("\"SizeTarget\": \"discord50\",", "\"SizeTarget\": \"discord50\",\n  \"DiscordPlan\": \"nitro\",\n  \"ShareCopiesDuringGames\": false,");
+        Check.True(json.Contains("\"DiscordPlan\": \"nitro\""), "the fixture has the new keys");
+        using var dir = new TempDir();
+        using var fixture = JsonDocument.Parse(json);
+        var s = LoadFrom(dir, json);
+        Check.Equal(Array.Empty<string>(), s.UnreadableValues.ToArray(), "nothing unreadable");
+        Check.True(s.Unknown == null || s.Unknown.Count == 0, "both keys are settings: " + string.Join(", ", s.Unknown?.Keys ?? Enumerable.Empty<string>()));
+        Check.Equal("nitro", s.DiscordPlan, "the plan is not derived again from the size target (discord50 = basic)");
+        Check.False(s.ShareCopiesDuringGames);
+        Check.Null(Missing(fixture.RootElement, s.ToElement(), "$"), "loaded as written");
+        s.Save();
+        using var saved = JsonDocument.Parse(File.ReadAllText(dir.File("settings.json")));
+        Check.Null(Missing(fixture.RootElement, saved.RootElement, "$"), "every key is in the saved file, with its value");
+        var again = Settings.Load();
+        Check.Equal("nitro", again.DiscordPlan);
+        Check.False(again.ShareCopiesDuringGames);
+        Check.Null(Missing(fixture.RootElement, again.ToElement(), "$"), "and reads back the same");
+    }
+
+    [UnitTest]
+    public static void The_Discord_plan_starts_from_the_recording_size_target_and_an_unknown_one_is_free()
+    {
+        string PlanOf(string? sizeTarget, string? plan)
+        {
+            string target = sizeTarget == null ? "" : $"\"SizeTarget\": \"{sizeTarget}\"";
+            string p = plan == null ? "" : $"\"DiscordPlan\": {(plan == "<null>" ? "null" : "\"" + plan + "\"")}";
+            return Settings.FromJson("{ " + string.Join(", ", new[] { target, p }.Where(x => x != "")) + " }").DiscordPlan!;
+        }
+
+        // No plan in the file (an older Clink): the plan follows the size target.
+        Check.Equal("free", PlanOf(null, null), "no keys at all");
+        Check.Equal("free", PlanOf("none", null));
+        Check.Equal("free", PlanOf("discord10", null));
+        Check.Equal("basic", PlanOf("discord50", null));
+        Check.Equal("nitro", PlanOf("discord500", null));
+        Check.Equal("free", PlanOf("copium200", null), "a Copium target says nothing about Discord");
+        Check.Equal("free", PlanOf("copiumplus", null));
+        Check.Equal("free", PlanOf("nonsense", null), "an unknown size target is none");
+        Check.Equal("nitro", PlanOf("discord500", "<null>"), "an explicit null is the same as missing");
+        // A plan in the file is kept, whatever the size target says.
+        Check.Equal("free", PlanOf("discord500", "free"));
+        Check.Equal("basic", PlanOf("none", "basic"));
+        Check.Equal("nitro", PlanOf("discord10", "nitro"));
+        Check.Equal("nitro", PlanOf(null, "Nitro"), "any case");
+        Check.Equal("basic", PlanOf(null, " BASIC "), "and surrounding spaces");
+        // An unknown plan is free (not derived: the file said something).
+        Check.Equal("free", PlanOf("discord500", "gold"));
+        Check.Equal("free", PlanOf("discord50", ""));
+        Check.Equal("free", PlanOf("discord50", "discord50"), "a target id is not a plan id");
+
+        // The plan maps to the target ids, so bytes and labels come only from Capabilities.
+        Check.Equal(new[] { "free", "basic", "nitro" }, Settings.DiscordPlans);
+        Check.Equal(new long[] { 20_000_000, 50_000_000, 1_000_000_000 }, Settings.DiscordPlans.Select(p => ShareFitModel.ForPlan(p).LimitBytes).ToArray());
+    }
+
+    [UnitTest]
+    public static void The_sharing_settings_round_trip_and_a_file_without_them_gets_the_defaults()
+    {
+        using var dir = new TempDir();
+        var fresh = LoadFrom(dir, null);
+        Check.Equal("free", fresh.DiscordPlan, "a fresh install starts at free");
+        Check.True(fresh.ShareCopiesDuringGames, "copies during games are on by default");
+        Check.True(new Settings().ShareCopiesDuringGames);
+
+        foreach (string plan in new[] { "free", "basic", "nitro" })
+        {
+            using var d = new TempDir();
+            var s = LoadFrom(d, "{}");
+            s.DiscordPlan = plan;
+            s.ShareCopiesDuringGames = plan != "basic";
+            s.Save();
+            var back = Settings.Load();
+            Check.Equal(plan, back.DiscordPlan);
+            Check.Equal(plan != "basic", back.ShareCopiesDuringGames);
+            using var doc = JsonDocument.Parse(File.ReadAllText(d.File("settings.json")));
+            Check.Equal(plan, doc.RootElement.GetProperty("DiscordPlan").GetString(), "the key is written");
+            Check.Equal(plan != "basic", doc.RootElement.GetProperty("ShareCopiesDuringGames").GetBoolean());
+        }
+
+        // The migration is saved with the file: a v0.4.1 file with discord50 gets "basic" and keeps it when the size target changes later.
+        using var old = new TempDir();
+        var migrated = LoadFrom(old, V041);
+        Check.Equal("basic", migrated.DiscordPlan, "discord50 = Nitro Basic");
+        Check.True(migrated.ShareCopiesDuringGames);
+        migrated.SizeTarget = "none";
+        migrated.Save();
+        Check.Equal("basic", Settings.Load().DiscordPlan, "no longer follows the size target once it has been written");
+    }
+
+    [UnitTest]
+    public static void The_import_calls_the_sharing_settings_by_their_names()
+    {
+        var plan = SettingsImport.Differences("""{ "DiscordPlan": "free" }""", """{ "DiscordPlan": "nitro" }""");
+        Check.Equal(new[] { "Discord plan" }, plan.ToArray());
+        var games = SettingsImport.Differences("""{ "ShareCopiesDuringGames": true }""", """{ "ShareCopiesDuringGames": false }""");
+        Check.Equal(new[] { "sharing" }, games.ToArray());
+        Check.Equal(Array.Empty<string>(), SettingsImport.Differences("""{ "DiscordPlan": "Nitro" }""", """{ "DiscordPlan": "nitro" }""").ToArray(), "the same plan");
+        Check.Equal(Array.Empty<string>(), SettingsImport.Differences("""{ "SizeTarget": "discord50" }""", """{ "SizeTarget": "discord50", "DiscordPlan": "basic" }""").ToArray(),
+            "a file without the plan and one that says what that file would have made it are the same");
+    }
+
     // ------------------------------------------------------------------ fresh install, defaults
 
     [UnitTest]
@@ -328,6 +435,15 @@ internal static class SettingsTests
     }
 
     [UnitTest]
+    public static void SaveCopyFolder_is_kept_only_as_a_full_path()
+    {
+        Check.Null(Settings.FromJson("""{ "SaveCopyFolder": "." }""").SaveCopyFolder, "relative");
+        Check.Null(Settings.FromJson("""{ "SaveCopyFolder": "   " }""").SaveCopyFolder, "whitespace");
+        Check.Null(Settings.FromJson("{}").SaveCopyFolder, "missing");
+        Check.Equal(@"D:\Saved clips", Settings.FromJson("""{ "SaveCopyFolder": "D:\\Saved clips" }""").SaveCopyFolder, "full path");
+    }
+
+    [UnitTest]
     public static void A_saved_cyan_accent_loads_as_spark()
     {
         using var dir = new TempDir();
@@ -362,6 +478,45 @@ internal static class SettingsTests
         Check.Equal("F9", s.Hotkey.ToString());
         Check.False(s.MainHotkeyAssigned);
         Check.False(s.MainHotkeyNeedsSetup);
+    }
+
+    [UnitTest]
+    public static void A_saved_bitrate_loads_unchanged_whatever_the_codec()
+    {
+        // Codec-aware preset defaults never rewrite a file: a v0.4.x HEVC file that holds 20 keeps 20.
+        using var dir = new TempDir();
+        var s = LoadFrom(dir, """{ "Resolution": "1080p", "Fps": 60, "BitrateMbps": 20, "Codec": "hevc" }""");
+        Check.Equal(20, s.BitrateMbps);
+        Check.Equal("hevc", s.Codec);
+        using var dir2 = new TempDir();
+        Check.Equal(14, LoadFrom(dir2, """{ "BitrateMbps": 14, "Codec": "h264" }""").BitrateMbps);
+    }
+
+    [UnitTest]
+    public static void BitrateChosen_defaults_to_false_and_round_trips_through_save_and_load()
+    {
+        using var dir = new TempDir();
+        var legacy = LoadFrom(dir, """{ "BitrateMbps": 14, "Codec": "h264" }""");
+        Check.False(legacy.BitrateChosen, "a file without the flag loads as false");
+        Check.False(new Settings().BitrateChosen);
+        legacy.BitrateChosen = true;
+        legacy.Save();
+        using var saved = JsonDocument.Parse(File.ReadAllText(dir.File("settings.json")));
+        Check.True(saved.RootElement.GetProperty("BitrateChosen").GetBoolean(), "written");
+        Check.True(Settings.Load().BitrateChosen, "read back");
+        Check.True(Settings.FromJson("""{ "BitrateChosen": true, "BitrateMbps": 14 }""").BitrateChosen);
+    }
+
+    [UnitTest]
+    public static void BitrateChosen_alone_is_no_import_offer_but_travels_with_one()
+    {
+        Check.True(SettingsImport.HasLabelOrIsVolatile(nameof(Settings.BitrateChosen)));
+        var flagOnly = SettingsImport.Differences("""{ "BitrateMbps": 14 }""", """{ "BitrateMbps": 14, "BitrateChosen": true }""");
+        Check.Equal(0, flagOnly.Count);
+        var withBitrate = SettingsImport.Differences("""{ "BitrateMbps": 14 }""", """{ "BitrateMbps": 20, "BitrateChosen": true }""");
+        Check.Equal(new[] { "video quality" }, withBitrate.ToArray());
+        string taken = SettingsImport.KeepOurOwn("""{ "BitrateMbps": 20, "BitrateChosen": true }""", """{ "BitrateMbps": 14 }""", keepOurToken: false);
+        Check.True(Settings.FromJson(taken).BitrateChosen, "the flag is taken over with the import");
     }
 
     // ------------------------------------------------------------------ older files
@@ -947,6 +1102,19 @@ internal static class SettingsTests
     }
 
     [UnitTest]
+    public static void The_real_default_clips_folder_is_Clink_under_Videos()
+    {
+        string? saved = Settings.DefaultClipsFolderOverride;
+        try
+        {
+            Settings.DefaultClipsFolderOverride = null;
+            // a path computation only: nothing is created or written
+            Check.Equal(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "Clink"), Settings.DefaultClipsFolder);
+        }
+        finally { Settings.DefaultClipsFolderOverride = saved; }
+    }
+
+    [UnitTest]
     public static void A_value_of_the_wrong_kind_or_a_null_for_a_number_is_unreadable()
     {
         using var dir = new TempDir();
@@ -958,7 +1126,7 @@ internal static class SettingsTests
         Check.Equal(45, s.BufferSeconds);
         Check.Equal(60, s.Fps);
         Check.True(s.CaptureCursor);
-        Check.Equal(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "Clink"), s.ClipsFolder);
+        Check.Equal(Settings.DefaultClipsFolder, s.ClipsFolder);
         Check.False(s.CopiumPlus);
         Check.Equal(7, s.ToastClip.Seconds);
         Check.Equal(0.9f, s.HdrKnee);          // a number in quotes is fine
@@ -1131,9 +1299,21 @@ internal static class SettingsTests
         Settings.DirOverride = dir.Path;
         Check.Equal(dir.Path, Settings.Dir);
         Check.Equal(dir.File("settings.json"), Settings.FilePath);
+        // Without the override the settings are in the real Clink's folder: checked with a made-up one, and the true one (%APPDATA%\Clink)
+        // is only read as a string while the override is still set. Settings.Dir never resolves to the true folder during a test, so a
+        // save queued for the UI thread (or a thread started by an earlier test) cannot land in the user's real settings.json.
+        using var home = new TempDir();
+        string real = home.File(@"AppData\Roaming\Clink");
+        Settings.RealDirOverride = real;
         Settings.DirOverride = null;
-        Settings.RealDirOverride = null;   // the runner points the real Clink's folder at a scratch one too
-        Check.Equal(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Clink"), Settings.Dir);
+        Check.Equal(real, Settings.RealDir);
+        Check.Equal(real, Settings.Dir, "no override: the real folder");
+        Check.Equal(Path.Combine(real, "settings.json"), Settings.FilePath);
+        Settings.DirOverride = dir.Path;
+        Check.Equal(real, Settings.RealDir, "an override does not move the real folder");
+        Settings.RealDirOverride = null;   // DirOverride is still set, so Settings.Dir is not the real folder at any point
+        Check.Equal(dir.Path, Settings.Dir);
+        Check.Equal(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Clink"), Settings.RealDir);
     }
 
     // ------------------------------------------------------------------ hotkey helpers
@@ -1225,9 +1405,9 @@ internal static class SettingsTests
     {
         Check.Equal(new[] { "none", "discord10", "discord50", "copium200", "discord500", "copiumplus" }, Capabilities.SizeTargets.Select(t => t.Id).ToArray());
         Check.Equal(
-            new[] { "None", "Discord (10 MB)", "Discord Nitro Basic (50 MB)", "Copium (200 MB, 10 min)", "Discord Nitro (500 MB)", "Copium Plus (2 GB, 60 min)" },
+            new[] { "None", "Discord free (20 MB)", "Discord Nitro Basic (50 MB)", "Copium (200 MB, 10 min)", "Discord Nitro (1 GB)", "Copium Plus (2 GB, 60 min)" },
             Capabilities.SizeTargets.Select(t => t.Name).ToArray());
-        Check.Equal(new long[] { 0, 10_000_000, 50_000_000, 200_000_000, 500_000_000, 2_000_000_000 }, Capabilities.SizeTargets.Select(t => t.Bytes).ToArray());
+        Check.Equal(new long[] { 0, 20_000_000, 50_000_000, 200_000_000, 1_000_000_000, 2_000_000_000 }, Capabilities.SizeTargets.Select(t => t.Bytes).ToArray());
         Check.Equal(new[] { 0, 0, 0, 600, 0, 3600 }, Capabilities.SizeTargets.Select(t => t.MaxSeconds).ToArray());
 
         var plus = Capabilities.SizeTargetFor("copiumplus");
@@ -1336,13 +1516,130 @@ internal static class SettingsTests
         Check.False(Capabilities.IsWarningNote(""));
         Check.False(Capabilities.IsWarningNote("a 45 s clip at 16 Mbps fits 200 MB"));
         Check.False(Capabilities.IsWarningNote("lowered to 4.2 Mbps so a 2:00 clip fits 50 MB"));
-        Check.True(Capabilities.IsWarningNote("a 1 h clip does not fit in 10 MB even at 0.5 Mbps; shorten the replay length"));
+        Check.True(Capabilities.IsWarningNote("a 1 h clip does not fit in 20 MB even at 0.5 Mbps; shorten the replay length"));
         Check.True(Capabilities.IsWarningNote(Capabilities.CopiumLengthNote));
         Check.True(Capabilities.IsWarningNote(Capabilities.CopiumPlusLengthNote));
 
-        // and straight from ResolveBitrate: a 10 MB target for an hour cannot fit
+        // and straight from ResolveBitrate: a 20 MB target for an hour cannot fit
         var (_, note) = Capabilities.ResolveBitrate(new Settings { SizeTarget = "discord10" }, 3, 3600);
         Check.Contains(note, "does not fit");
         Check.True(Capabilities.IsWarningNote(note));
+    }
+
+    [UnitTest]
+    public static void The_Discord_free_target_is_twenty_megabytes_under_its_historical_id()
+    {
+        var t = Capabilities.SizeTargetFor("discord10");   // the id is what saved settings hold; it must keep resolving
+        Check.Equal("discord10", t.Id);
+        Check.Equal("Discord free (20 MB)", t.Name);
+        Check.Equal(20_000_000L, t.Bytes);
+        Check.Equal(0, t.MaxSeconds);
+        Check.Equal(20_000_000L, Capabilities.SizeTargetBytes("discord10"));
+        Check.Equal("Discord free (20 MB)", Capabilities.SizeTargetName("discord10"));
+        Check.Equal("discord10", Capabilities.SizeTargetFor(" DISCORD10 ").Id);
+        Check.Equal("none", Capabilities.SizeTargetFor("discord20").Id);   // an id that was never shipped is still "none"
+        Check.Equal("none", Capabilities.SizeTargetFor("discord-free").Id);
+    }
+
+    [UnitTest]
+    public static void The_Discord_free_target_lowers_the_bitrate_to_fit_twenty_megabytes()
+    {
+        // a 45 s replay + 1 s keyframe = 46 s; 0.95 * 20 MB * 8 / 46 s = 3.304 Mbps, less 0.192 Mbps per audio track
+        var s = new Settings { SizeTarget = "discord10", BitrateMbps = 50, KeyframeSeconds = 1 };
+        var (mbps, note) = Capabilities.ResolveBitrate(s, 3, 45);   // 3.304 - 0.576 = 2.728
+        Check.Near(2.7, mbps);
+        Check.Equal("lowered to 2.7 Mbps so a 45 s clip fits 20 MB", note);
+        Check.False(Capabilities.IsWarningNote(note));
+
+        (mbps, note) = Capabilities.ResolveBitrate(s, 1, 45);   // 3.304 - 0.192 = 3.112
+        Check.Near(3.1, mbps);
+        Check.Equal("lowered to 3.1 Mbps so a 45 s clip fits 20 MB", note);
+
+        (mbps, note) = Capabilities.ResolveBitrate(s, 0, 45);   // 3.304
+        Check.Near(3.3, mbps);
+
+        // a modest chosen bitrate that already fits is kept
+        (mbps, note) = Capabilities.ResolveBitrate(new Settings { SizeTarget = "discord10", BitrateMbps = 2, KeyframeSeconds = 1 }, 3, 45);
+        Check.Near(2, mbps);
+        Check.Equal("a 45 s clip at 2 Mbps fits 20 MB", note);
+    }
+
+    [UnitTest]
+    public static void Without_a_size_target_the_chosen_bitrate_is_kept()
+    {
+        foreach (string? id in new string?[] { "none", null, "bogus" })
+        {
+            var (mbps, note) = Capabilities.ResolveBitrate(new Settings { SizeTarget = id!, BitrateMbps = 37, KeyframeSeconds = 1 }, 3, 45);
+            Check.Near(37, mbps, 1e-9, $"'{id}'");
+            Check.True(note == null, $"'{id}' has no note");
+        }
+    }
+
+    [UnitTest]
+    public static void A_twenty_megabyte_budget_that_cannot_fit_is_clamped_to_the_minimum_bitrate()
+    {
+        var s = new Settings { SizeTarget = "discord10", BitrateMbps = 50, KeyframeSeconds = 1 };
+        // 1 h: 0.95 * 20 MB * 8 / 3601 s = 0.042 Mbps, below the 0.5 Mbps minimum even with no audio
+        var (mbps, note) = Capabilities.ResolveBitrate(s, 0, 3600);
+        Check.Near(0.5, mbps);
+        Check.Equal("a 1 h clip does not fit in 20 MB even at 0.5 Mbps; shorten the replay length", note);
+        Check.True(Capabilities.IsWarningNote(note));
+
+        // with 3 audio tracks the audio alone (0.576 Mbps) outgrows the budget of a 1 h clip: still the minimum, never negative
+        (mbps, note) = Capabilities.ResolveBitrate(s, 3, 3600);
+        Check.Near(0.5, mbps);
+        Check.True(Capabilities.IsWarningNote(note));
+    }
+
+    [UnitTest]
+    public static void A_Discord_free_clip_estimated_at_the_resolved_bitrate_stays_under_twenty_megabytes()
+    {
+        int checkedCases = 0;
+        foreach (int replay in new[] { 10, 30, 45, 60, 120, 300 })
+            foreach (int tracks in new[] { 0, 1, 3, 5 })
+                foreach (float key in new[] { 0.25f, 1f, 5f })
+                {
+                    var s = new Settings { SizeTarget = "discord10", BitrateMbps = 200, KeyframeSeconds = key };
+                    var (mbps, note) = Capabilities.ResolveBitrate(s, tracks, replay);
+                    string what = $"replay {replay} s, {tracks} tracks, keyframe {key} s -> {mbps} Mbps";
+                    if (Capabilities.IsWarningNote(note)) { Check.Near(0.5, mbps, 1e-9, what); continue; }   // below the minimum: nothing can fit
+                    long bytes = Capabilities.EstimateBytes(mbps, tracks, replay + key);
+                    Check.True(bytes <= Capabilities.TargetHeadroom * 20_000_000 + 1, $"{what}: {bytes} bytes");
+                    // and not much under: the target must not shrink. Rounding the bitrate down to 0.1 Mbps loses at most 0.1 Mbps of the (replay + keyframe) seconds.
+                    double floor = Capabilities.TargetHeadroom * 20_000_000 - 0.1e6 * (replay + key) / 8;
+                    Check.True(bytes >= floor - 1, $"{what}: {bytes} bytes is under {floor:0}");
+                    checkedCases++;
+                }
+        Check.True(checkedCases > 0, "at least one combination was above the minimum");
+    }
+
+    [UnitTest]
+    public static void The_target_headroom_is_five_percent()
+    {
+        Check.Equal(0.95, Capabilities.TargetHeadroom);
+    }
+
+    [UnitTest]
+    public static void The_Discord_Nitro_target_is_one_gigabyte_under_its_historical_id()
+    {
+        var t = Capabilities.SizeTargetFor("discord500");   // the id is what saved settings hold; it must keep resolving
+        Check.Equal("discord500", t.Id);
+        Check.Equal("Discord Nitro (1 GB)", t.Name);
+        Check.Equal(1_000_000_000L, t.Bytes);
+        Check.Equal(0, t.MaxSeconds);
+        Check.Equal("1 GB", Capabilities.FormatBytes(t.Bytes));
+        Check.Equal(50_000_000L, Capabilities.SizeTargetBytes("discord50"));   // Nitro Basic is unchanged
+
+        // a 45 s replay + 1 s keyframe = 46 s; 0.95 * 1 GB * 8 / 46 s = 165.217 Mbps, less 0.576 Mbps of audio = 164.64 -> 164.6
+        var s = new Settings { SizeTarget = "discord500", BitrateMbps = 200, KeyframeSeconds = 1 };
+        var (mbps, note) = Capabilities.ResolveBitrate(s, 3, 45);
+        Check.Near(164.6, mbps);
+        Check.Equal("lowered to 164.6 Mbps so a 45 s clip fits 1 GB", note);
+        Check.False(Capabilities.IsWarningNote(note));
+
+        s.BitrateMbps = 50;   // already fits: kept
+        (mbps, note) = Capabilities.ResolveBitrate(s, 3, 45);
+        Check.Near(50, mbps);
+        Check.Equal("a 45 s clip at 50 Mbps fits 1 GB", note);
     }
 }

@@ -77,8 +77,10 @@ public partial class TrimWindow : Window
         SetTrimMode(trimMode);
         UpdateTexts(0);
         // Cloud sharing off (Settings → App): no "Save & share"; switched while the editor is open, it follows.
-        void ShowShareButton() => SaveShareButton.Visibility = AppController.Instance?.Settings.CloudSharingEnabled == false ? Visibility.Collapsed : Visibility.Visible;
+        // With a Copium token as well, the button is split (see UpdateShareButtons); a token added in Settings meanwhile is picked up on Activated.
+        void ShowShareButton() => UpdateShareButtons();
         ShowShareButton();
+        Activated += (_, _) => UpdateShareButtons();
         if (AppController.Instance is { } cloudApp)
         {
             cloudApp.CloudSharingChanged += ShowShareButton;
@@ -471,7 +473,7 @@ public partial class TrimWindow : Window
         string path = _entry.Path;
         void Open()
         {
-            try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true }); }
+            try { TestGuard.Start(new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true }); }
             catch (Exception ex) { Dispatcher.BeginInvoke(() => StatusText.Text = "Open failed: " + ex.Message); }
         }
         if (!_entry.IsArchived) { Open(); return; }
@@ -634,89 +636,228 @@ public partial class TrimWindow : Window
 
     // ------------------------------------------------------------------ save
 
-    private async void Save_Click(object sender, RoutedEventArgs e) => await SaveAsync(share: false);
-    private async void SaveShare_Click(object sender, RoutedEventArgs e) => await SaveAsync(share: true);
+    private void Save_Click(object sender, RoutedEventArgs e) => RunLogged(SaveAsync(share: false));
+    private void SaveShare_Click(object sender, RoutedEventArgs e) => RunLogged(SaveAsync(share: true));
 
-    private async Task SaveAsync(bool share)
+    /// <summary>For a save nobody awaits: an exception that got past SaveAsync's own handling is logged, never swallowed or left unobserved.</summary>
+    private static void RunLogged(Task task) =>
+        task.ContinueWith(t => Log.Error("Trim", t.Exception!.GetBaseException()), CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
+
+    // The trim a share step has not used up: saved, but the share after it was declined, cancelled, refused or failed. A retry
+    // shares this clip instead of trimming again, for as long as what would be written is what was written (OutputKey).
+    private ClipEntry? _saved;
+    private string _savedKey = "";
+
+    /// <summary>Everything that decides what a trim writes: the source, in / out, the Replace box, and each track's tick and volume.</summary>
+    private string OutputKey()
+    {
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        var sb = new System.Text.StringBuilder();
+        sb.Append(_entry.Path).Append('|').Append(Timeline.SelectionStart.ToString("R", inv)).Append('|').Append(Timeline.SelectionEnd.ToString("R", inv))
+          .Append('|').Append(ReplaceCheck.IsChecked == true ? 'R' : '-');
+        foreach (var r in _rows) sb.Append('|').Append(r.Included ? '1' : '0').Append(':').Append(r.Volume.Value.ToString("R", inv));
+        return sb.ToString();
+    }
+
+    private void RememberSaved(ClipEntry clip)
+    {
+        if (_closed) return;
+        _saved = clip;
+        _savedKey = OutputKey();
+    }
+
+    /// <summary>The remembered trim when nothing that shapes the output has changed since (and its file is still there); else forgets it.</summary>
+    private ClipEntry? SavedToReuse()
+    {
+        if (_saved is { } clip && _savedKey == OutputKey() && File.Exists(clip.Path)) return clip;
+        _saved = null;
+        return null;
+    }
+
+    private static bool HasToken => AppController.Instance?.HasCopiumToken == true;
+    private static bool CloudOn => AppController.Instance?.Settings.CloudSharingEnabled != false;
+
+    /// <summary>"Save &amp; share": the plain button, the split one (a token and cloud sharing on), or neither (cloud sharing off).</summary>
+    internal void UpdateShareButtons()
+    {
+        bool split = ShareChoices.TrimSplit(HasToken, CloudOn);
+        SaveShareButton.Visibility = CloudOn && !split ? Visibility.Visible : Visibility.Collapsed;
+        SaveShareSplit.Visibility = split ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    /// <summary>Save, trim and share buttons on or off together: both halves of the split button as well as the plain one.</summary>
+    private void SetSaveEnabled(bool enabled) =>
+        SaveButton.IsEnabled = SaveShareButton.IsEnabled = SaveShareMain.IsEnabled = SaveShareArrow.IsEnabled = enabled;
+
+    /// <summary>The "▾" half: the menu with the other options.</summary>
+    private void SaveShareArrow_Click(object sender, RoutedEventArgs e) => OpenShareMenu();
+
+    /// <summary>Alt+Down / Shift+F10 on the "Save &amp; share" half open the menu too.</summary>
+    private void SaveShareMain_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (SaveShareSplit.Visibility != Visibility.Visible || !ShareMenu.IsOpenKey(e)) return;
+        e.Handled = true;
+        OpenShareMenu();
+    }
+
+    private void OpenShareMenu()
+    {
+        if (_busy || ShareChoices.ForTrim(HasToken, CloudOn) is not { } items) return;
+        // PlacementTarget is the arrow, which is in this window: CaptureExclusion finds the window through it (a capture-excluded
+        // trim window keeps its menu out of capture too); the menu drops from the left edge of the whole split button
+        ShareMenu.Open(SaveShareArrow, items, choice => RunLogged(SaveAsync(share: true, choice)), below: SaveShareMain);
+    }
+
+    /// <summary>
+    /// "Share file…" and "Save a copy…" on the saved trim. True when it went through (the window then closes like after an upload);
+    /// false leaves the window open with the reason in the status line: the trim itself is saved either way.
+    /// </summary>
+    private async Task<bool> RunFileChoiceAsync(AppController app, ClipEntry saved, ShareChoice choice)
+    {
+        string name = Path.GetFileName(saved.Path);
+        if (choice == ShareChoice.ShareFile)
+        {
+            if (app.ShareFile(saved)) { StatusText.Text = $"Saved {name}: drag it from the share window"; return true; }
+            StatusText.Text = $"Saved {name}, not shared: {AppController.ShareWindowFailedText.ToLowerInvariant()}. Choose again to share it.";
+            return false;
+        }
+        StatusText.Text = "Saving a copy…";
+        var progress = new Progress<double>(p => StatusText.Text = $"Saving a copy… {p:P0}");
+        var result = await app.SaveCopyAsync(saved, this, progress);
+        switch (result.Outcome)
+        {
+            case SaveOutcome.Saved:
+                string dir = Path.GetDirectoryName(result.SavedTo) ?? "";
+                StatusText.Text = $"Saved {name}; copy saved to {(Path.GetFileName(dir) is { Length: > 0 } leaf ? leaf : dir)}";
+                return true;
+            case SaveOutcome.Cancelled:
+                StatusText.Text = $"Saved {name}, no copy saved. Choose again to share it.";
+                return false;
+            default:
+                StatusText.Text = $"Saved {name}, copy failed: {result.Error}. Choose again to share it.";
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// Trims and saves. <paramref name="share"/> then shares the saved clip: with <paramref name="choice"/> null, what "Save &amp; share"
+    /// always did (upload, or the share window without a token); with a choice from the ▾ menu, that choice. Nothing is shared when
+    /// the save did not go through.
+    /// </summary>
+    internal async Task SaveAsync(bool share, ShareChoice? choice = null)
     {
         if (_busy) return;
         _busy = true;
-        Pause();
-        SaveButton.IsEnabled = SaveShareButton.IsEnabled = false;
-        StatusText.Text = "Trimming…";
-        double start = Timeline.SnapToKeyframe(Timeline.SelectionStart), end = Timeline.SelectionEnd;
-        bool replace = ReplaceCheck.IsChecked == true;
+        SetSaveEnabled(false);
         string src = _entry.Path;
-        var app = AppController.Instance;
-        // Trims are written to the local clips folder (docs/SPEC-v2.md §9: local first, the archive service moves them later
-        // under the normal rules). A source that was archived, or that lives elsewhere, is not a reason to write next to it:
-        // a trim written onto the share would be a plain local entry with a UNC path, checked with File.Exists on the UI thread.
-        string srcDir = Path.GetDirectoryName(src) ?? app.Settings.ClipsFolder;
-        string dir = _entry.IsArchived || !ArchiveService.IsSameFolder(srcDir, app.Settings.ClipsFolder) ? app.Settings.ClipsFolder : srcDir;
-        string stem = Path.GetFileNameWithoutExtension(src);
-        string dst = Path.Combine(dir, stem + " (trim).mp4");
-        int n = 2;
-        while (File.Exists(dst)) dst = Path.Combine(dir, stem + $" (trim {n++}).mp4");
+        string dst = src; // set once the output's name is chosen; the catch only deletes a file that is not the source
         bool trimmed = false; // once true the output is complete and is never deleted, whatever happens after
         bool replaced = false; // the original is now the trim: what the editor shows describes a file that is gone
+        ClipEntry? result = null; // the saved clip, once there is one (a new trim, or the remembered one on a retry)
+        // The share step did not complete: stay open, buttons back on, and remember the saved clip so choosing again shares it.
+        async Task KeepOpenAsync(bool enableButtons = true)
+        {
+            if (enableButtons) SetSaveEnabled(true);
+            await RestoreEditorAsync(replaced);
+            if (share && result != null) RememberSaved(result);   // after the editor reopened on a replaced file: the key is that state's
+        }
         try
         {
-            if (end - start < 0.1) throw new InvalidOperationException("Selection is too short");
-            Directory.CreateDirectory(dir);
-            // The rows' names (file order, as the mix); without rows the trimmer reads them from the file itself.
-            string[]? names = _rows.Count > 0 ? _rows.Select(r => r.Name).ToArray() : null;
-            // What the sliders did to All audio is rendered into it here (MixPlan), as the preview plays it.
-            TrackMix[]? mix = _rows.Count > 0 ? MixPlan.Export(_roles, _rows.Select(r => r.Included).ToArray(), _rows.Select(r => r.Gain).ToArray()) : null;
-            if (mix != null && !mix.Any(m => m.Include)) StatusText.Text = "Trimming (no audio)…";
-            string[] keptNames = await Task.Run(() => Trimmer.Trim(src, dst, start, end, names, mix));
-            trimmed = true;
-            ClipEntry result;
-            string? replaceProblem = replace ? await ReplaceOriginalAsync(src, dst) : null;
-            if (replace && replaceProblem == null)
+            Pause();
+            var app = AppController.Instance ?? throw new InvalidOperationException("Clink is not running");
+            // A retry after a share step that did not finish shares the clip that step saved: nothing that shapes the output changed.
+            // "Save trimmed" is an explicit save: always a new trim, and the memory goes.
+            ClipEntry? reuse = share ? SavedToReuse() : null;
+            if (reuse == null) _saved = null;
+            string? replaceProblem = null;
+            if (reuse != null)
             {
-                replaced = true;
-                _entry.Duration = end - start;
-                _entry.Size = new FileInfo(src).Length;
-                _entry.AudioTracks = keptNames;
-                _entry.CopiumLink = null; _entry.CopiumPageUrl = null; _entry.CopiumId = null;
-                app.Library.Update(_entry);
-                result = _entry;
-                StatusText.Text = "Replaced " + Path.GetFileName(src);
+                result = reuse;
+                trimmed = true;
+                dst = reuse.Path;
+                StatusText.Text = "Sharing " + Path.GetFileName(reuse.Path);
             }
             else
             {
-                result = app.Library.Add(dst, end - start, new FileInfo(dst).Length, _entry.Game, keptNames, isTrim: true, sourcePath: src);
-                StatusText.Text = replaceProblem != null
-                    ? $"Could not replace the original ({replaceProblem}); saved as {Path.GetFileName(dst)} instead"
-                    : "Saved " + Path.GetFileName(dst);
+                StatusText.Text = "Trimming…";
+                double start = Timeline.SnapToKeyframe(Timeline.SelectionStart), end = Timeline.SelectionEnd;
+                bool replace = ReplaceCheck.IsChecked == true;
+                // Trims are written to the local clips folder (docs/SPEC-v2.md §9: local first, the archive service moves them later
+                // under the normal rules). A source that was archived, or that lives elsewhere, is not a reason to write next to it:
+                // a trim written onto the share would be a plain local entry with a UNC path, checked with File.Exists on the UI thread.
+                string srcDir = Path.GetDirectoryName(src) ?? app.Settings.ClipsFolder;
+                string dir = _entry.IsArchived || !ArchiveService.IsSameFolder(srcDir, app.Settings.ClipsFolder) ? app.Settings.ClipsFolder : srcDir;
+                string stem = Path.GetFileNameWithoutExtension(src);
+                dst = Path.Combine(dir, stem + " (trim).mp4");
+                int n = 2;
+                while (File.Exists(dst)) dst = Path.Combine(dir, stem + $" (trim {n++}).mp4");
+                if (end - start < 0.1) throw new InvalidOperationException("Selection is too short");
+                TestGuard.Check(dst);
+                Directory.CreateDirectory(dir);
+                // The rows' names (file order, as the mix); without rows the trimmer reads them from the file itself.
+                string[]? names = _rows.Count > 0 ? _rows.Select(r => r.Name).ToArray() : null;
+                // What the sliders did to All audio is rendered into it here (MixPlan), as the preview plays it.
+                TrackMix[]? mix = _rows.Count > 0 ? MixPlan.Export(_roles, _rows.Select(r => r.Included).ToArray(), _rows.Select(r => r.Gain).ToArray()) : null;
+                if (mix != null && !mix.Any(m => m.Include)) StatusText.Text = "Trimming (no audio)…";
+                string trimDst = dst;
+                string[] keptNames = await Task.Run(() => Trimmer.Trim(src, trimDst, start, end, names, mix));
+                trimmed = true;
+                replaceProblem = replace ? await ReplaceOriginalAsync(src, dst) : null;
+                if (replace && replaceProblem == null)
+                {
+                    replaced = true;
+                    _entry.Duration = end - start;
+                    _entry.Size = new FileInfo(src).Length;
+                    _entry.AudioTracks = keptNames;
+                    _entry.CopiumLink = null; _entry.CopiumPageUrl = null; _entry.CopiumId = null;
+                    app.Library.Update(_entry);
+                    result = _entry;
+                    StatusText.Text = "Replaced " + Path.GetFileName(src);
+                }
+                else
+                {
+                    result = app.Library.Add(dst, end - start, new FileInfo(dst).Length, _entry.Game, keptNames, isTrim: true, sourcePath: src);
+                    StatusText.Text = replaceProblem != null
+                        ? $"Could not replace the original ({replaceProblem}); saved as {Path.GetFileName(dst)} instead"
+                        : "Saved " + Path.GetFileName(dst);
+                }
             }
-            if (share)
+            if (share && choice is ShareChoice.ShareFile or ShareChoice.SaveCopy)
+            {
+                // from the ▾ menu: the trim is saved (any failure above skipped this); now the chosen option on the new clip
+                if (!await RunFileChoiceAsync(app, result, choice!.Value))
+                {
+                    await KeepOpenAsync();
+                    return;
+                }
+            }
+            else if (share)
             {
                 StatusText.Text = "Uploading…";
-                var progress = new Progress<double>(p => StatusText.Text = $"Uploading… {p:P0}");
+                var progress = new Progress<double>(p => StatusText.Text = app.ShareProgressText(result, p));
                 bool ok = await app.ShareAsync(result, progress, context: ConsentContext.TrimShare);
                 if (!ok && app.LastShareOutcome == ShareOutcome.Declined)
                 {
                     // "Not now" in the Share with Copium? pop-up, or cloud sharing off: the trim is saved, nothing failed.
-                    StatusText.Text = $"Saved {Path.GetFileName(result.Path)}, not shared" + (app.Settings.CloudSharingEnabled ? "" : ": cloud sharing is off");
-                    SaveButton.IsEnabled = SaveShareButton.IsEnabled = true;
-                    await RestoreEditorAsync(replaced);
+                    bool cloudOff = !app.Settings.CloudSharingEnabled;
+                    StatusText.Text = $"Saved {Path.GetFileName(result.Path)}, not shared" + (cloudOff ? ": cloud sharing is off" : ". Choose again to share it.");
+                    await KeepOpenAsync();
                     return;
                 }
                 if (!ok && app.LastShareOutcome != ShareOutcome.FileShareOpened)
                 {
                     // Not uploaded, but the trim itself is saved: stay open with the reason instead of flashing "Upload failed" and
                     // closing on a reason only the footer knows. Over Copium's limit the selection can be tightened and saved
-                    // again; any other failure is retried from the clip list (saving here again would only trim another copy).
+                    // again; for any other failure choosing again retries the upload on the saved trim (it is remembered, so nothing
+                    // is trimmed twice), which is why the buttons come back on here too.
                     if (app.ShareRefusal is string refusal)
                     {
                         string why = refusal.Length > 1 ? char.ToLowerInvariant(refusal[0]) + refusal[1..] : refusal;
                         string tick = app.Settings.CopiumPlus ? "" : ", or tick 'I have Copium+' if you do";
                         StatusText.Text = $"Saved {Path.GetFileName(result.Path)}, not uploaded: {why} - tighten the selection{tick}";
-                        SaveButton.IsEnabled = SaveShareButton.IsEnabled = true;
                     }
-                    else StatusText.Text = $"Saved {Path.GetFileName(result.Path)}, not uploaded: {app.ShareError ?? "upload failed"} - share it from the clip list to try again";
-                    await RestoreEditorAsync(replaced);
+                    else StatusText.Text = $"Saved {Path.GetFileName(result.Path)}, not uploaded: {app.ShareError ?? "upload failed"}. Choose again to retry.";
+                    await KeepOpenAsync();
                     return;
                 }
                 // No Copium token: the share window opened with the saved clip, which is the result. Close like a success.
@@ -737,10 +878,10 @@ public partial class TrimWindow : Window
             {
                 // The trim itself finished: keep the file and say where it is.
                 string kept = File.Exists(dst) ? dst : src;
-                StatusText.Text = $"Saved {Path.GetFileName(kept)}, but: {ex.Message}";
+                StatusText.Text = $"Saved {Path.GetFileName(kept)}, but: {ex.Message}" + (share && result != null ? ". Choose again to share it." : "");
             }
-            SaveButton.IsEnabled = SaveShareButton.IsEnabled = true;
-            await RestoreEditorAsync(replaced);
+            try { await KeepOpenAsync(); }
+            catch (Exception ex2) { Log.Error("Trim", ex2); }   // the window must not be left disabled by a failure in the recovery itself
         }
         finally { _busy = false; }
     }
