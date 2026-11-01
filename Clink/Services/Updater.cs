@@ -1126,6 +1126,13 @@ internal sealed class Updater : IDisposable
     /// <summary>Runs an exe with <see cref="PreflightVerb"/>, waits up to the timeout. Replaced by a fake in the unit tests (no test starts a real process); null otherwise.</summary>
     internal static Func<string, TimeSpan, PreflightResult>? PreflightOverride { get; set; }
 
+    /// <summary>
+    /// Stands in for starting the downloaded exe in <see cref="StartApply"/> in the unit tests: gets the start info it would run and says
+    /// whether the process started and kept running. Null otherwise (a real run). A fake installer is no PE file: starting it can take
+    /// Windows many seconds (virus scan) or never return, so a test that only needs "the apply was launched" must not start it.
+    /// </summary>
+    internal static Func<ProcessStartInfo, bool>? LaunchOverride { get; set; }
+
     private static PreflightResult RunPreflightProcess(string exe, TimeSpan timeout)
     {
         try
@@ -1315,6 +1322,12 @@ internal sealed class Updater : IDisposable
         try { File.WriteAllText(marker, $"the update process did not finish\n{DateTime.Now:yyyy-MM-dd HH:mm:ss} {targetExePath}"); } catch { }
         try
         {
+            if (LaunchOverride is { } launch)
+            {
+                // A unit test stands in for the process: true = it started and kept running, false = it exited right away.
+                if (!launch(psi)) throw new InvalidOperationException("the update process exited right away (exit code unknown)");
+                return;
+            }
             using var p = Process.Start(psi) ?? throw new InvalidOperationException("could not start the updater process");
             // It waits for this process to exit before doing anything, so leaving early always means it failed.
             if (p.WaitForExit(2000)) throw new InvalidOperationException($"the update process exited right away (exit code {p.ExitCode})");
