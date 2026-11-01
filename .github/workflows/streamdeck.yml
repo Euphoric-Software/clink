@@ -71,7 +71,7 @@ jobs:
       - name: Upload the plugin
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: streamdeck-plugin
+          name: streamdeck-plugin-ci-${{ github.event_name }}-${{ github.sha }}
           path: dist/streamdeck/*.streamDeckPlugin
           if-no-files-found: error
           retention-days: 1

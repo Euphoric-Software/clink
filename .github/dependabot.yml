@@ -13,6 +13,24 @@ updates:
     directory: /streamdeck
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      elgato:
+        patterns:
+          - "@elgato/*"
+      tooling:
+        patterns:
+          - "typescript"
+          - "esbuild"
+          - "@types/node"
+    ignore:
+      # @elgato/streamdeck is tied to the manifest's SDKVersion 3.
+      - dependency-name: "@elgato/streamdeck"
+        update-types: ["version-update:semver-major"]
+      # The plugin runs on Node 24.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: dotnet-sdk
     directory: /

@@ -1295,10 +1295,14 @@ try {
         }
     }
 
-    Invoke-Test 'L5: every actions/setup-dotnet is followed by the SDK Authenticode and version step, in all three workflows' {
+    Invoke-Test 'L5: every actions/setup-dotnet is followed by the SDK Authenticode and version step, in every workflow that sets up .NET' {
         $total = 0
-        foreach ($wf in ($allWorkflows | Where-Object Name -ne 'streamdeck.yml')) {
-            # streamdeck.yml is Node-only (no .NET SDK), so it has no setup-dotnet to verify.
+        foreach ($wf in $allWorkflows) {
+            if ($wf.Name -eq 'streamdeck.yml') {
+                # streamdeck.yml is Node-only (no .NET SDK): excluded from the checks below, but it must stay that way.
+                Assert-True ([System.IO.File]::ReadAllText($wf.FullName) -notmatch '(?i)setup-dotnet|dotnet-version|global-json|\bdotnet ') 'streamdeck.yml gained .NET setup: drop the exclusion'
+                continue
+            }
             $text = [System.IO.File]::ReadAllText($wf.FullName)
             $setups = [regex]::Matches($text, 'actions/setup-dotnet@[0-9a-f]{40}').Count
             $verified = [regex]::Matches($text, "(?s)actions/setup-dotnet@[0-9a-f]{40}[^\n]*\n\s+with:\n\s+global-json-file: global\.json\n\s*\n(?:\s*#[^\n]*\n)*\s*- name: Verify the \.NET SDK[^\n]*\n\s+shell: pwsh\n\s+run: \|\n\s+\. \./tools/lib/dotnet-sdk-lib\.ps1\n\s+Assert-DotNetSdk -GlobalJsonPath global\.json").Count
@@ -1750,6 +1754,8 @@ try {
         foreach ($wf in $allWorkflows) {
             $text = [System.IO.File]::ReadAllText($wf.FullName)
             if ($wf.Name -ne 'build.yml') { Assert-True ($text -notmatch '(?m)^\s*(?:- )?uses:\s*actions/cache') "$($wf.Name) uses actions/cache" }
+            # setup-node's built-in caching is a cache too: only the non-publishing workflows (build.yml, streamdeck.yml) may use it.
+            if ($wf.Name -notin 'build.yml', 'streamdeck.yml') { Assert-True ($text -notmatch '(?im)^\s*(?:cache|package-manager-cache)\s*:\s*(?!false\b)\S') "$($wf.Name) enables setup-node caching" }
         }
         $build = Read-Workflow 'build.yml'
         Assert-True ([regex]::Matches($build, "key: nuget-\$\{\{ runner\.os \}\}-\$\{\{ hashFiles\('\*\*/\*\.csproj', 'global\.json', 'nuget\.config'\) \}\}").Count -eq 2) 'build.yml: not both cache keys cover the csproj files, global.json and nuget.config'

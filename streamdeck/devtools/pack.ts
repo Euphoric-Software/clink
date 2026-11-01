@@ -28,12 +28,18 @@ export function stage(dist: string): string {
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const arg = (name: string): string | undefined => process.argv.find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3);
   const dist = path.resolve(root, arg("dist") ?? path.join("..", "dist"));
-  const staged = stage(dist);
-  if (process.argv.includes("--stage-only")) {
-    console.log(`pack: staged and checked ${staged}`);
-  } else {
-    const cli = path.join(root, "node_modules", "@elgato", "cli", "bin", "streamdeck.mjs");
-    execFileSync(process.execPath, [cli, "pack", staged, "--output", path.join(dist, "streamdeck")], { cwd: root, stdio: "inherit" });
-    rmSync(path.join(dist, "pack-stage"), { recursive: true, force: true });
+  try {
+    const staged = stage(dist);
+    if (process.argv.includes("--stage-only")) {
+      console.log(`pack: staged and checked ${staged}`);
+    } else {
+      const outDir = path.join(dist, "streamdeck");
+      rmSync(path.join(outDir, `${PLUGIN.replace(/\.sdPlugin$/, "")}.streamDeckPlugin`), { force: true });
+      const cli = path.join(root, "node_modules", "@elgato", "cli", "bin", "streamdeck.mjs");
+      execFileSync(process.execPath, [cli, "pack", staged, "--output", outDir, "--force"], { cwd: root, stdio: "inherit" });
+    }
+  } finally {
+    // --stage-only leaves the stage for the tests that call it; a real pack never does.
+    if (!process.argv.includes("--stage-only")) rmSync(path.join(dist, "pack-stage"), { recursive: true, force: true });
   }
 }
