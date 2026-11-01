@@ -11,6 +11,7 @@ using Windows.Win32.Foundation;
 using Windows.Win32.UI.WindowsAndMessaging;
 using Clink.Native;
 using Clink.Services;
+using Clink.Services.Localization;
 
 namespace Clink.UI;
 
@@ -33,7 +34,7 @@ namespace Clink.UI;
 /// </summary>
 public partial class ShareWindow : Window, ICaptureExcludedWindow
 {
-    private const string DragHint = "Drag into Discord, a browser upload box or a folder";
+    private static string DragHint => L.T("Drag into Discord, a browser upload box or a folder");
     /// <summary>The clipboard / drag format Explorer reads to decide between copy and move.</summary>
     internal const string PreferredDropEffect = "Preferred DropEffect";
     /// <summary>
@@ -61,6 +62,9 @@ public partial class ShareWindow : Window, ICaptureExcludedWindow
     {
         Entry = entry;
         InitializeComponent();
+        // tooltips with key names in them (the {l:T} extension takes no arguments)
+        CloseX.ToolTip = L.T("Close ({keys})", ("keys", L.Ltr("Esc")));
+        CopyButton.ToolTip = L.T("Copy the file, then paste it into Discord or a folder with {paste} ({copy} in this window does the same)", ("paste", L.Ltr("Ctrl+V")), ("copy", L.Ltr("Ctrl+C")));
         AppIcons.Attach(this);   // has its own taskbar button (no owner): the icon size the taskbar draws, not WPF's default frame
         // Cloud sharing off (Settings → App): the file to drag is local, but there is nothing to set up.
         // Already signed in (or a token pasted): nothing to set up either.
@@ -96,8 +100,8 @@ public partial class ShareWindow : Window, ICaptureExcludedWindow
 
     /// <summary>The line above the card: the no-token explanation, or just what to do with the file when a token exists (Share file…).</summary>
     internal static string IntroFor(bool hasToken) => hasToken
-        ? "Drag the file where you want it, or copy it:"
-        : "No Copium token yet, so there is no link to copy. Share the file itself:";
+        ? L.T("Drag the file where you want it, or copy it:")
+        : L.T("No Copium token yet, so there is no link to copy. Share the file itself:");
 
     private static bool HasToken() => AppController.Instance is { } app && app.HasCopiumToken;
     private static bool CloudSharingOff() => AppController.Instance?.Settings.CloudSharingEnabled == false;
@@ -123,8 +127,8 @@ public partial class ShareWindow : Window, ICaptureExcludedWindow
     internal static string MetaFor(long size, double duration)
     {
         var parts = new List<string>(2);
-        if (size > 0) parts.Add(Capabilities.FormatBytes(size));
-        if (duration > 0) parts.Add(Capabilities.FormatClipLength(duration));
+        if (size > 0) parts.Add(L.Bytes(size));
+        if (duration > 0) parts.Add(L.ClipLength(duration));
         return string.Join(" · ", parts);
     }
 
@@ -225,7 +229,7 @@ public partial class ShareWindow : Window, ICaptureExcludedWindow
                 return;
             case FileState.Offline:
                 HintText.Text = ClipRow.ArchiveOffline;
-                SetStatus("Clink looks again when you come back to this window.", "Muted");
+                SetStatus(L.T("Clink looks again when you come back to this window."), "Muted");
                 _stateNote = true;
                 break;
             default:
@@ -347,7 +351,7 @@ public partial class ShareWindow : Window, ICaptureExcludedWindow
             SetStatus(null);
             // Copy only: allowing Move would let Explorer move the clip out of the library.
             var effect = DragDrop.DoDragDrop(Card, FileData(Entry.Path), DragEffects);
-            if (effect == DragEffects) SetStatus("Dropped. The clip stays in your library.");
+            if (effect == DragEffects) SetStatus(L.T("Dropped. The clip stays in your library."));
             // The guard is the allowed effect above; if a target still answers Move, or the file is gone afterwards, the clip may
             // have left the library: say so in the log, and look at the card again (a gone file disables it).
             if ((effect & DragDropEffects.Move) != 0)
@@ -358,7 +362,7 @@ public partial class ShareWindow : Window, ICaptureExcludedWindow
         catch (Exception ex)
         {
             Log.Warn("share window: drag failed: " + ex.Message);
-            SetStatus("Could not start the drag: " + ex.Message, "Warn");
+            SetStatus(L.T("Could not start the drag: {error}", ("error", ex.Message)), "Warn");
         }
     }
 
@@ -372,12 +376,12 @@ public partial class ShareWindow : Window, ICaptureExcludedWindow
         try
         {
             Clipboard.SetDataObject(FileData(Entry.Path), true);
-            SetStatus("File copied. Paste it with Ctrl+V into Discord or a folder.");
+            SetStatus(L.T("File copied. Paste it with {keys} into Discord or a folder.", ("keys", L.Ltr("Ctrl+V"))));
         }
         catch (Exception ex)
         {
             Log.Warn("share window: clipboard: " + ex.Message);
-            SetStatus("Could not copy the file: " + ex.Message, "Warn");
+            SetStatus(L.T("Could not copy the file: {error}", ("error", ex.Message)), "Warn");
         }
     }
 
@@ -397,7 +401,7 @@ public partial class ShareWindow : Window, ICaptureExcludedWindow
         {
             string path = Entry.Path;
             bool archived = Entry.IsArchived;
-            SetStatus("Looking for the file…", "Muted");   // an archive share that is waking up can take a while
+            SetStatus(L.T("Looking for the file…"), "Muted");   // an archive share that is waking up can take a while
             var state = await Task.Run(() => Probe(path, archived));
             if (_closed) return;
             if (state != FileState.Present) { _state = state; ShowState(); return; }
@@ -407,7 +411,7 @@ public partial class ShareWindow : Window, ICaptureExcludedWindow
         catch (Exception ex)
         {
             Log.Warn("share window: open folder: " + ex.Message);
-            SetStatus("Could not open the folder: " + ex.Message, "Warn");
+            SetStatus(L.T("Could not open the folder: {error}", ("error", ex.Message)), "Warn");
         }
         finally { _openingFolder = false; }
     }
