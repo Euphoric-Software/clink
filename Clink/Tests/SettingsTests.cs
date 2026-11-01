@@ -1472,19 +1472,19 @@ internal static class SettingsTests
         var (mbps, note) = Capabilities.ResolveBitrate(s, 3, 45);
         Check.Near(16, mbps);
         Check.Equal("a 45 s clip at 16 Mbps fits 200 MB", note);
-        Check.False(Capabilities.IsWarningNote(note));
+        Check.False(SizeTargetNotes.IsWarningNote(note));
 
         // a replay of exactly 10 min: the bitrate that fits 10:00 in 200 MB, and the old warning text, unchanged
         (mbps, note) = Capabilities.ResolveBitrate(s, 3, 600);
         Check.Near(1.9, mbps);
-        Check.Equal("lowered to 1.9 Mbps so a 10:00 clip fits 200 MB" + Capabilities.CopiumLengthNote + " (a 10:00 replay saves a hair over 10 min)", note);
-        Check.True(Capabilities.IsWarningNote(note));
+        Check.Equal("lowered to 1.9 Mbps so a 10:00 clip fits 200 MB" + SizeTargetNotes.CopiumLengthNote + " (a 10:00 replay saves a hair over 10 min)", note);
+        Check.True(SizeTargetNotes.IsWarningNote(note));
 
         // longer than 10 min: still fitted for 10 min only, with the plain note
         (mbps, note) = Capabilities.ResolveBitrate(s, 3, 1800);
         Check.Near(1.9, mbps);
-        Check.Equal("lowered to 1.9 Mbps so a 10:00 clip fits 200 MB" + Capabilities.CopiumLengthNote, note);
-        Check.True(Capabilities.IsWarningNote(note));
+        Check.Equal("lowered to 1.9 Mbps so a 10:00 clip fits 200 MB" + SizeTargetNotes.CopiumLengthNote, note);
+        Check.True(SizeTargetNotes.IsWarningNote(note));
     }
 
     [UnitTest]
@@ -1494,36 +1494,36 @@ internal static class SettingsTests
         var (mbps, note) = Capabilities.ResolveBitrate(s, 3, 45);
         Check.Near(16, mbps);
         Check.Equal("a 45 s clip at 16 Mbps fits 2 GB", note);
-        Check.False(Capabilities.IsWarningNote(note));
+        Check.False(SizeTargetNotes.IsWarningNote(note));
 
         // 30 min at 16 Mbps is about 3.6 GB, so 2 GB lowers the bitrate; nothing about the length is wrong yet
         (mbps, note) = Capabilities.ResolveBitrate(s, 3, 1800);
         Check.Near(7.8, mbps);
         Check.Equal("lowered to 7.8 Mbps so a 30:00 clip fits 2 GB", note);
-        Check.False(Capabilities.IsWarningNote(note));
+        Check.False(SizeTargetNotes.IsWarningNote(note));
 
         // a 1 h replay is a hair over Copium Plus's 60 min: the length warning, and the bitrate that fits an hour
         (mbps, note) = Capabilities.ResolveBitrate(s, 3, 3600);
         Check.Near(3.6, mbps);
-        Check.Equal("lowered to 3.6 Mbps so a 1 h clip fits 2 GB" + Capabilities.CopiumPlusLengthNote + " (a 60:00 replay saves a hair over 60 min)", note);
-        Check.True(Capabilities.IsWarningNote(note));
+        Check.Equal("lowered to 3.6 Mbps so a 1 h clip fits 2 GB" + SizeTargetNotes.CopiumPlusLengthNote + " (a 60:00 replay saves a hair over 60 min)", note);
+        Check.True(SizeTargetNotes.IsWarningNote(note));
     }
 
     [UnitTest]
     public static void Warning_notes_are_the_ones_no_bitrate_can_fix()
     {
-        Check.False(Capabilities.IsWarningNote(null));
-        Check.False(Capabilities.IsWarningNote(""));
-        Check.False(Capabilities.IsWarningNote("a 45 s clip at 16 Mbps fits 200 MB"));
-        Check.False(Capabilities.IsWarningNote("lowered to 4.2 Mbps so a 2:00 clip fits 50 MB"));
-        Check.True(Capabilities.IsWarningNote("a 1 h clip does not fit in 20 MB even at 0.5 Mbps; shorten the replay length"));
-        Check.True(Capabilities.IsWarningNote(Capabilities.CopiumLengthNote));
-        Check.True(Capabilities.IsWarningNote(Capabilities.CopiumPlusLengthNote));
+        Check.False(SizeTargetNotes.IsWarningNote(null));
+        Check.False(SizeTargetNotes.IsWarningNote(""));
+        Check.False(SizeTargetNotes.IsWarningNote("a 45 s clip at 16 Mbps fits 200 MB"));
+        Check.False(SizeTargetNotes.IsWarningNote("lowered to 4.2 Mbps so a 2:00 clip fits 50 MB"));
+        Check.True(SizeTargetNotes.IsWarningNote("a 1 h clip does not fit in 20 MB even at 0.5 Mbps; shorten the replay length"));
+        Check.True(SizeTargetNotes.IsWarningNote(SizeTargetNotes.CopiumLengthNote));
+        Check.True(SizeTargetNotes.IsWarningNote(SizeTargetNotes.CopiumPlusLengthNote));
 
         // and straight from ResolveBitrate: a 20 MB target for an hour cannot fit
         var (_, note) = Capabilities.ResolveBitrate(new Settings { SizeTarget = "discord10" }, 3, 3600);
         Check.Contains(note, "does not fit");
-        Check.True(Capabilities.IsWarningNote(note));
+        Check.True(SizeTargetNotes.IsWarningNote(note));
     }
 
     [UnitTest]
@@ -1549,7 +1549,7 @@ internal static class SettingsTests
         var (mbps, note) = Capabilities.ResolveBitrate(s, 3, 45);   // 3.304 - 0.576 = 2.728
         Check.Near(2.7, mbps);
         Check.Equal("lowered to 2.7 Mbps so a 45 s clip fits 20 MB", note);
-        Check.False(Capabilities.IsWarningNote(note));
+        Check.False(SizeTargetNotes.IsWarningNote(note));
 
         (mbps, note) = Capabilities.ResolveBitrate(s, 1, 45);   // 3.304 - 0.192 = 3.112
         Check.Near(3.1, mbps);
@@ -1583,12 +1583,12 @@ internal static class SettingsTests
         var (mbps, note) = Capabilities.ResolveBitrate(s, 0, 3600);
         Check.Near(0.5, mbps);
         Check.Equal("a 1 h clip does not fit in 20 MB even at 0.5 Mbps; shorten the replay length", note);
-        Check.True(Capabilities.IsWarningNote(note));
+        Check.True(SizeTargetNotes.IsWarningNote(note));
 
         // with 3 audio tracks the audio alone (0.576 Mbps) outgrows the budget of a 1 h clip: still the minimum, never negative
         (mbps, note) = Capabilities.ResolveBitrate(s, 3, 3600);
         Check.Near(0.5, mbps);
-        Check.True(Capabilities.IsWarningNote(note));
+        Check.True(SizeTargetNotes.IsWarningNote(note));
     }
 
     [UnitTest]
@@ -1602,7 +1602,7 @@ internal static class SettingsTests
                     var s = new Settings { SizeTarget = "discord10", BitrateMbps = 200, KeyframeSeconds = key };
                     var (mbps, note) = Capabilities.ResolveBitrate(s, tracks, replay);
                     string what = $"replay {replay} s, {tracks} tracks, keyframe {key} s -> {mbps} Mbps";
-                    if (Capabilities.IsWarningNote(note)) { Check.Near(0.5, mbps, 1e-9, what); continue; }   // below the minimum: nothing can fit
+                    if (SizeTargetNotes.IsWarningNote(note)) { Check.Near(0.5, mbps, 1e-9, what); continue; }   // below the minimum: nothing can fit
                     long bytes = Capabilities.EstimateBytes(mbps, tracks, replay + key);
                     Check.True(bytes <= Capabilities.TargetHeadroom * 20_000_000 + 1, $"{what}: {bytes} bytes");
                     // and not much under: the target must not shrink. Rounding the bitrate down to 0.1 Mbps loses at most 0.1 Mbps of the (replay + keyframe) seconds.
@@ -1635,7 +1635,7 @@ internal static class SettingsTests
         var (mbps, note) = Capabilities.ResolveBitrate(s, 3, 45);
         Check.Near(164.6, mbps);
         Check.Equal("lowered to 164.6 Mbps so a 45 s clip fits 1 GB", note);
-        Check.False(Capabilities.IsWarningNote(note));
+        Check.False(SizeTargetNotes.IsWarningNote(note));
 
         s.BitrateMbps = 50;   // already fits: kept
         (mbps, note) = Capabilities.ResolveBitrate(s, 3, 45);

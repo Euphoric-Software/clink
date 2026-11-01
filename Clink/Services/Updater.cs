@@ -76,7 +76,7 @@ internal sealed class Updater : IDisposable
     private readonly SemaphoreSlim _wake = new(0, 1);        // released by Wake(): cuts the background loop's wait short
     private readonly Dictionary<ReleaseVersion, int> _attempts = new();
     private readonly object _pendingLock = new();            // PendingPath/PendingVersion: set by the check, dropped by the UI too
-    private string? _lastDownloadError;
+    private Note? _lastDownloadError;   // what the last failed exe download reported (a note: English in the log, the language of the UI on screen)
     private Task? _loop;
     /// <summary>Set by <see cref="TrackFailures"/> when this check is the one that finds the background checks failing for days (reset by every check): its notification.</summary>
     private UpdateNotice? _failNotice;
@@ -461,7 +461,12 @@ internal sealed class Updater : IDisposable
     public const string NoUpdatesNote = "Updates aren't available in this build";
 
     /// <summary><see cref="NoUpdatesNote"/> in the language of the UI.</summary>
-    public static string NoUpdatesDisplay => Note.Of("Updates aren't available in this build").Shown;
+    public static string NoUpdatesDisplay => NoUpdatesNoteText.Shown;
+    /// <summary><see cref="NoUpdatesNote"/> as a note (English in the log).</summary>
+    internal static Note NoUpdatesNoteText => Note.Of("Updates aren't available in this build");
+
+    /// <summary>Why there is nothing to check: a --dev instance never looks for updates; a build without a signed update feed has no updates at all.</summary>
+    internal static Note NoUpdatesReason(bool isDev) => isDev ? DevModeNoteText : NoUpdatesNoteText;
 
     /// <summary>
     /// Background checks that have failed without a single success for longer than this earn one tray notice per session
@@ -743,7 +748,7 @@ internal sealed class Updater : IDisposable
         try
         {
             // The hash and size come from the signed manifest (UpdateInfo): nothing unsigned is ever downloaded, and no hash file is requested.
-            if (string.IsNullOrEmpty(info.Sha256)) throw Shown(new InvalidOperationException("the offer carries no signed SHA-256"), "the offer carries no signed SHA-256");
+            if (string.IsNullOrEmpty(info.Sha256)) throw Shown(new InvalidOperationException("the offer carries no signed SHA-256"), Note.Of("update|the offer carries no signed SHA-256"));
             string expected = info.Sha256;
             long done = 0;
             using (var req = new HttpRequestMessage(HttpMethod.Get, info.ExeUrl))
@@ -759,14 +764,14 @@ internal sealed class Updater : IDisposable
                     try { answer = await SendAsync(req, answerLimit.Token, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false); }
                     catch (OperationCanceledException) when (!ct.IsCancellationRequested)
                     {
-                        string text = $"the download server did not answer within {DownloadAnswerTimeout.TotalSeconds.ToString("0.##", CultureInfo.InvariantCulture)} s";
-                        throw Shown(new IOException(text), text);
+                        string secs = DownloadAnswerTimeout.TotalSeconds.ToString("0.##", CultureInfo.InvariantCulture);
+                        throw Shown(new IOException($"the download server did not answer within {secs} s"), Note.Of("update|the download server did not answer within {seconds} s", ("seconds", secs)));
                     }
                     answerLimit.CancelAfter(Timeout.InfiniteTimeSpan);   // answered: the timer must not fire into the body's reads
                 }
                 using var resp = answer;
                 // An explicit status check: EnsureSuccessStatusCode's message carries the server's reason phrase, and this text reaches the user.
-                if (!resp.IsSuccessStatusCode) throw Shown(new HttpRequestException($"HTTP {(int)resp.StatusCode}", null, resp.StatusCode), $"HTTP {(int)resp.StatusCode}");
+                if (!resp.IsSuccessStatusCode) throw Shown(new HttpRequestException($"HTTP {(int)resp.StatusCode}", null, resp.StatusCode), Note.Of("update|HTTP {code}", ("code", (int)resp.StatusCode)));
                 // With a signed size, a body that says or turns out to be longer is cut off instead of being transferred in full.
                 if (resp.Content.Headers.ContentLength is long declared && declared != info.ExeSize)
                     throw Shown(new InvalidDataException($"size mismatch: the server announces {declared} bytes, the signed manifest says {info.ExeSize}"), SizeMismatch);
@@ -815,7 +820,7 @@ internal sealed class Updater : IDisposable
                                     double rate = (done - anchor.Done) / (at - anchor.At).TotalSeconds;
                                     if (rate < minRate)
                                         throw Shown(new IOException($"download too slow ({rate / 1024:0.#} KB/s over the last {(at - anchor.At).TotalSeconds.ToString("0.##", CultureInfo.InvariantCulture)} s, at least {minRate / 1024.0:0.#} KB/s needed; {done / 1024} KB so far)"),
-                                            $"download too slow (under {(minRate / 1024.0).ToString("0.#", CultureInfo.InvariantCulture)} KB/s)");
+                                            Note.Of("update|download too slow (under {rate} KB/s)", ("rate", (minRate / 1024.0).ToString("0.#", CultureInfo.InvariantCulture))));
                                 }
                                 if (done > info.ExeSize) throw Shown(new InvalidDataException($"size mismatch: more than the {info.ExeSize} bytes the signed manifest says"), SizeMismatch);
                                 if (total > 0) progress?.Report(Math.Min(1.0, done / (double)total));
@@ -824,12 +829,12 @@ internal sealed class Updater : IDisposable
                         catch (OperationCanceledException) when (!ct.IsCancellationRequested && deadline.IsCancellationRequested)
                         {
                             string over = deadlineLimit.TotalSeconds.ToString("0.##", CultureInfo.InvariantCulture);
-                            throw Shown(new IOException($"download took too long (over {over} s in total, {done / 1024} KB received)"), $"download took too long (over {over} s)");
+                            throw Shown(new IOException($"download took too long (over {over} s in total, {done / 1024} KB received)"), Note.Of("update|download took too long (over {seconds} s)", ("seconds", over)));
                         }
                         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
                         {
                             string quiet = DownloadReadTimeout.TotalSeconds.ToString("0.##", CultureInfo.InvariantCulture);
-                            throw Shown(new IOException($"download stalled (no data for {quiet} s after {done / 1024} KB)"), $"download stalled (no data for {quiet} s)");
+                            throw Shown(new IOException($"download stalled (no data for {quiet} s after {done / 1024} KB)"), Note.Of("update|download stalled (no data for {seconds} s)", ("seconds", quiet)));
                         }
                     }
                 }
@@ -837,11 +842,11 @@ internal sealed class Updater : IDisposable
 
             long length = new FileInfo(partial).Length;
             if (info.ExeSize > 0 && length != info.ExeSize) throw Shown(new InvalidDataException($"size mismatch: got {length} bytes, the signed manifest says {info.ExeSize}"), SizeMismatch);
-            if (!LooksLikeExe(partial)) throw Shown(new InvalidDataException("downloaded file is not a Windows executable"), "the downloaded file is not a Windows executable");
+            if (!LooksLikeExe(partial)) throw Shown(new InvalidDataException("downloaded file is not a Windows executable"), Note.Of("update|the downloaded file is not a Windows executable"));
             string actual = Sha256Hex(partial);
-            if (!string.Equals(expected, actual, StringComparison.OrdinalIgnoreCase)) throw Shown(new InvalidDataException("SHA-256 mismatch"), "SHA-256 mismatch");
+            if (!string.Equals(expected, actual, StringComparison.OrdinalIgnoreCase)) throw Shown(new InvalidDataException("SHA-256 mismatch"), Note.Of("update|SHA-256 mismatch"));
             string? wrongVersion = CheckEmbeddedVersion(partial, info.Version);
-            if (wrongVersion != null) throw Shown(new InvalidDataException($"release {info.Tag} is unusable: {wrongVersion}"), $"the downloaded exe does not report v{info.Version}");
+            if (wrongVersion != null) throw Shown(new InvalidDataException($"release {info.Tag} is unusable: {wrongVersion}"), Note.Of("update|the downloaded exe does not report v{version}", ("version", info.Version.ToString())));
             progress?.Report(1.0);
 
             File.Move(partial, final, overwrite: true);
@@ -874,25 +879,25 @@ internal sealed class Updater : IDisposable
     // ---- what the user is told about a failed download: fixed texts only (like UpdateFeed.FetchCappedAsync's UserDetail), never an
     // exception's own message, which may carry what a server sent (a header line, a reason phrase). The log has the full message.
 
-    private const string SizeMismatch = "size mismatch";
+    private static Note SizeMismatch => Note.Of("update|size mismatch");
 
-    /// <summary><paramref name="ex"/>, carrying <paramref name="userText"/> (built here from constants and numbers, never from a server) for <see cref="DownloadErrorText"/>.</summary>
-    private static T Shown<T>(T ex, string userText) where T : Exception => UserText.Attach(ex, userText);
+    /// <summary><paramref name="ex"/>, carrying <paramref name="userText"/> (built here from constants and numbers, never from a server) for <see cref="DownloadErrorNote"/>.</summary>
+    private static T Shown<T>(T ex, Note userText) where T : Exception => UserText.Attach(ex, userText);
 
     /// <summary>
     /// The short text the user is shown for a failed exe download from <paramref name="url"/>: the fixed text <see cref="DownloadAsync"/>
     /// attached ("HTTP 503", "download stalled (no data for 60 s)", "SHA-256 mismatch", ...), else one chosen by the kind of failure
     /// ("network error (&lt;host&gt;)"). Never <see cref="Exception.Message"/>.
     /// </summary>
-    internal static string DownloadErrorText(Exception ex, string url)
+    internal static Note DownloadErrorNote(Exception ex, string url)
     {
-        if (ex.Data[UserText.Key] is string text) return text;
-        if (ex is OperationCanceledException) return $"no answer within {FeedClientTimeout.TotalSeconds:0} s";
-        if (ex is HttpRequestException { StatusCode: { } code }) return $"HTTP {(int)code}";
+        if (ex.Data[UserText.Key] is Note text) return text;
+        if (ex is OperationCanceledException) return Note.Of("update|no answer within {seconds} s", ("seconds", FeedClientTimeout.TotalSeconds.ToString("0", CultureInfo.InvariantCulture)));
+        if (ex is HttpRequestException { StatusCode: { } code }) return Note.Of("update|HTTP {code}", ("code", (int)code));
         for (Exception? e = ex; e != null; e = e.InnerException)
-            if (e is HttpRequestException or HttpIOException or System.Net.Sockets.SocketException) return $"network error ({HostOf(url)})";
-        if (ex is IOException or UnauthorizedAccessException) return "the download could not be saved in the updates folder";
-        return "unexpected error (details in the log)";
+            if (e is HttpRequestException or HttpIOException or System.Net.Sockets.SocketException) return Note.Of("update|network error ({host})", ("host", Note.Ltr(HostOf(url))));
+        if (ex is IOException or UnauthorizedAccessException) return Note.Of("update|the download could not be saved in the updates folder");
+        return Note.Of("update|unexpected error (details in the log)");
     }
 
     private static string Sha256Hex(string path)
@@ -985,8 +990,8 @@ internal sealed class Updater : IDisposable
     /// <summary>Replaces the browser in the unit tests (told the one address that would be opened); null otherwise.</summary>
     internal static Action<string>? BrowserOverride { get; set; }
 
-    /// <summary>Opens <see cref="ReleasePageFor"/> in the browser. Null when it was opened, otherwise a message for the footer.</summary>
-    public string? OpenReleasePage(UpdateInfo? info)
+    /// <summary>Opens <see cref="ReleasePageFor"/> in the browser. Null when it was opened, otherwise a note for the footer.</summary>
+    internal Note? OpenReleasePage(UpdateInfo? info)
     {
         string page = ReleasePageFor(info);
         try
@@ -995,7 +1000,7 @@ internal sealed class Updater : IDisposable
             else TestGuard.Start(new ProcessStartInfo(page) { UseShellExecute = true })?.Dispose();
             return null;
         }
-        catch (Exception ex) { return L.T("Could not open the browser: {error}", ("error", Describe(ex))); }
+        catch (Exception ex) { return Note.Of("Could not open the browser: {error}", ("error", Describe(ex))); }
     }
 
     private static string Describe(Exception? ex)
@@ -1606,8 +1611,7 @@ internal sealed class Updater : IDisposable
     /// </summary>
     private UpdateNotice DownloadCapNotice(ReleaseVersion version, int tries)
     {
-        string why = (_lastDownloadError ?? "unknown error").ReplaceLineEndings(" ").Trim().TrimEnd('.');
-        if (why.Length > 110) why = why[..110] + "…";
+        var why = _lastDownloadError ?? Note.Of("update|unknown error");   // (fixed texts of DownloadErrorNote: short enough for the balloon)
         return new UpdateNotice($"download:{version}", Note.Of("Clink update not downloaded"),
             Note.PluralOf("Downloading v{version} failed {count} times ({reason}). To retry, click Check now under Alerts → Updates.", tries, ("version", version.ToString()), ("reason", why)));   // (tries >= 3: English "other")
     }
@@ -1670,7 +1674,7 @@ internal sealed class Updater : IDisposable
             int tries = _attempts.GetValueOrDefault(info.Version);
             if (tries >= MaxDownloadAttempts && !manual)
             {
-                SetError(Note.PluralOf("downloading v{version} failed {count} times ({reason}). To retry, click Check now under Alerts → Updates.", tries, ("version", info.Version.ToString()), ("reason", _lastDownloadError ?? "unknown error")));   // (tries >= 3: English "other")
+                SetError(Note.PluralOf("downloading v{version} failed {count} times ({reason}). To retry, click Check now under Alerts → Updates.", tries, ("version", info.Version.ToString()), ("reason", _lastDownloadError ?? Note.Of("update|unknown error"))));   // (tries >= 3: English "other")
                 notice = DownloadCapNotice(info.Version, tries);
                 return info;
             }
@@ -1683,7 +1687,7 @@ internal sealed class Updater : IDisposable
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }   // shutting down; an HttpClient timeout is a failure like any other
             catch (Exception ex)
             {
-                _lastDownloadError = DownloadErrorText(ex, info.ExeUrl);   // a fixed text: the exception's message (the log below) may hold what a server sent
+                _lastDownloadError = DownloadErrorNote(ex, info.ExeUrl);   // a fixed text: the exception's message (the log below) may hold what a server sent
                 SetError(Note.Of("downloading v{version} failed: {reason}", ("version", info.Version.ToString()), ("reason", _lastDownloadError)));
                 Log.Warn($"updater: download of v{info.Version} failed ({tries + 1}/{MaxDownloadAttempts}): {ex.Message}");
                 // The attempt that reaches the cap is announced (once per version: the key), not only the passes the cap then refuses.

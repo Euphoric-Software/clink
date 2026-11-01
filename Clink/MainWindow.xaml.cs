@@ -102,7 +102,7 @@ public partial class MainWindow : Window
             // (not a recording: hours long, and the trimmer loads its selection into memory; the path test comes first, it costs nothing)
             try { newest = await Task.Run(() => entries.FirstOrDefault(e => !_app.IsRecordingEntry(e) && e.Exists)); }
             catch (Exception ex) { Log.Warn("trim last: " + ex.Message); }
-            if (newest != null) OpenTrim(newest); else _app.Say(L.T("No clips to trim yet"));
+            if (newest != null) OpenTrim(newest); else _app.SayT("No clips to trim yet");
         });
         _app.TrimRequested += entry => Dispatcher.BeginInvoke(() => OpenTrim(entry));
         _app.Library.Changed += () => Dispatcher.BeginInvoke(() => Clips.Refresh());
@@ -734,7 +734,7 @@ public partial class MainWindow : Window
         _filling = true;
         try { CopiumPlusCheck.IsChecked = true; }
         finally { _filling = was; }
-        _app.Say(L.T("Copium Plus size target: ticked I have Copium+"));
+        _app.SayT("Copium Plus size target: ticked I have Copium+");
     }
 
     // ------------------------------------------------------------------ capture: recording mode & custom apps (§5)
@@ -1132,7 +1132,7 @@ public partial class MainWindow : Window
             Directory.CreateDirectory(Settings.Dir);
             TestGuard.Start(new ProcessStartInfo(Settings.Dir) { UseShellExecute = true });
         }
-        catch (Exception ex) { _app.Say(L.T("Could not open the folder: {error}", ("error", ex.Message))); }
+        catch (Exception ex) { _app.SayT("Could not open the folder: {error}", ("error", ex.Message)); }
     }
 
     /// <summary>
@@ -1243,7 +1243,8 @@ public partial class MainWindow : Window
                 ? (checkFailed ? L.T("Last check failed: {error}", ("error", err)) : L.T("Update problem: {error}", ("error", err))) : null);
 
     /// <summary>Why there is nothing to check: a --dev instance never looks for updates; a build without a signed update feed has no updates at all.</summary>
-    private static string NoUpdatesText => AppController.IsDev ? Updater.DevModeDisplay : Updater.NoUpdatesDisplay;
+    private static Note NoUpdatesNote => Updater.NoUpdatesReason(AppController.IsDev);
+    private static string NoUpdatesText => NoUpdatesNote.Shown;
 
     private void Update_Click(object sender, RoutedEventArgs e) => _app.UpdateNow();
 
@@ -1366,7 +1367,7 @@ public partial class MainWindow : Window
         if (_loading) return;
         _app.Settings.UseDevBuilds = DevBuildCheck.IsChecked == true;
         _app.Settings.Save();
-        _app.Say(_app.Settings.UseDevBuilds ? L.T("Switched to dev builds - checking…") : L.T("Switched to releases - checking…"));
+        if (_app.Settings.UseDevBuilds) _app.SayT("Switched to dev builds - checking…"); else _app.SayT("Switched to releases - checking…");
         VersionPopup.IsOpen = false;
         VersionText.Text = FooterVersion;
         // A check (and its download) already running looked on the old channel: check again on this one once it is done.
@@ -1389,9 +1390,9 @@ public partial class MainWindow : Window
     {
         if (_checkingUpdate) return;
         var up = _app.Updater;
-        if (!up.UpdatesEnabled) { _app.Say(NoUpdatesText); return; }
+        if (!up.UpdatesEnabled) { _app.Say(NoUpdatesNote); return; }
         _checkingUpdate = true;
-        _app.Say(L.T("Checking…"));
+        _app.SayT("Checking…");
         try
         {
             var check = up.CheckNowAsync();
@@ -1399,28 +1400,32 @@ public partial class MainWindow : Window
             // progress: keep the footer honest instead of letting the stats line take it back after 4 s.
             while (await Task.WhenAny(check, Task.Delay(2000)) != check)
             {
-                string text = up.IsDownloading ? L.T("Downloading update…") : L.T("Still checking…");
-                if (_app.LastNotice != text) _app.Say(text); else _noticeUntil = DateTime.UtcNow.AddSeconds(4);
+                var progress = up.IsDownloading ? Note.Of("Downloading update…") : Note.Of("Still checking…");
+                if (_app.LastNotice != progress.Shown) _app.Say(progress); else _noticeUntil = DateTime.UtcNow.AddSeconds(4);
             }
             var info = await check;
             // The release notes page is the signed manifest's notesUrl, opened only when it is https and under the base of the feed it came
             // from (Updater.OpenReleasePage), else a fixed page: no other text of a manifest ever reaches the shell.
-            if (info == null) _app.Say(up.LastError != null ? L.T("Update check failed: {error}", ("error", up.LastErrorText)) : L.T("You're up to date (v{version})", ("version", L.Ltr(up.VersionDisplay))));
-            else if (_app.PendingVersion is ReleaseVersion pending && pending >= info.Version) _app.Say(L.T("Update v{version} is ready - click 'Update to v{pending}' to restart", ("version", L.Ltr(info.Version.ToString())), ("pending", L.Ltr(pending.ToString()))));
+            if (info == null)
+            {
+                if (up.LastErrorNote is { } lastError) _app.SayT("Update check failed: {error}", ("error", lastError));
+                else _app.SayT("You're up to date (v{version})", ("version", Note.Ltr(up.VersionDisplay)));
+            }
+            else if (_app.PendingVersion is ReleaseVersion pending && pending >= info.Version) _app.SayT("Update v{version} is ready - click 'Update to v{pending}' to restart", ("version", Note.Ltr(info.Version.ToString())), ("pending", Note.Ltr(pending.ToString())));
             else if (!_app.Settings.AutoUpdate)
             {
                 // Nothing is downloaded with auto-update off, so make the answer actionable: show the release.
-                _app.Say(L.T("Clink v{version} is available (auto-update is off) - opening the release page", ("version", L.Ltr(info.Version.ToString()))));
+                _app.SayT("Clink v{version} is available (auto-update is off) - opening the release page", ("version", Note.Ltr(info.Version.ToString())));
                 OpenReleasePage(info);
             }
             else
             {
                 // Auto-update is on but nothing is ready to install (the download failed, Updater.LastError says why): an
                 // "available" with nothing to click would be a dead end, so say why and show the release instead.
-                string? why = up.LastErrorText?.TrimEnd('.');
-                _app.Say(why != null
-                    ? L.T("Update v{version} found, but {reason} - opening the release page", ("version", L.Ltr(info.Version.ToString())), ("reason", why))
-                    : L.T("Update v{version} found, but it could not be downloaded - opening the release page", ("version", L.Ltr(info.Version.ToString()))));
+                if (up.LastErrorNote is { } why)
+                    _app.SayT("Update v{version} found, but {reason} - opening the release page", ("version", Note.Ltr(info.Version.ToString())), ("reason", why.WithoutFinalPeriod()));
+                else
+                    _app.SayT("Update v{version} found, but it could not be downloaded - opening the release page", ("version", Note.Ltr(info.Version.ToString())));
                 OpenReleasePage(info);
             }
         }
@@ -1903,23 +1908,23 @@ public partial class MainWindow : Window
         {
             // A relative path would resolve against whatever the current directory is (the exe's folder from Explorer, another
             // one when started at sign-in), so clips would land in different places.
-            _app.Say(L.T("Use a full path for the clips folder, e.g. {example}", ("example", L.Ltr(@"D:\Clips"))));
+            _app.SayT("Use a full path for the clips folder, e.g. {example}", ("example", Note.Ltr(@"D:\Clips")));
             ClipsFolderBox.Text = s.ClipsFolder;
             return;
         }
         if (!string.IsNullOrWhiteSpace(s.ArchivePath) && ArchiveService.IsSameFolder(path, s.ArchivePath))
         {
-            _app.Say(L.T("The clips folder cannot be the archive location"));
+            _app.SayT("The clips folder cannot be the archive location");
             ClipsFolderBox.Text = s.ClipsFolder;
             return;
         }
         try { Directory.CreateDirectory(path); }
-        catch (Exception ex) { _app.Say(L.T("Cannot use that folder: {error}", ("error", ex.Message))); ClipsFolderBox.Text = s.ClipsFolder; return; }
+        catch (Exception ex) { _app.SayT("Cannot use that folder: {error}", ("error", ex.Message)); ClipsFolderBox.Text = s.ClipsFolder; return; }
         s.ClipsFolder = path;
         s.Save();
         _app.Library.Load(path);
         _app.RecoverRecordingsAsync();   // unfinished recordings the new folder may hold
-        _app.Say(L.T("Clips folder changed"));
+        _app.SayT("Clips folder changed");
         // The default screenshots folder lives inside the clips folder: show the new one, or leaving that box later would pin the old default.
         ScreenshotFolderBox.Text = ScreenshotService.FolderFor(s);
         ScheduleRestart();   // the engine writes clips to its configured folder
@@ -2035,23 +2040,23 @@ public partial class MainWindow : Window
         if (path.Length == 0)
         {
             // Empty = back to the default, a Screenshots folder inside the clips folder.
-            if (s.ScreenshotsFolder != null) { s.ScreenshotsFolder = null; s.Save(); _app.Say(L.T("Screenshots folder reset")); }
+            if (s.ScreenshotsFolder != null) { s.ScreenshotsFolder = null; s.Save(); _app.SayT("Screenshots folder reset"); }
             ScreenshotFolderBox.Text = ScreenshotService.FolderFor(s);
             return;
         }
         if (string.Equals(path, ScreenshotService.FolderFor(s), StringComparison.OrdinalIgnoreCase)) { ScreenshotFolderBox.Text = ScreenshotService.FolderFor(s); return; }
         if (!Path.IsPathFullyQualified(path))
         {
-            _app.Say(L.T("Use a full path for the screenshots folder, e.g. {example}", ("example", L.Ltr(@"D:\Screenshots"))));
+            _app.SayT("Use a full path for the screenshots folder, e.g. {example}", ("example", Note.Ltr(@"D:\Screenshots")));
             ScreenshotFolderBox.Text = ScreenshotService.FolderFor(s);
             return;
         }
         try { Directory.CreateDirectory(path); }
-        catch (Exception ex) { _app.Say(L.T("Cannot use that folder: {error}", ("error", ex.Message))); ScreenshotFolderBox.Text = ScreenshotService.FolderFor(s); return; }
+        catch (Exception ex) { _app.SayT("Cannot use that folder: {error}", ("error", ex.Message)); ScreenshotFolderBox.Text = ScreenshotService.FolderFor(s); return; }
         s.ScreenshotsFolder = path;
         s.Save();
         ScreenshotFolderBox.Text = path;
-        _app.Say(L.T("Screenshots folder changed"));
+        _app.SayT("Screenshots folder changed");
     }
 
     private void BrowseScreenshots_Click(object sender, RoutedEventArgs e)
@@ -2086,7 +2091,7 @@ public partial class MainWindow : Window
             TestGuard.CheckLaunch("a folder dialog: " + title);
             return dlg.ShowDialog(this) == true ? dlg.FolderName : null;
         }
-        catch (Exception ex) { _app.Say(L.T("Folder picker failed: {error}", ("error", ex.Message))); return null; }
+        catch (Exception ex) { _app.SayT("Folder picker failed: {error}", ("error", ex.Message)); return null; }
     }
 
     /// <summary>The days / GB rules apply only to the automatic moves, so only they follow the switch; the location, Test and Archive now… are always there.</summary>
@@ -2140,14 +2145,14 @@ public partial class MainWindow : Window
         {
             // "\nas\clips" or "nas\clips" (a lost backslash) would resolve against the current folder: C:\nas\clips, or next to the
             // exe, which also differs between an Explorer start and a sign-in start (see the clips folder).
-            _app.Say(ArchiveService.FullPathHint);
+            _app.Say(ArchiveService.FullPathHintNote);
             RefuseArchivePath(ArchiveService.FullPathHint);
             return;
         }
         if (value != null && ArchiveService.IsSameFolder(value, s.ClipsFolder))
         {
             // Moving a clip onto itself would be "copy verified, delete local": the one copy gone. Refused here and in the service.
-            _app.Say(L.T("The archive location cannot be the clips folder itself"));
+            _app.SayT("The archive location cannot be the clips folder itself");
             RefuseArchivePath(L.T("Archive location is the clips folder: pick another folder, share or drive"));
             return;
         }
@@ -2228,7 +2233,7 @@ public partial class MainWindow : Window
             ArchiveStatus.SetResourceReference(TextBlock.ForegroundProperty, "Warn");
             return;
         }
-        if (string.IsNullOrWhiteSpace(_app.Settings.ArchivePath)) { _app.Say(L.T("Set an archive location first")); return; }
+        if (string.IsNullOrWhiteSpace(_app.Settings.ArchivePath)) { _app.SayT("Set an archive location first"); return; }
         TestGuard.CheckLaunch("the archive window");
         new ArchiveWindow(_app) { Owner = this }.ShowDialog();
         RefreshArchiveStatus();

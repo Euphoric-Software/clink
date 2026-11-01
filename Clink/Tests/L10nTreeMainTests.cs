@@ -251,7 +251,7 @@ internal static class L10nTreeMainTests
         Check.Equal("Copium's free limit (200 MB / 10 min)", Capabilities.CopiumLimits(false).Label);
         var s = new Settings { SizeTarget = "copium200", BitrateMbps = 16, KeyframeSeconds = 1 };
         var (_, note, warning) = Capabilities.ResolveBitrateChecked(s, 3, 600);
-        Check.Equal("lowered to 1.9 Mbps so a 10:00 clip fits 200 MB" + Capabilities.CopiumLengthNote + " (a 10:00 replay saves a hair over 10 min)", note);
+        Check.Equal("lowered to 1.9 Mbps so a 10:00 clip fits 200 MB" + SizeTargetNotes.CopiumLengthNote + " (a 10:00 replay saves a hair over 10 min)", note);
         Check.True(warning, "the length limit is a warning");
         (_, note, warning) = Capabilities.ResolveBitrateChecked(s, 3, 45);
         Check.Equal("a 45 s clip at 16 Mbps fits 200 MB", note);
@@ -470,7 +470,7 @@ internal static class L10nTreeMainTests
             SettingsImport.ForgetPendingClipMerge();
             var merge = typeof(SettingsImport).GetMethod("MergeClipIndex", Any) ?? throw new TestFailure("no MergeClipIndex");
             string? shown;
-            using (L.Scope("qps-ploc")) shown = merge.Invoke(null, new object[] { folder.Path }) as string;
+            using (L.Scope("qps-ploc")) shown = ((System.Runtime.CompilerServices.ITuple)merge.Invoke(null, new object[] { folder.Path })!)[0] as string;   // (the problem, and the renderer a log note uses)
             Marked(shown, "the notice the user reads");
             var pending = SettingsImport.PendingClipMerge();
             Check.NotNull(pending);
@@ -593,7 +593,7 @@ internal static class L10nTreeMainTests
         // the helpers of these files that take a key (L.Plural( is not used by them)
         var hits = L10nSourceScan.CSharp(root,
             new[] { "MainWindow.xaml.cs", @"UI\HotkeyListEditor.xaml.cs", @"UI\ReplayLengthSlider.cs", @"Services\Capabilities.cs", @"Services\SettingsImport.cs", @"Services\CopiumCardModel.cs" },
-            new[] { L10nSourceScan.T, L10nSourceScan.TInEn, L10nSourceScan.TrLocale, L10nSourceScan.Skipped, L10nSourceScan.SkippedBy });
+            new[] { L10nSourceScan.T, L10nSourceScan.TInEn, L10nSourceScan.TrLocale, L10nSourceScan.Skipped, L10nSourceScan.SkippedBy, L10nSourceScan.NoteOf, L10nSourceScan.SayT });
         hits.AddRange(L10nSourceScan.Xaml(root, new[] { "MainWindow.xaml", @"UI\HotkeyListEditor.xaml" }));
         foreach (var h in hits)
             if (h.Key != "setting|" && !area.Contains(h.Key) && !core.Contains(h.Key)) problems.Add(h.File + ": " + h.Key);   // "setting|" is the prefix SettingsImport.LabelText puts before a label (the labels are checked by their own test)

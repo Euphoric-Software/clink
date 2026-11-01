@@ -411,7 +411,7 @@ public partial class ClipsPane : UserControl
         }
         if (!Apply(row, path, archived, state, fromAction: true))
         {
-            if (archived && state == FileState.Missing && !e.IsShared) App.Say(L.T("{file} is no longer in the archive", ("file", L.Ltr(e.FileName))));   // dropped from the list
+            if (archived && state == FileState.Missing && !e.IsShared) App.SayT("{file} is no longer in the archive", ("file", Note.Ltr(e.FileName)));   // dropped from the list
             return false;
         }
         if (state == FileState.Present)
@@ -422,7 +422,7 @@ public partial class ClipsPane : UserControl
         if (!archived)
         {
             row.SetProblem(ClipRow.LocalDeleted);
-            App.Say(L.T("{file} is gone (deleted or moved outside Clink)", ("file", L.Ltr(e.FileName))));
+            App.SayT("{file} is gone (deleted or moved outside Clink)", ("file", Note.Ltr(e.FileName)));
             Refresh();   // leaves Local / Trimmed (a shared clip stays in Shared, marked "local file deleted")
         }
         return false;
@@ -612,7 +612,7 @@ public partial class ClipsPane : UserControl
         if (row == null) return;
         if (!await EnsureFileAsync(row)) { SayCannot(row, "open its folder"); return; }
         try { TestGuard.Start("explorer.exe", $"/select,\"{row.Entry.Path}\""); }
-        catch (Exception ex) { App.Say(L.T("Could not open folder: {error}", ("error", ex.Message))); }
+        catch (Exception ex) { App.SayT("Could not open folder: {error}", ("error", ex.Message)); }
     }
 
     private ClipDeleter NewDeleter() => new(App.Library, () => App.Settings.ClipsFolder, () => App.Settings.ArchivePath) { IsTrimOpen = e => TrimWindow.Find(e) != null, IsUploading = App.IsUploading };
@@ -758,7 +758,7 @@ public partial class ClipsPane : UserControl
         void Open()
         {
             try { TestGuard.Start(new ProcessStartInfo(path) { UseShellExecute = true }); }
-            catch (Exception ex) { Dispatcher.BeginInvoke(() => App.Say(L.T("Open failed: {error}", ("error", ex.Message)))); }
+            catch (Exception ex) { Dispatcher.BeginInvoke(() => App.SayT("Open failed: {error}", ("error", ex.Message))); }
         }
         if (!row.Entry.IsArchived) { Open(); return; }
         // ShellExecute on a share path touches the share again: on its own STA thread (shell extensions expect one), not the UI's.
@@ -785,7 +785,7 @@ public partial class ClipsPane : UserControl
         // The address came from the server or from the clip list file: only an https address is handed to the shell.
         if (!Clink.Services.CopiumClient.IsHttpsUrl(url, out var page)) { Log.Warn("clips: not opened: the clip's link is not an https address"); return; }
         try { TestGuard.Start(new ProcessStartInfo(page.AbsoluteUri) { UseShellExecute = true }); }
-        catch (Exception ex) { App.Say(L.T("Could not open the browser: {error}", ("error", ex.Message))); }
+        catch (Exception ex) { App.SayT("Could not open the browser: {error}", ("error", ex.Message)); }
     }
 
     // ------------------------------------------------------------------ screenshots side
@@ -927,11 +927,11 @@ public partial class ClipsPane : UserControl
         if (!App.Screenshots.IsOpenableEntry(path) || !File.Exists(path))
         {
             Log.Warn("library: screenshot not opened: not a .png in a screenshots folder");
-            App.Say(L.T("Could not open the screenshot: it is not in the screenshots folder, or it is gone"));
+            App.SayT("Could not open the screenshot: it is not in the screenshots folder, or it is gone");
             return;
         }
         try { TestGuard.Start(new ProcessStartInfo(path) { UseShellExecute = true }); }
-        catch (Exception ex) { App.Say(L.T("Could not open the screenshot: {error}", ("error", ex.Message))); }
+        catch (Exception ex) { App.SayT("Could not open the screenshot: {error}", ("error", ex.Message)); }
     }
 
     private void ShotFolder_Click(object sender, RoutedEventArgs e)
@@ -939,9 +939,9 @@ public partial class ClipsPane : UserControl
         var row = ShotOf(sender);
         if (row == null) return;
         // The same rule as Open / Edit: a path only the history file names is never probed or handed to the shell.
-        if (!App.Screenshots.IsOpenableEntry(row.Entry.Path)) { App.Say(L.T("The screenshot file is gone, or it is not in the screenshots folder")); return; }
+        if (!App.Screenshots.IsOpenableEntry(row.Entry.Path)) { App.SayT("The screenshot file is gone, or it is not in the screenshots folder"); return; }
         try { TestGuard.Start("explorer.exe", $"/select,\"{row.Entry.Path}\""); }
-        catch (Exception ex) { App.Say(L.T("Could not open folder: {error}", ("error", ex.Message))); }
+        catch (Exception ex) { App.SayT("Could not open folder: {error}", ("error", ex.Message)); }
     }
 
     /// <summary>Upload goes through the service, which asks for the Copium consent first (and refuses when cloud sharing is off).</summary>
@@ -983,7 +983,7 @@ public partial class ClipsPane : UserControl
         if (url == null) return;
         if (!CopiumClient.IsHttpsUrl(url, out var page)) { Log.Warn("library: screenshot page not opened: the link is not an https address"); return; }
         try { TestGuard.Start(new ProcessStartInfo(page.AbsoluteUri) { UseShellExecute = true }); }
-        catch (Exception ex) { App.Say(L.T("Could not open the browser: {error}", ("error", ex.Message))); }
+        catch (Exception ex) { App.SayT("Could not open the browser: {error}", ("error", ex.Message)); }
     }
 
     /// <summary>
@@ -1158,7 +1158,16 @@ internal sealed class ClipRow : INotifyPropertyChanged
     /// <summary>The list this row is in has a selection: the checkboxes are all shown and a plain click selects.</summary>
     public bool SelectMode => _selectMode;
     /// <summary>The checkbox's accessible name.</summary>
-    public string SelectName => L.T("Select {title}, {date}", ("title", Title), ("date", Entry.Created.ToString("MMM d, HH:mm", L.FormatCulture)));
+    public string SelectName
+    {
+        get
+        {
+            string date = Entry.Created.ToString("MMM d, HH:mm", L.FormatCulture);
+            // the generic "Clip" / "Trimmed clip" is a word, not a name: whole sentences (a gendered article or a case ending cannot be added to a slot)
+            if (GameTitle is { } game) return L.T("Select {title}, {date}", ("title", game), ("date", date));
+            return Entry.IsTrim ? L.T("Select Trimmed clip, {date}", ("date", date)) : L.T("Select Clip, {date}", ("date", date));
+        }
+    }
 
     public void SetSelection(bool selected, bool selectMode)
     {

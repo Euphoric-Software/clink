@@ -147,6 +147,13 @@ internal sealed partial class AppController
         StartRecording();
     }
 
+    /// <summary>
+    /// The sentence for a start the disk had no room for: the free and the needed space come from the exception (bytes), the sentence is a catalog
+    /// entry. The numbers are the ones the engine words (binary megabytes under the unit "MB"), so the English text is what it always was.
+    /// </summary>
+    internal static Note NotEnoughSpaceNote(NotEnoughFreeSpaceException ex) =>
+        Note.Of("Not enough free space to record. {error}", ("error", Note.Of("Not enough free disk space to record ({free} MB free, {needed} MB needed)", ("free", ex.FreeBytes / 1_048_576), ("needed", ex.NeededBytes / 1_048_576))));
+
     /// <summary>Starts one recording file now. Null when it started, else why not (nothing has changed then); the title is always "Recording not started".</summary>
     private Note? TryStartRecording()
     {
@@ -158,7 +165,7 @@ internal sealed partial class AppController
         catch (NotEnoughFreeSpaceException ex)   // by type, not by the words of its message (which stays the engine's English)
         {
             Log.Warn("Start recording: " + ex.Message);
-            return Note.Of("Not enough free space to record. {error}", ("error", ex.Message));
+            return NotEnoughSpaceNote(ex);
         }
         catch (IOException ex)
         {
@@ -170,7 +177,17 @@ internal sealed partial class AppController
             Log.Warn("Start recording: " + ex.Message);
             return Note.Of("Could not write the recording: {error}", ("error", ex.Message));
         }
-        catch (Exception ex)   // InvalidOperationException: the engine is not running / already recording
+        catch (AlreadyRecordingException ex)   // a race: the engine started one between the check and the call
+        {
+            Log.Warn("Start recording: " + ex.Message);
+            return Note.Of("Already recording");
+        }
+        catch (EngineNotRunningException ex)
+        {
+            Log.Warn("Start recording: " + ex.Message);
+            return Note.Of("Not recording: the engine is not running");
+        }
+        catch (Exception ex)   // anything else the engine threw: its message as it is
         {
             Log.Warn("Start recording: " + ex.Message);
             return Note.Verbatim(ex.Message);
@@ -266,12 +283,12 @@ internal sealed partial class AppController
         else _emptyAutoParts = 0;
         if (!again) _wantRecording = false;
 
-        string summary = RecordingPolicy.SavedSummary(r.DurationSeconds, r.SizeBytes);   // (RecordingPolicy words it; its texts are slice S5's)
-        if (RecordingPolicy.Problem(r) is { } problem)
+        var summary = RecordingPolicy.SavedSummaryNote(r.DurationSeconds, r.SizeBytes);
+        if (RecordingPolicy.ProblemNote(r) is { } problem)
         {
             Say(Note.Of("{title}: {text}", ("title", problem.Title), ("text", problem.Text)));
             if (Settings.ClickSound) ClickSound.PlayError();
-            NotifyProblem(problem.Title, problem.Text);
+            NotifyProblem(problem.Title.Shown, problem.Text.Shown);
         }
         else if (again)
         {
@@ -286,7 +303,7 @@ internal sealed partial class AppController
         else
         {
             SayT("Recording saved ({summary})", ("summary", summary));
-            Toasts.ShowRecordSaved(r.Game != null ? L.T("{game} · {summary}", ("game", r.Game), ("summary", summary)) : summary);
+            Toasts.ShowRecordSaved(r.Game != null ? L.T("{game} · {summary}", ("game", r.Game), ("summary", summary.Shown)) : summary.Shown);
         }
         // Recordings are not handed to the archive (it works on the clips folder's own files, which these are not, and they can be
         // hours long) and ClipSaved is for the clip toast / list highlight: the library's Changed event refreshes the list.
@@ -340,7 +357,7 @@ internal sealed partial class AppController
                         RaiseStateChanged();
                         return;
                     }
-                    catch (InvalidOperationException ex) when (ex.Message.Contains("Already recording", StringComparison.Ordinal))
+                    catch (AlreadyRecordingException)
                     {
                         if (busyRetried) return;   // somebody else's recording is on: it is the one that goes on
                         busyRetried = true;
@@ -401,9 +418,9 @@ internal sealed partial class AppController
             else Log.Warn("Recovery: " + (r.Error ?? r.Reason.ToString()));   // logged only: it would be said again at every start
         }
         if (n == 0 || _disposed) return;
-        string title = RecordingPolicy.RecoveredTitle(n);   // (S5's)
+        var title = RecordingPolicy.RecoveredTitleNote(n);
         Say(title);
-        Toasts.ShowNotice(title, L.T("Clink closed while recording; what was written is saved in the Recordings folder"));
+        Toasts.ShowNotice(title.Shown, L.T("Clink closed while recording; what was written is saved in the Recordings folder"));
     }
 
     /// <summary>

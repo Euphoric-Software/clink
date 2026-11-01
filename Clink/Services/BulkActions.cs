@@ -9,6 +9,12 @@ internal sealed record ShareFileItem(string Path, bool IsArchived, long Size, do
 /// <summary>What the library's selection bar can do with the selected rows.</summary>
 internal enum BulkAction { Upload, CopyLinks, ShareFiles, SaveCopies, Delete }
 
+/// <summary>Which share button of the bar a <see cref="BulkBarButton"/> is: the split "Share" + arrow, "Share files…", or "Copy links". The bar acts by the kind, never by the text of the label (which is translated).</summary>
+internal enum BulkBarButtonKind { Split, ShareFiles, CopyLinks }
+
+/// <summary>One share button of the selection bar: what it does and the label it shows.</summary>
+internal readonly record struct BulkBarButton(BulkBarButtonKind Kind, string Label);
+
 /// <summary>One entry of the bar's Share menu. <paramref name="Header"/> carries its access key (underscore); a disabled entry says why in <paramref name="ToolTip"/>.</summary>
 internal sealed record BulkActionItem(BulkAction Action, string Header, string ToolTip, bool Enabled = true);
 
@@ -68,22 +74,28 @@ internal static class BulkActions
     public static string UploadStoppingText => L.T("Stopping after this one…");
 
     /// <summary>The bar's status when a bulk upload ends: the summary, or why nothing was tried (no token, cloud off, the user said "Not now").</summary>
-    public static string UploadStatus(BulkShareResult r, bool screenshots)
+    public static string UploadStatus(BulkShareResult r, bool screenshots) => UploadStatusNote(r, screenshots).Shown;
+
+    /// <summary><see cref="UploadStatus"/> as a note: the bar shows it translated, a log gets English.</summary>
+    public static Note UploadStatusNote(BulkShareResult r, bool screenshots)
     {
-        if (r.Declined) return L.T("Not uploaded: sharing with Copium is not enabled");
+        if (r.Declined) return Note.Of("Not uploaded: sharing with Copium is not enabled");
         bool tried = r.Uploaded + r.AlreadyLinked + r.Refused + r.Busy + r.Failed > 0 || r.Cancelled;
-        if (!tried && !string.IsNullOrWhiteSpace(r.FirstError)) return r.FirstError;
-        return UploadSummary(r, screenshots);
+        if (!tried && !string.IsNullOrWhiteSpace(r.FirstError)) return Note.Verbatim(r.FirstError);
+        return UploadSummaryNote(r, screenshots);
     }
 
     /// <summary>The summary of a finished bulk upload (the notice and, unless nothing was tried, the bar's status).</summary>
-    public static string UploadSummary(BulkShareResult r, bool screenshots)
+    public static string UploadSummary(BulkShareResult r, bool screenshots) => UploadSummaryNote(r, screenshots).Shown;
+
+    /// <summary><see cref="UploadSummary(BulkShareResult, bool)"/> as a note.</summary>
+    public static Note UploadSummaryNote(BulkShareResult r, bool screenshots)
     {
         // With no failure the stop reason is also FirstError: pass it once, as the stop reason.
         string? failError = r.Failed > 0 || r.StopError == null ? r.FirstError : null;
         bool allLinked = r.Uploaded + r.AlreadyLinked == r.Total;   // then "Copy links" is offered for this selection
-        return UploadSummary(r.Uploaded, r.AlreadyLinked, r.Total, r.Refused, r.Busy, r.Failed, failError, r.Cancelled, screenshots,
-            r.StopError, r.NotTried, r.NotCopied, allLinked);
+        return UploadSummaryNote(r.Uploaded, r.AlreadyLinked, r.Total, r.Refused, r.Busy, r.Failed, Reason(failError), r.Cancelled, screenshots,
+            Reason(r.StopError), r.NotTried, r.NotCopied, allLinked);
     }
 
     /// <summary>The status while a bulk upload runs: "Uploading 2 of 6…" (with " 40%" once the item reports progress).</summary>
@@ -98,24 +110,34 @@ internal static class BulkActions
     /// are the sum of the two. Refused (over the account's limit), busy, failed (first error as told) and a cancel are added.
     /// </summary>
     public static string UploadSummary(int uploaded, int alreadyLinked, int total, int refused, int busy, int failed, string? firstError, bool cancelled, bool screenshots,
-        string? stopError = null, int notTried = 0, bool notCopied = false, bool canRetryCopy = false)
+        string? stopError = null, int notTried = 0, bool notCopied = false, bool canRetryCopy = false) =>
+        UploadSummaryNote(uploaded, alreadyLinked, total, refused, busy, failed, Reason(firstError), cancelled, screenshots, Reason(stopError), notTried, notCopied, canRetryCopy).Shown;
+
+    private static Note? Reason(string? text) => string.IsNullOrWhiteSpace(text) ? null : Note.Verbatim(text);
+
+    /// <summary>
+    /// <see cref="UploadSummary(int, int, int, int, int, int, string?, bool, bool, string?, int, bool, bool)"/> as a note: the first error and
+    /// the stop reason are notes too, so the log has them in English.
+    /// </summary>
+    public static Note UploadSummaryNote(int uploaded, int alreadyLinked, int total, int refused, int busy, int failed, Note? firstError, bool cancelled, bool screenshots,
+        Note? stopError = null, int notTried = 0, bool notCopied = false, bool canRetryCopy = false) => Note.Build(() =>
     {
         int links = uploaded + alreadyLinked;
         // each part is a whole sentence of its own; they are joined by a space (as the one string was before)
         var why = new List<string>();
         if (refused > 0) why.Add(L.Plural("{count} are too large to share.", refused));
         if (busy > 0) why.Add(L.Plural("{count} were busy.", busy));
-        if (failed > 0 || !string.IsNullOrWhiteSpace(firstError))
+        if (failed > 0 || firstError != null)
         {
-            bool hasError = !string.IsNullOrWhiteSpace(firstError);
-            if (hasError && failed > 1) why.Add(L.Plural("{count} failed: {error}.", failed, ("error", firstError!.TrimEnd('.'))));
-            else if (hasError) why.Add(L.T("{error}.", ("error", firstError!.TrimEnd('.'))));
+            // (.Shown: inside Note.Build it is the language being composed, English for the log)
+            if (firstError != null && failed > 1) why.Add(L.Plural("{count} failed: {error}.", failed, ("error", firstError.WithoutFinalPeriod().Shown)));
+            else if (firstError != null) why.Add(L.T("{error}.", ("error", firstError.WithoutFinalPeriod().Shown)));
             else why.Add(L.Plural("{count} failed.", failed));
         }
-        if (!string.IsNullOrWhiteSpace(stopError))
+        if (stopError != null)
         {
-            bool afterFailure = failed > 0 || !string.IsNullOrWhiteSpace(firstError);
-            why.Add(afterFailure ? L.T("Stopped: {error}.", ("error", stopError!.TrimEnd('.'))) : L.T("{error}.", ("error", stopError!.TrimEnd('.'))));
+            bool afterFailure = failed > 0 || firstError != null;
+            why.Add(afterFailure ? L.T("Stopped: {error}.", ("error", stopError.WithoutFinalPeriod().Shown)) : L.T("{error}.", ("error", stopError.WithoutFinalPeriod().Shown)));
         }
         if (notTried > 0) why.Add(L.Plural("{count} were not tried.", notTried));
         if (cancelled) why.Add(L.T("Cancelled."));
@@ -135,21 +157,25 @@ internal static class BulkActions
         parts.AddRange(why);
         if (notCopied && canRetryCopy) parts.Add(L.T("Use Copy links to try again."));
         return string.Join(" ", parts);
-    }
+    });
 
     /// <summary>
     /// The bar's share buttons, in order: the menu (token and cloud sharing on), or "Share files…" (cloud on, no token) followed by
     /// "Copy links" when every selected clip is linked (as the single row offers both), or "Copy links" alone (cloud off, every clip
     /// linked), or none.
     /// </summary>
-    public static IReadOnlyList<string> ShareButtonLabels(bool hasToken, bool cloudOn, int count, int linked)
+    public static IReadOnlyList<string> ShareButtonLabels(bool hasToken, bool cloudOn, int count, int linked) =>
+        ShareButtons(hasToken, cloudOn, count, linked).Select(b => b.Label).ToList();
+
+    /// <summary><see cref="ShareButtonLabels"/> with the kind of each button, so the bar acts by kind.</summary>
+    public static IReadOnlyList<BulkBarButton> ShareButtons(bool hasToken, bool cloudOn, int count, int linked)
     {
         bool allLinked = count > 0 && linked == count;
-        if (ShareIsSplit(hasToken, cloudOn)) return new[] { SplitMainLabel };   // the split button: the arrow half is added with it
-        var labels = new List<string>();
-        if (cloudOn) labels.Add(ShareFilesLabel);
-        if (allLinked) labels.Add(CopyLinksLabel);
-        return labels;
+        if (ShareIsSplit(hasToken, cloudOn)) return new[] { new BulkBarButton(BulkBarButtonKind.Split, SplitMainLabel) };   // the split button: the arrow half is added with it
+        var buttons = new List<BulkBarButton>();
+        if (cloudOn) buttons.Add(new BulkBarButton(BulkBarButtonKind.ShareFiles, ShareFilesLabel));
+        if (allLinked) buttons.Add(new BulkBarButton(BulkBarButtonKind.CopyLinks, CopyLinksLabel));
+        return buttons;
     }
 
     /// <summary>
@@ -203,17 +229,24 @@ internal static class BulkActions
     /// (<paramref name="unreachable"/>) and how many were not tried because they were busy (uploading or being deleted). Every selected
     /// row is in <paramref name="total"/>.
     /// </summary>
-    public static string SaveSummary(int saved, int total, string? firstError, int unreachable = 0, int busy = 0)
+    public static string SaveSummary(int saved, int total, string? firstError, int unreachable = 0, int busy = 0) => SaveSummaryNote(saved, total, firstError, unreachable, busy).Shown;
+
+    /// <summary><see cref="SaveSummary"/> as a note (the first error is shown and logged as it is).</summary>
+    public static Note SaveSummaryNote(int saved, int total, string? firstError, int unreachable = 0, int busy = 0) =>
+        SaveSummaryNote(saved, total, Reason(firstError), unreachable, busy);
+
+    /// <summary><see cref="SaveSummary"/> as a note whose first error is a note too.</summary>
+    public static Note SaveSummaryNote(int saved, int total, Note? firstError, int unreachable = 0, int busy = 0) => Note.Build(() =>
     {
         // each part is a whole sentence of its own; they are joined by a space
         var why = new List<string>();
-        if (!string.IsNullOrWhiteSpace(firstError)) why.Add(L.T("{error}.", ("error", firstError.TrimEnd('.'))));
+        if (firstError != null) why.Add(L.T("{error}.", ("error", firstError.WithoutFinalPeriod().Shown)));
         if (unreachable > 0) why.Add(L.Plural("{count} could not be reached.", unreachable));
         if (busy > 0) why.Add(L.Plural("{count} were busy.", busy));
         if (saved >= total && total > 0) return L.Plural("Saved {count} copies.", saved);
         string head = saved == 0 ? L.T("Nothing was saved.") : L.Plural("Saved {saved} of {count} copies.", total, ("saved", saved));
         return string.Join(" ", why.Prepend(head));
-    }
+    });
 
     /// <summary>The warning under the share window's card when files were left out, or null when every file is there.</summary>
     public static string? ShareFilesSummary(int present, int total)

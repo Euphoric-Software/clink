@@ -9,24 +9,17 @@ namespace Clink.Tests;
 /// <summary>The one way an exception carries the sentence for the user (<see cref="UserText"/>): precedence, translation at display time, and every exception type of the app using it.</summary>
 internal static class UserTextTests
 {
-    private sealed class OwnText(string text) : Exception("english message"), IUserText
-    {
-        public string UserText => text;
-    }
-
     [UnitTest]
-    public static void Of_prefers_the_attached_text_then_IUserText_then_the_message()
+    public static void Of_prefers_the_attached_text_then_the_message()
     {
         using var scope = L.Scope("en");
         // nothing attached: the exception's own message
         Check.Equal("plain", UserText.Of(new InvalidOperationException("plain")));
-        // IUserText beats the message
-        Check.Equal("from the interface", UserText.Of(new OwnText("from the interface")));
-        // the attached text beats IUserText and the message, as a finished string ...
-        var both = UserText.Attach(new OwnText("from the interface"), "attached text");
+        // the attached text beats the message, as a finished string ...
+        var both = UserText.Attach(new InvalidOperationException("english message"), "attached text");
         Check.Equal("attached text", UserText.Of(both));
         // ... and as a note
-        var noted = UserText.Attach(new OwnText("from the interface"), Note.Of("Clink is not running"));
+        var noted = UserText.Attach(new InvalidOperationException("english message"), Note.Of("Clink is not running"));
         Check.Equal("Clink is not running", UserText.Of(noted));
         // Attach returns the same exception (it is used inside throw expressions)
         var ex = new IOException("m");
@@ -47,7 +40,7 @@ internal static class UserTextTests
             // the exception was built before this language was chosen: the text follows the language at display time
             Check.True(PseudoLocale.IsPseudo(UserText.Of(ex)), "shown from the catalog under the pseudo-locale: " + UserText.Of(ex));
             Check.Equal("No video stream in file", ex.Message, "the Message does not change with the language");
-            Check.Equal("No video stream in file", UserText.EnglishOf(ex), "English for a log line");
+            Check.Equal("No video stream in file", UserText.NoteOf(ex).English, "English for a log line");
         }
         using (L.Scope("en")) Check.Equal("No video stream in file", UserText.Of(ex));
     }

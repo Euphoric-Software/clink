@@ -184,6 +184,8 @@
   "Saved": "Saved",
   "Could not save (the reason is in the notification)": "Could not save (the reason is in the notification)",
   "Could not save: {error}": "Could not save: {error}",
+  "Save this screenshot before Clink quits?": "Save this screenshot before Clink quits?",
+  "Save this screenshot?": "Save this screenshot?",
   "Save the changes to this screenshot before Clink quits?": "Save the changes to this screenshot before Clink quits?",
   "Save the changes to this screenshot?": "Save the changes to this screenshot?",
   "Preview failed — retrying": "Preview failed — retrying",

@@ -54,7 +54,7 @@ internal sealed record ArchiveProblem(string English, string Shown, bool Setting
 /// what they pick (due), with or without the automatic switch, at full speed unless a game is running. It runs on the same thread,
 /// one run at a time, and the automatic pass gives way to it.
 /// A local clip is deleted only when a different, complete copy exists: the archive location is checked for being another name
-/// for the clips folder (<see cref="AliasProblem"/>), and the delete itself goes through <see cref="DeleteGuard"/>, which cannot
+/// for the clips folder (<see cref="AliasCheck"/>), and the delete itself goes through <see cref="DeleteGuard"/>, which cannot
 /// delete a file that is also the archive copy.
 /// </summary>
 internal sealed class ArchiveService
@@ -119,7 +119,9 @@ internal sealed class ArchiveService
     public bool IsReachable => _reachable;
 
     /// <summary>What the UI says (and the service reports) when the archive location is not a full path.</summary>
-    public static string FullPathHint => L.T("Use a full path such as {example} or {unc}", ("example", L.Ltr(@"D:\Clips")), ("unc", L.Ltr(@"\\nas\clips")));
+    public static string FullPathHint => FullPathHintNote.Shown;
+    /// <summary><see cref="FullPathHint"/> as a note (English in the log).</summary>
+    internal static Note FullPathHintNote => Note.Of("Use a full path such as {example} or {unc}", ("example", Note.Ltr(@"D:\Clips")), ("unc", Note.Ltr(@"\\nas\clips")));
 
     public void Start()
     {
@@ -737,7 +739,7 @@ internal sealed class ArchiveService
 
     // ------------------------------------------------------------------ never delete a clip that has no distinct copy
 
-    /// <summary>Why <see cref="DeleteGuard.Open"/> handed over no guard, or <see cref="DeleteGuard.Delete"/> did not delete.</summary>
+    /// <summary>Why <see cref="DeleteGuard.OpenCore"/> handed over no guard, or <see cref="DeleteGuard.DeleteCore"/> did not delete.</summary>
     internal enum GuardResult
     {
         /// <summary>No problem.</summary>
@@ -793,17 +795,9 @@ internal sealed class ArchiveService
         private DeleteGuard(FileStream copy, SafeFileHandle clip) { _copy = copy; _clip = clip; }
 
         /// <summary>
-        /// Opens both files and checks them; null (with <paramref name="result"/> and, where it helps, a <paramref name="problem"/> in
-        /// the words the dialog shows) when the clip must not be deleted now.
+        /// Opens both files and checks them; null (with <paramref name="result"/> and, where it helps, a <paramref name="problem"/> that
+        /// shows in the language of the UI and logs in English) when the clip must not be deleted now.
         /// </summary>
-        public static DeleteGuard? Open(string clip, string copy, long length, DateTime lastWriteUtc, out GuardResult result, out string? problem)
-        {
-            var guard = OpenCore(clip, copy, length, lastWriteUtc, out result, out ArchiveProblem? why);
-            problem = why?.Shown;
-            return guard;
-        }
-
-        /// <summary><see cref="Open"/> with the problem in both its languages (the log keeps the English).</summary>
         internal static DeleteGuard? OpenCore(string clip, string copy, long length, DateTime lastWriteUtc, out GuardResult result, out ArchiveProblem? problem)
         {
             problem = null;
@@ -847,14 +841,6 @@ internal sealed class ArchiveService
         }
 
         /// <summary>Marks the local clip for deletion through the handle that was checked. It goes when the guard is disposed.</summary>
-        public bool Delete(out GuardResult result, out string? problem)
-        {
-            bool done = DeleteCore(out result, out ArchiveProblem? why);
-            problem = why?.Shown;
-            return done;
-        }
-
-        /// <summary><see cref="Delete"/> with the problem in both its languages.</summary>
         internal bool DeleteCore(out GuardResult result, out ArchiveProblem? problem)
         {
             byte on = 1;
@@ -910,9 +896,6 @@ internal sealed class ArchiveService
         return problem;
     }
 
-    /// <summary><see cref="AliasCheck"/> as text for the user (null: two different folders).</summary>
-    internal static string? AliasProblem(string archive, string clips) => AliasCheck(archive, clips)?.Shown;
-
     /// <summary>
     /// Null when <paramref name="archive"/> and <paramref name="clips"/> are two different folders, else the problem. Two names for
     /// one folder (a junction, a second share of the same disk, the <c>\\?\</c> spelling) cannot always be told apart by name or by
@@ -920,7 +903,7 @@ internal sealed class ArchiveService
     /// system: a small file written into one folder must not show up in the other, in either direction. A folder that cannot be
     /// written to says nothing here (a copy would fail there too).
     /// </summary>
-    private static ArchiveProblem? AliasCheck(string archive, string clips)
+    internal static ArchiveProblem? AliasCheck(string archive, string clips)
     {
         string name = $".clink-alias-{Guid.NewGuid():N}.tmp";
         string inArchive = Path.Combine(archive, name), inClips = Path.Combine(clips, name);

@@ -119,8 +119,8 @@ internal static class ShareFitModelTests
         Check.True(ShareFitModel.CanMakeCopy(ShareFitState.Over), "Over");
         Check.True(ShareFitModel.CanMakeCopy(ShareFitState.Refused("Too big for Discord free (20 MB): open Clink to make a smaller copy")), "Refused: asking again may work");
         Check.True(ShareFitModel.CanMakeCopy(ShareFitState.Failed(ShareFitModel.LowDiskReason(20_000_000), ShareCopyError.LowDisk)), "Failed: the disk");
-        Check.True(ShareFitModel.CanMakeCopy(ShareFitState.Failed("something odd")), "Failed with no kind given: another try");
-        Check.False(ShareFitModel.CanMakeCopy(ShareFitState.Failed(ShareFitModel.StayedTooBigReason)), "stayed too big: the same again, trim the clip");
+        Check.True(ShareFitModel.CanMakeCopy(ShareFitState.Failed("something odd", ShareCopyError.None)), "Failed with no kind given: another try");
+        Check.False(ShareFitModel.CanMakeCopy(ShareFitState.Failed(ShareFitModel.StayedTooBigReason, ShareCopyError.StayedTooBig)), "stayed too big: the same again, trim the clip");
         Check.False(ShareFitModel.CanMakeCopy(ShareFitState.CantFit(55)), "CantFit");
         Check.False(ShareFitModel.CanMakeCopy(ShareFitState.Unavailable(ShareUnavailableKind.Elevated)), "Unavailable");
         foreach (var s in new[] { ShareFitState.Fits, ShareFitState.Preparing, ShareFitState.Waiting, ShareFitState.Working(0.2, null) })
@@ -146,7 +146,6 @@ internal static class ShareFitModelTests
         // Stayed too big is told by its kind, whatever the words say.
         var big = ShareFitModel.StateFor(new ShareCopyResult(ShareCopyOutcome.Failed, "x.mp4", 1) { ErrorKind = ShareCopyError.StayedTooBig, Error = "other words", MaxSeconds = 30 });
         Check.Contains(ShareFitModel.Text(big, new ShareFitTarget(20_000_000, 0, "Discord free (20 MB)"), 40_000_000, 60)!, "30");
-        Check.Equal(ShareCopyError.StayedTooBig, ShareFitState.Failed(ShareFitModel.StayedTooBigReason).ErrorKind, "the old constructor still tells it");
     }
 
     [UnitTest]

@@ -228,6 +228,8 @@ internal static class L
     private sealed record State(string Code, LocaleInfo Info, bool Pseudo);
 
     private static volatile State s_state = MakeState("en");
+    [ThreadStatic] private static State? t_state;   // InEnglish: this thread answers in English while a note composes its log text
+    private static State Current => t_state ?? s_state;
     private static volatile CatalogSet? s_override;
     private static readonly Lazy<CatalogSet> s_embedded = new(LoadEmbedded, LazyThreadSafetyMode.ExecutionAndPublication);
     private static readonly ConcurrentDictionary<string, byte> s_missing = new(StringComparer.Ordinal);
@@ -238,7 +240,7 @@ internal static class L
 
     /// <summary>The active language code: one of <see cref="Known"/>, or "qps-ploc" inside a test <see cref="Scope"/>.</summary>
     public static string Code => s_state.Code;
-    public static bool IsRtl => s_state.Info.Rtl;
+    public static bool IsRtl => Current.Info.Rtl;
     /// <summary>The culture for resources and system text (CurrentUICulture is set to it at start).</summary>
     public static CultureInfo UiCulture => CultureFor(s_state.Info.Code, s_state.Info.Culture, ui: true);
     /// <summary>
@@ -316,7 +318,19 @@ internal static class L
     // ------------------------------------------------------------------ translating
 
     /// <summary>The text for <paramref name="key"/> in the active language, with <c>{name}</c> placeholders filled from <paramref name="args"/>.</summary>
-    public static string T(string key, params (string Name, object? Value)[] args) => Translate(s_state, key, args);
+    public static string T(string key, params (string Name, object? Value)[] args) => Translate(Current, key, args);
+
+    /// <summary>
+    /// Runs <paramref name="compose"/> with this thread answering <see cref="T"/>, <see cref="Plural"/>, <see cref="Bytes"/> and the other
+    /// catalog calls in English whatever the active language is (a log line is written for the developer). Only for <see cref="Note.Build"/>.
+    /// </summary>
+    internal static string InEnglish(Func<string> compose)
+    {
+        var before = t_state;
+        t_state = MakeState("en");
+        try { return compose(); }
+        finally { t_state = before; }
+    }
 
     /// <summary>Like <see cref="T"/> in a given language (a Known code or "qps-ploc"), whatever the active one is.</summary>
     public static string TIn(string locale, string key, params (string Name, object? Value)[] args) => Translate(MakeState(locale), key, args);
@@ -327,7 +341,7 @@ internal static class L
     /// </summary>
     public static string Plural(string key, long count, params (string Name, object? Value)[] args)
     {
-        var st = s_state;
+        var st = Current;
         // a caller-supplied {count} (e.g. "1,234" with separators) wins; the category always comes from the number
         bool hasCount = Array.Exists(args, a => a.Name == "count");
         var all = new (string Name, object? Value)[args.Length + (hasCount ? 0 : 1)];
@@ -413,27 +427,29 @@ internal static class L
     public static string Number(double value) => value.ToString("#,0.##", FormatCulture);
 
     /// <summary>"820 kB", "9.5 MB", "190 MB", "1.2 GB" (decimal units, as Capabilities.FormatBytes).</summary>
-    public static string Bytes(long bytes)
-    {
-        var fc = FormatCulture;
-        if (bytes < 0) bytes = 0;
-        if (bytes < 1_000_000) return T("unit|{n} kB", ("n", (bytes / 1_000.0).ToString("0", fc)));
-        if (bytes < 10_000_000) return T("unit|{n} MB", ("n", (bytes / 1_000_000.0).ToString("0.#", fc)));
-        if (bytes < 1_000_000_000) return T("unit|{n} MB", ("n", (bytes / 1_000_000.0).ToString("0", fc)));
-        if (bytes < 10_000_000_000) return T("unit|{n} GB", ("n", (bytes / 1_000_000_000.0).ToString("0.#", fc)));
-        return T("unit|{n} GB", ("n", (bytes / 1_000_000_000.0).ToString("0", fc)));
-    }
+    public static string Bytes(long bytes) => BytesCore(null, bytes);
 
     /// <summary><see cref="Bytes"/> in <paramref name="locale"/> (a log line is written in English whatever language the UI has); the number still follows <see cref="FormatCulture"/>.</summary>
-    public static string BytesIn(string locale, long bytes)
+    public static string BytesIn(string locale, long bytes) => BytesCore(locale, bytes);
+
+    /// <summary>
+    /// The one place that picks the unit and the digits of a size, for <see cref="Bytes"/> (the active language, <paramref name="locale"/> null)
+    /// and <see cref="BytesIn"/>. The digits follow <see cref="FormatCulture"/> in both, so the numbers in a log line are written in the
+    /// regional format of this PC (like every number in a note); only the unit word differs by language.
+    /// </summary>
+    private static string BytesCore(string? locale, long bytes)
     {
         var fc = FormatCulture;
         if (bytes < 0) bytes = 0;
-        if (bytes < 1_000_000) return TIn(locale, "unit|{n} kB", ("n", (bytes / 1_000.0).ToString("0", fc)));
-        if (bytes < 10_000_000) return TIn(locale, "unit|{n} MB", ("n", (bytes / 1_000_000.0).ToString("0.#", fc)));
-        if (bytes < 1_000_000_000) return TIn(locale, "unit|{n} MB", ("n", (bytes / 1_000_000.0).ToString("0", fc)));
-        if (bytes < 10_000_000_000) return TIn(locale, "unit|{n} GB", ("n", (bytes / 1_000_000_000.0).ToString("0.#", fc)));
-        return TIn(locale, "unit|{n} GB", ("n", (bytes / 1_000_000_000.0).ToString("0", fc)));
+        (string key, string n) = bytes switch
+        {
+            < 1_000_000 => ("unit|{n} kB", (bytes / 1_000.0).ToString("0", fc)),
+            < 10_000_000 => ("unit|{n} MB", (bytes / 1_000_000.0).ToString("0.#", fc)),
+            < 1_000_000_000 => ("unit|{n} MB", (bytes / 1_000_000.0).ToString("0", fc)),
+            < 10_000_000_000 => ("unit|{n} GB", (bytes / 1_000_000_000.0).ToString("0.#", fc)),
+            _ => ("unit|{n} GB", (bytes / 1_000_000_000.0).ToString("0", fc)),
+        };
+        return locale == null ? T(key, ("n", n)) : TIn(locale, key, ("n", n));
     }
 
     /// <summary>"15 s", "1:30", "10:00", "1 h", "1:05:00" (as Capabilities.FormatDuration).</summary>

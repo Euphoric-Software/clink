@@ -193,7 +193,15 @@ internal sealed class ScreenshotRow : INotifyPropertyChanged
     /// <summary>The list this row is in has a selection: the checkboxes are all shown and a plain click selects.</summary>
     public bool SelectMode => _selectMode;
     /// <summary>The checkbox's accessible name.</summary>
-    public string SelectName => L.T("Select {title}, {date}", ("title", Title), ("date", Entry.Created.ToString("MMM d, HH:mm", L.FormatCulture)));
+    public string SelectName
+    {
+        get
+        {
+            string date = Entry.Created.ToString("MMM d, HH:mm", L.FormatCulture);
+            // the generic "Screenshot" is a word, not a name: a whole sentence (a gendered article or a case ending cannot be added to a slot)
+            return string.IsNullOrWhiteSpace(Entry.Game) ? L.T("Select Screenshot, {date}", ("date", date)) : L.T("Select {title}, {date}", ("title", Title), ("date", date));
+        }
+    }
 
     public void SetSelection(bool selected, bool selectMode)
     {

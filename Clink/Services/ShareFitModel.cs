@@ -77,9 +77,8 @@ internal sealed record ShareFitState(ShareFitStateKind Kind)
     public static ShareFitState Working(double progress, ShareFitPlan? plan) => new(ShareFitStateKind.Working) { Progress = Math.Clamp(progress, 0, 1), Plan = plan };
     public static ShareFitState Done(ShareCopyResult copy) => new(ShareFitStateKind.Done) { Copy = copy };
     public static ShareFitState CantFit(int maxSeconds) => new(ShareFitStateKind.CantFit) { MaxSeconds = maxSeconds };
-    public static ShareFitState Failed(string reason) => new(ShareFitStateKind.Failed) { Reason = reason, ErrorKind = reason == ShareFitModel.StayedTooBigReason ? ShareCopyError.StayedTooBig : ShareCopyError.None };
+    /// <summary>A failed copy: the English <paramref name="reason"/> (logs, tests) and what <paramref name="kind"/> of failure it was (the model acts on the kind, never on the words).</summary>
     public static ShareFitState Failed(string reason, ShareCopyError kind) => new(ShareFitStateKind.Failed) { Reason = reason, ErrorKind = kind };
-    public static ShareFitState Failed(Note reason, ShareCopyError kind) => new(ShareFitStateKind.Failed) { Reason = reason.English, ReasonNote = reason, ErrorKind = kind };
     public static ShareFitState Unavailable(ShareUnavailableKind why) => new(ShareFitStateKind.Unavailable) { Why = why, Reason = ShareFitModel.UnavailableReason(why) };
     public static ShareFitState Refused(string text) => new(ShareFitStateKind.Refused) { Reason = text };
 }

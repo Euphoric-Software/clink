@@ -394,7 +394,7 @@ internal static class ShareWindowTests
         Check.True(ReferenceEquals(w.CancelCopyButton, w.FocusFor(ShareFitStateKind.Working, ShareFitState.Working(0.2, null))));
         Check.True(ReferenceEquals(w.CopyButton, w.FocusFor(ShareFitStateKind.Done, ShareFitState.Over)), "Done: Copy file, the primary button");
         Check.True(ReferenceEquals(w.MakeCopyButton, w.FocusFor(ShareFitStateKind.Over, ShareFitState.Over)), "Cancel pressed: Make is back");
-        Check.True(ReferenceEquals(w.CopyButton, w.FocusFor(ShareFitStateKind.Failed, ShareFitState.Failed(ShareFitModel.StayedTooBigReason))), "no Make button: Copy file");
+        Check.True(ReferenceEquals(w.CopyButton, w.FocusFor(ShareFitStateKind.Failed, ShareFitState.Failed(ShareFitModel.StayedTooBigReason, ShareCopyError.StayedTooBig))), "no Make button: Copy file");
         w.CopyButton.IsEnabled = false;
         Check.True(ReferenceEquals(w.UseOriginalButton, w.FocusFor(ShareFitStateKind.Done, ShareFitState.Over)), "Copy file is off: Use the original");
     }

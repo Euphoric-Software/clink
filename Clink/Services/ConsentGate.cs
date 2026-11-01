@@ -36,7 +36,9 @@ internal readonly record struct ConsentAnswer(ConsentChoice Choice, bool AutoUpl
 /// </summary>
 internal sealed class ConsentGate
 {
-    public static string CloudOffTitle => L.T("Cloud sharing is off");
+    public static string CloudOffTitle => CloudOffTitleNote.Shown;
+    /// <summary><see cref="CloudOffTitle"/> as a note.</summary>
+    public static Note CloudOffTitleNote => Note.Of("Cloud sharing is off");
     public static string CloudOffText => CloudOffNote.Shown;
     /// <summary>The same sentence as a <see cref="Note"/>: shown translated, logged in English (use it with <c>Say</c>; <see cref="CloudOffText"/> is for display only).</summary>
     public static Note CloudOffNote => Note.Of("Cloud sharing is off — enable it under App → Cloud sharing");
@@ -49,7 +51,7 @@ internal sealed class ConsentGate
     /// <summary>Shows the pop-up for a context and returns the answer. The default says "Not now" (no window): the app installs the real one.</summary>
     public Func<ConsentContext, Task<ConsentAnswer>> Prompt { get; set; } = _ => Task.FromResult(new ConsentAnswer(ConsentChoice.NotNow));
     /// <summary>Tells the user something (context, title, text): the footer, a toast. Default: log only.</summary>
-    public Action<ConsentContext, string, string> Notice { get; set; } = (_, title, text) => Log.Info("consent: " + title + ": " + text);
+    public Action<ConsentContext, Note, Note> Notice { get; set; } = (_, title, text) => Log.Info("consent: " + title.English + ": " + text.English);
     /// <summary>Opens the token setup (the App tab's token box) when the user said yes and there is no token yet.</summary>
     public Action OpenTokenSetup { get; set; } = () => { };
 
@@ -95,7 +97,7 @@ internal sealed class ConsentGate
         if (!_settings.CloudSharingEnabled)
         {
             Log.Info($"consent: refused ({context}): cloud sharing is off");
-            Notice(context, CloudOffTitle, CloudOffText);
+            Notice(context, CloudOffTitleNote, CloudOffNote);
             return false;
         }
         if (_settings.CopiumConsent) return true;

@@ -364,6 +364,11 @@ public partial class TrimWindow : Window
         _ => role.ToString(),   // Mix and Other never reach a list
     };
 
+    /// <summary>The sentence for a trim that was refused because the sources inside All audio cannot be changed (the same words as the mix note in the editor).</summary>
+    internal static Note AlignmentRefusalNote(TrimAlignmentRefusal kind) => kind == TrimAlignmentRefusal.Untrusted
+        ? Note.Of("This Windows reads clips differently: sources cannot be changed inside All audio")
+        : Note.Of("Recorded or trimmed by an older Clink: sources cannot be changed inside All audio");
+
     /// <summary>The label of a track row: "All audio (mix)" for the Mix, the source's name for Clink's own sources, else the name the file has.</summary>
     private static string TrackLabel(TrackRole fileRole, string fileName) => fileRole switch
     {
@@ -373,17 +378,27 @@ public partial class TrimWindow : Window
     };
 
     /// <summary>
-    /// The status after an upload that Copium's limit refused: "Saved X (trim).mp4, not uploaded: over the limit - tighten the selection, or tick
-    /// 'I have Copium+' if you do". The refusal starts a sentence on its own elsewhere; after "not uploaded:" English lower-cases its first
-    /// letter. Other languages use it as it is (a noun or a name there may need its capital).
+    /// The status after an upload that was refused: "Saved X (trim).mp4, not uploaded: over Copium's free limit (200 MB / 10 min) - tighten the
+    /// selection, or tick 'I have Copium+' if you do". By <paramref name="kind"/>: over the account's limits is a whole sentence of its own
+    /// per plan (the limits are put in it, so no refusal text is cut or re-cased); a smaller copy that could not be made puts the refusal
+    /// (<paramref name="refusal"/>, a whole sentence with its own full stop) in a sentence-level slot as it is; a refusal that is only a
+    /// phrase (<see cref="ShareRefusalKind.Phrase"/>, a game is in front) ends the status with no advice after it.
     /// </summary>
-    internal static string NotUploadedText(string fileName, string refusal, bool copiumPlus)
+    internal static string NotUploadedText(string fileName, ShareRefusalKind kind, string refusal, bool copiumPlus)
     {
-        string why = L.Code == "en" && refusal.Length > 1 ? char.ToLowerInvariant(refusal[0]) + refusal[1..] : refusal;
         string saved = L.Ltr(fileName);
+        if (kind == ShareRefusalKind.OverLimit)
+        {
+            var (maxBytes, maxSeconds, _) = Capabilities.CopiumLimits(copiumPlus);
+            return copiumPlus
+                ? L.T("Saved {name}, not uploaded: over Copium Plus's limit ({size} / {minutes} min) - tighten the selection", ("name", saved), ("size", L.Bytes(maxBytes)), ("minutes", maxSeconds / 60))
+                : L.T("Saved {name}, not uploaded: over Copium's free limit ({size} / {minutes} min) - tighten the selection, or tick '{label}' if you do", ("name", saved), ("size", L.Bytes(maxBytes)), ("minutes", maxSeconds / 60), ("label", L.T("I have Copium+")));
+        }
+        if (kind == ShareRefusalKind.Phrase)
+            return L.T("Saved {name}, not uploaded. {reason}", ("name", saved), ("reason", refusal));
         return copiumPlus
-            ? L.T("Saved {name}, not uploaded: {why} - tighten the selection", ("name", saved), ("why", why))
-            : L.T("Saved {name}, not uploaded: {why} - tighten the selection, or tick '{label}' if you do", ("name", saved), ("why", why), ("label", L.T("I have Copium+")));
+            ? L.T("Saved {name}, not uploaded. {reason} Tighten the selection to share it.", ("name", saved), ("reason", refusal))
+            : L.T("Saved {name}, not uploaded. {reason} Tighten the selection, or tick '{label}' if you do.", ("name", saved), ("reason", refusal), ("label", L.T("I have Copium+")));
     }
 
     /// <summary>A volume as a percentage ("100%"), rounded away from zero like the "0" format did.</summary>
@@ -856,7 +871,9 @@ public partial class TrimWindow : Window
                 TrackMix[]? mix = _rows.Count > 0 ? MixPlan.Export(_roles, _rows.Select(r => r.Included).ToArray(), _rows.Select(r => r.Gain).ToArray()) : null;
                 if (mix != null && !mix.Any(m => m.Include)) StatusText.Text = L.T("Trimming (no audio)…");
                 string trimDst = dst;
-                string[] keptNames = await Task.Run(() => Trimmer.Trim(src, trimDst, start, end, names, mix));
+                string[] keptNames;
+                try { keptNames = await Task.Run(() => Trimmer.Trim(src, trimDst, start, end, names, mix)); }
+                catch (TrimAlignmentException refused) { throw new ShownException(AlignmentRefusalNote(refused.Kind)); }   // the kind picks the sentence, not the words of the message
                 trimmed = true;
                 replaceProblem = replace ? await ReplaceOriginalAsync(src, dst) : null;
                 if (replace && replaceProblem == null)
@@ -908,7 +925,7 @@ public partial class TrimWindow : Window
                     // is trimmed twice), which is why the buttons come back on here too.
                     if (app.ShareRefusal is string refusal)
                     {
-                        StatusText.Text = NotUploadedText(Path.GetFileName(result.Path), refusal, app.Settings.CopiumPlus);
+                        StatusText.Text = NotUploadedText(Path.GetFileName(result.Path), app.RefusalKind, refusal, app.Settings.CopiumPlus);
                     }
                     else StatusText.Text = L.T("Saved {name}, not uploaded: {error}. Choose again to retry.", ("name", L.Ltr(Path.GetFileName(result.Path))), ("error", app.ShareError ?? L.T("upload failed")));
                     await KeepOpenAsync();

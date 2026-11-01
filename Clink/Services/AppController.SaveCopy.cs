@@ -35,10 +35,10 @@ internal sealed partial class AppController
         string? target = SaveTargetPicker is { } picker ? picker(entry) : PickSaveTarget(entry, owner);
         if (string.IsNullOrWhiteSpace(target)) return new SaveResult(SaveOutcome.Cancelled, null, null);
         string source = entry.Path;
-        if (SaveCopy.TargetProblem(target, source, Settings.ClipsFolder) is { } problem)
+        if (SaveCopy.TargetProblemNote(target, source, Settings.ClipsFolder) is { } problem)
         {
-            SayT("Not saved: {reason}", ("reason", problem));   // (SaveCopy.TargetProblem words it: slice S2)
-            return new SaveResult(SaveOutcome.Refused, null, problem);
+            SayT("Not saved: {reason}", ("reason", problem));
+            return new SaveResult(SaveOutcome.Refused, null, problem.Shown);
         }
         try
         {
@@ -113,12 +113,12 @@ internal sealed partial class AppController
     /// </summary>
     public bool ShareFile(ClipEntry entry)
     {
-        ShareRefusal = null;
-        ShareError = null;
+        _refusal = null; RefusalKind = ShareRefusalKind.None;
+        _shareError = null;
         if (!OpenShareWindow(entry))
         {
             var failed = Note.Of("Could not open the share window");   // (AppController.ShareWindowFailedText is the same key, for the clip list)
-            ShareError = failed.Shown;
+            _shareError = failed;
             Say(failed);
             LastShareOutcome = ShareOutcome.WindowFailed;
             return false;

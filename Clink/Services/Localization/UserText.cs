@@ -1,16 +1,6 @@
 namespace Clink.Services.Localization;
 
 /// <summary>
-/// An exception (or any object) that knows the sentence to show the user when its <see cref="Exception.Message"/> is the English one for
-/// the log. Only for types that cannot carry the text in <see cref="Exception.Data"/> (<see cref="UserText.Attach{T}(T, Note)"/>).
-/// </summary>
-internal interface IUserText
-{
-    /// <summary>The sentence in the language of the UI.</summary>
-    string UserText { get; }
-}
-
-/// <summary>
 /// The one way an exception carries what the user is shown. <see cref="Exception.Message"/> is English and goes to the log (a log is
 /// read by the developer whatever language the user picked); the user's sentence rides on the exception in <c>Data["Clink.UserText"]</c>,
 /// preferably as a <see cref="Note"/> (catalog key + arguments) so it is translated when it is shown, not when it is thrown.
@@ -36,7 +26,7 @@ internal static class UserText
 
     /// <summary>
     /// What to show the user for <paramref name="ex"/>: the text attached with <see cref="Attach{T}(T, Note)"/> (a note is rendered now, in
-    /// the current language), else <see cref="IUserText.UserText"/>, else <see cref="Exception.Message"/>. A single-inner
+    /// the current language), else <see cref="Exception.Message"/>. A single-inner
     /// <see cref="AggregateException"/> (what <c>Task.Wait</c> throws) is looked through.
     /// </summary>
     internal static string Of(Exception ex)
@@ -46,7 +36,7 @@ internal static class UserText
         {
             Note n => n.Shown,
             string s => s,
-            _ => ex is IUserText u ? u.UserText : ex.Message,
+            _ => ex.Message,
         };
     }
 
@@ -61,14 +51,8 @@ internal static class UserText
         {
             Note n => n,
             string s => Note.Verbatim(s),
-            _ => Note.Verbatim(ex is IUserText u ? u.UserText : ex.Message),
+            _ => Note.Verbatim(ex.Message),
         };
     }
 
-    /// <summary>The attached text in English (what a log may say), else <see cref="Exception.Message"/>.</summary>
-    internal static string EnglishOf(Exception ex)
-    {
-        if (ex is AggregateException { InnerExceptions.Count: 1 } a) ex = a.InnerException!;
-        return ex.Data[Key] switch { Note n => n.English, string s => s, _ => ex.Message };
-    }
 }

@@ -58,12 +58,6 @@ internal static unsafe class Capabilities
     // The length limits as complete sentences (English catalog keys); the note joins one to the status sentence with the "{status} - {limit}" template.
     private const string FreeLimitText = "Copium free uploads are limited to 10 min: trim a full-length clip before sharing it, or shorten the replay length";
     private const string PlusLimitText = "Copium Plus uploads are limited to 60 min: trim a full-length clip before sharing it, or shorten the replay length";
-    /// <summary>Appended to the size-target note when the replay length is 10 min or more (a full 10:00 clip runs a moment over); the UI shows it in Warn colour. English text, as the note reads under English.</summary>
-    public const string CopiumLengthNote = " - " + FreeLimitText;
-    /// <summary>The same for the Copium Plus target, from a replay length of 60 min up.</summary>
-    public const string CopiumPlusLengthNote = " - " + PlusLimitText;
-    // What every length note has in common, and so what IsWarningNote looks for besides "does not fit".
-    private const string LengthLimitMarker = " uploads are limited to ";
     /// <summary>Each enabled audio track is AAC at this rate.</summary>
     public const int AudioKbps = 192;
     /// <summary>Bitrate range a size target may pick (the engine runs anything ≥ 0.1 Mbps; below 0.5 the picture is unusable).</summary>
@@ -335,13 +329,6 @@ internal static unsafe class Capabilities
     }
 
     /// <summary>
-    /// True for a size-target note the UI shows in Warn colour: no bitrate makes the clip fit ("does not fit"), or the replay
-    /// length reaches the target's length limit ("… uploads are limited to 10 min …"), which no bitrate fixes either.
-    /// </summary>
-    public static bool IsWarningNote(string? note) =>
-        note != null && (note.Contains("does not fit", StringComparison.Ordinal) || note.Contains(LengthLimitMarker, StringComparison.Ordinal));
-
-    /// <summary>
     /// The sentence a target with a length limit adds once the replay is at or over it (a full clip is then over the limit); null below it or
     /// without a limit. Only the two Copium targets have a length limit. Whole sentences, so a language can order them as it needs.
     /// </summary>
@@ -365,9 +352,9 @@ internal static unsafe class Capabilities
     /// 5 % headroom, plus a one-line note for the UI that says what happened (when even the minimum does not fit, the note says so).
     /// The fit counts one keyframe interval more than that length, because a clip starts on the last keyframe at or before it and
     /// so runs up to that much longer (a 2:00 replay saves ~2:01). A Copium target also appends its length note
-    /// (<see cref="CopiumLengthNote"/>, <see cref="CopiumPlusLengthNote"/>) from a replay length of 10 min (60 for Plus) up, a
+    /// ("{status} - {limit}", see <c>LengthLimit</c>) from a replay length of 10 min (60 for Plus) up, a
     /// full clip being over the limit then, which no bitrate can fix: the bitrate is then what a trim to the limit needs, not one
-    /// that squeezes the whole replay into the size for nothing. <see cref="IsWarningNote"/> tells which notes are warnings.
+    /// that squeezes the whole replay into the size for nothing. Whether a note is a warning is a flag of <see cref="ResolveBitrateChecked"/>, never read from the words of the note.
     /// </summary>
     public static (double bitrateMbps, string? note) ResolveBitrate(Settings s, int audioTracks, int seconds)
     {

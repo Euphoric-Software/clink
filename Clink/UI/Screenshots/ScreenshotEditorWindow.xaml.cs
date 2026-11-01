@@ -314,12 +314,28 @@ public partial class ScreenshotEditorWindow : Window, ICaptureExcludedWindow
         Hotkeys.GrantForeground();
         Activate();
         TestGuard.CheckLaunch("a message box (save edits before quit)");
-        var answer = MessageBox.Show(this, L.T("Save the changes to this screenshot before Clink quits?"),
+        var answer = MessageBox.Show(this, SavePromptText(HoldsUnsavedNewCapture, onQuit: true),
             L.T("Clink screenshot editor"), MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
         if (answer == MessageBoxResult.Cancel) return false;
         if (answer == MessageBoxResult.Yes && !await SaveCoreAsync(finish: false)) return false;
         return true;
     }
+
+    /// <summary>The editor holds a capture that was never saved (No on a prompt discards all of it, not just some edits).</summary>
+    private bool HoldsUnsavedNewCapture => _request is { IsNewCapture: true } && !_everSaved;
+
+    /// <summary>
+    /// The question of the save prompt (Yes / No / Cancel). A new capture that was never saved: "Save this screenshot?" (No discards the whole
+    /// capture); a screenshot that is saved already, or came from a file: "Save the changes to this screenshot?". <paramref name="onQuit"/>:
+    /// the prompt Clink asks before it quits.
+    /// </summary>
+    internal static string SavePromptText(bool unsavedNewCapture, bool onQuit) => (unsavedNewCapture, onQuit) switch
+    {
+        (true, true) => L.T("Save this screenshot before Clink quits?"),
+        (true, false) => L.T("Save this screenshot?"),
+        (false, true) => L.T("Save the changes to this screenshot before Clink quits?"),
+        (false, false) => L.T("Save the changes to this screenshot?"),
+    };
 
     internal void CloseApproved()
     {
@@ -336,7 +352,7 @@ public partial class ScreenshotEditorWindow : Window, ICaptureExcludedWindow
         if (_session.IsDirty)
         {
             TestGuard.CheckLaunch("a message box (save edits)");
-            var answer = MessageBox.Show(this, L.T("Save the changes to this screenshot?"),
+            var answer = MessageBox.Show(this, SavePromptText(HoldsUnsavedNewCapture, onQuit: false),
                 L.T("Clink screenshot editor"), MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
             if (answer == MessageBoxResult.Cancel) return;
             if (answer == MessageBoxResult.Yes && !await SaveCoreAsync(finish: true)) return;

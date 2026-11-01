@@ -25,8 +25,21 @@ internal sealed class Note
     private readonly (string Name, object? Value)[] _args;
     private readonly long? _count;
     private readonly string? _verbatim;
+    private readonly bool _trimPeriod;
+    private readonly Func<string>? _compose;
 
-    private Note(string key, (string Name, object? Value)[] args, long? count = null, string? verbatim = null) { Key = key; _args = (args ?? Array.Empty<(string, object?)>()).ToArray(); _count = count; _verbatim = verbatim; }
+    private Note(string key, (string Name, object? Value)[] args, long? count = null, string? verbatim = null, bool trimPeriod = false, Func<string>? compose = null) { Key = key; _args = (args ?? Array.Empty<(string, object?)>()).ToArray(); _count = count; _verbatim = verbatim; _trimPeriod = trimPeriod; _compose = compose; }
+
+    /// <summary>This note without a final full stop (<see cref="Shown"/> and <see cref="English"/>), for a sentence that is used as a clause of another one.</summary>
+    public Note WithoutFinalPeriod() => new(Key, _args, _count, _verbatim, trimPeriod: true, compose: _compose);
+
+    /// <summary>
+    /// A note for a text that is put together from several catalog entries (a join of sentences, a choice between entries by a count): the
+    /// text of <paramref name="compose"/> is what <see cref="Shown"/> returns, and <see cref="English"/> runs it again with every catalog call
+    /// answering in English (<see cref="L.InEnglish"/>), so the log never gets a translated piece. <paramref name="compose"/> must only build
+    /// text (no side effects, no waiting) and take any text it was given from outside as it is.
+    /// </summary>
+    public static Note Build(Func<string> compose) => new("(composed)", Array.Empty<(string, object?)>(), compose: compose);
 
     /// <summary>A note for catalog entry <paramref name="key"/> (its English text, see <see cref="L.T"/>) with <c>{name}</c> arguments.</summary>
     public static Note Of(string key, params (string Name, object? Value)[] args) => new(key, args);
@@ -64,10 +77,12 @@ internal sealed class Note
         })).ToArray();
 
     /// <summary>The text in the language of the UI.</summary>
-    public string Shown => _verbatim ?? (_count is long c ? L.Plural(Key, c, Resolve(false)) : L.T(Key, Resolve(false)));
+    public string Shown => Trim(_verbatim ?? (_compose != null ? _compose() : _count is long c ? L.Plural(Key, c, Resolve(false)) : L.T(Key, Resolve(false))));
+
+    private string Trim(string s) => _trimPeriod ? s.TrimEnd('.') : s;
 
     /// <summary>The text in English (logs), whatever the language of the UI is; free of direction marks.</summary>
-    public string English => _verbatim ?? s_marks.Replace(L.TIn("en", Key, _count is long c ? Resolve(true).Append(("count", (object?)c)).ToArray() : Resolve(true)), "");
+    public string English => Trim(_verbatim ?? (_compose != null ? s_marks.Replace(L.InEnglish(_compose), "") : s_marks.Replace(L.TIn("en", Key, _count is long c ? Resolve(true).Append(("count", (object?)c)).ToArray() : Resolve(true)), "")));
 
     /// <summary>English, so a note that ends up in a log line by string concatenation stays English; use <see cref="Shown"/> for the user.</summary>
     public override string ToString() => English;
@@ -82,6 +97,12 @@ internal enum RecordingState { Starting, Recording, WaitingForGame, Paused, Erro
 /// the share window itself could not be opened (<see cref="AppController.ShareError"/> says so; no upload was tried).
 /// </summary>
 internal enum ShareOutcome { None, LinkCopied, Uploaded, FileShareOpened, Refused, Failed, WindowFailed, Declined }
+
+/// <summary>
+/// Why a Share was refused (<see cref="AppController.RefusalKind"/>): over Copium's limits for the account, no smaller copy could be made
+/// (the refusal is a whole sentence of its own), or a refusal that is a phrase rather than a sentence (a game is in front).
+/// </summary>
+internal enum ShareRefusalKind { None, OverLimit, SmallerCopy, Phrase }
 
 /// <summary>Owns the engine, settings, clip library, hotkeys, game detection, toasts, status dot, archive, tray icon and the single-instance pipe.</summary>
 internal sealed partial class AppController : IDisposable
@@ -148,9 +169,15 @@ internal sealed partial class AppController : IDisposable
     public bool IsPaused { get; private set; }
     public string LastNotice { get; private set; } = "";
     /// <summary>Why the last <see cref="ShareAsync"/> refused to upload (Copium's free limits), for the clip row and the toast to show instead of "Upload failed"; null when it was not refused.</summary>
-    public string? ShareRefusal { get; private set; }
+    public string? ShareRefusal => _refusal?.Shown;
+    private Note? _refusal;
+    /// <summary>What kind of refusal <see cref="ShareRefusal"/> is, so a caller words its sentence by the kind instead of editing the refusal text (None when it was not refused).</summary>
+    internal ShareRefusalKind RefusalKind { get; private set; }
     /// <summary>Why the last <see cref="ShareAsync"/> failed (no token, Copium's answer, the network), for the clip row, the toast and the trim editor to show; null when it did not fail.</summary>
-    public string? ShareError { get; private set; }
+    public string? ShareError => _shareError?.Shown;
+    private Note? _shareError;
+    /// <summary><see cref="ShareError"/> as a note (English for a log).</summary>
+    internal Note? ShareErrorNote => _shareError;
     /// <summary>The last upload failed because Copium rejected the token (HTTP 401 / 403): a bulk upload stops instead of trying the rest.</summary>
     internal bool ShareTokenRejected { get; private set; }
     /// <summary>
@@ -667,19 +694,19 @@ internal sealed partial class AppController : IDisposable
         // A downloaded update was skipped at startup (install failed earlier, read-only folder, elevated): tell the user, once per start.
         if (Updater.InstallProblemNote is { } problem) { Say(problem); ShowBalloon(L.T("Clink update not installed"), problem.Shown); }
         // A hand edit of settings.json that does not parse, or has values that do not make sense (those keep their defaults).
-        if (Settings.LoadProblem is string unread) { Say(unread); ShowBalloon(Settings.FileWasSkipped ? L.T("Clink settings not loaded") : L.T("Clink settings partly read"), unread); }
+        if (Settings.LoadProblem is string unread) { Say(Note.Verbatim(unread)); ShowBalloon(Settings.FileWasSkipped ? L.T("Clink settings not loaded") : L.T("Clink settings partly read"), unread); }   // (the text is English in every language: it names files and settings)
         // The footer line of MigrateHotkeys is easy to miss when Clink starts in the tray; this is a hotkey it just claimed or left unset.
         if (_hotkeyNotice is string hotkeyNotice) ShowBalloon(L.T("Clink hotkey"), hotkeyNotice);
         // Where the settings live. A Clink started from inside a packaged app (an MSIX/Store desktop app, say) sees that app's private copy of
         // AppData, so says so; a real one took another copy's settings over on a first start (App.RunNormal), or looks for a copy
         // worth offering (the tray item, below).
-        if (AppDataRedirect.Notice is string redirected) Say(redirected);
+        if (AppDataRedirect.NoticeNote is { } redirected) Say(redirected);
         if (Settings.ImportedFrom is { } taken) SayT("Imported the settings Clink saved while started from inside {app} ({saved})", ("app", Note.Ltr(taken.FriendlyName)), ("saved", taken.SavedLocalText));
         // Settings were imported (now, or by the Clink that restarted into this one) but the clip lists could not be merged: said once,
         // and every later start tries the merge again.
-        if (SettingsImport.TakeClipsNotice() is string clipsNotice) { Say(clipsNotice); ShowBalloon("Clink", clipsNotice); }
+        if (SettingsImport.TakeClipsNoticeNote() is { } clipsNotice) { Say(clipsNotice); ShowBalloon("Clink", clipsNotice.Shown); }
         // An import (now, or by the Clink that restarted into this one) did not take over a network folder: said once, naming which.
-        if (SettingsImport.TakeNetworkPathsNotice() is string pathsNotice) { Say(pathsNotice); ShowBalloon("Clink", pathsNotice); }
+        if (SettingsImport.TakeNetworkPathsNoticeNote() is { } pathsNotice) { Say(pathsNotice); ShowBalloon("Clink", pathsNotice.Shown); }
         SettingsImport.PendingChanged += OnImportPending;
         if (CanOfferImport) _ = SettingsImport.Scan(Settings);
         RaiseStateChanged();
@@ -1078,7 +1105,7 @@ internal sealed partial class AppController : IDisposable
             ShowBalloon("Clink", why.Shown);
             return;
         }
-        if (result.ClipsNotice is string clipsNotice) Say(clipsNotice);   // already worded (and translated) by SettingsImport
+        if (result.ClipsNoticeNote is { } clipsNotice) Say(clipsNotice);
         else SayT("Imported the settings saved {saved}: restarting Clink", ("saved", copy.SavedLocalText));
         if (RestartClink(out string? error)) return;
 
@@ -1376,17 +1403,6 @@ internal sealed partial class AppController : IDisposable
 
     /// <summary>The tray's pause item: "Resume recording" while paused, else "Pause recording".</summary>
     private string PauseItemText => IsPaused ? L.T("Resume recording") : L.T("Pause recording");
-
-    /// <summary>
-    /// Shows <paramref name="msg"/> as it is (already in the language of the UI, or English text from a part that is not translated yet)
-    /// and logs it as it is. Prefer <see cref="SayT"/> / <see cref="Say(Note)"/>, which log English whatever the language is.
-    /// </summary>
-    public void Say(string msg)
-    {
-        LastNotice = msg;
-        Log.Info("notice: " + msg);
-        Notice?.Invoke(msg);
-    }
 
     /// <summary>Shows <paramref name="note"/> in the language of the UI and logs it in English.</summary>
     public void Say(Note note)
@@ -1748,7 +1764,7 @@ internal sealed partial class AppController : IDisposable
     private static Note OverLimitNote(bool plus)
     {
         var (maxBytes, maxSeconds, _) = Capabilities.CopiumLimits(plus);
-        var limits = new[] { ("size", (object?)Capabilities.FormatBytes(maxBytes)), ("minutes", (object?)(maxSeconds / 60)) };
+        var limits = new[] { ("size", (object?)Note.Size(maxBytes)), ("minutes", (object?)(maxSeconds / 60)) };
         return plus ? Note.Of("Over Copium Plus's limit ({size} / {minutes} min)", limits) : Note.Of("Over Copium's free limit ({size} / {minutes} min)", limits);
     }
 
@@ -1768,7 +1784,7 @@ internal sealed partial class AppController : IDisposable
         int secs = (int)Math.Ceiling(Math.Max(0, duration));
         var args = new[]
         {
-            ("limit", (object?)Capabilities.FormatBytes(maxBytes)), ("minutes", maxSeconds / 60), ("size", Capabilities.FormatBytes(size)),
+            ("limit", (object?)Note.Size(maxBytes)), ("minutes", maxSeconds / 60), ("size", Note.Size(size)),
             ("length", $"{secs / 60}:{secs % 60:00}"),
         };
         // (folder-scanned clips have no duration: no length in the sentence)
@@ -1792,8 +1808,8 @@ internal sealed partial class AppController : IDisposable
     /// <param name="declinedAfterCopy">Called once, with the reason, when this call made a smaller copy and then declined to upload it because the sign-in, plan or switches changed meanwhile (outcome <see cref="ShareOutcome.Declined"/>). Per call, so concurrent shares cannot mix their reasons up; it runs on the awaiting context, never blocks, and is not called for a prompt the user answered.</param>
     public async Task<bool> ShareAsync(ClipEntry entry, IProgress<double>? progress = null, bool announce = false, ConsentContext context = ConsentContext.ClipShare, bool quiet = false, Action? released = null, bool allowFit = true, Action<string>? declinedAfterCopy = null)
     {
-        ShareRefusal = null;
-        ShareError = null;
+        _refusal = null; RefusalKind = ShareRefusalKind.None;
+        _shareError = null;
         ShareTokenRejected = false;
         LastShareOutcome = ShareOutcome.None;
         if (!string.IsNullOrEmpty(entry.CopiumLink))
@@ -1814,9 +1830,9 @@ internal sealed partial class AppController : IDisposable
         // comes when a token is saved or at the first real upload. With a token the first share asks and goes on only for "Enable".
         if (!Settings.CloudSharingEnabled)
         {
-            ShareError = CloudOffText;
+            _shareError = CloudOffNote;
             Say(CloudOffNote);
-            Consent.Notice(context, ConsentGate.CloudOffTitle, CloudOffText);
+            Consent.Notice(context, ConsentGate.CloudOffTitleNote, CloudOffNote);
             LastShareOutcome = ShareOutcome.Declined;
             return false;
         }
@@ -1826,7 +1842,7 @@ internal sealed partial class AppController : IDisposable
             if (announce && !Settings.CopiumConsent && GameOrFullScreenInFront())
             {
                 var needOk = Note.Of("Sharing needs your OK once — open Clink and press Share");
-                ShareError = needOk.Shown;
+                _shareError = needOk;
                 Say(needOk);
                 LastShareOutcome = ShareOutcome.Failed;
                 return false;
@@ -1835,7 +1851,7 @@ internal sealed partial class AppController : IDisposable
             {
                 if (!Settings.CloudSharingEnabled)
                 {
-                    ShareError = CloudOffText;
+                    _shareError = CloudOffNote;
                     Say(CloudOffNote);
                 }
                 else SayT("Not shared: sharing with Copium is not enabled");
@@ -1845,7 +1861,7 @@ internal sealed partial class AppController : IDisposable
         }
         if (!Settings.CloudSharingEnabled)   // (switched off while the pop-up was up)
         {
-            ShareError = CloudOffText;
+            _shareError = CloudOffNote;
             Say(CloudOffNote);
             LastShareOutcome = ShareOutcome.Declined;
             return false;
@@ -1854,7 +1870,7 @@ internal sealed partial class AppController : IDisposable
         {
             if (quiet)   // a bulk upload opens no window (it needs the token first)
             {
-                ShareError = L.T("No Copium token: sign in with Copium under App → Copium");
+                _shareError = Note.Of("No Copium token: sign in with Copium under App → Copium");
                 LastShareOutcome = ShareOutcome.Failed;
                 return false;
             }
@@ -1864,7 +1880,7 @@ internal sealed partial class AppController : IDisposable
             if (announce && GameOrFullScreenInFront())
             {
                 var noToken = Note.Of("No Copium token: open Clink to share the file");
-                ShareError = noToken.Shown;
+                _shareError = noToken;
                 Say(noToken);
                 LastShareOutcome = ShareOutcome.Failed;
                 return false;
@@ -1885,7 +1901,7 @@ internal sealed partial class AppController : IDisposable
         bool needsCopy = allowFit && ShareSizeOver(entry.Size, Settings.CopiumPlus) && ShareLengthRefusalFor(entry.Duration, Settings.CopiumPlus) == null;
         if (!needsCopy && ShareRefusalFor(entry.Size, entry.Duration, Settings.CopiumPlus) is string refusal)
         {
-            ShareRefusal = refusal;
+            _refusal = OverLimitNote(Settings.CopiumPlus); RefusalKind = ShareRefusalKind.OverLimit;
             Say(ShareRefusalNoteFor(entry.Size, entry.Duration, Settings.CopiumPlus));
             LastShareOutcome = ShareOutcome.Refused;
             return false;
@@ -1894,7 +1910,7 @@ internal sealed partial class AppController : IDisposable
         if (needsCopy && !ShareCopiesAvailable)
         {
             var unavailable = ShareFitModel.UnavailableNote(ShareFitModel.ForCopium(Settings.CopiumPlus), ShareUnavailableKind.Elevated, entry.Size);
-            ShareRefusal = unavailable.Shown;
+            _refusal = unavailable; RefusalKind = ShareRefusalKind.SmallerCopy;
             Say(unavailable);
             LastShareOutcome = ShareOutcome.Refused;
             return false;
@@ -1944,7 +1960,7 @@ internal sealed partial class AppController : IDisposable
                 if (fit.Refusal != null)
                 {
                     fitRefused = true;
-                    ShareRefusal = fit.Refusal.Shown;
+                    _refusal = fit.Refusal; RefusalKind = fit.Kind;
                     Say(fit.Notice ?? fit.Refusal);
                 }
                 else if (!(Settings.CloudSharingEnabled && Settings.CopiumConsent && Settings.CopiumToken == token && Settings.CopiumPlus == plusAtStart))
@@ -1957,7 +1973,7 @@ internal sealed partial class AppController : IDisposable
                     Note why;
                     if (!Settings.CloudSharingEnabled)
                     {
-                        ShareError = CloudOffText;
+                        _shareError = CloudOffNote;
                         why = CloudOffNote;
                     }
                     else if (!Settings.CopiumConsent) why = Note.Of("Not shared: sharing with Copium is not enabled");
@@ -1993,19 +2009,19 @@ internal sealed partial class AppController : IDisposable
         }
         catch (Exception ex)
         {
-            ShareRefusal = null;   // another clip's Share may have been refused while this one was going up
+            _refusal = null; RefusalKind = ShareRefusalKind.None;   // another clip's Share may have been refused while this one was going up
             if (uploadCts.IsCancellationRequested && !_cts.IsCancellationRequested && !Settings.CloudSharingEnabled)
             {
                 Log.Info("Copium upload: cancelled, cloud sharing was turned off");
                 killed = true;
-                ShareError = CloudOffText;
+                _shareError = CloudOffNote;
                 SayT("Not shared: cloud sharing is off");
             }
             else
             {
                 Log.Error("Copium upload", ex);
                 var failure = UserText.NoteOf(ex);   // Copium's refusals and timeouts carry a note: the row and the toast show it translated, the log (above) has the English Message
-                ShareError = failure.Shown;
+                _shareError = failure;
                 ShareTokenRejected = ex is CopiumHttpException tokenEx && CopiumClient.IsTokenRejection(tokenEx.StatusCode, tokenEx.ErrorText);
                 SayT("Upload failed: {error}", ("error", failure));
             }
@@ -2052,12 +2068,15 @@ internal sealed partial class AppController : IDisposable
         {
             SharePhase.Copying => ShareFitModel.WorkingText(ShareFitModel.ForCopium(Settings.CopiumPlus), null, p),
             SharePhase.Waiting => ShareFitModel.WaitingText,
-            _ => L.T("Uploading… {percent}", ("percent", p.ToString("P0", L.FormatCulture))),
+            _ => UploadingPercentText(p),
         };
     }
 
+    /// <summary>"Uploading… 40%": the line of an upload that is under way (a clip, or a screenshot of a bulk upload, which has no smaller-copy phase).</summary>
+    internal static string UploadingPercentText(double p) => L.T("Uploading… {percent}", ("percent", p.ToString("P0", L.FormatCulture)));
+
     /// <summary>What <see cref="FitForCopiumAsync"/> found: the file to upload (and the copy to dispose afterwards), or why nothing is uploaded.</summary>
-    private sealed record FitOutcome(string Path, Note? Refusal, Note? Notice, ShareCopyResult? Copy);
+    private sealed record FitOutcome(string Path, Note? Refusal, Note? Notice, ShareCopyResult? Copy, ShareRefusalKind Kind = ShareRefusalKind.SmallerCopy);
 
     /// <summary>
     /// The copy's reports (any thread) for one upload: the share phase, the caller's progress, and <paramref name="first"/> once, at the
@@ -2110,7 +2129,7 @@ internal sealed partial class AppController : IDisposable
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { Log.Warn("share: could not read the clip's length: " + ex.Message); }
             if (seconds > Capabilities.CopiumLimits(plus).Seconds)
-                return new FitOutcome(entry.Path, OverLimitNote(plus), ShareRefusalNoteFor(entry.Size, seconds, plus), null);
+                return new FitOutcome(entry.Path, OverLimitNote(plus), ShareRefusalNoteFor(entry.Size, seconds, plus), null, ShareRefusalKind.OverLimit);
         }
         var reports = new CopyReports(this, entry, progress, copyStarted);
         ShareCopyResult result;
@@ -2120,15 +2139,19 @@ internal sealed partial class AppController : IDisposable
         {
             // A last look at what is about to go up: a copy over the limit or over the length would only be refused by Copium.
             Note? refusal = null;
+            var refusalKind = ShareRefusalKind.SmallerCopy;
             if (result.Bytes > target.LimitBytes)
                 refusal = ShareFitModel.FailedNote(target, ShareFitModel.StayedTooBigReason, result.OriginalBytes > 0 ? result.OriginalBytes : entry.Size, ShareCopyError.StayedTooBig);
             else if (result.Seconds > Capabilities.CopiumLimits(plus).Seconds)
+            {
                 refusal = OverLimitNote(plus);
+                refusalKind = ShareRefusalKind.OverLimit;
+            }
             if (refusal != null)
             {
                 Log.Info($"Copium upload: the copy is not usable ({result.Bytes} bytes, {result.Seconds:0.#} s): {refusal.English}");
                 result.Dispose();
-                return new FitOutcome(entry.Path, refusal, refusal, null);
+                return new FitOutcome(entry.Path, refusal, refusal, null, refusalKind);
             }
             return new FitOutcome(result.Path, null, null, result);
         }
@@ -2145,9 +2168,14 @@ internal sealed partial class AppController : IDisposable
                 throw new IOException("making the smaller copy was cancelled");   // another asker of the same copy cancelled it
             }
             long original = result.OriginalBytes > 0 ? result.OriginalBytes : entry.Size;
-            Note text = ShareFitModel.TextNote(ShareFitModel.StateFor(result), target, original, seconds) ?? OverLimitNote(plus);
+            var state = ShareFitModel.StateFor(result);
+            Note? stateText = ShareFitModel.TextNote(state, target, original, seconds);
+            Note text = stateText ?? OverLimitNote(plus);
+            // Sentences (a failed or unavailable copy, a clip that can't fit) go into the trim line whole; the over-limit phrase and the
+            // game-in-front phrase ("Too big for Copium: open Clink to make a smaller copy") are not sentences and get their own wording.
+            var kind = stateText == null ? ShareRefusalKind.OverLimit : state.Kind == ShareFitStateKind.Refused ? ShareRefusalKind.Phrase : ShareRefusalKind.SmallerCopy;
             Log.Info($"Copium upload: no smaller copy ({result.Outcome}, {result.ErrorKind}): {text.English}");
-            return new FitOutcome(entry.Path, text, text, null);
+            return new FitOutcome(entry.Path, text, text, null, kind);
         }
         finally { result.Dispose(); }
     }

@@ -756,7 +756,7 @@ internal static class L10nTreeClipsTests
         {
             @"UI\ClipsPane.xaml.cs", @"UI\ClipsPane.Selection.cs", @"UI\LibraryView.cs", @"UI\ClipItem.cs", @"UI\ClipGrouping.cs",
             @"UI\ClipDeleteConfirmWindow.xaml.cs", @"UI\ShareFilesWindow.xaml.cs", @"Services\ClipDelete.cs", @"Services\BulkActions.cs", @"Services\SaveCopy.cs",
-        }, new[] { L10nSourceScan.T, L10nSourceScan.Plural });
+        }, new[] { L10nSourceScan.T, L10nSourceScan.Plural, L10nSourceScan.NoteOf, L10nSourceScan.SayT });
         hits.AddRange(L10nSourceScan.Xaml(root, new[] { @"UI\ClipsPane.xaml", @"UI\ClipDeleteConfirmWindow.xaml", @"UI\ShareFilesWindow.xaml" }));
         var used = hits.Select(h => h.Key).ToHashSet(StringComparer.Ordinal);
         foreach (var h in hits)

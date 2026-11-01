@@ -226,6 +226,43 @@ internal static class ShareCopiumFitTests
     }
 
     [UnitTest]
+    public static void The_refusal_kind_says_whether_the_account_limit_or_the_smaller_copy_refused()
+    {
+        using (var rig = new Rig())
+        {
+            var longClip = rig.Clip(OverSize, seconds: 601);   // over the length limit: no copy can help
+            Check.False(Wait(rig.App.ShareAsync(longClip)));
+            Check.Equal(ShareRefusalKind.OverLimit, rig.App.RefusalKind);
+            rig.Transcoder.Duration = 700;
+            Check.False(Wait(rig.App.ShareAsync(rig.Clip(OverSize, seconds: 0))));   // the length is read from the file: also the account's limit
+            Check.Equal(ShareRefusalKind.OverLimit, rig.App.RefusalKind);
+            rig.Transcoder.Duration = 5;
+            Check.True(Wait(rig.App.ShareAsync(rig.Clip(OverSize))));
+            Check.Equal(ShareRefusalKind.None, rig.App.RefusalKind, "an upload clears it");
+        }
+        using (var rig = new Rig())
+        {
+            rig.Transcoder.TranscodeSize = _ => OverSize;   // the copy stays too big: a smaller copy could not be made
+            Check.False(Wait(rig.App.ShareAsync(rig.Clip(OverSize))));
+            Check.Equal(ShareRefusalKind.SmallerCopy, rig.App.RefusalKind);
+            Check.True(rig.App.ShareRefusal!.EndsWith(".", StringComparison.Ordinal), "a smaller-copy refusal is a whole sentence: " + rig.App.ShareRefusal);
+        }
+        using (var rig = new Rig(elevated: true))
+        {
+            Check.False(Wait(rig.App.ShareAsync(rig.Clip(OverSize))));   // no smaller copies as administrator
+            Check.Equal(ShareRefusalKind.SmallerCopy, rig.App.RefusalKind);
+            Check.True(rig.App.ShareRefusal!.EndsWith(".", StringComparison.Ordinal), "so is this one: " + rig.App.ShareRefusal);
+        }
+        using (var rig = new Rig())
+        {
+            rig.Game = true;
+            rig.S.ShareCopiesDuringGames = false;
+            Check.False(Wait(rig.App.ShareAsync(rig.Clip(OverSize), announce: true, context: ConsentContext.ShareLast)));
+            Check.Equal(ShareRefusalKind.Phrase, rig.App.RefusalKind, "a game in front is a phrase, not a sentence");
+        }
+    }
+
+    [UnitTest]
     public static void The_refusal_helpers_split_the_size_and_the_length_limit()
     {
         Check.True(AppController.ShareSizeOver(200_000_001, plus: false));
@@ -401,6 +438,11 @@ internal static class ShareCopiumFitTests
             if (file != @"UI\ToastWindow.xaml.cs")
                 Check.False(text.Contains("L.T(\"Uploading\u2026 {percent}\"", StringComparison.Ordinal), file + " builds its own L.T upload line instead of ShareProgressText");
         }
+        // the library bar's bulk uploads (clips and screenshots) use the same line too
+        string selection = File.ReadAllText(Path.Combine(root, @"UI\ClipsPane.Selection.cs"));
+        Check.Contains(selection, "ShareProgressText(", "ClipsPane.Selection.cs (clips)");
+        Check.Contains(selection, "UploadingPercentText(", "ClipsPane.Selection.cs (screenshots)");
+        Check.False(selection.Contains("L.T(\"Uploading\u2026 {percent}\"", StringComparison.Ordinal), "ClipsPane.Selection.cs builds its own L.T upload line");
     }
 
     private sealed class Refuse(HttpStatusCode code, string body) : HttpMessageHandler

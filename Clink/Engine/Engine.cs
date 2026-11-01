@@ -44,7 +44,19 @@ internal sealed class EngineConfig
 }
 
 /// <summary>The disk has less free space than a recording needs (<see cref="Engine.StartRecording"/>): the type, not the English words, tells the controller which sentence to show.</summary>
-internal sealed class NotEnoughFreeSpaceException(string message) : IOException(message);
+internal sealed class NotEnoughFreeSpaceException(string message, long freeBytes, long neededBytes) : IOException(message)
+{
+    /// <summary>What the disk has free, in bytes, when the start was refused.</summary>
+    public long FreeBytes { get; } = freeBytes;
+    /// <summary>The least free space a recording needs, in bytes.</summary>
+    public long NeededBytes { get; } = neededBytes;
+}
+
+/// <summary>A recording is going already (<see cref="Engine.StartRecording"/>): a type, so the controller tells it from the other <see cref="InvalidOperationException"/>s without reading the words of its message.</summary>
+internal sealed class AlreadyRecordingException() : InvalidOperationException("Already recording");
+
+/// <summary>The engine is not running (<see cref="Engine.StartRecording"/>): a type, like <see cref="AlreadyRecordingException"/>, so the controller words it from the catalog.</summary>
+internal sealed class EngineNotRunningException() : InvalidOperationException("Not recording: the engine is not running");
 
 /// <summary>The engine's status line: what it is doing (<see cref="Engine.StatusKind"/>).</summary>
 internal enum EngineStatusKind { Stopped, Starting, Recording, Error }
@@ -690,14 +702,14 @@ internal sealed unsafe class Engine : IDisposable
     /// </summary>
     public string StartRecording(RecordingOptions options, string? gameHint = null)
     {
-        if (_stop || !IsRunning || _ring == null || _encoder == null) throw new InvalidOperationException("Not recording: the engine is not running");
-        if (IsRecording) throw new InvalidOperationException("Already recording");
+        if (_stop || !IsRunning || _ring == null || _encoder == null) throw new EngineNotRunningException();
+        if (IsRecording) throw new AlreadyRecordingException();
         // The file-system work first, outside the lock: a slow folder (a network share) must not hold up DetachRecorder.
         string folder = Path.GetFullPath(options.Folder);
         Services.TestGuard.Check(folder);
         Directory.CreateDirectory(folder);
         long free = FreeBytes(folder);
-        if (free >= 0 && free < MinFreeBytes) throw new NotEnoughFreeSpaceException($"Not enough free disk space to record ({free / 1_048_576} MB free, 1024 MB needed)");
+        if (free >= 0 && free < MinFreeBytes) throw new NotEnoughFreeSpaceException($"Not enough free disk space to record ({free / 1_048_576} MB free, 1024 MB needed)", free, MinFreeBytes);
 
         string game = _gameName ?? (string.IsNullOrEmpty(gameHint) ? "" : gameHint);
         string baseName = string.IsNullOrEmpty(game) ? "Recording" : SanitizeName(game);
@@ -709,8 +721,8 @@ internal sealed unsafe class Engine : IDisposable
         lock (_recLock)
         {
             var ring = _ring; var enc = _encoder;
-            if (_stop || !IsRunning || ring == null || enc == null) throw new InvalidOperationException("Not recording: the engine is not running");
-            if (IsRecording) throw new InvalidOperationException("Already recording");
+            if (_stop || !IsRunning || ring == null || enc == null) throw new EngineNotRunningException();
+            if (IsRecording) throw new AlreadyRecordingException();
 
             List<AudioTrack> tracks;
             List<AudioTrackDesc> descs;

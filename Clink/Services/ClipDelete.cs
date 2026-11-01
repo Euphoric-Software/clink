@@ -310,6 +310,12 @@ internal sealed class ClipDeleter
         _ => "",
     };
 
+    /// <summary><see cref="ShotBulkSummary"/> as a note (English in the log).</summary>
+    internal static Note ShotBulkSummaryNote(int deleted, int total, int withoutFile) => Note.Build(() => ShotBulkSummary(deleted, total, withoutFile));
+
+    /// <summary><see cref="BulkProblemText"/> as a note (English in the log); its text is empty when nothing was kept.</summary>
+    internal static Note BulkProblemNote(int deleted, int total, ClipDeleteResult? first) => Note.Build(() => BulkProblemText(deleted, total, first));
+
     /// <summary>What the bar says after a bulk screenshot delete: <paramref name="total"/> counts every row the delete was asked for, <paramref name="withoutFile"/> of them left because their file is gone.</summary>
     internal static string ShotBulkSummary(int deleted, int total, int withoutFile)
     {

@@ -171,7 +171,7 @@ internal static class L10nTreeCopiumTests
                     Marked(ShareChoices.ButtonLabel(token, cloud, link), "ButtonLabel" + at);
                     Marked(ShareChoices.ToastLabel(token, cloud, link), "ToastLabel" + at);
                     if (ShareChoices.ButtonName(token, cloud, link) is { } name) Marked(name, "ButtonName" + at);
-                    // a split button's main half carries the same label as the bar's: ClipsPane.Selection tells them apart by it
+                    // a split button's main half carries the same label as the bar's (the bar itself acts by BulkBarButtonKind, not by this text)
                     if (ShareChoices.IsSplit(token, cloud, link)) Check.Equal(ShareChoices.SplitMainLabel, ShareChoices.ButtonLabel(token, cloud, link));
                 }
         var menus = new List<(string What, IReadOnlyList<ShareChoiceItem> Items)>

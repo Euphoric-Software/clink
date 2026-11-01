@@ -20,7 +20,7 @@ internal sealed partial class AppController
             Say(text);
             // A screenshot action has no footer in front of it; the clip paths report through their own NotifyProblem / row.
             if (context is ConsentContext.ScreenshotUploadManual or ConsentContext.ScreenshotUploadLibrary or ConsentContext.ScreenshotUploadSetting or ConsentContext.Proactive or ConsentContext.TokenSaved)
-                Toasts.ShowNotice(title, text);
+                Toasts.ShowNotice(title.Shown, text.Shown);
         },
         OpenTokenSetup = ShowCopiumSetup,
     };

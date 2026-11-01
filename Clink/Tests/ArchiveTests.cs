@@ -493,11 +493,11 @@ internal static class ArchiveTests
         Check.True(TryMakeJunction(junction, one.Path), "mklink /J made no junction");
         try
         {
-            Check.Null(ArchiveService.AliasProblem(two.Path, one.Path), "two different folders");
-            Check.NotNull(ArchiveService.AliasProblem(junction, one.Path), "a junction to the clips folder");
-            Check.NotNull(ArchiveService.AliasProblem(one.Path, junction), "the other way round");
-            Check.NotNull(ArchiveService.AliasProblem(@"\\?\" + one.Path, one.Path), @"the \\?\ spelling");
-            Check.Null(ArchiveService.AliasProblem(System.IO.Path.Combine(two.Path, "does-not-exist"), one.Path), "a folder that is not there says nothing (nothing can be copied there either)");
+            Check.Null(ArchiveGuardText.AliasProblem(two.Path, one.Path), "two different folders");
+            Check.NotNull(ArchiveGuardText.AliasProblem(junction, one.Path), "a junction to the clips folder");
+            Check.NotNull(ArchiveGuardText.AliasProblem(one.Path, junction), "the other way round");
+            Check.NotNull(ArchiveGuardText.AliasProblem(@"\\?\" + one.Path, one.Path), @"the \\?\ spelling");
+            Check.Null(ArchiveGuardText.AliasProblem(System.IO.Path.Combine(two.Path, "does-not-exist"), one.Path), "a folder that is not there says nothing (nothing can be copied there either)");
             Check.Equal(0, Directory.GetFiles(one.Path).Length + Directory.GetFiles(two.Path).Length, "no probe file left behind");
         }
         finally { Directory.Delete(junction); }
@@ -539,11 +539,11 @@ internal static class ArchiveTests
     {
         using var dir = new TempDir();
         var (clip, copy, bytes, written) = GuardFiles(dir);
-        using (var guard = ArchiveService.DeleteGuard.Open(clip, copy, bytes.Length, written, out var result, out var problem))
+        using (var guard = ArchiveGuardText.Open(clip, copy, bytes.Length, written, out var result, out var problem))
         {
             Check.NotNull(guard, "a guard (" + result + ": " + problem + ")");
             Check.Equal(ArchiveService.GuardResult.Ready, result);
-            Check.True(guard!.Delete(out _, out _), "the delete through the handle");
+            Check.True(ArchiveGuardText.Delete(guard!, out _, out _), "the delete through the handle");
             Check.True(File.Exists(copy), "the copy is untouched by the delete");
         }   // closing the guard is what finishes the delete
         Check.False(File.Exists(clip), "the clip is gone");
@@ -564,7 +564,7 @@ internal static class ArchiveTests
             // local one and the name and the file index check have already been fooled. The guard is the last line.
             foreach (var (label, aliasCopy) in new[] { ("same path", clip), ("junction", System.IO.Path.Combine(junction, "clip.mp4")) })
             {
-                using var guard = ArchiveService.DeleteGuard.Open(clip, aliasCopy, bytes.Length, written, out var result, out _);
+                using var guard = ArchiveGuardText.Open(clip, aliasCopy, bytes.Length, written, out var result, out _);
                 Check.Null(guard, label + ": no guard for a clip that is its own copy");
                 Check.True(result is ArchiveService.GuardResult.InUse or ArchiveService.GuardResult.SameFile, label + ": refused (" + result + ")");
                 Check.True(File.ReadAllBytes(clip).AsSpan().SequenceEqual(bytes), label + ": the clip is intact");
@@ -581,21 +581,21 @@ internal static class ArchiveTests
         int length = bytes.Length;
 
         File.Move(copy, copy + ".away");
-        using (var none = ArchiveService.DeleteGuard.Open(clip, copy, length, written, out var missing, out _))
+        using (var none = ArchiveGuardText.Open(clip, copy, length, written, out var missing, out _))
         { Check.Null(none); Check.Equal(ArchiveService.GuardResult.CopyMissing, missing, "no copy"); }
         File.Move(copy + ".away", copy);
 
         using (var fs = new FileStream(copy, FileMode.Open, FileAccess.Write, FileShare.None)) fs.SetLength(length - 1);
-        using (var shortCopy = ArchiveService.DeleteGuard.Open(clip, copy, length, written, out var differs, out var why))
+        using (var shortCopy = ArchiveGuardText.Open(clip, copy, length, written, out var differs, out var why))
         { Check.Null(shortCopy); Check.Equal(ArchiveService.GuardResult.CopyDiffers, differs, "a copy one byte short"); Check.Contains(why, "bytes"); }
         File.WriteAllBytes(copy, bytes);
 
-        using (var older = ArchiveService.DeleteGuard.Open(clip, copy, length, written.AddSeconds(1), out var changedTime, out _))
+        using (var older = ArchiveGuardText.Open(clip, copy, length, written.AddSeconds(1), out var changedTime, out _))
         { Check.Null(older); Check.Equal(ArchiveService.GuardResult.Changed, changedTime, "the clip was written at another time than the one copied"); }
 
         using (var fs = new FileStream(clip, FileMode.Append, FileAccess.Write, FileShare.None)) fs.WriteByte(1);
         File.SetLastWriteTimeUtc(clip, written);
-        using (var longer = ArchiveService.DeleteGuard.Open(clip, copy, length, written, out var changedLength, out _))
+        using (var longer = ArchiveGuardText.Open(clip, copy, length, written, out var changedLength, out _))
         { Check.Null(longer); Check.Equal(ArchiveService.GuardResult.Changed, changedLength, "the clip grew"); }
 
         Check.True(File.Exists(clip) && File.Exists(copy), "nothing was deleted");
@@ -608,18 +608,18 @@ internal static class ArchiveTests
         var (clip, copy, bytes, written) = GuardFiles(dir);
 
         using (var writer = new FileStream(clip, FileMode.Open, FileAccess.Write, FileShare.Read))   // an uploader, a muxer
-        using (var busy = ArchiveService.DeleteGuard.Open(clip, copy, bytes.Length, written, out var writing, out _))
+        using (var busy = ArchiveGuardText.Open(clip, copy, bytes.Length, written, out var writing, out _))
         { Check.Null(busy); Check.Equal(ArchiveService.GuardResult.InUse, writing, "open for writing"); }
 
         using (var player = new FileStream(clip, FileMode.Open, FileAccess.Read, FileShare.Read))   // a player that does not share delete
-        using (var busy = ArchiveService.DeleteGuard.Open(clip, copy, bytes.Length, written, out var playing, out _))
+        using (var busy = ArchiveGuardText.Open(clip, copy, bytes.Length, written, out var playing, out _))
         { Check.Null(busy); Check.Equal(ArchiveService.GuardResult.InUse, playing, "open by a player that does not let it be deleted"); }
 
         File.SetAttributes(clip, FileAttributes.ReadOnly);
         try
         {
-            using var guard = ArchiveService.DeleteGuard.Open(clip, copy, bytes.Length, written, out var result, out var problem);
-            if (guard != null) Check.False(guard.Delete(out result, out problem), "a read-only clip cannot be deleted");
+            using var guard = ArchiveGuardText.Open(clip, copy, bytes.Length, written, out var result, out var problem);
+            if (guard != null) Check.False(ArchiveGuardText.Delete(guard, out result, out problem), "a read-only clip cannot be deleted");
             Check.Equal(ArchiveService.GuardResult.Denied, result, "read-only");
             Check.Contains(problem, "access denied");
         }
@@ -636,7 +636,7 @@ internal static class ArchiveTests
         string cutFile = dir.File("cut.mp4");
         File.WriteAllBytes(cutFile, cut);
         WaitUntilNobodyHasItOpen(cutFile);
-        using (var guard = ArchiveService.DeleteGuard.Open(clip, copy, bytes.Length, written, out _, out _))
+        using (var guard = ArchiveGuardText.Open(clip, copy, bytes.Length, written, out _, out _))
         {
             Check.NotNull(guard, "a guard");
             // A new cut takes the clip's name while the clip is being deleted ("Replace original"). Renaming it over the clip is
@@ -646,8 +646,8 @@ internal static class ArchiveTests
             try { File.Move(cutFile, clip, overwrite: true); overwritten = true; }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { overwritten = false; }
             if (!overwritten) { File.Move(clip, clip + ".old"); File.Move(cutFile, clip); }
-            guard!.Delete(out _, out _);   // whatever this returns, it concerns the file that was checked, not whatever has the name now
-            guard.Dispose();
+            ArchiveGuardText.Delete(guard!, out _, out _);   // whatever this returns, it concerns the file that was checked, not whatever has the name now
+            guard!.Dispose();
         }
         Check.True(File.Exists(clip) && File.ReadAllBytes(clip).AsSpan().SequenceEqual(cut), "the cut that took the clip's name survived the delete");
         Check.False(File.Exists(clip + ".old"), "the file the guard had checked is the one that went");

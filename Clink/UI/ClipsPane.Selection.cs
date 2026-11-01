@@ -272,12 +272,12 @@ public partial class ClipsPane
             if (linked > 0) yield return BarButton(L.T("Copy links"), BulkCopyLinks, L.T("Copy the Copium links, one per line"));
             yield break;
         }
-        var labels = BulkActions.ShareButtonLabels(hasToken, cloudOn, count, linked);
-        for (int i = 0; i < labels.Count; i++)
+        var buttons = BulkActions.ShareButtons(hasToken, cloudOn, count, linked);
+        for (int i = 0; i < buttons.Count; i++)
         {
-            string label = labels[i];
+            var (kind, label) = buttons[i];
             string? style = i == 0 ? "AccentButton" : null;   // the first share button is the main one
-            if (label == BulkActions.SplitMainLabel)
+            if (kind == BulkBarButtonKind.Split)
             {
                 // the split button: "Share" opens the share window (Share files…), "▾" the menu with every option
                 Button? mainButton = null, arrowButton = null;
@@ -298,7 +298,7 @@ public partial class ClipsPane
                 yield return mainButton;
                 yield return arrowButton;
             }
-            else if (label == BulkActions.ShareFilesLabel)
+            else if (kind == BulkBarButtonKind.ShareFiles)
                 yield return BarButton(label, () => Run(ShareFilesAsync()), tooMany ? BulkActions.TooManyToShareText : L.T("Drag or copy the files into Discord, a browser or a folder"), !tooMany, style);
             else
                 yield return BarButton(label, BulkCopyLinks, L.T("Copy the Copium links, one per line"), style: style);
@@ -503,7 +503,7 @@ public partial class ClipsPane
             {
                 if (finished || i < 0 || !ReferenceEquals(current, rows[i])) return;   // not a row the upload owns, or a late report
                 rows[i].Progress = p;
-                rows[i].Status = L.T("Uploading… {percent}", ("percent", p.ToString("P0", L.FormatCulture)));
+                rows[i].Status = App.ShareProgressText(rows[i].Entry, p);
                 ShowStatus(UploadLine(i + 1, total, p));
             });
         }
@@ -563,7 +563,7 @@ public partial class ClipsPane
             return new Progress<double>(p =>
             {
                 if (finished || i < 0 || !ReferenceEquals(current, rows[i])) return;
-                rows[i].Status = L.T("Uploading… {percent}", ("percent", p.ToString("P0", L.FormatCulture)));
+                rows[i].Status = AppController.UploadingPercentText(p);
                 ShowStatus(UploadLine(i + 1, total, p));
             });
         }
@@ -662,8 +662,8 @@ public partial class ClipsPane
         _clipSel.Clear();   // a finished delete ends the selection
         Refresh();
         foreach (var (row, why) in kept.Concat(blocked.Select(b => (Row: b.Key, Why: b.Value)))) row.SetProblem(ClipDeleter.ProblemText(why));
-        string problem = ClipDeleter.BulkProblemText(deleted, rows.Count, first);
-        App.Say(problem.Length == 0 ? L.Plural("Deleted {count} clips", deleted) : problem);
+        var problem = ClipDeleter.BulkProblemNote(deleted, rows.Count, first);
+        App.Say(problem.Shown.Length == 0 ? Note.Build(() => L.Plural("Deleted {count} clips", deleted)) : problem);
         return null;
     }
 
@@ -736,7 +736,7 @@ public partial class ClipsPane
             row.SetProblem(ScreenshotRow.DeleteProblemText(why, ScreenshotService.IsOnLocalFixedDrive(row.Entry.Path)));
         foreach (var row in noFile) row.SetProblem(ScreenshotRow.NoFileText);
         MarkSkipped();
-        App.Say(ClipDeleter.ShotBulkSummary(deleted, rows.Count, withoutFile + noFile.Count));   // a file found gone at delete time counts as skipped, without a file
+        App.Say(ClipDeleter.ShotBulkSummaryNote(deleted, rows.Count, withoutFile + noFile.Count));   // a file found gone at delete time counts as skipped, without a file
         return null;
     }
 }

@@ -557,14 +557,14 @@ internal static class ConsentTests
         {
             var linked = Newest(app, dir, "linked.mp4");
             linked.CopiumLink = "https://v.copium.pics/abc.mp4";
-            app.Say("x");
+            app.Say(Note.Verbatim("x"));
             app.ShareLast();
             Check.Equal(ShareOutcome.LinkCopied, app.LastShareOutcome, "an existing link is only copied");
             Check.Equal(new[] { "https://v.copium.pics/abc.mp4" }, copied.ToArray());
             Check.Equal(0, handler.Requests);
 
             Newest(app, dir, "unlinked.mp4");
-            app.Say("x");
+            app.Say(Note.Verbatim("x"));
             app.ShareLast();
             Check.Equal(AppController.CloudOffText, app.LastNotice, "a clip without a link is refused");
             Check.Equal(0, handler.Requests);
@@ -602,10 +602,10 @@ internal static class ConsentTests
             Check.Equal(ShareOutcome.Declined, app.LastShareOutcome);
             Check.Equal("Cloud sharing is off — enable it under App → Cloud sharing", AppController.CloudOffText);
             // the hotkey, the tray item and the pipe all end in ShareLast
-            app.Say("something else");
+            app.Say(Note.Verbatim("something else"));
             app.RunCommand("share");
             Check.Equal(AppController.CloudOffText, app.LastNotice, "the pipe's share says so");
-            app.Say("something else");
+            app.Say(Note.Verbatim("something else"));
             app.ShareLast();
             Check.Equal(AppController.CloudOffText, app.LastNotice, "and so does the hotkey / tray");
             Check.Equal(0, handler.Requests);
@@ -756,20 +756,20 @@ internal static class ConsentTests
         foreach (var cmd in new[] { "clip", "trim", "share", "record", "pause", "resume" })
         {
             Check.True(AppController.IsClipsCommand(cmd), cmd);
-            app.Say("x");
+            app.Say(Note.Verbatim("x"));
             app.RunCommand(cmd);
             Check.Equal(AppController.ClipsOffText, app.LastNotice, "--" + cmd);
         }
         Check.False(app.IsPaused, "pause did not pause anything");
         Check.False(AppController.IsClipsCommand("screenshot"));
         Check.False(AppController.IsClipsCommand("show"));
-        app.Say("x");
+        app.Say(Note.Verbatim("x"));
         app.ClipNow();
         Check.Equal(AppController.ClipsOffText, app.LastNotice);
-        app.Say("x");
+        app.Say(Note.Verbatim("x"));
         app.ToggleRecording();
         Check.Equal(AppController.ClipsOffText, app.LastNotice);
-        app.Say("x");
+        app.Say(Note.Verbatim("x"));
         app.TogglePause();
         Check.Equal(AppController.ClipsOffText, app.LastNotice);
         // a startup command (--clip when no Clink was running) gets the same answer, later

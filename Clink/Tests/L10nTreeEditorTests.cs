@@ -244,19 +244,19 @@ internal static class L10nTreeEditorTests
         var gone = ScreenshotService.ChangedSinceSaved(new ScreenshotEntry { Path = dir.File("none.png"), Size = 100 })!;
         Check.Equal("the file is gone", gone.Log);
         Check.Equal("Saved locally, but it was not uploaded: the file is gone.", gone.Toast);
-        Check.Equal("The file is gone", gone.Batch);
+        Check.Equal("The file is gone", gone.Batch.English);
 
         var changed = ScreenshotService.ChangedSinceSaved(new ScreenshotEntry { Path = file, Size = 50 })!;
         Check.Equal("the file changed after it was saved", changed.Log);
         Check.Equal("Saved locally, but it was not uploaded: the file changed after it was saved.", changed.Toast);
-        Check.Equal("The file changed after it was saved", changed.Batch);
+        Check.Equal("The file changed after it was saved", changed.Batch.English);
 
         Check.True(ScreenshotService.ChangedSinceSaved(new ScreenshotEntry { Path = file, Size = 100 }) == null, "an untouched file passes");
 
         var failed = ScreenshotService.ChangedSinceSaved(new ScreenshotEntry { Path = file, Size = 100 }, _ => throw new IOException("disk on fire"))!;
         Check.Equal("the file could not be checked (disk on fire)", failed.Log);
         Check.Equal("Saved locally, but it was not uploaded: the file could not be checked (disk on fire).", failed.Toast);
-        Check.Equal("The file could not be checked (disk on fire)", failed.Batch);
+        Check.Equal("The file could not be checked (disk on fire)", failed.Batch.English);
         Check.Equal(Array.Empty<string>(), L.Missing.ToArray(), "every text is in Locales/en/editor.json");
     }
 
@@ -272,19 +272,20 @@ internal static class L10nTreeEditorTests
         ScreenshotUploadTests.Capture(rig);
         var entry = rig.Toasts.LastEntry!;
         File.AppendAllText(entry.Path, "x");   // the size differs
-        string? batchText = null;
+        string? batchText = null, batchEnglish = null;
         Log.Line += Collect;
         try
         {
             var one = rig.Service.UploadAsync(entry, manual: true);
             ScreenshotUploadTests.Pump(() => one.IsCompleted, "the check");
-            var batch = rig.Service.UploadAsync(entry, manual: true, batch: true, batchProblem: s => batchText = s);
+            var batch = rig.Service.UploadAsync(entry, manual: true, batch: true, batchProblem: s => { batchText = s.Shown; batchEnglish = s.English; });
             ScreenshotUploadTests.Pump(() => batch.IsCompleted, "the batch check");
         }
         finally { Log.Line -= Collect; }
         Check.Equal(0, rig.Calls.Count, "nothing was sent");
         Check.True(PseudoLocale.IsPseudo(rig.Toasts.LastProblemText), "the toast text: " + rig.Toasts.LastProblemText);
         Check.True(batchText != null && PseudoLocale.IsPseudo(batchText), "the batch line: " + batchText);
+        Check.Equal("The file changed after it was saved", batchEnglish, "the batch note keeps an English form for a log");
         string[] logged;
         lock (lines) logged = lines.Where(l => l.Contains("upload skipped for", StringComparison.Ordinal)).ToArray();
         Check.Equal(2, logged.Length);

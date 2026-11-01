@@ -233,14 +233,38 @@ internal static class L10nTreeTrimTests
             // the two notes are the engine's own words too: the copies in the catalog must not drift from them
             Check.Equal(ClipAlignment.UntrustedNote, L.T("This Windows reads clips differently: sources cannot be changed inside All audio"));
             Check.Equal(ClipAlignment.OlderClinkNote, L.T("Recorded or trimmed by an older Clink: sources cannot be changed inside All audio"));
-            Check.Equal("Saved a (trim).mp4, not uploaded: over the limit - tighten the selection", TrimWindow.NotUploadedText("a (trim).mp4", "Over the limit", true));
-            Check.Equal("Saved a (trim).mp4, not uploaded: over the limit - tighten the selection, or tick 'I have Copium+' if you do", TrimWindow.NotUploadedText("a (trim).mp4", "Over the limit", false));
-            // other languages use the refusal as it is, capital letter and all
-            using (L.Scope("de")) Check.True(TrimWindow.NotUploadedText("a.mp4", "Zu gross", true).Contains("Zu gross", StringComparison.Ordinal), "a non-English refusal keeps its capital letter");
+            // over the account's limits: whole sentences per plan, the limits put in (the English is the old lower-cased refusal, word for word)
+            string plusRefusal = AppController.ShareRefusalFor(long.MaxValue, 0, true)!, freeRefusal = AppController.ShareRefusalFor(long.MaxValue, 0, false)!;
+            Check.Equal("Saved a (trim).mp4, not uploaded: " + char.ToLowerInvariant(plusRefusal[0]) + plusRefusal[1..] + " - tighten the selection",
+                TrimWindow.NotUploadedText("a (trim).mp4", ShareRefusalKind.OverLimit, plusRefusal, true));
+            Check.Equal("Saved a (trim).mp4, not uploaded: " + char.ToLowerInvariant(freeRefusal[0]) + freeRefusal[1..] + " - tighten the selection, or tick 'I have Copium+' if you do",
+                TrimWindow.NotUploadedText("a (trim).mp4", ShareRefusalKind.OverLimit, freeRefusal, false));
+            // a smaller copy that could not be made: its refusal is a whole sentence (with its full stop) and goes in as it is (no case change: other languages need their capitals)
+            string failed = ShareFitModel.FailedNote(ShareFitModel.ForCopium(true), "the disk is full", 46_000_000).Shown;
+            Check.Equal("Couldn't make a smaller copy: the disk is full. The original is 46 MB, over Copium Plus (2 GB, 60 min).", failed);
+            Check.Equal("Saved a.mp4, not uploaded. " + failed + " Tighten the selection to share it.", TrimWindow.NotUploadedText("a.mp4", ShareRefusalKind.SmallerCopy, failed, true));
+            Check.Equal("Saved a.mp4, not uploaded. " + failed + " Tighten the selection, or tick 'I have Copium+' if you do.", TrimWindow.NotUploadedText("a.mp4", ShareRefusalKind.SmallerCopy, failed, false));
+            // a refusal that is only a phrase (a game is in front) ends the status
+            string game = ShareFitModel.GameRefusalText(ShareFitModel.ForCopium(true));
+            Check.Equal("Saved a.mp4, not uploaded. " + game, TrimWindow.NotUploadedText("a.mp4", ShareRefusalKind.Phrase, game, true));
+            using (L.Scope("de")) Check.True(TrimWindow.NotUploadedText("a.mp4", ShareRefusalKind.SmallerCopy, "Zu gross", true).Contains("Zu gross", StringComparison.Ordinal), "a refusal keeps its capital letter");
             using (L.Scope("tr"))
             {
                 Check.Equal("İstanbul", ArchiveService.Capitalize("istanbul"), "a leading i is a dotted capital under Turkish");
-                Check.True(TrimWindow.NotUploadedText("a.mp4", "İstanbul", true).Contains("İstanbul", StringComparison.Ordinal), "the Turkish refusal keeps its capital letter");
+                Check.True(TrimWindow.NotUploadedText("a.mp4", ShareRefusalKind.SmallerCopy, "İstanbul", true).Contains("İstanbul", StringComparison.Ordinal), "the Turkish refusal keeps its capital letter");
+            }
+            using (L.Scope("qps-ploc"))
+            {
+                L.ClearMissing();
+                Check.True(PseudoLocale.IsPseudo(TrimWindow.NotUploadedText("a.mp4", ShareRefusalKind.OverLimit, freeRefusal, false)), "the over-the-limit sentences are translated whole");
+                foreach (bool plus in new[] { true, false })
+                {
+                    string pseudo = TrimWindow.NotUploadedText("a.mp4", ShareRefusalKind.SmallerCopy, failed, plus);
+                    Check.True(PseudoLocale.IsPseudo(pseudo), "the smaller-copy sentence is translated whole: " + pseudo);
+                    Check.False(pseudo.Contains("Tighten", StringComparison.Ordinal) || pseudo.Contains("Saved", StringComparison.Ordinal), "no English left around the refusal: " + pseudo);
+                }
+                Check.True(PseudoLocale.IsPseudo(TrimWindow.NotUploadedText("a.mp4", ShareRefusalKind.Phrase, game, true)), "the phrase sentence is translated whole");
+                Check.Equal(Array.Empty<string>(), L.Missing.ToArray(), "both are in trim.json");
             }
         }
         finally { MixRenderTests.OnMta(() => { full.Dispose(); partial.Dispose(); }); }

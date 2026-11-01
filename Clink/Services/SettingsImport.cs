@@ -33,8 +33,11 @@ internal sealed record ForeignSettings(string Package, string Folder, DateTime S
 /// <param name="BackupPath">Where the settings it replaced were kept (<c>settings.pre-import.json</c>, or the next free <c>settings.pre-import.N.json</c>); null when there were none.</param>
 /// <param name="ClipsProblem">Why the clip lists were not merged; null when they were, or the other copy had no clips to merge.</param>
 /// <param name="NetworkPathsKept">The folder settings (<c>ScreenshotsFolder</c>, <c>ClipsFolder</c>, <c>ArchivePath</c>) whose network path in the other copy was NOT taken over: ours stayed.</param>
-internal sealed record ImportResult(string? BackupPath, string? ClipsProblem, IReadOnlyList<string>? NetworkPathsKept = null)
+internal sealed record ImportResult(string? BackupPath, string? ClipsProblem, IReadOnlyList<string>? NetworkPathsKept = null, Func<string>? ClipsReason = null)
 {
+    /// <summary><see cref="ClipsNotice"/> as a note: English for a log, the language of the UI on screen (the reason is worded again for each).</summary>
+    public Note? ClipsNoticeNote => ClipsReason != null ? Note.Build(() => SettingsImport.ClipsNoticeFor(ClipsReason()))
+        : ClipsProblem == null ? null : Note.Build(() => SettingsImport.ClipsNoticeFor(ClipsProblem));
     /// <summary>"Settings imported; the clip list could not be merged: …", or null when it was merged.</summary>
     public string? ClipsNotice => ClipsProblem == null ? null : SettingsImport.ClipsNoticeFor(ClipsProblem);
     /// <summary>"Settings imported; the other copy's network folders were not taken over: …", or null when there were none.</summary>
@@ -61,10 +64,15 @@ internal static class AppDataRedirect
     public static string? FinalFolder { get; private set; }
 
     /// <summary>The line shown once per start when redirected; null otherwise.</summary>
-    public static string? Notice => Package == null ? null : NoticeFor(FriendlyName ?? Package);
+    public static string? Notice => NoticeNote?.Shown;
 
-    public static string NoticeFor(string friendlyName) =>
-        L.T("Clink was started from inside {app}: Windows keeps a private copy of its settings for that app, so changes made now are not seen by Clink started from Explorer or the Start menu", ("app", L.Ltr(friendlyName)));
+    /// <summary><see cref="Notice"/> as a note.</summary>
+    internal static Note? NoticeNote => Package == null ? null : NoticeNoteFor(FriendlyName ?? Package);
+
+    public static string NoticeFor(string friendlyName) => NoticeNoteFor(friendlyName).Shown;
+
+    internal static Note NoticeNoteFor(string friendlyName) =>
+        Note.Of("Clink was started from inside {app}: Windows keeps a private copy of its settings for that app, so changes made now are not seen by Clink started from Explorer or the Start menu", ("app", Note.Ltr(friendlyName)));
 
     /// <summary>
     /// Looks at where <see cref="Settings.Dir"/> really is and sets <see cref="Package"/>, <see cref="FriendlyName"/> and
@@ -479,7 +487,10 @@ internal static class SettingsImport
     internal static string NetworkPathsNoticePath => Path.Combine(Settings.Dir, "import-paths.notice");
 
     /// <summary>Said once at the next start (<c>AppController.Start</c>; an import restarts Clink, so it is kept in a file): which network folders an import did not take over.</summary>
-    public static string? TakeNetworkPathsNotice()
+    public static string? TakeNetworkPathsNotice() => TakeNetworkPathsNoticeNote()?.Shown;
+
+    /// <summary><see cref="TakeNetworkPathsNotice"/> as a note (the sentence is worded again in English for the log).</summary>
+    public static Note? TakeNetworkPathsNoticeNote()
     {
         try
         {
@@ -506,9 +517,9 @@ internal static class SettingsImport
                     else unknown++;
                 }
                 if (unknown > 0) Log.Warn($"import: the note about network folders names {unknown} unknown setting(s), left out");
-                return kept.Count > 0 ? NetworkPathsNoticeFor(kept) : null;
+                return kept.Count > 0 ? Note.Build(() => NetworkPathsNoticeFor(kept)) : null;
             }
-            return text;
+            return Note.Verbatim(text);
         }
         catch (Exception ex)
         {
@@ -733,13 +744,13 @@ internal static class SettingsImport
             try { TestGuard.Check(NetworkPathsNoticePath); File.WriteAllText(NetworkPathsNoticePath, JsonSerializer.Serialize(networkKept)); }   // the setting names, not words: the sentence is built in the user's language when it is shown
             catch (Exception ex) { Log.Warn("import: could not note the network folders that were kept: " + ex.Message); }
         }
-        string? clipsProblem = MergeClipIndex(copy.Folder);
+        var (clipsProblem, clipsReason) = MergeClipIndex(copy.Folder);
         if (Pending?.DeclineKey == copy.DeclineKey) SetPending(null);
         Log.Info($"import: took over the settings saved {copy.SavedLocalText} inside {copy.Package}"
             + (copy.Differences.Count > 0 ? $" (changes: {string.Join(", ", copy.Differences)})" : "")
             + (backup != null ? $"; the replaced settings are kept as {Path.GetFileName(backup)}" : "")
             + (clipsProblem != null ? "; the clip list was not merged" : ""));
-        return new ImportResult(backup, clipsProblem, networkKept);
+        return new ImportResult(backup, clipsProblem, networkKept, clipsReason);
     }
 
     // ------------------------------------------------------------------ what an import keeps of ours
@@ -864,6 +875,9 @@ internal static class SettingsImport
     /// </summary>
     public static string? TakeClipsNotice() => Interlocked.Exchange(ref s_clipsNotice, null)?.Invoke();
 
+    /// <summary><see cref="TakeClipsNotice"/> as a note (the reason is worded again in English for the log).</summary>
+    public static Note? TakeClipsNoticeNote() => Interlocked.Exchange(ref s_clipsNotice, null) is { } render ? Note.Build(render) : null;
+
     internal sealed record ClipsMarker(string From, string Reason, int Attempts);
 
     /// <summary>"clips merge pending from &lt;folder&gt;": what a start looks for to finish a merge that did not work.</summary>
@@ -908,14 +922,14 @@ internal static class SettingsImport
     }
 
     /// <summary>Merges <paramref name="folder"/>'s clip list into ours and keeps the marker in step. Returns why it could not, or null. Never throws.</summary>
-    private static string? MergeClipIndex(string folder)
+    private static (string? Problem, Func<string>? Render) MergeClipIndex(string folder)
     {
         var (render, english) = TryMergeClipsCore(folder);
-        if (render == null) { ForgetPendingClipMerge(); return null; }
+        if (render == null) { ForgetPendingClipMerge(); return (null, null); }
         string problem = render();
         WriteClipsMarker(new ClipsMarker(folder, english ?? problem, 1));   // the file keeps the English reason, whatever language the user runs
         Interlocked.Exchange(ref s_clipsNotice, () => ClipsNoticeFor(render()));
-        return problem;
+        return (problem, render);
     }
 
     /// <summary>
