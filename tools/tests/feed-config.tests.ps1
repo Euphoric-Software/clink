@@ -101,7 +101,7 @@ try {
         $both = '"stableKeys":["' + $k1 + '"],"devKeys":["' + $k2 + '"]'
         foreach ($variant in 'FeedUrl', 'FEEDURL', 'feedurl', 'devfeedurl', 'DevFeedUrl') {
             $text = '{"schema":1,"feedUrl":"https://dl.example/clink/",' + $both + ',"' + $variant + '":"https://dl.example/clink/"}'
-            # Windows PowerShell 5.1's ConvertFrom-Json already refuses two keys that differ only in case ("duplicated keys"); pwsh 7 keeps both.
+            # Windows PowerShell 5.1's ConvertFrom-Json already refuses two keys that differ only in case ("duplicated keys"); pwsh 7 also refuses them, with a "different casing" message.
             Assert-Throws { [void](Get-FeedConfig -Path (New-RawFeedFile $text) -Channel stable) } "(property '$variant' is spelled differently|duplicated keys)" "extra $variant beside the real property"
         }
         # The same variants on their own (the real property absent): the file would otherwise look empty or half-filled to the client.
@@ -111,6 +111,14 @@ try {
         # Properties that merely resemble a known one are unknown and ignored.
         $ok = Get-FeedConfig -Path (New-RawFeedFile ('{"schema":1,"feedUrls":"x","feedUrl":"https://dl.example/clink/",' + $both + '}')) -Channel stable
         Assert-True $ok.Enabled 'an unrelated property name was refused'
+    }
+    Invoke-Test 'case-duplicate keys: the pwsh 7 ConvertFrom-Json message (simulated, so this also runs on 5.1) gets the same wording as the 5.1 one; other parse errors pass through' {
+        $file = New-RawFeedFile '{"schema":1,"feedUrl":"https://dl.example/clink/"}'
+        # A function shadows the cmdlet for everything called from this block (including Get-FeedConfig).
+        function ConvertFrom-Json { param([Parameter(ValueFromPipeline = $true)] $InputObject) throw "Cannot convert the JSON string because it contains keys with different casing. Please use the -AsHashTable switch instead. The key that was attempted to be added to the existing key 'feedUrl' was 'FeedUrl'." }
+        Assert-Throws { [void](Get-FeedConfig -Path $file -Channel stable) } 'duplicated keys' 'the pwsh 7 casing message'
+        function ConvertFrom-Json { param([Parameter(ValueFromPipeline = $true)] $InputObject) throw 'some other parse failure' }
+        Assert-Throws { [void](Get-FeedConfig -Path $file -Channel stable) } '\Asome other parse failure\z' 'an unrelated parse error'
     }
 
     Invoke-Test 'Resolve-FeedBaseUrl: the rules of FeedTrust.ValidFeedUrl, canonical forms only, with the reason' {
