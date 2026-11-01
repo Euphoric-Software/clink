@@ -4,6 +4,7 @@ obj/
 bin_*/
 obj_*/
 dist/
+node_modules/
 *.user
 *.suo
 .vs/

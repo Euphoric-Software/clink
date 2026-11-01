@@ -1,0 +1,106 @@
+{
+  "$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
+  "UUID": "software.euphoric.clink",
+  "Name": "Clink",
+  "Description": "Save clips, record, pause, share and take screenshots with Clink from your Stream Deck.",
+  "Author": "Euphoric Software",
+  "Version": "0.1.0.0",
+  "Icon": "imgs/plugin-icon",
+  "Category": "Clink",
+  "CategoryIcon": "imgs/category-icon",
+  "URL": "https://docs.euphoric.software/clink/stream-deck",
+  "SDKVersion": 3,
+  "Software": {
+    "MinimumVersion": "7.1"
+  },
+  "OS": [
+    {
+      "Platform": "windows",
+      "MinimumVersion": "10"
+    }
+  ],
+  "Nodejs": {
+    "Version": "24"
+  },
+  "CodePath": "bin/plugin.js",
+  "Actions": [
+    {
+      "Name": "Save clip",
+      "UUID": "software.euphoric.clink.save-clip",
+      "Icon": "imgs/save-clip",
+      "Tooltip": "Saves the last moments as a clip.",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/save-clip-key"
+        }
+      ]
+    },
+    {
+      "Name": "Record",
+      "UUID": "software.euphoric.clink.record",
+      "Icon": "imgs/record",
+      "Tooltip": "Starts or stops a manual recording.",
+      "Controllers": [
+        "Keypad"
+      ],
+      "DisableAutomaticStates": true,
+      "States": [
+        {
+          "Image": "imgs/record-key"
+        },
+        {
+          "Image": "imgs/record-key-on"
+        }
+      ]
+    },
+    {
+      "Name": "Pause",
+      "UUID": "software.euphoric.clink.pause",
+      "Icon": "imgs/pause",
+      "Tooltip": "Pauses or resumes recording.",
+      "Controllers": [
+        "Keypad"
+      ],
+      "DisableAutomaticStates": true,
+      "States": [
+        {
+          "Image": "imgs/pause-key"
+        },
+        {
+          "Image": "imgs/pause-key-on"
+        }
+      ]
+    },
+    {
+      "Name": "Share last clip",
+      "UUID": "software.euphoric.clink.share-last",
+      "Icon": "imgs/share-last",
+      "Tooltip": "Shares the most recent clip.",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/share-last-key"
+        }
+      ]
+    },
+    {
+      "Name": "Screenshot",
+      "UUID": "software.euphoric.clink.screenshot",
+      "Icon": "imgs/screenshot",
+      "Tooltip": "Takes a screenshot.",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/screenshot-key"
+        }
+      ]
+    }
+  ]
+}
