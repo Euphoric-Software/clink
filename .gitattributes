@@ -1,1 +1,5 @@
 THIRD-PARTY-NOTICES.txt text eol=crlf
+
+# Vendored Inno Setup translations: byte-identical to upstream, never EOL-converted (installer/Languages/README.md lists their SHA-256).
+installer/Languages/*.isl -text
+installer/Languages/*.islu -text

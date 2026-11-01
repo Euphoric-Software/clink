@@ -91,16 +91,43 @@ OutputBaseFilename=Clink-Setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+; Follow the Windows UI language on every run, upgrades included (every pre-0.4.5 install recorded english, so a remembered choice is ignored).
+; ShowLanguageDialog=auto still asks when no language matches.
+LanguageDetectionMethod=uilanguage
+ShowLanguageDialog=auto
+UsePreviousLanguage=no
 
 [Languages]
+; The same 16 languages as the app. English is the default and the fallback for any message a language file lacks. Setup follows the
+; language of the Windows UI on every run, upgrades included (LanguageDetectionMethod=uilanguage, UsePreviousLanguage=no), and asks only
+; when none matches (ShowLanguageDialog=auto).
+; Official files come with Inno Setup (compiler:Languages\); Hindi and Simplified Chinese are vendored in Languages\ (see its README.md).
 Name: "english"; MessagesFile: "compiler:Default.isl"
+Name: "spanish"; MessagesFile: "compiler:Languages\Spanish.isl"
+Name: "french"; MessagesFile: "compiler:Languages\French.isl"
+Name: "german"; MessagesFile: "compiler:Languages\German.isl"
+Name: "brazilianportuguese"; MessagesFile: "compiler:Languages\BrazilianPortuguese.isl"
+Name: "italian"; MessagesFile: "compiler:Languages\Italian.isl"
+Name: "dutch"; MessagesFile: "compiler:Languages\Dutch.isl"
+Name: "polish"; MessagesFile: "compiler:Languages\Polish.isl"
+Name: "turkish"; MessagesFile: "compiler:Languages\Turkish.isl"
+Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
+Name: "ukrainian"; MessagesFile: "compiler:Languages\Ukrainian.isl"
+Name: "arabic"; MessagesFile: "compiler:Languages\Arabic.isl"
+Name: "hindi"; MessagesFile: "Languages\Hindi.islu"
+Name: "japanese"; MessagesFile: "compiler:Languages\Japanese.isl"
+Name: "korean"; MessagesFile: "compiler:Languages\Korean.isl"
+Name: "chinesesimplified"; MessagesFile: "Languages\ChineseSimplified.isl"
+
+; Clink's own installer texts (the runtime task, its download and error messages), one block per language.
+#include "ClinkMessages.isi"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 #ifdef DotNetRuntimeUrl
 ; Shown only when the runtime is missing; ticked by default in the interactive wizard. With /SILENT or /VERYSILENT it runs only
 ; when /TASKS= or /MERGETASKS= names it explicitly (see ShouldInstallRuntime in [Code]).
-Name: "dotnetruntime"; Description: "Install the Microsoft .NET {#DotNetRuntimeVersion} Desktop Runtime (required to run Clink)"; GroupDescription: "Required component:"; Check: NeedsDesktopRuntime
+Name: "dotnetruntime"; Description: "{cm:ClinkRuntimeTask,{#DotNetRuntimeVersion}}"; GroupDescription: "{cm:ClinkRuntimeTaskGroup}"; Check: NeedsDesktopRuntime
 #endif
 
 [Files]
@@ -332,14 +359,14 @@ begin
 end;
 
 // Tell the user (dialog unless silent; always logged) and optionally offer the official download page.
-procedure WarnRuntime(const Msg: string);
+procedure WarnRuntime(const Key, Msg: string);
 var
   ErrCode: Integer;
 begin
-  Log('.NET runtime: ' + Msg);
+  Log('.NET runtime [' + Key + ']: ' + Msg);
   if WizardSilent then Exit;
-  if SuppressibleMsgBox(Msg + #13#10#13#10 + 'Clink will not start until the .NET 10 Desktop Runtime (x64) is installed. ' +
-      'Open the official download page now?' + #13#10 + DotNetUrl, mbInformation, MB_YESNO, IDNO) = IDYES then
+  if SuppressibleMsgBox(Msg + #13#10#13#10 + CustomMessage('ClinkRuntimeOpenPagePrompt') + #13#10 + DotNetUrl,
+      mbInformation, MB_YESNO, IDNO) = IDYES then
     // As the original (non-elevated) user, so the browser does not run with Setup's rights.
     ShellExecAsOriginalUser('open', DotNetUrl, '', '', SW_SHOWNORMAL, ewNoWait, ErrCode);
 end;
@@ -425,8 +452,8 @@ end;
 
 procedure InitializeWizard;
 begin
-  RuntimeDownloadPage := CreateDownloadPage('Downloading the .NET Desktop Runtime',
-    'Setup is downloading the Microsoft .NET Desktop Runtime and checking it.', nil);
+  RuntimeDownloadPage := CreateDownloadPage(CustomMessage('ClinkDownloadPageTitle'),
+    CustomMessage('ClinkDownloadPageDescription'), nil);
   RuntimeDownloadPage.ShowBaseNameInsteadOfUrl := True;
 end;
 
@@ -462,9 +489,9 @@ begin
         else
         begin
           Log('.NET runtime download failed: ' + GetExceptionMessage);
-          Retry := SuppressibleMsgBox('The .NET Desktop Runtime could not be downloaded or did not pass its integrity check:' + #13#10 +
+          Retry := SuppressibleMsgBox(CustomMessage('ClinkDownloadFailed') + #13#10 +
             AddPeriod(GetExceptionMessage) + #13#10#13#10 +
-            'Yes: try again.' + #13#10 + 'No: continue without it (you can install it later).',
+            CustomMessage('ClinkRetryYes') + #13#10 + CustomMessage('ClinkRetryNo'),
             mbError, MB_YESNO, IDNO) = IDYES;
         end;
       end;
@@ -492,12 +519,12 @@ begin
     case RunVerifiedRuntime(Params, ResultCode) of
       1:
         begin
-          WarnRuntime('The downloaded .NET Desktop Runtime installer is missing or failed its integrity check, so it was not run.');
+          WarnRuntime('ClinkRuntimeNotRun', CustomMessage('ClinkRuntimeNotRun'));
           Exit;
         end;
       2:
         begin
-          WarnRuntime('The .NET Desktop Runtime installer could not be started: ' + SysErrorMessage(ResultCode) + ' (code ' + IntToStr(ResultCode) + ').');
+          WarnRuntime('ClinkRuntimeCouldNotStart', FmtMessage(CustomMessage('ClinkRuntimeCouldNotStart'), [SysErrorMessage(ResultCode), IntToStr(ResultCode)]));
           Exit;
         end;
     end;
@@ -506,25 +533,25 @@ begin
     begin
       if (ResultCode <> 0) then RuntimeRestartNeeded := True;
       if not HasDesktopRuntime10 then
-        WarnRuntime('The .NET Desktop Runtime installer finished but the runtime was not detected.');
+        WarnRuntime('ClinkRuntimeNotDetected', CustomMessage('ClinkRuntimeNotDetected'));
     end
     else if (ResultCode = 1223) or (ResultCode = 1602) then
-      WarnRuntime('The .NET Desktop Runtime installation was cancelled.')
+      WarnRuntime('ClinkRuntimeCancelled', CustomMessage('ClinkRuntimeCancelled'))
     else if ResultCode = 1618 then
     begin
       if WizardSilent then
-        WarnRuntime('Another installation is in progress (code 1618), so the .NET Desktop Runtime was not installed.')
+        WarnRuntime('ClinkRuntimeBusySilent', CustomMessage('ClinkRuntimeBusySilent'))
       else
-        Retry := SuppressibleMsgBox('Another installation is already in progress (code 1618), so the .NET Desktop Runtime could not be installed.' + #13#10#13#10 +
-          'Finish or close the other installation, then choose Yes to try again, or No to continue without it.',
+        Retry := SuppressibleMsgBox(CustomMessage('ClinkRuntimeBusyPrompt1') + #13#10#13#10 +
+          CustomMessage('ClinkRuntimeBusyPrompt2'),
           mbError, MB_YESNO, IDNO) = IDYES;
       if (not Retry) and (not WizardSilent) then
-        WarnRuntime('The .NET Desktop Runtime was not installed because another installation was in progress.');
+        WarnRuntime('ClinkRuntimeBusyNotInstalled', CustomMessage('ClinkRuntimeBusyNotInstalled'));
     end
     else if HasDesktopRuntime10 then
       Log('Installer returned ' + IntToStr(ResultCode) + ' but the runtime is present (for example a newer one was already installed).')
     else
-      WarnRuntime('The .NET Desktop Runtime installer failed with code ' + IntToStr(ResultCode) + '.');
+      WarnRuntime('ClinkRuntimeFailedCode', FmtMessage(CustomMessage('ClinkRuntimeFailedCode'), [IntToStr(ResultCode)]));
   until not Retry;
 end;
 
@@ -541,7 +568,7 @@ begin
   if not ShouldInstallRuntime then Exit;
   if not RuntimeDownloaded then
   begin
-    WarnRuntime('The .NET Desktop Runtime was not downloaded, so it was not installed.');
+    WarnRuntime('ClinkRuntimeNotDownloaded', CustomMessage('ClinkRuntimeNotDownloaded'));
     Exit;
   end;
   InstallRuntime;
@@ -571,8 +598,8 @@ begin
   if MemoGroupInfo <> '' then Result := Result + MemoGroupInfo + NewLine + NewLine;
   if MemoTasksInfo <> '' then Result := Result + MemoTasksInfo + NewLine + NewLine;
   if (not HasDesktopRuntime10) and (not ShouldInstallRuntime) then
-    Result := Result + 'Warning: the .NET 10 Desktop Runtime (x64) was not found and Setup will not install it.' + NewLine +
-      Space + 'Clink will not start until it is installed from ' + DotNetUrl;
+    Result := Result + CustomMessage('ClinkReadyWarning1') + NewLine +
+      Space + FmtMessage(CustomMessage('ClinkReadyWarning2'), [DotNetUrl]);
 end;
 
 // Path of the exe inside a Run value such as: "C:\x\Clink.exe" --minimized

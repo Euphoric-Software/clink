@@ -186,6 +186,12 @@ if ($iscc) {
         $isccOutput | ForEach-Object { Write-Output "ISCC: $_" }
         throw "ISCC failed (exit code $isccExit)"
     }
+    # A language that lacks one of Clink's own messages (or an Inno message) compiles with only a warning and shows English at run time: refuse it.
+    $missingTranslations = @($isccOutput | Where-Object { [string]$_ -match 'has not been defined for the "' })
+    if ($missingTranslations.Count -gt 0) {
+        $missingTranslations | ForEach-Object { Write-Output "ISCC: $_" }
+        throw "ISCC reported $($missingTranslations.Count) message(s) 'has not been defined for the ... language': every language must define every message (installer\ClinkMessages.isi)."
+    }
     if (-not (Test-Path -LiteralPath $setupPath)) { throw "ISCC did not produce $setupPath" }
     # A real setup exe embeds the framework exe (megabytes); an empty or stub file means ISCC went wrong without failing.
     if (-not $SkipSetupSizeCheck) {
