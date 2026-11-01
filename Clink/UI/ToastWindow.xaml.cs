@@ -578,7 +578,7 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         SetShareEnabled(false);
         ShareButton.ToolTip = null;
         SetShareStatus("Uploading…");
-        var progress = new Progress<double>(p => SetShareStatus($"Uploading… {p:P0}"));
+        var progress = new Progress<double>(p => SetShareStatus(AppController.Instance.ShareProgressText(Entry, p)));
         bool ok = await AppController.Instance.ShareAsync(Entry, progress);
         _busy = false;
         if (ok) { Dismiss(); return; }   // the "Shared" toast takes over
