@@ -1089,8 +1089,9 @@ public partial class MainWindow : Window
     {
         try
         {
+            TestGuard.CheckLaunch("opening the settings folder");   // before anything is created
             Directory.CreateDirectory(Settings.Dir);
-            Process.Start(new ProcessStartInfo(Settings.Dir) { UseShellExecute = true });
+            TestGuard.Start(new ProcessStartInfo(Settings.Dir) { UseShellExecute = true });
         }
         catch (Exception ex) { _app.Say("Could not open the folder: " + ex.Message); }
     }
@@ -1290,6 +1291,7 @@ public partial class MainWindow : Window
         var model = new CopiumWelcomeModel(_app.WelcomeInitialAutoUpload, _app.ApplyWelcome);
         try
         {
+            TestGuard.CheckLaunch("the welcome window");   // before the window exists or _welcome is set
             var w = new CopiumWelcomeWindow(model, _app.SignIn.Current.Username, () => _app.IsShuttingDown);
             if (IsVisible) { w.Owner = this; w.WindowStartupLocation = WindowStartupLocation.CenterOwner; }
             else w.ShowInTaskbar = true;   // no visible owner: it must not be buried without a taskbar button
@@ -1396,6 +1398,7 @@ public partial class MainWindow : Window
     internal void OpenClip(ClipEntry entry, bool trim)
     {
         if (TrimWindow.Find(entry) is { } open) { open.Reveal(trim); return; }
+        TestGuard.CheckLaunch("the trim window");
         var w = new TrimWindow(entry, trim) { Owner = IsVisible ? this : null };
         w.Show();
     }
@@ -1762,7 +1765,7 @@ public partial class MainWindow : Window
 
     private void CopiumCleanupOpen_Click(object sender, RoutedEventArgs e)
     {
-        try { Process.Start(new ProcessStartInfo(CopiumCardModel.CleanupUrl) { UseShellExecute = true })?.Dispose(); }
+        try { TestGuard.Start(new ProcessStartInfo(CopiumCardModel.CleanupUrl) { UseShellExecute = true })?.Dispose(); }
         catch (Exception ex) { Log.Warn("copium cleanup page: " + ex.Message); }
     }
 
@@ -1774,7 +1777,7 @@ public partial class MainWindow : Window
 
     private void CopiumSite_Click(object sender, RoutedEventArgs e)
     {
-        try { Process.Start(new ProcessStartInfo("https://copium.pics/") { UseShellExecute = true }); } catch { }
+        try { TestGuard.Start(new ProcessStartInfo("https://copium.pics/") { UseShellExecute = true }); } catch { }
     }
 
     private void CopiumPlusChanged(object sender, RoutedEventArgs e)
@@ -2023,6 +2026,7 @@ public partial class MainWindow : Window
                 var probe = Task.Run(() => { try { return Directory.Exists(initial); } catch { return false; } });
                 if (probe.Wait(300) && probe.Result) dlg.InitialDirectory = initial;
             }
+            TestGuard.CheckLaunch("a folder dialog: " + title);
             return dlg.ShowDialog(this) == true ? dlg.FolderName : null;
         }
         catch (Exception ex) { _app.Say("Folder picker failed: " + ex.Message); return null; }
@@ -2168,6 +2172,7 @@ public partial class MainWindow : Window
             return;
         }
         if (string.IsNullOrWhiteSpace(_app.Settings.ArchivePath)) { _app.Say("Set an archive location first"); return; }
+        TestGuard.CheckLaunch("the archive window");
         new ArchiveWindow(_app) { Owner = this }.ShowDialog();
         RefreshArchiveStatus();
     }

@@ -202,13 +202,16 @@ internal static class TestRunner
         // The paths are never put back to the real ones: this process only ends after the run (App.OnStartup shuts down), nothing
         // here needs %APPDATA%\Clink, and a save a test queued for the UI thread (Settings.Save from a background thread) resolves its
         // folder when it runs, which can be after the run: it must land in the scratch folder, not in the user's real settings.json.
-        // So the queued UI work is run first (DrainUi), while the scratch folder is still in force, and the scratch folder stays
-        // pointed at afterwards (a late save may recreate it; that is harmless). Same after a takeover, where nothing is drained
-        // (the UI thread is the stuck one) and the process exits at once.
+        // So the queued UI work is run (DrainUi) after each test, in that test's own folders and under its time limit (ExecuteWatched),
+        // and once more at the end, while the scratch folder is still in force; and the scratch folder stays pointed at afterwards (a
+        // late save may recreate it; that is harmless). Same after a takeover, where nothing is drained (the UI thread is the stuck one)
+        // and the process exits at once. Behind all this, TestGuard refuses any write to the true user folders: one that happens
+        // outside any test (e.g. in the last drain) is reported after the last test and fails the run.
         var session = new Session(tests, noSkip, limit,
             before: () => ResetShared(before, scratch), after: () => ResetShared(before, scratch),
             cleanup: () => EndOfRun(scratch),
-            print: Print, exit: code => Environment.Exit(code == 0 ? 0 : 1), watch: watch);
+            print: Print, exit: code => Environment.Exit(code == 0 ? 0 : 1), watch: watch,
+            leftovers: () => TestGuard.TakeViolations().Select(v => v.Replace("\r", "").Replace('\n', ' ')));
         return session.Run();
     }
 
@@ -276,6 +279,7 @@ internal static class TestRunner
         private readonly bool _watch;
         private readonly Action _before, _after, _cleanup;
         private readonly Action? _restore;
+        private readonly Func<IEnumerable<string>>? _leftovers;
         private readonly Action<string> _print;
         private readonly Action<int> _exit;
         private readonly object _gate = new();
@@ -290,11 +294,12 @@ internal static class TestRunner
         /// <param name="restore">Optional: puts back what needs to be in force after the run; runs before <paramref name="cleanup"/> and only when no takeover happened. The real runner passes none: it never points anything back at the real folders (see <see cref="Run"/>).</param>
         /// <param name="watch">False: no watchdog (a debugger is attached).</param>
         /// <param name="afterTimeoutLimit">The cap on the limit once a test has timed out (<see cref="TestRunner.AfterTimeoutLimit"/>).</param>
+        /// <param name="leftovers">Optional: asked once after <paramref name="cleanup"/>; each line it returns is printed as a FAIL and counted (the real runner passes the guard's refusals outside any test, <see cref="TestGuard.TakeViolations"/>).</param>
         public Session(List<(string Name, MethodInfo Method)> tests, bool noSkip, TimeSpan limit, Action before, Action after, Action cleanup, Action<string> print, Action<int> exit,
-            Action? restore = null, bool watch = true, TimeSpan? afterTimeoutLimit = null)
+            Action? restore = null, bool watch = true, TimeSpan? afterTimeoutLimit = null, Func<IEnumerable<string>>? leftovers = null)
         {
             _tests = tests; _noSkip = noSkip; _limit = limit; _before = before; _after = after; _cleanup = cleanup; _print = print; _exit = exit;
-            _restore = restore; _watch = watch; _afterTimeoutLimit = afterTimeoutLimit ?? AfterTimeoutLimit;
+            _restore = restore; _watch = watch; _afterTimeoutLimit = afterTimeoutLimit ?? AfterTimeoutLimit; _leftovers = leftovers;
         }
 
         /// <summary>The limit now in force: lowered to <c>min(limit, 10 s)</c> after the first timeout, because the thread that is stuck is the UI thread and any test that needs it (a Dispatcher.Invoke) would otherwise cost the whole limit each.</summary>
@@ -344,7 +349,13 @@ internal static class TestRunner
                 }
                 _before();
                 var sw = Stopwatch.StartNew();
-                var outcome = ExecuteWatched(method, _noSkip);
+                // The guard's refusals name the test; put back what was there after it (a session run by a test of the runner itself
+                // must not leave the enclosing test unnamed).
+                string? enclosingTest = TestGuard.CurrentTest;
+                TestGuard.CurrentTest = name;
+                TestOutcome outcome;
+                try { outcome = ExecuteWatched(method, _noSkip); }
+                finally { TestGuard.CurrentTest = enclosingTest; }
                 lock (_gate)
                 {
                     if (_generation != generation) return false;   // timed out meanwhile: already reported, the run went on elsewhere
@@ -408,6 +419,10 @@ internal static class TestRunner
             // After a takeover a test may still be alive on its stuck thread: the real paths are not put back (see the constructor).
             if (!tookOver) try { _restore?.Invoke(); } catch { }
             try { _cleanup(); } catch { }
+            // What was refused outside any test (work left queued after the last one and run by the cleanup's drain, or a thread a test
+            // left behind) fails the run: it was a test that bypassed its scratch folder.
+            if (_leftovers != null)
+                try { foreach (string what in _leftovers()) { _failed++; _print("FAIL  (after the last test)  " + what); } } catch { }
             if (summary)
             {
                 _print($"{_passed} passed, {_failed} failed, {_skipped} skipped ({_total.ElapsedMilliseconds} ms)");
@@ -425,7 +440,7 @@ internal static class TestRunner
         Func<System.Net.Http.HttpRequestMessage, CancellationToken, Task<System.Net.Http.HttpResponseMessage>>? UpdaterHttp, FeedTrust? FeedTrust,
         TimeSpan? FeedTimeout, Packaging? Packaging, Func<string, TimeSpan, Updater.PreflightResult>? Preflight, IReadOnlyList<Version>? Runtimes, bool? Elevated,
         Func<DateTimeOffset>? UpdaterClock, TimeSpan? DownloadAnswerTimeout, TimeSpan? DownloadReadTimeout, Action<string>? SendObserver, Action<string>? Browser,
-        TimeSpan? DownloadTotalTimeout, long? DownloadMinRate, TimeSpan? DownloadRateWindow, (string? Stable, string? Dev)? FloorSeeds)
+        TimeSpan? DownloadTotalTimeout, long? DownloadMinRate, TimeSpan? DownloadRateWindow, (string? Stable, string? Dev)? FloorSeeds, string? DefaultClips)
     {
         public static Shared Capture() => new(Settings.DirOverride, ClipLibrary.IndexPathOverride, Updater.UpdatesDirOverride,
             AppController.InstanceSuffix, AppController.DevHotkeys, AppController.DevAcceptImport, AppController.DevToken, AppController.DevRecord, AppController.DevQuiet, AppController.DevQuietRecord, AppController.DevNoMarker, AppController.DevDemoStatus,
@@ -433,7 +448,7 @@ internal static class TestRunner
             Updater.HttpOverride, Updater.FeedOverride, Updater.FeedTimeoutOverride,
             Updater.PackagingOverride, Updater.PreflightOverride, DotNetRuntimes.Override, Updater.IsElevatedOverride,
             Updater.ClockOverride, Updater.DownloadAnswerTimeoutOverride, Updater.DownloadReadTimeoutOverride, Updater.SendObserver, Updater.BrowserOverride,
-            Updater.DownloadTotalTimeoutOverride, Updater.DownloadMinRateOverride, Updater.DownloadRateWindowOverride, Updater.FloorSeedOverride);
+            Updater.DownloadTotalTimeoutOverride, Updater.DownloadMinRateOverride, Updater.DownloadRateWindowOverride, Updater.FloorSeedOverride, Settings.DefaultClipsFolderOverride);
     }
 
     /// <summary>The feed trust a test starts with: On, with a made-up base and two keys that never signed anything (tests that need a feed bring their own).</summary>
@@ -464,9 +479,13 @@ internal static class TestRunner
     {
         List<string> outer;
         lock (s_strays) { outer = new List<string>(s_strays); s_strays.Clear(); }
+        string[] outerViolations = TestGuard.TakeViolations();   // the enclosing test's refusals: a nested run must not consume them
         try
         {
             var outcome = Execute(method, noSkip);
+            DrainUi();
+            TestGuard.SweepWindows();   // a window that was shown (and is not allowed) is a violation, and is closed
+            foreach (string refused in TestGuard.TakeViolations()) RecordStray(refused);   // a write to a true user folder, a launch, a shown window: refused (TestGuard)
             string[] strays;
             lock (s_strays) strays = s_strays.ToArray();
             if (strays.Length == 0) return outcome;
@@ -476,6 +495,7 @@ internal static class TestRunner
         finally
         {
             lock (s_strays) { s_strays.Clear(); s_strays.AddRange(outer); }
+            TestGuard.AddViolations(outerViolations);
         }
     }
 
@@ -487,9 +507,11 @@ internal static class TestRunner
     }
 
     /// <summary>
-    /// Runs what the test run left queued for the UI thread, while the scratch folder is still in force: the tests run inside one
+    /// Runs what was left queued for the UI thread, while the scratch folder is still in force: after each test (<see cref="ExecuteWatched"/>,
+    /// in the folders of the test that asked for it) and at the end of the run (<see cref="EndOfRun"/>). The tests run inside one
     /// UI-thread call, so the dispatcher does not pump until the run is over, and a save a background thread asked for (the updater's
-    /// checks and downloads: <see cref="Settings.Save"/> queues it onto the UI thread) would run only after that. Does nothing off the UI thread.
+    /// checks and downloads: <see cref="Settings.Save"/> queues it onto the UI thread) used to run only after that, once the settings
+    /// folder had been put back, and wrote the real %APPDATA%\Clink\settings.json. Does nothing off the UI thread.
     /// </summary>
     internal static void DrainUi()
     {
@@ -522,6 +544,7 @@ internal static class TestRunner
         Settings.DirOverride = scratch ?? before.SettingsDir;
         Settings.RealDirOverride = scratch != null ? Path.Combine(scratch, "RealClink") : before.RealDir;
         ClipLibrary.IndexPathOverride = scratch != null ? Path.Combine(scratch, "clips.json") : before.ClipIndex;
+        Settings.DefaultClipsFolderOverride = scratch != null ? Path.Combine(scratch, "Clips") : before.DefaultClips;   // a fresh Settings keeps its clips (and screenshots) folder in scratch, never in Videos\Clink
         Updater.UpdatesDirOverride = scratch != null ? Path.Combine(scratch, "updates") : before.UpdatesDir;
         // No test leaves a fake network or feed behind for the next, and during a test any request the test did not fake fails it: it
         // throws (so it never reaches the network) and is recorded as a stray, which fails the test after it ran even when the code under
@@ -549,13 +572,14 @@ internal static class TestRunner
         Updater.PackagingOverride = scratch != null ? Packaging.SelfContained : before.Packaging;   // tests run as the portable flavour (updates\ folder, Clink.exe) unless they say otherwise
         Updater.PreflightOverride = scratch != null ? static (_, _) => new(0, false, null) : before.Preflight;   // never a real process; a test installs its own fake
         DotNetRuntimes.Override = scratch != null ? new[] { new Version(10, 0, 0) } : before.Runtimes;
+        UI.Toasts.ShowOverride = scratch != null ? static _ => { } : null;   // a toast is built but never put on the screen (the controller raises them for notices a test provokes); a test installs its own to look at them
+        Updater.LaunchOverride = null;   // no launch seam left over: the next test that would start the apply is refused (TestGuard), not served by a stale fake
         Updater.IsElevatedOverride = before.Elevated;   // null = ask Windows; a test that pretends to be elevated does not leave it so
         Settings.ThawSaves();
         Settings.SeedDefaults = scratch == null;   // off during a test (the older tests pin exact hotkey lists); the seeding tests turn it on themselves
         SettingsImport.Reset();
         SettingsImport.PackagesRoot = scratch != null ? Path.Combine(scratch, "Packages") : before.PackagesRoot;
         AppDataRedirect.Reset();
-        Updater.LaunchOverride = null;   // no launch seam left over: a test that starts the apply installs its own
     }
 
     private static bool IsOn(string? value) => value is "1" || string.Equals(value, "true", StringComparison.OrdinalIgnoreCase);

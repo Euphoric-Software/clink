@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.Http;
@@ -632,8 +633,9 @@ internal static class PackagingTests
             File.Delete(exe + ".failed");
         }
 
-        // A passing preflight goes on to start the apply process. The launch is faked (see above); here it "exits right away", which
-        // is the failure path: not the preflight's error.
+        // A passing preflight goes on to start the apply process. The launch is faked (see above; a fake exe is no PE file, and Windows
+        // would also open a modal "Unsupported 16-Bit Application" dialog on the owner's screen); here it "exits right away", which is
+        // the failure path: not the preflight's error.
             Updater.PreflightOverride = (_, _) => { launched++; return new(0, false, null); };
             launched = 0;
             try { up.LaunchApply(exe, target, Array.Empty<string>()); Check.Fail("the fake process exited right away: the apply cannot have succeeded"); }
@@ -644,6 +646,7 @@ internal static class PackagingTests
             Check.Equal(1, started.Count, "the apply was launched once");
             Check.Equal(exe, started[0].FileName);
             Check.Equal(new[] { "--apply-update", target, Environment.ProcessId.ToString() }, started[0].ArgumentList.ToArray());
+            Check.False(started[0].UseShellExecute, "no shell: the apply is started directly");
             Check.True(File.Exists(exe + ".failed"), "a launch that exited right away is marked failed");
 
             // The split: PrepareApply runs the check once and StartApply (what the window calls back on its UI thread) never runs it again;
@@ -665,6 +668,30 @@ internal static class PackagingTests
             Check.Equal(1, started.Count, "and nothing more was launched");
         }
         finally { Updater.LaunchOverride = null; }
+    }
+
+    [UnitTest]
+    public static void Packaging_with_no_launch_seam_a_test_cannot_start_the_apply()
+    {
+        // The guard: in test mode a real Process.Start of anything is refused and recorded (never a dialog on the owner's screen).
+        Check.True(TestGuard.Active, "this test only runs in test mode: without the guard it would start a real process");
+        Check.Equal(0, TestGuard.ViolationCount, "no refusal left over from before");
+        using var two = new TwoFlavours();
+        Updater.IsElevatedOverride = false;
+        Updater.PreflightOverride = (_, _) => new(0, false, null);
+        var up = new Updater(two.Settings(two.ScExe, two.FxExe), V("1.0.0"));
+        Check.Null(Updater.LaunchOverride);
+        var token = up.PrepareApply(two.ScFile);
+        // The exe goes away before the launch: even if the guard were broken, Windows could only say "file not found" (the fake exe is no
+        // PE file, and starting it would open the modal "Unsupported 16-Bit Application" dialog on the owner's screen).
+        File.Delete(two.ScFile);
+        var ex = Check.Throws<InvalidOperationException>(() => Updater.StartApply(token, Path.Combine(two.Dir.Path, "Clink.exe"), Array.Empty<string>()));
+        Check.Contains(ex.Message, "refused");
+        var refused = TestGuard.TakeViolations();   // this test provoked exactly one refusal and asserts it
+        Check.Equal(1, refused.Length);
+        Check.Contains(refused[0], "--apply-update");
+        Check.Contains(refused[0], nameof(Packaging_with_no_launch_seam_a_test_cannot_start_the_apply), "names the running test");
+        Check.True(File.Exists(two.ScFile + ".failed"), "the failed launch is marked like any other");
     }
 
     [UnitTest]

@@ -50,6 +50,7 @@ internal sealed partial class AppController
         if (!_ui.CheckAccess()) return _ui.Invoke(() => OpenShareFilesWindow(items, screenshots));
         try
         {
+            TestGuard.CheckLaunch("the share files window");   // before anything is closed, created or registered
             bool overGame = OverGame;
             var old = _shareFilesWindow;
             _shareFilesWindow = null;
@@ -312,6 +313,7 @@ internal sealed partial class AppController
             Title = "Save copies of the clips to",
             InitialDirectory = SaveCopy.InitialFolder(Settings.SaveCopyFolder, Environment.GetFolderPath(Environment.SpecialFolder.MyVideos)),
         };
+        TestGuard.CheckLaunch("the save-copies folder dialog");
         bool? ok = owner != null ? dialog.ShowDialog(owner) : dialog.ShowDialog();
         return ok == true ? dialog.FolderName : null;
     }
