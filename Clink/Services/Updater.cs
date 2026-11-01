@@ -992,7 +992,8 @@ internal sealed class Updater : IDisposable
 
     private const string ElevatedNote = "Clink is running as administrator and does not install updates from an elevated process";
 
-    private static bool IsElevated()
+    /// <summary>This process runs as administrator (an elevated token); <see cref="IsElevatedOverride"/> in a test.</summary>
+    internal static bool IsElevated()
     {
         if (IsElevatedOverride is bool forced) return forced;
         try

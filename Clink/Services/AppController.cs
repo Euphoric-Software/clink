@@ -551,6 +551,7 @@ internal sealed partial class AppController : IDisposable
         ApplyStatusDot();
         RaiseStateChanged();
         FeaturesChanged?.Invoke();
+        PublishRemote();
     }
 
     // ------------------------------------------------------------------ lifecycle
@@ -584,6 +585,7 @@ internal sealed partial class AppController : IDisposable
         Engine.RecordingStopped += result => { try { _ui.BeginInvoke(() => OnRecordingEnded(result)); } catch (Exception ex) { Log.Warn("recording end: " + ex.Message); } };
         RecoverRecordingsAsync();
         _ = PipeServerAsync(_cts.Token);
+        StartRemote();
         CreateTray();
         _timer = new DispatcherTimer(TimeSpan.FromSeconds(1), DispatcherPriority.Background, (_, _) => Tick(), _ui);
         _timer.Start();
@@ -735,6 +737,9 @@ internal sealed partial class AppController : IDisposable
     private static bool MainWindowInFront =>
         System.Windows.Application.Current?.MainWindow is { IsVisible: true, IsActive: true, WindowState: not System.Windows.WindowState.Minimized };
 
+    /// <summary>Test seam: gets the notices <see cref="NotifyProblem"/> would show (title, text) instead of a toast or a balloon.</summary>
+    internal Action<string, string>? ProblemNoticeProbe { get; set; }
+
     /// <summary>
     /// Why something asked for from the hotkey, the tray or the command line (no UI of their own) did not happen, shown once
     /// where the user is looking; the caller has already put it in the footer. Nothing more while the window is in front; a
@@ -744,6 +749,7 @@ internal sealed partial class AppController : IDisposable
     /// </summary>
     private void NotifyProblem(string title, string text, bool overGame = false)
     {
+        if (ProblemNoticeProbe is { } probe) { probe(title, text); return; }
         if (MainWindowInFront) return;
         if (overGame || Hotkeys.GameInFront()) Toasts.ShowProblem(title, text);
         else ShowBalloon(title, text);
@@ -766,6 +772,7 @@ internal sealed partial class AppController : IDisposable
         Say(msg);
         if (!MainWindowVisible) ShowBalloon("Clink update ready", msg);
         UpdateStateChanged?.Invoke();
+        PublishRemote();
     }
 
     /// <summary>Update problems already announced in this session (one notification per version or unconfirmed streak, not one every 6 h).</summary>
@@ -786,6 +793,7 @@ internal sealed partial class AppController : IDisposable
             NotifyProblem(notice.Title, notice.Text);
         }
         UpdateStateChanged?.Invoke();
+        PublishRemote();
     }
 
     /// <summary>The downloaded update was dropped (Dev Build switched): no "Update to v…" in the tray or the footer any more.</summary>
@@ -794,6 +802,7 @@ internal sealed partial class AppController : IDisposable
         if (Updater.PendingVersion != null) return;   // a newer download became pending meanwhile; OnUpdateReady shows that one
         if (_updateItem != null) _updateItem.Visible = false;
         UpdateStateChanged?.Invoke();
+        PublishRemote();
     }
 
     /// <summary>Installs the downloaded update now: hands over to the new exe and quits.</summary>
@@ -1371,6 +1380,7 @@ internal sealed partial class AppController : IDisposable
         if (_recordItem != null) _recordItem.Text = RecordItemText;
         if (_dot != null && Settings.StatusDot && Settings.ClipsEnabled) { try { _dot.Apply(State, IsManualRecording); } catch { } }
         StateChanged?.Invoke();
+        PublishRemote();
     }
 
     // ------------------------------------------------------------------ hotkeys (docs/SPEC-v2.md §6)
@@ -1505,10 +1515,11 @@ internal sealed partial class AppController : IDisposable
     /// <param name="seconds">Replay length to save; null = the replay-length slider (<see cref="Settings.BufferSeconds"/>).</param>
     public async void ClipNow(int? seconds = null)
     {
-        if (!Settings.ClipsEnabled) { ClipsOffNotice(); return; }
+        if (!Settings.ClipsEnabled) { ClipsOffNotice(); RaiseClipNotSaved("clipsOff"); return; }
         if (_restarting || !Engine.IsRunning)
         {
             bool waiting = !IsPaused && GameOnly && _gamePid == 0;
+            string reason = ClipNotSavedReason(_restarting, IsPaused, waiting, Engine.Error != null, _starting);
             // A recorder that failed to start says why: "yet" would promise a start that may never come.
             string why = _restarting ? "Clink is restarting"
                 : IsPaused ? "Recording is paused"
@@ -1525,6 +1536,7 @@ internal sealed partial class AppController : IDisposable
                 if (Settings.ClickSound) ClickSound.PlayError();
                 NotifyProblem("Clip not saved", waiting ? why + ". If your game is not detected, add it under Capture → Recording → Custom apps." : why);
             }
+            RaiseClipNotSaved(reason);
             return;
         }
         if ((DateTime.UtcNow - _lastClipAt).TotalMilliseconds < 700) return;
@@ -1533,6 +1545,7 @@ internal sealed partial class AppController : IDisposable
         _clipRefusedAt = DateTime.MinValue;
         var saved = new TaskCompletionSource<ClipEntry?>(TaskCreationOptions.RunContinuationsAsynchronously);
         _saveTask = saved.Task;
+        PublishRemote();   // "saving" now, not at the next 1 s tick
         if (Settings.ClickSound) ClickSound.Play(Settings.ClickVolume);
         try
         {
@@ -1546,6 +1559,7 @@ internal sealed partial class AppController : IDisposable
             Toasts.ShowClipSaved(entry);
             Archive.NotifyClipSaved();
             ClipSaved?.Invoke(entry);
+            PublishRemoteEvent(RemoteProtocol.ClipSaved((int)Math.Round(result.DurationSeconds)));
             // The save copied the clip into managed buffers that are all garbage now: a background GC lets the next save reuse
             // that space instead of growing the process by another clip.
             GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: false);
@@ -1556,8 +1570,9 @@ internal sealed partial class AppController : IDisposable
             Say("Clip failed: " + ex.Message);
             // The click has already played: without this a failed save looks like a saved clip.
             NotifyProblem("Clip not saved", ex.Message);
+            RaiseClipNotSaved("failed");
         }
-        finally { saved.TrySetResult(null); _saving = 0; }
+        finally { saved.TrySetResult(null); _saving = 0; PublishRemote(); }
     }
 
     /// <summary>
@@ -1567,54 +1582,63 @@ internal sealed partial class AppController : IDisposable
     /// </summary>
     public async void ShareLast()
     {
-        // The hotkey, the tray item and --share-last: a notice instead of an upload while Clips is off or cloud sharing is off.
-        if (!Settings.ClipsEnabled) { ClipsOffNotice(); return; }
-        if (!Settings.CloudSharingEnabled)
+        // One "shareDone" for the remote pipe per press, whichever way it ends (also by an exception), after the user was told.
+        string outcome = "failed";
+        try
         {
-            // A clip that already has a link only has it copied (no network), so that stays possible; anything else is refused. A clip
-            // being saved right now (or just turned down) has no link yet.
-            var newest = Volatile.Read(ref _saving) == 1 || DateTime.UtcNow - _clipRefusedAt < TimeSpan.FromSeconds(3) ? null : NewestShareable();
-            if (newest == null || string.IsNullOrEmpty(newest.CopiumLink))
+            // The hotkey, the tray item and --share-last: a notice instead of an upload while Clips is off or cloud sharing is off.
+            if (!Settings.ClipsEnabled) { outcome = "declined"; ClipsOffNotice(); return; }
+            if (!Settings.CloudSharingEnabled)
             {
-                Say(CloudOffText);
-                Log.Info("share-last: cloud sharing is off");
-                NotifyProblem("Cloud sharing is off", CloudOffText, overGame: UserNotificationState.FullScreenInFront());
+                // A clip that already has a link only has it copied (no network), so that stays possible; anything else is refused. A clip
+                // being saved right now (or just turned down) has no link yet.
+                var newest = Volatile.Read(ref _saving) == 1 || DateTime.UtcNow - _clipRefusedAt < TimeSpan.FromSeconds(3) ? null : NewestShareable();
+                if (newest == null || string.IsNullOrEmpty(newest.CopiumLink))
+                {
+                    outcome = "declined";
+                    Say(CloudOffText);
+                    Log.Info("share-last: cloud sharing is off");
+                    NotifyProblem("Cloud sharing is off", CloudOffText, overGame: UserNotificationState.FullScreenInFront());
+                    return;
+                }
+            }
+            // "Clip, then share" (a Stream Deck multi-action, --clip then --share-last, two quick presses) means the clip being saved
+            // right now: the library only gets it once the save is done, so wait for that save, however long it takes (a long replay
+            // on a slow disk), and share what it saved, never the clip before it. A clip turned down before its save started (not
+            // recording, or --clip starting Clink) shares nothing either: the two presses of a multi-action arrive well inside 3 s,
+            // and a share-last pressed on its own still shares the newest clip.
+            ClipEntry? entry;
+            if (Volatile.Read(ref _saving) == 1 && _saveTask is { } saving)
+            {
+                entry = await saving;
+                // ClipNow has already said why the clip was not saved (footer, and a toast / balloon away from the window).
+                if (entry == null) { outcome = "noClip"; Log.Info("share-last: the clip being saved failed; nothing shared"); return; }
+            }
+            else if (DateTime.UtcNow - _clipRefusedAt < TimeSpan.FromSeconds(3))
+            {
+                // Same: ClipNow / the startup balloon has said why; the footer keeps that reason.
+                outcome = "noClip";
+                Log.Info("share-last: the clip just pressed was not saved; nothing shared");
                 return;
             }
+            else entry = NewestShareable();
+            bool ok = false, joined = false, windowOpened = false;
+            if (entry == null) { outcome = "noClip"; Say("No clips to share yet"); }
+            else
+            {
+                // A second press during the same upload gets the same result: the press that started it reports a failure, once.
+                joined = _uploads.TryGetValue(entry, out var running) && running.Announced;
+                ok = await ShareAsync(entry, new RemoteShareProgress(p => PublishRemoteEvent(RemoteProtocol.ShareProgress(p))), announce: true, context: ConsentContext.ShareLast);
+                outcome = RemoteOutcome(LastShareOutcome);
+                // no Copium token: the share window is the answer, not a problem; the user's own "Not now" is not one either
+                windowOpened = LastShareOutcome is ShareOutcome.FileShareOpened or ShareOutcome.Declined;
+            }
+            // The hotkey, the tray item and --share-last have no UI of their own, and the window is usually in the tray, minimized or
+            // behind the game: a refusal (or a failure) that only reached the footer would be invisible (NotifyProblem: a toast over
+            // the game, a tray balloon otherwise).
+            if (!ok && !joined && !windowOpened && LastNotice.Length > 0) NotifyProblem("Clip not uploaded", LastNotice, overGame: UserNotificationState.FullScreenInFront());
         }
-        // "Clip, then share" (a Stream Deck multi-action, --clip then --share-last, two quick presses) means the clip being saved
-        // right now: the library only gets it once the save is done, so wait for that save, however long it takes (a long replay
-        // on a slow disk), and share what it saved, never the clip before it. A clip turned down before its save started (not
-        // recording, or --clip starting Clink) shares nothing either: the two presses of a multi-action arrive well inside 3 s,
-        // and a share-last pressed on its own still shares the newest clip.
-        ClipEntry? entry;
-        if (Volatile.Read(ref _saving) == 1 && _saveTask is { } saving)
-        {
-            entry = await saving;
-            // ClipNow has already said why the clip was not saved (footer, and a toast / balloon away from the window).
-            if (entry == null) { Log.Info("share-last: the clip being saved failed; nothing shared"); return; }
-        }
-        else if (DateTime.UtcNow - _clipRefusedAt < TimeSpan.FromSeconds(3))
-        {
-            // Same: ClipNow / the startup balloon has said why; the footer keeps that reason.
-            Log.Info("share-last: the clip just pressed was not saved; nothing shared");
-            return;
-        }
-        else entry = NewestShareable();
-        bool ok = false, joined = false, windowOpened = false;
-        if (entry == null) Say("No clips to share yet");
-        else
-        {
-            // A second press during the same upload gets the same result: the press that started it reports a failure, once.
-            joined = _uploads.TryGetValue(entry, out var running) && running.Announced;
-            ok = await ShareAsync(entry, announce: true, context: ConsentContext.ShareLast);
-            // no Copium token: the share window is the answer, not a problem; the user's own "Not now" is not one either
-            windowOpened = LastShareOutcome is ShareOutcome.FileShareOpened or ShareOutcome.Declined;
-        }
-        // The hotkey, the tray item and --share-last have no UI of their own, and the window is usually in the tray, minimized or
-        // behind the game: a refusal (or a failure) that only reached the footer would be invisible (NotifyProblem: a toast over
-        // the game, a tray balloon otherwise).
-        if (!ok && !joined && !windowOpened && LastNotice.Length > 0) NotifyProblem("Clip not uploaded", LastNotice, overGame: UserNotificationState.FullScreenInFront());
+        finally { PublishRemoteEvent(RemoteProtocol.ShareDone(outcome)); }
     }
 
     /// <summary>The newest clip "share last clip" means (a recording is hours long: not that), or null.</summary>
@@ -1760,6 +1784,7 @@ internal sealed partial class AppController : IDisposable
         }
         var done = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         _uploads[entry] = (done.Task, announce);
+        PublishRemote();   // "upload.on" now, not at the next 1 s tick
         bool ok = false;
         bool killed = false;   // stopped by the cloud kill switch: a neutral "not shared", not a failure
         using var uploadCts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);   // this upload only: the cloud kill switch cancels it
@@ -1772,7 +1797,8 @@ internal sealed partial class AppController : IDisposable
             string path = entry.Path;
             // Off the UI thread: opening an archived clip on an unreachable share blocks in the FileStream constructor for ~20 s.
             // The callers' Progress<T> were made on the UI thread and still report there.
-            var up = await Task.Run(() => CopiumClient.UploadAsync(token, path, title, progress, uploadCts.Token));
+            var tee = new RemoteUploadTee(this, progress);
+            var up = await Task.Run(() => CopiumClient.UploadAsync(token, path, title, tee, uploadCts.Token));
             entry.CopiumLink = up.Link;
             entry.CopiumPageUrl = up.PageUrl;
             entry.CopiumId = up.Id;
@@ -1809,6 +1835,7 @@ internal sealed partial class AppController : IDisposable
             _uploadCancels.Remove(uploadCts);
             LastShareOutcome = ok ? ShareOutcome.Uploaded : killed ? ShareOutcome.Declined : ShareOutcome.Failed;   // before the waiting asks continue, which read it
             done.SetResult(ok);
+            PublishRemote();
         }
         return ok;
     }
@@ -2154,6 +2181,7 @@ internal sealed partial class AppController : IDisposable
         _disposed = true;
         Log.Info("Quitting");
         _cts.Cancel();
+        StopRemote();
         try { WaitForSaves(ExitStopLimit); } catch (Exception ex) { Log.Warn("Exit: saves: " + ex.Message); }   // a running "Save a copy" removes its .clinkpart within 4 s
         try { _signIn?.Shutdown(); } catch (Exception ex) { Log.Warn("Exit: sign-in: " + ex.Message); }   // no network wait: a late approval is simply never stored
         _timer?.Stop();
