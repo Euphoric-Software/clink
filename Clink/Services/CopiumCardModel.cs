@@ -1,3 +1,5 @@
+using Clink.Services.Localization;
+
 namespace Clink.Services;
 
 /// <summary>Which body the App tab's Copium card shows.</summary>
@@ -24,25 +26,26 @@ internal enum CopiumPanel
 internal sealed class CopiumCardModel
 {
     // ---- the strings
-    internal const string SignInLabel = "Sign in with Copium";
-    internal const string SignInHint = "Opens copium.pics in your browser. Approve there and you're done.";
-    internal const string NameLabel = "Name on Copium";
-    internal const string UseTokenLink = "Use an API token instead";
-    internal const string CodeCheckHint = "Check that this code matches the one on the Copium page.";
-    internal const string OpenAgainLabel = "Open the page again";
-    internal const string CancelLabel = "Cancel";
-    internal const string SignOutLabel = "Sign out";
-    internal const string StartingStatus = "Contacting Copium…";
-    internal const string WaitingStatus = "Waiting for you to approve in your browser…";
-    internal const string RetryingStatus = "Can't reach Copium right now. Still trying…";
-    internal const string FinishingStatus = "Finishing sign-in…";
-    internal const string UnverifiedNote = "Couldn't check your account just now.";
-    internal const string PlusFromAccountNote = "From your Copium account";
-    internal const string DevNeedsTokenReason = "Not available in a test instance without --dev-token";
-    internal const string CleanupOpenLabel = "Open copium.pics";
-    internal const string CleanupDismissLabel = "Dismiss";
-    internal const string NoTokenShareHint = "Without a token, Share opens a window you can drag the clip from (into Discord, a browser or a folder).";
-    internal const string SignOutBusyStatus = "Signing out…";
+    // Properties, not constants: each is the text in the active language (the English text is the catalog key).
+    internal static string SignInLabel => L.T("Sign in with Copium");
+    internal static string SignInHint => L.T("Opens copium.pics in your browser. Approve there and you're done.");
+    internal static string NameLabel => L.T("Name on Copium");
+    internal static string UseTokenLink => L.T("Use an API token instead");
+    internal static string CodeCheckHint => L.T("Check that this code matches the one on the Copium page.");
+    internal static string OpenAgainLabel => L.T("Open the page again");
+    internal static string CancelLabel => L.T("Cancel");
+    internal static string SignOutLabel => L.T("Sign out");
+    internal static string StartingStatus => L.T("Contacting Copium…");
+    internal static string WaitingStatus => L.T("Waiting for you to approve in your browser…");
+    internal static string RetryingStatus => L.T("Can't reach Copium right now. Still trying…");
+    internal static string FinishingStatus => L.T("Finishing sign-in…");
+    internal static string UnverifiedNote => L.T("Couldn't check your account just now.");
+    internal static string PlusFromAccountNote => L.T("From your Copium account");
+    internal static string DevNeedsTokenReason => L.T("Not available in a test instance without --dev-token");
+    internal static string CleanupOpenLabel => L.T("Open copium.pics");
+    internal static string CleanupDismissLabel => L.T("Dismiss");
+    internal static string NoTokenShareHint => L.T("Without a token, Share opens a window you can drag the clip from (into Discord, a browser or a folder).");
+    internal static string SignOutBusyStatus => L.T("Signing out…");
     /// <summary>Where the "Open copium.pics" button of the cleanup notice goes (the ShareX &amp; API page, where the connections are listed).</summary>
     internal const string CleanupUrl = "https://copium.pics/sharex";
 
@@ -152,14 +155,17 @@ internal sealed class CopiumCardModel
         bool hasCode = panel == CopiumPanel.Waiting && state.Status == SignInStatus.Waiting && !string.IsNullOrEmpty(state.Code);
         string? cleanup = string.IsNullOrWhiteSpace(state.RemoteCleanupName) ? null
             : state.RemoteCleanupGuess
-                ? $"Clink couldn't remove its connection from Copium. Remove the connection probably named “{Iso(state.RemoteCleanupName)}” on copium.pics under ShareX & API."
-                : $"Clink couldn't remove its connection from Copium. Remove “{Iso(state.RemoteCleanupName)}” on copium.pics under ShareX & API.";
+                ? L.T("Clink couldn't remove its connection from Copium. Remove the connection probably named “{name}” on copium.pics under ShareX & API.", ("name", Iso(state.RemoteCleanupName)))
+                : L.T("Clink couldn't remove its connection from Copium. Remove “{name}” on copium.pics under ShareX & API.", ("name", Iso(state.RemoteCleanupName)));
 
         string? signedInText = null;
         if (panel == CopiumPanel.SignedIn)
         {
-            string who = string.IsNullOrWhiteSpace(state.Username) ? "Signed in" : "Signed in as " + Iso(state.Username);
-            signedInText = state.Plus ? who + " · Copium+" : who;
+            bool named = !string.IsNullOrWhiteSpace(state.Username);
+            string who = named ? Iso(state.Username!) : "";
+            signedInText = named
+                ? (state.Plus ? L.T("Signed in as {name} · Copium+", ("name", who)) : L.T("Signed in as {name}", ("name", who)))
+                : (state.Plus ? L.T("Signed in · Copium+") : L.T("Signed in"));
         }
 
         return new CopiumCardModel
@@ -205,25 +211,25 @@ internal sealed class CopiumCardModel
     /// <summary>The one line for a failed sign-in (null failure: the generic line).</summary>
     internal static string FailureLine(SignInFailure? failure, string? message = null) => failure switch
     {
-        SignInFailure.Unsupported => "Sign in with Copium isn't available yet. Use an API token instead.",
-        SignInFailure.RateLimited => "Too many sign-in attempts. Try again in a few minutes.",
-        SignInFailure.Expired => "The code expired. Try again.",
-        SignInFailure.Denied => "The sign-in was cancelled on Copium.",
-        SignInFailure.Network => "Couldn't reach Copium. Check your connection and try again.",
-        SignInFailure.AlreadySignedIn => "You're already signed in. Sign out first to switch accounts.",
+        SignInFailure.Unsupported => L.T("Sign in with Copium isn't available yet. Use an API token instead."),
+        SignInFailure.RateLimited => L.T("Too many sign-in attempts. Try again in a few minutes."),
+        SignInFailure.Expired => L.T("The code expired. Try again."),
+        SignInFailure.Denied => L.T("The sign-in was cancelled on Copium."),
+        SignInFailure.Network => L.T("Couldn't reach Copium. Check your connection and try again."),
+        SignInFailure.AlreadySignedIn => L.T("You're already signed in. Sign out first to switch accounts."),
         SignInFailure.CloudSharingOff => ConsentGate.CloudOffText,
         SignInFailure.DevInstanceNeedsToken => DevNeedsTokenReason,
-        SignInFailure.CouldNotSave => "Couldn't save the sign-in on this PC.",
-        _ => "Something went wrong. Try again.",
+        SignInFailure.CouldNotSave => L.T("Couldn't save the sign-in on this PC."),
+        _ => L.T("Something went wrong. Try again."),
     };
 
     /// <summary>What the card says after Sign out; null when there is nothing to say.</summary>
     internal static string? SignOutText(SignOutResult result) => result switch
     {
-        SignOutResult.Revoked => "Signed out. Clink's connection was removed from Copium.",
+        SignOutResult.Revoked => L.T("Signed out. Clink's connection was removed from Copium."),
         SignOutResult.NotSupportedDisconnectOnWebsite or SignOutResult.FailedButSignedOutLocally =>
-            "Signed out on this PC. Remove the Clink connection on copium.pics under ShareX & API.",
-        SignOutResult.Manual => "Signed out on this PC. Your API token still works on copium.pics until you delete it there.",
+            L.T("Signed out on this PC. Remove the Clink connection on copium.pics under ShareX & API."),
+        SignOutResult.Manual => L.T("Signed out on this PC. Your API token still works on copium.pics until you delete it there."),
         _ => null,
     };
 }

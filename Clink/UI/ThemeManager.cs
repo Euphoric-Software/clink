@@ -1,11 +1,16 @@
 using System.Windows;
 using System.Windows.Media;
 using Clink.Services;
+using Clink.Services.Localization;
 
 namespace Clink.UI;
 
 /// <summary>A theme or an accent as settings.json names it (<see cref="Id"/>, what is stored) and the App tab shows it (<see cref="Label"/>).</summary>
-internal sealed record ThemeChoice(string Id, string Label);
+internal sealed record ThemeChoice(string Id, string LabelKey)
+{
+    /// <summary>The label in the active language (<see cref="LabelKey"/> is the catalog key, which may be a context key; the key's own text is shown when there is no translation).</summary>
+    public string Label => L.T(LabelKey);
+}
 
 /// <summary>
 /// The colour tokens of the app and how a theme (Dark or Light) and an accent (Spark Blue, Blue, Violet, Pink, Orange, Green) become them.
@@ -23,12 +28,12 @@ internal sealed record ThemeChoice(string Id, string Label);
 internal static class ThemeManager
 {
     /// <summary>Dark first. These are the ids a <c>Settings.Theme</c> can hold.</summary>
-    public static IReadOnlyList<ThemeChoice> Themes { get; } = new ThemeChoice[] { new("dark", "Dark"), new("light", "Light") };
+    public static IReadOnlyList<ThemeChoice> Themes { get; } = new ThemeChoice[] { new("dark", "theme|Dark"), new("light", "theme|Light") };
 
     /// <summary>Spark Blue first (the default). These are the ids a <c>Settings.Accent</c> can hold.</summary>
     public static IReadOnlyList<ThemeChoice> Accents { get; } = new ThemeChoice[]
     {
-        new("spark", "Spark Blue"), new("blue", "Blue"), new("violet", "Violet"), new("pink", "Pink"), new("orange", "Orange"), new("green", "Green"),
+        new("spark", "accent|Spark Blue"), new("blue", "accent|Blue"), new("violet", "accent|Violet"), new("pink", "accent|Pink"), new("orange", "accent|Orange"), new("green", "accent|Green"),
     };
 
     /// <summary>Accent ids an earlier Clink stored that now mean another one: "cyan", the default before the Euphoric Software rebrand, is Spark Blue.</summary>

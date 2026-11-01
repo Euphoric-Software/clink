@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
 using Clink.Services;
+using Clink.Services.Localization;
 
 namespace Clink.UI;
 
@@ -17,10 +18,13 @@ internal sealed class ReplayLengthSlider : FrameworkElement
 {
     public const int Minimum = 5, Maximum = 3600;
     public const int IdealMin = 30, IdealMax = 90;
-    private static readonly (int seconds, string label)[] s_ticks =
-    {
-        (15, "15 s"), (30, "30 s"), (60, "1 m"), (120, "2 m"), (300, "5 m"), (600, "10 m"), (1800, "30 m"), (3600, "1 h"),
-    };
+    private static readonly int[] s_ticks = { 15, 30, 60, 120, 300, 600, 1800, 3600 };
+
+    /// <summary>A tick's caption in the active language: "15 s", "30 s", "1 m" ... "30 m", "1 h" (whole units from the catalog).</summary>
+    internal static string TickLabel(int seconds) =>
+        seconds < 60 ? L.T("unit|{n} s", ("n", seconds))
+        : seconds < 3600 ? L.T("unit|{n} m", ("n", seconds / 60))
+        : L.T("unit|{n} h", ("n", seconds / 3600));
     private const double LabelWidth = 50, PadLeft = 7, PadRight = 10;
     private const double TrackY = 22, TrackHeight = 4, ThumbRadius = 7, ControlHeight = 50;
     private static readonly double s_logMin = Math.Log(Minimum), s_logSpan = Math.Log(Maximum) - Math.Log(Minimum);
@@ -38,7 +42,7 @@ internal sealed class ReplayLengthSlider : FrameworkElement
         FocusVisualStyle = null;   // keyboard focus is drawn by OnRender (accent ring on the thumb), not as a rectangle around the row
         Height = ControlHeight;
         Cursor = Cursors.Hand;
-        ToolTip = "Drag, or use ← → (PageUp / PageDown for bigger steps)";
+        ToolTip = L.T("Drag, or use ← → (PageUp / PageDown for bigger steps)");
         // Everything is drawn in OnRender with the brushes of the moment: a theme change draws it again. The Capture tab is unloaded
         // while another tab is showing (the App tab, where the theme is changed), so it also draws again whenever it is loaded.
         Loaded += (_, _) => { ThemeManager.ThemeChanged -= InvalidateVisual; ThemeManager.ThemeChanged += InvalidateVisual; InvalidateVisual(); };
@@ -196,14 +200,15 @@ internal sealed class ReplayLengthSlider : FrameworkElement
             double xl = XOf(_limit);
             dc.DrawRectangle(overLimit, null, new Rect(xl, TrackY - TrackHeight / 2, Math.Max(0, right - xl), TrackHeight));
         }
-        var ideal = new FormattedText("ideal", CultureInfo.CurrentCulture, FlowDirection.LeftToRight, face, 10, accent2, ppd);
+        var ideal = new FormattedText(L.T("replay-length|ideal"), CultureInfo.CurrentCulture, FlowDirection.LeftToRight, face, 10, accent2, ppd);
         dc.DrawText(ideal, new Point((zl + zr) / 2 - ideal.Width / 2, TrackY - TrackHeight / 2 - 4 - ideal.Height));
 
         // ticks + labels
         var tickPen = new Pen(muted, 1) { StartLineCap = PenLineCap.Flat };
         for (int i = 0; i < s_ticks.Length; i++)
         {
-            var (sec, label) = s_ticks[i];
+            int sec = s_ticks[i];
+            string label = TickLabel(sec);
             double x = Math.Round(XOf(sec)) + 0.5;
             dc.DrawLine(tickPen, new Point(x, TrackY + TrackHeight / 2 + 3), new Point(x, TrackY + TrackHeight / 2 + 7));
             var ft = new FormattedText(label, CultureInfo.CurrentCulture, FlowDirection.LeftToRight, face, 10, muted, ppd);
