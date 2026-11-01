@@ -70,6 +70,7 @@
   "Not recording: waiting for a game. If your game is not detected, add it under Capture → Recording → Custom apps.": "Not recording: waiting for a game. If your game is not detected, add it under Capture → Recording → Custom apps.",
   "Clip saved ({seconds}s)": "Clip saved ({seconds}s)",
   "Clip failed: {error}": "Clip failed: {error}",
+  "The encoder restarted, try again": "The encoder restarted, try again",
   "No clips to share yet": "No clips to share yet",
   "Clip not uploaded": "Clip not uploaded",
   "Over Copium Plus's limit ({size} / {minutes} min)": "Over Copium Plus's limit ({size} / {minutes} min)",

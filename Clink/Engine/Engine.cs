@@ -34,6 +34,8 @@ internal sealed class EngineConfig
     public string VoiceApp = "auto";
     public float HdrKnee = 0.75f, HdrPeak = 4f;
     public string ClipsFolder = "";
+    /// <summary>The hidden encoder experiment (Settings.EncoderExperiment) for the live encoder; null = today's setup.</summary>
+    public LiveEncoderTuning? EncoderTuning;
 
     /// <summary>"h264" / "hevc" / "av1" in any case or spacing; anything else (or null) is h264.</summary>
     public static string NormalizeCodec(string? codec)
@@ -131,6 +133,10 @@ internal sealed unsafe class Engine : IDisposable
     private FrameConverter? _converter;
     private VideoEncoder? _encoder;
     private RingStore? _ring;
+    private VideoEncoderConfig? _encCfg;
+    private OutputOrderGuard? _orderGuard;      // set while a tuned (encoder experiment) encoder runs
+    private bool _tuningLatchedOff;             // an experiment broke the output order: off for the rest of this session (never reset, never retried)
+    private int _encoderGen;                    // +1 for every encoder reopen (before the ring is cleared): a save that spans one is refused, see ThrowIfEncoderRestarted
     private readonly List<AudioTrack> _tracks = new();
     private readonly object _audioGate = new();
     private long _pacerDropped;
@@ -225,10 +231,18 @@ internal sealed unsafe class Engine : IDisposable
             };
             double mbps = Math.Clamp(_cfg.BitrateMbps, 0.1, 500);
             uint bitrate = (uint)Math.Round(mbps * 1_000_000);
-            _encoder = new VideoEncoder(_d3d, new VideoEncoderConfig(_cfg.OutWidth, _cfg.OutHeight, _cfg.Fps, bitrate, _cfg.Codec, _cfg.GopSeconds));
+            _encCfg = new VideoEncoderConfig(_cfg.OutWidth, _cfg.OutHeight, _cfg.Fps, bitrate, _cfg.Codec, _cfg.GopSeconds);
+            // The encoder experiment, unless an earlier one broke the output order in this session (then never again). Null options = today's.
+            var tuning = _tuningLatchedOff ? null : _cfg.EncoderTuning;
+            _encoder = new VideoEncoder(_d3d, _encCfg, tuning == null ? null : VideoEncoderOptions.Live with { LiveTuning = tuning });
+            _orderGuard = tuning == null ? null : new OutputOrderGuard();
 
             // Ring: what the replay length needs at this bitrate, clamped to half of physical RAM; a failed allocation is retried
             // smaller inside RingStore. The effective replay length is what the ring really holds, and is what the UI shows.
+            // Under VBR the ring is sized from the applied peak (the encoder is open by now), so the replay length holds at the peak.
+            double configuredMbps = mbps;
+            mbps = EncoderExperiments.RingMbps(mbps, _encoder.Applied);
+            if (mbps != configuredMbps) Log.Info($"Ring sized for the VBR peak {mbps:0.#} Mbps (mean {configuredMbps:0.#} Mbps)");
             long want = RingStore.BytesFor(mbps, _cfg.BufferSeconds);
             long max = RingStore.MaxBytes();
             long ringBytes = Math.Min(want, max);
@@ -244,7 +258,11 @@ internal sealed unsafe class Engine : IDisposable
                 Log.Info($"Ring buffer {_ring.Capacity >> 20} MB for {_cfg.BufferSeconds}s at {mbps:0.#} Mbps ({_cfg.Codec}{(_cfg.Codec == "av1" ? ", experimental" : "")})");
             var ring = _ring;
             var fan = _fan;
-            _encoder.OnOutput = (pts, key, data) => fan.Push(ring, pts, key, data);   // ring, then the recording if one runs (copy + enqueue under the gate)
+            var guard = _orderGuard;
+            // ring, then the recording if one runs (copy + enqueue under the gate)
+            _encoder.OnOutput = guard == null
+                ? (pts, key, data) => fan.Push(ring, pts, key, data)
+                : (pts, key, data) => { if (guard.Accept(pts)) fan.Push(ring, pts, key, data); };   // a tuned encoder: out-of-order output never reaches the ring
 
             StartAudio();
 
@@ -274,6 +292,7 @@ internal sealed unsafe class Engine : IDisposable
                     next = ComUtil.QpcNow100ns();
                 }
                 Tick();
+                if (_orderGuard is { Tripped: true } tripped) ReopenWithoutTuning(tripped);
                 next += period;
                 long behind = ComUtil.QpcNow100ns() - next;
                 if (behind > period * 4)
@@ -288,7 +307,7 @@ internal sealed unsafe class Engine : IDisposable
                     ThrowIfDeviceLost();   // also catches a lost GPU while the encoder pool is empty and nothing reaches Convert
                     var enc = _encoder; var cap = _capture;
                     if (enc != null && cap != null)
-                        Log.Info($"stats: capture {cap.FramesReceived} (copied {cap.FramesCopied}), encoded in={enc.FramesIn} out={enc.FramesOut}, dropped pacer={Interlocked.Read(ref _pacerDropped)} queue-full={enc.Dropped}, ring holds {RingRangeSeconds:0.0}s");
+                        Log.Info($"stats: capture {cap.FramesReceived} (copied {cap.FramesCopied}), encoded in={enc.FramesIn} out={enc.FramesOut} inflight={enc.FramesInFlight}, dropped pacer={Interlocked.Read(ref _pacerDropped)} queue-full={enc.Dropped}, ring holds {RingRangeSeconds:0.0}s");
                 }
             }
         }
@@ -306,6 +325,8 @@ internal sealed unsafe class Engine : IDisposable
         finally
         {
             _stop = true;
+            // The guard may have tripped after the last pass of the loop (or in its last one): the reopen never ran, so latch here.
+            if (_orderGuard?.Tripped == true) _tuningLatchedOff = true;
             // (_stop, set first, is what keeps a recording from starting during the audio join and the teardown: StartRecording checks it
             // under _recLock, which DetachRecorder takes. IsRunning stays true until the teardown is done: the controller relies on it.)
             DetachRecorder();   // before anything is torn down; the recording finishes on its own thread
@@ -346,6 +367,40 @@ internal sealed unsafe class Engine : IDisposable
         else sample->Release();
         // After a GPU reset every convert fails: stop rather than show "Recording" while nothing reaches the ring.
         if (!ok) ThrowIfDeviceLost();
+    }
+
+    /// <summary>
+    /// The encoder experiment put frames out of order (4a writes pts as dts, so that would corrupt clips): drop the bad encoder, clear
+    /// the ring (it may hold the out-of-order tail), and open a plain one. Latched: this Engine never tries an experiment again.
+    /// Runs on the video thread, since the guard trips on the encoder's own thread, which cannot dispose its encoder.
+    /// </summary>
+    private void ReopenWithoutTuning(OutputOrderGuard guard)
+    {
+        _tuningLatchedOff = true;
+        _orderGuard = null;
+        Log.Warn($"Encoder experiment '{_cfg.EncoderTuning}' put output out of order ({guard.Detail}); reopening the encoder without it for the rest of this session");
+        // First: a save in flight that already read the old encoder sees this and refuses (its video would mix two encoders' streams).
+        // Order matters: _encoder = null BEFORE the increment (a full fence). SaveClip reads the generation first, then _encoder, so a save
+        // that got the old encoder read a generation from before the increment, and its re-check sees the change. With the increment
+        // first, a save could read the new generation together with the old encoder and pass the re-check after the ring is refilled.
+        var old = _encoder;
+        _encoder = null;
+        Interlocked.Increment(ref _encoderGen);
+        if (old != null)
+        {
+            old.OnOutput = null;
+            try { old.Dispose(); } catch (Exception ex) { Log.Warn("encoder dispose: " + ex.Message); }
+        }
+        // A recording in progress holds the tuned encoder's parameter sets and would go on with a plain encoder's frames: finish its file
+        // now, as the controller's recording-ended path does for a capture stall (it starts the next part, with the plain encoder).
+        if (IsRecording) Log.Warn("Encoder experiment: finishing this recording part; the next part starts on the plain encoder");
+        DetachRecorder(RecordingEndReason.Discontinuity);
+        var ring = _ring!;
+        ring.Clear();
+        var fan = _fan;
+        var enc = new VideoEncoder(_d3d!, _encCfg!);   // Off: no options, exactly today's setup
+        enc.OnOutput = (pts, key, data) => fan.Push(ring, pts, key, data);
+        _encoder = enc;
     }
 
     private void ThrowIfDeviceLost()
@@ -600,6 +655,7 @@ internal sealed unsafe class Engine : IDisposable
     /// <param name="gameHint">The game the app detected (what the UI shows); names the clip only when the engine has no game of its own.</param>
     public ClipResult SaveClip(int? seconds = null, string? gameHint = null)
     {
+        int gen = Volatile.Read(ref _encoderGen);   // before enc: see ThrowIfEncoderRestarted
         var ring = _ring; var enc = _encoder;
         if (!IsRunning || ring == null || enc == null) throw new InvalidOperationException("Not recording");
         long end = ComUtil.QpcNow100ns();
@@ -620,6 +676,7 @@ internal sealed unsafe class Engine : IDisposable
         }
 
         var video = ring.Snapshot(from, end);
+        ThrowIfEncoderRestarted(gen, Volatile.Read(ref _encoderGen));   // the ring was cleared and refilled by another encoder: enc's header would not match
         if (video.Count < 2) throw new InvalidOperationException("Nothing recorded yet, wait a moment and try again.");
         long origin = video[0].Pts;
 
@@ -651,6 +708,16 @@ internal sealed unsafe class Engine : IDisposable
         long size = new FileInfo(path).Length;
         Log.Info($"Clip saved: {path} ({duration:0.0}s, {size / 1_048_576.0:0.0} MB, {frames} frames, {audioNames.Length} audio tracks, {enc.Codec}{(enc.IsAv1 ? " experimental" : "")}, mux {t0.ElapsedMilliseconds} ms)");
         return new ClipResult(path, duration, size, string.IsNullOrEmpty(game) ? null : game, audioNames);
+    }
+
+    /// <summary>
+    /// A save reads the generation before the encoder and checks it again after the ring snapshot: when the encoder was reopened in
+    /// between (the order guard), the snapshot may come from another encoder than the one whose sequence header would be written.
+    /// Throws what the callers already show as the save's reason (like "Not recording").
+    /// </summary>
+    internal static void ThrowIfEncoderRestarted(int genBefore, int genNow)
+    {
+        if (genBefore != genNow) throw Clink.Services.Localization.UserText.Attach(new InvalidOperationException("The encoder restarted, try again"), Clink.Services.Note.Of("The encoder restarted, try again"));
     }
 
     private static string SanitizeName(string s)
@@ -824,14 +891,14 @@ internal sealed unsafe class Engine : IDisposable
     /// recording lock, so it cannot interleave with a <see cref="StartRecording"/>: that one either finishes first (and is detached here) or
     /// sees <c>_stop</c> and refuses.
     /// </summary>
-    private void DetachRecorder()
+    private void DetachRecorder(RecordingEndReason reason = RecordingEndReason.EngineStopped)
     {
         lock (_recLock)
         {
             var sink = Volatile.Read(ref _sink);
             if (sink == null) return;
             DetachTaps(sink);
-            sink.Stop(RecordingEndReason.EngineStopped, catchUp: false);
+            sink.Stop(reason, catchUp: false);
         }
     }
 

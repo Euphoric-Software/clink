@@ -610,6 +610,7 @@ internal static class L10nTreeAppTests
             @"Services\AppController.cs", @"Services\AppController.Connect.cs", @"Services\AppController.Consent.cs", @"Services\AppController.Recording.cs",
             @"Services\AppController.SaveCopy.cs", @"Services\AppController.Screenshots.cs", @"Services\AppController.ShareMany.cs",
             @"UI\ToastWindow.xaml.cs", @"UI\StatusDotWindow.xaml.cs", @"Services\Updater.cs", "App.xaml.cs",
+            @"Engine\Engine.cs",   // (the save's "The encoder restarted, try again" note, shown by the controller through UserText)
         }, new[] { L10nSourceScan.T, L10nSourceScan.Plural, "SayT(", "Note.Of(", "Note.PluralOf(" });
         hits.AddRange(L10nSourceScan.Xaml(root, new[] { @"UI\ToastWindow.xaml", @"UI\StatusDotWindow.xaml" }));
         Check.True(hits.Count > 200, "found the literals of the slice's sources: " + hits.Count);

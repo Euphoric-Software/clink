@@ -1268,6 +1268,7 @@ internal sealed partial class AppController : IDisposable
             VoiceApp = GameProcessTracker.NormalizeName(Settings.VoiceApp),
             HdrKnee = Settings.HdrKnee, HdrPeak = Settings.HdrPeak,
             ClipsFolder = Settings.ClipsFolder,
+            EncoderTuning = Clink.Encode.EncoderExperiments.Resolve(Settings.EncoderExperiment, Capabilities.SizeTargetBytes(Settings.SizeTarget) > 0),
         };
     }
 
@@ -1681,9 +1682,9 @@ internal sealed partial class AppController : IDisposable
         catch (Exception ex)
         {
             Log.Error("Save clip", ex);
-            SayT("Clip failed: {error}", ("error", ex.Message));
+            SayT("Clip failed: {error}", ("error", UserText.NoteOf(ex)));
             // The click has already played: without this a failed save looks like a saved clip.
-            NotifyProblem(L.T("Clip not saved"), ex.Message);
+            NotifyProblem(L.T("Clip not saved"), UserText.Of(ex));
         }
         finally { saved.TrySetResult(null); _saving = 0; }
     }
