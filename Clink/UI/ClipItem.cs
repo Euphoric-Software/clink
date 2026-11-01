@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Windows.Media.Imaging;
 using Clink.Services;
+using Clink.Services.Localization;
 
 namespace Clink.UI;
 
@@ -15,16 +16,16 @@ internal sealed class ClipItem : INotifyPropertyChanged
 
     public ClipItem(ClipEntry e) { Entry = e; }
 
-    public string Title => string.IsNullOrEmpty(Entry.Game) ? "Clip" : Entry.Game!;
+    public string Title => string.IsNullOrEmpty(Entry.Game) ? L.T("Clip") : L.Ltr(Entry.Game!);
     public string Meta
     {
         get
         {
-            string dur = Entry.Duration > 0 ? $"{TimeSpan.FromSeconds(Entry.Duration):m\\:ss} · " : "";
-            return $"{Entry.Created:MMM d, HH:mm} · {dur}{Capabilities.FormatBytes(Entry.Size)}";
+            string dur = Entry.Duration > 0 ? $"{TimeSpan.FromSeconds(Entry.Duration).ToString("m\\:ss", L.FormatCulture)} · " : "";
+            return $"{Entry.Created.ToString("MMM d, HH:mm", L.FormatCulture)} · {dur}{L.Bytes(Entry.Size)}";
         }
     }
-    public string ShareLabel => string.IsNullOrEmpty(Entry.CopiumLink) ? "Share" : "Copy link";
+    public string ShareLabel => string.IsNullOrEmpty(Entry.CopiumLink) ? L.T("Share") : L.T("Copy link");
     public bool HasLink => !string.IsNullOrEmpty(Entry.CopiumLink);
     public BitmapSource? Thumbnail { get => _thumb; set { _thumb = value; Raise(); } }
     public bool IsUploading { get => _uploading; set { _uploading = value; Raise(); } }

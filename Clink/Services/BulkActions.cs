@@ -1,4 +1,5 @@
 using System.IO;
+using Clink.Services.Localization;
 
 namespace Clink.Services;
 
@@ -17,12 +18,12 @@ internal static class BulkActions
     /// <summary>The most files one "Share files…" window takes.</summary>
     public const int MaxShareFiles = 100;
 
-    public const string TooManyToShareText = "Select up to 100 files to share at once";
+    public static string TooManyToShareText => L.Plural("Select up to {count} files to share at once", MaxShareFiles);
 
     // The bar's split button: "Share" runs Share files…, "▾" opens the menu (the arrow's label, name and tip are the clip row's).
-    public const string SplitMainLabel = ShareChoices.SplitMainLabel;
-    public const string SplitMainName = "Share files";
-    public const string SplitMainTip = "Open the share window: drag the files into Discord, a browser or a folder";
+    public static string SplitMainLabel => ShareChoices.SplitMainLabel;
+    public static string SplitMainName => L.T("Share files");
+    public static string SplitMainTip => L.T("Open the share window: drag the files into Discord, a browser or a folder");
     public const BulkAction SplitMainAction = BulkAction.ShareFiles;
 
     /// <summary>The bar's Share button is split (a menu exists): a token and cloud sharing on.</summary>
@@ -41,32 +42,35 @@ internal static class BulkActions
         if (!hasToken || !cloudOn) return null;
         var items = new List<BulkActionItem>();
         if (uploadOn && linked < count)
-            items.Add(new BulkActionItem(BulkAction.Upload, "_" + UploadLabel, UploadTip(screenshots)));
+            items.Add(new BulkActionItem(BulkAction.Upload, L.T("_Upload and copy links"), UploadTip(screenshots)));
         if (count > 0 && linked == count)
-            items.Add(new BulkActionItem(BulkAction.CopyLinks, "_Copy links", "Copy the Copium links of the selected clips, one per line"));
+            items.Add(new BulkActionItem(BulkAction.CopyLinks, L.T("_Copy links"), L.T("Copy the Copium links of the selected clips, one per line")));
         bool tooMany = count > MaxShareFiles;
-        items.Add(new BulkActionItem(BulkAction.ShareFiles, "_Share files…",
-            tooMany ? TooManyToShareText : "Drag or copy the files into Discord, a browser or a folder", !tooMany));
-        items.Add(new BulkActionItem(BulkAction.SaveCopies, "S_ave copies…", "Save copies of the selected clip files to another folder"));
+        items.Add(new BulkActionItem(BulkAction.ShareFiles, L.T("_Share files…"),
+            tooMany ? TooManyToShareText : L.T("Drag or copy the files into Discord, a browser or a folder"), !tooMany));
+        items.Add(new BulkActionItem(BulkAction.SaveCopies, L.T("S_ave copies…"), L.T("Save copies of the selected clip files to another folder")));
         return items;
     }
 
-    public const string ShareFilesLabel = "Share files…", CopyLinksLabel = "Copy links", UploadLabel = "Upload and copy links";
+    public static string ShareFilesLabel => L.T("Share files…");
+    public static string CopyLinksLabel => L.T("Copy links");
+    public static string UploadLabel => L.T("Upload and copy links");
 
     /// <summary>The tooltip of "Upload and copy links".</summary>
-    public static string UploadTip(bool screenshots) =>
-        $"Upload the {(screenshots ? "screenshots" : "clips")} that have no link yet, then copy all links";
+    public static string UploadTip(bool screenshots) => screenshots
+        ? L.T("Upload the screenshots that have no link yet, then copy all links")
+        : L.T("Upload the clips that have no link yet, then copy all links");
 
     /// <summary>"Upload and copy links" is offered on the bar: a token, cloud sharing on and at least one selected item without a link.</summary>
     public static bool UploadOffered(bool hasToken, bool cloudOn, int count, int linked) => hasToken && cloudOn && count > 0 && linked < count;
 
     /// <summary>The status after Cancel was pressed during a bulk upload.</summary>
-    public const string UploadStoppingText = "Stopping after this one…";
+    public static string UploadStoppingText => L.T("Stopping after this one…");
 
     /// <summary>The bar's status when a bulk upload ends: the summary, or why nothing was tried (no token, cloud off, the user said "Not now").</summary>
     public static string UploadStatus(BulkShareResult r, bool screenshots)
     {
-        if (r.Declined) return "Not uploaded: sharing with Copium is not enabled";
+        if (r.Declined) return L.T("Not uploaded: sharing with Copium is not enabled");
         bool tried = r.Uploaded + r.AlreadyLinked + r.Refused + r.Busy + r.Failed > 0 || r.Cancelled;
         if (!tried && !string.IsNullOrWhiteSpace(r.FirstError)) return r.FirstError;
         return UploadSummary(r, screenshots);
@@ -84,7 +88,9 @@ internal static class BulkActions
 
     /// <summary>The status while a bulk upload runs: "Uploading 2 of 6…" (with " 40%" once the item reports progress).</summary>
     public static string UploadingStatus(int index, int total, double fraction = -1) =>
-        fraction > 0 ? $"Uploading {index} of {total}… {fraction:P0}" : $"Uploading {index} of {total}…";
+        fraction > 0
+            ? L.T("Uploading {index} of {total}… {percent}", ("index", index), ("total", total), ("percent", fraction.ToString("P0", L.FormatCulture)))
+            : L.T("Uploading {index} of {total}…", ("index", index), ("total", total));
 
     /// <summary>
     /// What the bar and the toast say after "Upload and copy links". <paramref name="uploaded"/> were uploaded now,
@@ -95,33 +101,40 @@ internal static class BulkActions
         string? stopError = null, int notTried = 0, bool notCopied = false, bool canRetryCopy = false)
     {
         int links = uploaded + alreadyLinked;
-        string why = "";
-        if (refused > 0) why += refused == 1 ? " 1 is too large to share." : $" {refused} are too large to share.";
-        if (busy > 0) why += busy == 1 ? " 1 was busy." : $" {busy} were busy.";
+        // each part is a whole sentence of its own; they are joined by a space (as the one string was before)
+        var why = new List<string>();
+        if (refused > 0) why.Add(L.Plural("{count} are too large to share.", refused));
+        if (busy > 0) why.Add(L.Plural("{count} were busy.", busy));
         if (failed > 0 || !string.IsNullOrWhiteSpace(firstError))
         {
             bool hasError = !string.IsNullOrWhiteSpace(firstError);
-            if (hasError && failed > 1) why += $" {failed} failed: {firstError!.TrimEnd('.')}.";
-            else if (hasError) why += " " + firstError!.TrimEnd('.') + ".";
-            else why += failed == 1 ? " 1 failed." : $" {failed} failed.";
+            if (hasError && failed > 1) why.Add(L.Plural("{count} failed: {error}.", failed, ("error", firstError!.TrimEnd('.'))));
+            else if (hasError) why.Add(L.T("{error}.", ("error", firstError!.TrimEnd('.'))));
+            else why.Add(L.Plural("{count} failed.", failed));
         }
         if (!string.IsNullOrWhiteSpace(stopError))
         {
             bool afterFailure = failed > 0 || !string.IsNullOrWhiteSpace(firstError);
-            why += (afterFailure ? " Stopped: " : " ") + stopError!.TrimEnd('.') + ".";
+            why.Add(afterFailure ? L.T("Stopped: {error}.", ("error", stopError!.TrimEnd('.'))) : L.T("{error}.", ("error", stopError!.TrimEnd('.'))));
         }
-        if (notTried > 0) why += notTried == 1 ? " 1 was not tried." : $" {notTried} were not tried.";
-        if (cancelled) why += " Cancelled.";
-        if (links == 0) return "Nothing was uploaded." + why;
+        if (notTried > 0) why.Add(L.Plural("{count} were not tried.", notTried));
+        if (cancelled) why.Add(L.T("Cancelled."));
+        if (links == 0) return string.Join(" ", why.Prepend(L.T("Nothing was uploaded.")));
         int toUpload = total - alreadyLinked;
-        string headNoun = screenshots ? (toUpload == 1 ? "screenshot" : "screenshots") : (toUpload == 1 ? "clip" : "clips");
-        string head = toUpload <= 0 ? ""
-            : uploaded >= toUpload ? $"Uploaded {uploaded} {headNoun}. "
-            : $"Uploaded {uploaded} of {toUpload} {headNoun}. ";
+        // "Uploaded {count}": the noun agrees with the number shown. "Uploaded {uploaded} of {count}": it agrees with {count}, the noun's own number.
+        string? head = toUpload <= 0 ? null
+            : uploaded >= toUpload
+                ? (screenshots ? L.Plural("Uploaded {count} screenshots.", uploaded) : L.Plural("Uploaded {count} clips.", uploaded))
+                : (screenshots ? L.Plural("Uploaded {uploaded} of {count} screenshots.", toUpload, ("uploaded", uploaded)) : L.Plural("Uploaded {uploaded} of {count} clips.", toUpload, ("uploaded", uploaded)));
         string onClipboard = notCopied
-            ? (links == 1 ? "1 link is ready but couldn't be copied to the clipboard." : $"{links} links are ready but couldn't be copied to the clipboard.")
-            : (links == 1 ? "1 link is on the clipboard." : $"{links} links are on the clipboard.");
-        return head + onClipboard + why + (notCopied && canRetryCopy ? " Use Copy links to try again." : "");
+            ? L.Plural("{count} links are ready but couldn't be copied to the clipboard.", links)
+            : L.Plural("{count} links are on the clipboard.", links);
+        var parts = new List<string>();
+        if (head != null) parts.Add(head);
+        parts.Add(onClipboard);
+        parts.AddRange(why);
+        if (notCopied && canRetryCopy) parts.Add(L.T("Use Copy links to try again."));
+        return string.Join(" ", parts);
     }
 
     /// <summary>
@@ -148,8 +161,7 @@ internal static class BulkActions
     /// <summary>"6 clips selected", "1 clip selected", "3 screenshots selected".</summary>
     public static string CountLabel(int n, bool screenshots)
     {
-        string noun = screenshots ? (n == 1 ? "screenshot" : "screenshots") : (n == 1 ? "clip" : "clips");
-        return $"{n} {noun} selected";
+        return screenshots ? L.Plural("{count} screenshots selected", n) : L.Plural("{count} clips selected", n);
     }
 
     /// <summary>The links one per line (CRLF), without empty ones and without repeats, in the order given.</summary>
@@ -186,8 +198,6 @@ internal static class BulkActions
         }
     }
 
-    private static string Copies(int n) => n == 1 ? "1 copy" : $"{n} copies";
-
     /// <summary>
     /// What the bar says after the copies: all saved, some, or none, with the first error, how many files could not be reached
     /// (<paramref name="unreachable"/>) and how many were not tried because they were busy (uploading or being deleted). Every selected
@@ -195,12 +205,14 @@ internal static class BulkActions
     /// </summary>
     public static string SaveSummary(int saved, int total, string? firstError, int unreachable = 0, int busy = 0)
     {
-        string why = string.IsNullOrWhiteSpace(firstError) ? "" : " " + firstError.TrimEnd('.') + ".";
-        if (unreachable > 0) why += unreachable == 1 ? " 1 could not be reached." : $" {unreachable} could not be reached.";
-        if (busy > 0) why += busy == 1 ? " 1 was busy." : $" {busy} were busy.";
-        if (saved >= total && total > 0) return $"Saved {Copies(saved)}.";
-        if (saved == 0) return "Nothing was saved." + why;
-        return $"Saved {saved} of {total} copies." + why;
+        // each part is a whole sentence of its own; they are joined by a space
+        var why = new List<string>();
+        if (!string.IsNullOrWhiteSpace(firstError)) why.Add(L.T("{error}.", ("error", firstError.TrimEnd('.'))));
+        if (unreachable > 0) why.Add(L.Plural("{count} could not be reached.", unreachable));
+        if (busy > 0) why.Add(L.Plural("{count} were busy.", busy));
+        if (saved >= total && total > 0) return L.Plural("Saved {count} copies.", saved);
+        string head = saved == 0 ? L.T("Nothing was saved.") : L.Plural("Saved {saved} of {count} copies.", total, ("saved", saved));
+        return string.Join(" ", why.Prepend(head));
     }
 
     /// <summary>The warning under the share window's card when files were left out, or null when every file is there.</summary>
@@ -208,14 +220,13 @@ internal static class BulkActions
     {
         int missing = total - present;
         if (missing <= 0) return null;
-        if (present == 0) return total == 1 ? "The file could not be reached." : "None of the files could be reached.";
-        return missing == 1 ? "1 file could not be reached and was left out." : $"{missing} files could not be reached and were left out.";
+        if (present == 0) return total == 1 ? L.T("The file could not be reached.") : L.T("None of the files could be reached.");
+        return L.Plural("{count} files could not be reached and were left out.", missing);
     }
 
     /// <summary>"Share 6 clips" / "Share 1 clip" / "Share 6 screenshots": the multi-file share window's title.</summary>
     public static string ShareWindowTitle(int count, bool screenshots)
     {
-        string noun = screenshots ? (count == 1 ? "screenshot" : "screenshots") : (count == 1 ? "clip" : "clips");
-        return $"Share {count} {noun}";
+        return screenshots ? L.Plural("Share {count} screenshots", count) : L.Plural("Share {count} clips", count);
     }
 }

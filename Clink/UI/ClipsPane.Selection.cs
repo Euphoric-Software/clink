@@ -6,6 +6,7 @@ using System.Windows.Media;
 using System.Windows.Threading;
 using Clink.Screenshots;
 using Clink.Services;
+using Clink.Services.Localization;
 
 namespace Clink.UI;
 
@@ -216,7 +217,7 @@ public partial class ClipsPane
             SetBarStatus(null);
             return;
         }
-        SetLive(SelectCount, count > 0 ? BulkActions.CountLabel(count, shots) : _busy == BarBusy.Uploading ? "Uploading…" : "Saving copies…");
+        SetLive(SelectCount, count > 0 ? BulkActions.CountLabel(count, shots) : _busy == BarBusy.Uploading ? L.T("Uploading…") : L.T("Saving copies…"));
         int linked = shots ? _shotSel.InOrder(_shots).Count(r => r.HasLink) : _clipSel.InOrder(VisibleClips).Count(r => r.HasLink);
         bool hasToken = App.HasCopiumToken, cloudOn = App.Settings.CloudSharingEnabled;
         // Rebuilt only when what it offers changes (a refresh must not take the keyboard focus off a bar button). Working / idle only
@@ -248,12 +249,12 @@ public partial class ClipsPane
     {
         if (_busy == BarBusy.Saving)
         {
-            yield return BarButton("Cancel", () => _saveCts?.Cancel(), "Stop saving; copies already made stay");
+            yield return BarButton(L.T("Cancel"), () => _saveCts?.Cancel(), L.T("Stop saving; copies already made stay"));
             yield break;
         }
         if (_busy == BarBusy.Uploading)
         {
-            yield return BarButton("Cancel", StopUpload, "Stop after the current upload; links already made stay");
+            yield return BarButton(L.T("Cancel"), StopUpload, L.T("Stop after the current upload; links already made stay"));
             yield break;
         }
         bool tooMany = count > BulkActions.MaxShareFiles;
@@ -261,14 +262,14 @@ public partial class ClipsPane
         {
             if (BulkActions.UploadOffered(hasToken, cloudOn, count, linked))
                 yield return BarButton(BulkActions.UploadLabel, () => Run(UploadSelectedAsync()), BulkActions.UploadTip(true), style: "AccentButton");
-            if (cloudOn) yield return BarButton("Share files…", () => Run(ShareFilesAsync()), tooMany ? BulkActions.TooManyToShareText : "Drag or copy the files into Discord, a browser or a folder", !tooMany);
-            if (linked == count) yield return BarButton("Copy links", BulkCopyLinks, "Copy the Copium links, one per line");
-            yield return BarButton("Delete", () => Run(DeleteSelectedAsync()), "Move the selected files to the Recycle Bin", style: "DangerTextButton");
+            if (cloudOn) yield return BarButton(L.T("Share files…"), () => Run(ShareFilesAsync()), tooMany ? BulkActions.TooManyToShareText : L.T("Drag or copy the files into Discord, a browser or a folder"), !tooMany);
+            if (linked == count) yield return BarButton(L.T("Copy links"), BulkCopyLinks, L.T("Copy the Copium links, one per line"));
+            yield return BarButton(L.T("Delete"), () => Run(DeleteSelectedAsync()), L.T("Move the selected files to the Recycle Bin"), style: "DangerTextButton");
             yield break;
         }
         if (_level == LibraryLevel.Shared)
         {
-            if (linked > 0) yield return BarButton("Copy links", BulkCopyLinks, "Copy the Copium links, one per line");
+            if (linked > 0) yield return BarButton(L.T("Copy links"), BulkCopyLinks, L.T("Copy the Copium links, one per line"));
             yield break;
         }
         var labels = BulkActions.ShareButtonLabels(hasToken, cloudOn, count, linked);
@@ -298,11 +299,11 @@ public partial class ClipsPane
                 yield return arrowButton;
             }
             else if (label == BulkActions.ShareFilesLabel)
-                yield return BarButton(label, () => Run(ShareFilesAsync()), tooMany ? BulkActions.TooManyToShareText : "Drag or copy the files into Discord, a browser or a folder", !tooMany, style);
+                yield return BarButton(label, () => Run(ShareFilesAsync()), tooMany ? BulkActions.TooManyToShareText : L.T("Drag or copy the files into Discord, a browser or a folder"), !tooMany, style);
             else
-                yield return BarButton(label, BulkCopyLinks, "Copy the Copium links, one per line", style: style);
+                yield return BarButton(label, BulkCopyLinks, L.T("Copy the Copium links, one per line"), style: style);
         }
-        yield return BarButton("Delete", () => Run(DeleteSelectedAsync()), "Move the selected clips to the Recycle Bin", style: "DangerTextButton");
+        yield return BarButton(L.T("Delete"), () => Run(DeleteSelectedAsync()), L.T("Move the selected clips to the Recycle Bin"), style: "DangerTextButton");
     }
 
     private void RunBarAction(BulkAction action)
@@ -326,7 +327,7 @@ public partial class ClipsPane
             _saveCts = null;
             _uploadCts = null;
             SetBusy(BarBusy.None);
-            SetBarStatus("Something went wrong: " + ex.Message);
+            SetBarStatus(L.T("Something went wrong: {error}", ("error", ex.Message)));
         }
     }
 
@@ -337,9 +338,9 @@ public partial class ClipsPane
         var links = OnShots ? _shotSel.InOrder(_shots).Select(r => r.Link).ToList() : _clipSel.InOrder(VisibleClips).Select(r => r.Link).ToList();
         string text = BulkActions.JoinLinks(links);
         int n = text.Length == 0 ? 0 : text.Split("\r\n").Length;
-        if (n == 0) { SetBarStatus("There are no links to copy"); return; }
+        if (n == 0) { SetBarStatus(L.T("There are no links to copy")); return; }
         App.CopyToClipboard(text);
-        SetBarStatus(n == 1 ? "1 link copied" : $"{n} links copied");
+        SetBarStatus(L.Plural("{count} links copied", n));
     }
 
     // ------------------------------------------------------------------ share files
@@ -349,7 +350,7 @@ public partial class ClipsPane
         if (_busy != BarBusy.None) return;
         bool onShots = OnShots;   // the feature when the button was pressed (the user may switch while the files are looked for)
         SetBusy(BarBusy.Working);
-        SetBarStatus("Looking for the files…");
+        SetBarStatus(L.T("Looking for the files…"));
         string? status = null;
         try
         {
@@ -372,7 +373,7 @@ public partial class ClipsPane
                 total = rows.Count;
                 items = rows.Where(r => !r.IsDeleting).Select(r => new ShareFileItem(r.Entry.Path, r.Entry.IsArchived, r.Entry.Size, r.Entry.Duration)).ToList();
             }
-            if (items.Count == 0) status = BulkActions.ShareFilesSummary(0, Math.Max(total, 1)) ?? "None of the files could be reached";
+            if (items.Count == 0) status = BulkActions.ShareFilesSummary(0, Math.Max(total, 1)) ?? L.T("None of the files could be reached");
             else if (items.Count > BulkActions.MaxShareFiles) status = BulkActions.TooManyToShareText;
             else if (!App.OpenShareFilesWindow(items, onShots)) status = AppController.ShareWindowFailedText;
             else status = BulkActions.ShareFilesSummary(items.Count, total);
@@ -415,7 +416,7 @@ public partial class ClipsPane
             row.IsProblem = false;
             row.IsSaving = true;
             row.IsUploading = true;
-            ShowStatus($"Saving {i + 1} of {total}…");
+            ShowStatus(L.T("Saving {index} of {total}…", ("index", i + 1), ("total", total)));
             return true;
         }
         void OnProgress(int i, double p) => Dispatcher.BeginInvoke(() =>
@@ -424,10 +425,10 @@ public partial class ClipsPane
             var row = ready[i];
             if (!ReferenceEquals(current, row)) return;   // not a row the save owns (skipped as busy), or a late report
             row.Progress = p;
-            row.Status = $"Saving… {p:P0}";
+            row.Status = L.T("Saving… {percent}", ("percent", p.ToString("P0", L.FormatCulture)));
         });
         SetBusy(BarBusy.Saving);
-        ShowStatus($"Saving 1 of {total}…");
+        ShowStatus(L.T("Saving {index} of {total}…", ("index", 1), ("total", total)));
         BulkSaveResult result;
         try { result = await App.SaveCopiesAsync(ready.Select(r => r.Entry).ToList(), Window.GetWindow(this), OnProgress, cts.Token, BeginRow); }
         catch (Exception ex)
@@ -443,7 +444,7 @@ public partial class ClipsPane
         }
         SetBusy(BarBusy.None);
         string? status = result.Cancelled
-            ? (result.Folder == null ? null : $"Cancelled. {result.Saved} of {result.Total + busyRows} saved.")
+            ? (result.Folder == null ? null : L.T("Cancelled. {saved} of {total} saved.", ("saved", result.Saved), ("total", result.Total + busyRows)))
             : BulkActions.SaveSummary(result.Saved, result.Total + busyRows, result.FirstError, result.Unreachable, busyRows + result.Busy);
         SetBarStatus(status);
     }
@@ -491,7 +492,7 @@ public partial class ClipsPane
             row.IsProblem = false;
             row.Progress = 0;
             row.IsUploading = true;
-            row.Status = "Uploading…";
+            row.Status = L.T("Uploading…");
             ShowStatus(UploadLine(i + 1, total));
             return true;
         }
@@ -502,7 +503,7 @@ public partial class ClipsPane
             {
                 if (finished || i < 0 || !ReferenceEquals(current, rows[i])) return;   // not a row the upload owns, or a late report
                 rows[i].Progress = p;
-                rows[i].Status = $"Uploading… {p:P0}";
+                rows[i].Status = L.T("Uploading… {percent}", ("percent", p.ToString("P0", L.FormatCulture)));
                 ShowStatus(UploadLine(i + 1, total, p));
             });
         }
@@ -552,7 +553,7 @@ public partial class ClipsPane
             current = row;
             row.IsProblem = false;
             row.IsUploading = true;
-            row.Status = "Uploading…";
+            row.Status = L.T("Uploading…");
             ShowStatus(UploadLine(i + 1, total));
             return true;
         }
@@ -562,7 +563,7 @@ public partial class ClipsPane
             return new Progress<double>(p =>
             {
                 if (finished || i < 0 || !ReferenceEquals(current, rows[i])) return;
-                rows[i].Status = $"Uploading… {p:P0}";
+                rows[i].Status = L.T("Uploading… {percent}", ("percent", p.ToString("P0", L.FormatCulture)));
                 ShowStatus(UploadLine(i + 1, total, p));
             });
         }
@@ -637,10 +638,10 @@ public partial class ClipsPane
         int unselectedTrims = ok.Where(r => r.IsParent).Sum(p => ClipGrouping.TrimsOf(_localAll, r => r.Entry, p).Count(t => !_clipSel.Contains(t)));
         string body = ClipDeleter.BulkConfirmBody(ok.Count, ok.Count(r => r.IsShared), unselectedTrims, blocked.Count, false);
         var owner = Window.GetWindow(this) ?? Application.Current?.MainWindow;
-        var dialog = new ClipDeleteConfirmWindow(ClipDeleter.BulkConfirmTitle(ok.Count, false), body, "Delete", owner);
+        var dialog = new ClipDeleteConfirmWindow(ClipDeleter.BulkConfirmTitle(ok.Count, false), body, L.T("Delete"), owner);
         if (dialog.ShowDialog() != true || !dialog.Confirmed) return null;
         nint handle = OwnerHandle(owner);
-        SetBarStatus("Deleting…");
+        SetBarStatus(L.T("Deleting…"));
         int deleted = 0;
         var kept = new List<(ClipRow Row, ClipDeleteResult Why)>();
         var byEntry = ok.ToDictionary(r => r.Entry, r => r, ReferenceEqualityComparer.Instance as IEqualityComparer<ClipEntry>);
@@ -661,7 +662,7 @@ public partial class ClipsPane
         Refresh();
         foreach (var (row, why) in kept.Concat(blocked.Select(b => (Row: b.Key, Why: b.Value)))) row.SetProblem(ClipDeleter.ProblemText(why));
         string problem = ClipDeleter.BulkProblemText(deleted, rows.Count, first);
-        App.Say(problem.Length == 0 ? (deleted == 1 ? "Deleted 1 clip" : $"Deleted {deleted} clips") : problem);
+        App.Say(problem.Length == 0 ? L.Plural("Deleted {count} clips", deleted) : problem);
         return null;
     }
 
@@ -700,16 +701,16 @@ public partial class ClipsPane
         if (ok.Count == 0)
         {
             MarkSkipped();
-            return withoutFile > 0 && blocked == 0 ? "Nothing was deleted. " + ClipDeleter.WithoutFileText(withoutFile)
-                : plan.Count(ClipDeleter.ShotSkip.Uploading) == blocked && blocked > 0 ? "Nothing was deleted: the screenshots are uploading."
-                : "Nothing was deleted: the screenshots can't be deleted right now.";
+            return withoutFile > 0 && blocked == 0 ? L.T("Nothing was deleted.") + " " + ClipDeleter.WithoutFileText(withoutFile)
+                : plan.Count(ClipDeleter.ShotSkip.Uploading) == blocked && blocked > 0 ? L.T("Nothing was deleted: the screenshots are uploading.")
+                : L.T("Nothing was deleted: the screenshots can't be deleted right now.");
         }
         string body = ClipDeleter.BulkConfirmBody(ok.Count, ok.Count(r => r.HasLink), 0, blocked, true, withoutFile);
         var owner = Window.GetWindow(this) ?? Application.Current?.MainWindow;
-        var dialog = new ClipDeleteConfirmWindow(ClipDeleter.BulkConfirmTitle(ok.Count, true), body, "Delete", owner);
+        var dialog = new ClipDeleteConfirmWindow(ClipDeleter.BulkConfirmTitle(ok.Count, true), body, L.T("Delete"), owner);
         if (dialog.ShowDialog() != true || !dialog.Confirmed) return null;
         nint handle = OwnerHandle(owner);
-        SetBarStatus("Deleting…");
+        SetBarStatus(L.T("Deleting…"));
         int deleted = 0;
         var failed = new List<(ScreenshotRow Row, ScreenshotDeleteResult Why)>();
         var noFile = new List<ScreenshotRow>();
