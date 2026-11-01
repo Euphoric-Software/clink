@@ -15,9 +15,20 @@ internal interface IScreenshotSource
     FrozenMonitor Capture(MonitorInfo monitor);
 }
 
-/// <summary>A capture that failed (the screen could not be copied); the message says what to tell the user.</summary>
+/// <summary>
+/// A capture that failed (the screen could not be copied). <see cref="Exception.Message"/> is English (it goes to the log);
+/// <see cref="UserText"/> is the same sentence in the user's language, for the "Screenshot not taken" toast.
+/// </summary>
 internal sealed class ScreenshotCaptureException : Exception
 {
+    private readonly string? _userText;
+
     public ScreenshotCaptureException(string message) : base(message) { }
     public ScreenshotCaptureException(string message, Exception inner) : base(message, inner) { }
+    /// <param name="message">The English text for the log.</param>
+    /// <param name="userText">The text to show the user (built with <c>L.T</c> at the throw site).</param>
+    public ScreenshotCaptureException(string message, string userText) : base(message) { _userText = userText; }
+
+    /// <summary>What to tell the user: the translated text when the thrower gave one, else <see cref="Exception.Message"/>.</summary>
+    public string UserText => _userText ?? Message;
 }

@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using Clink.Screenshots.Editing;
+using Clink.Services.Localization;
 
 namespace Clink.UI.Screenshots;
 
@@ -64,6 +65,10 @@ public partial class EditorToolbar : UserControl
     public EditorToolbar()
     {
         InitializeComponent();
+        SetKeyTips();
+        WidthText.Text = Px(4);   // (the XAML default; Refresh shows the session's)
+        ActualButton.Content = Pct(100);   // (the "100%" zoom button and the zoom text before the first SetZoom)
+        ZoomText.Text = Pct(100);
         foreach (var (name, hex) in s_swatches)
         {
             ScreenshotEditorOptions.TryParseColor(hex, out var color);
@@ -94,10 +99,54 @@ public partial class EditorToolbar : UserControl
             Width = 24,
             Height = 24,
             Margin = new Thickness(0, 0, 2, 0),
-            ToolTip = name,
+            ToolTip = ColourName(name),
         };
-        System.Windows.Automation.AutomationProperties.SetName(b, name + " colour");
+        System.Windows.Automation.AutomationProperties.SetName(b, ColourLabel(name));
         return b;
+    }
+
+    // one literal per colour so that every text is a catalog key ("Red" and "Red colour" are translated whole)
+    private static string ColourName(string name) => name switch
+    {
+        "Red" => L.T("Red"), "Orange" => L.T("Orange"), "Yellow" => L.T("Yellow"), "Green" => L.T("Green"), "Blue" => L.T("Blue"),
+        "Purple" => L.T("Purple"), "White" => L.T("White"), "Black" => L.T("Black"), "Pink" => L.T("Pink"), "Cyan" => L.T("Cyan"),
+        _ => name,
+    };
+
+    private static string ColourLabel(string name) => name switch
+    {
+        "Red" => L.T("Red colour"), "Orange" => L.T("Orange colour"), "Yellow" => L.T("Yellow colour"), "Green" => L.T("Green colour"), "Blue" => L.T("Blue colour"),
+        "Purple" => L.T("Purple colour"), "White" => L.T("White colour"), "Black" => L.T("Black colour"), "Pink" => L.T("Pink colour"), "Cyan" => L.T("Cyan colour"),
+        _ => name + " colour",
+    };
+
+    /// <summary>The tooltips that name a key: "Pen (P)" is the catalog text "Freehand pen ({keys})" with the key passed in as it is (key names are not translated).</summary>
+    private void SetKeyTips()
+    {
+        static string Tip(string text, string keys) => L.T(text, ("keys", L.Ltr(keys)));
+        SelectTool.ToolTip = Tip("Select, move and resize ({keys})", "V");
+        PenTool.ToolTip = Tip("Freehand pen ({keys})", "P");
+        LineTool.ToolTip = Tip("Straight line; Shift snaps to 45 degrees ({keys})", "L");
+        StraightArrowTool.ToolTip = Tip("Straight arrow; Shift snaps to 45 degrees ({keys})", "Shift+A");
+        ArrowTool.ToolTip = Tip("Draw a curve; the head points the way your hand was going ({keys})", "A");
+        RectangleTool.ToolTip = Tip("Rectangle outline; Shift makes a square ({keys})", "R");
+        TextTool.ToolTip = Tip("Add text: click, type, Enter to finish, Shift+Enter for a new line ({keys})", "T");
+        CropTool.ToolTip = Tip("Choose the part of the picture to keep; undoable ({keys})", "C");
+        UndoButton.ToolTip = Tip("Undo ({keys})", "Ctrl+Z");
+        RedoButton.ToolTip = Tip("Redo ({keys})", "Ctrl+Y");
+        CancelCaptureButton.ToolTip = Tip("Throw the screenshot away ({keys}, when there is nothing to deselect)", "Esc");
+        DoneButton.ToolTip = Tip("Save the picture and copy it ({keys})", "Enter");
+        FitButton.ToolTip = Tip("Fit the picture in the window ({keys})", "Ctrl+0");
+        ActualButton.ToolTip = Tip("One picture pixel per screen pixel ({keys})", "Ctrl+1");
+        CopyButton.ToolTip = Tip("Copy the picture to the clipboard ({keys})", "Ctrl+C");
+        SaveButton.ToolTip = Tip("Save the picture as a PNG ({keys})", "Ctrl+S");
+        BlurTool.ToolTip = Tip("Blur a region: drag a rectangle ({keys})", "B");
+        PixelateTool.ToolTip = Tip("Pixelate a region: drag a rectangle ({keys})", "X");
+        HighlightTool.ToolTip = Tip("Highlighter: drag a rectangle (Shift makes a square), or draw freehand (the Freehand option) ({keys})", "H");
+        SpotlightTool.ToolTip = Tip("Spotlight: keep a box sharp, blur and darken the rest ({keys})", "S");
+        MagnifyTool.ToolTip = Tip("Magnify: drag over what to enlarge; the enlarged copy appears beside it ({keys})", "M");
+        EraseTool.ToolTip = Tip("Smart erase: drag over what to remove; the background is continued into it ({keys})", "E");
+        InsertButton.ToolTip = L.T("Insert an image: a recent screenshot, a file or the clipboard ({keys}). {paste} pastes the clipboard picture", ("keys", L.Ltr("I")), ("paste", L.Ltr("Ctrl+V")));
     }
 
     // ------------------------------------------------------------------ building the option panels
@@ -154,30 +203,30 @@ public partial class EditorToolbar : UserControl
         _refreshers.Add(() => { var cur = current(); foreach (var (b, c) in list) b.IsChecked = c.R == cur.R && c.G == cur.G && c.B == cur.B; });
     }
 
-    private static string Px(double v) => $"{Math.Round(v)} px";
-    private static string Pct(double v) => $"{Math.Round(v)}%";
+    private static string Px(double v) => L.T("unit|{n} px", ("n", Math.Round(v)));
+    private static string Pct(double v) => L.T("unit|{n}%", ("n", Math.Round(v)));
 
     private void BuildEffectPanels()
     {
         EditorSession S() => _session!;
-        AddSlider(BlurPanel, "Radius", 1, 40, 1, "Blur radius", "How strong the blur is, in picture pixels", Px, () => S().Options.BlurRadius, (v, f) => S().SetBlurRadius((int)v, f), left: 0);
-        AddSlider(PixelatePanel, "Block", 2, 64, 1, "Pixelate block size", "Size of one square, in picture pixels", Px, () => S().Options.PixelateBlock, (v, f) => S().SetPixelateBlock((int)v, f), left: 0);
+        AddSlider(BlurPanel, L.T("Radius"), 1, 40, 1, L.T("Blur radius"), L.T("How strong the blur is, in picture pixels"), Px, () => S().Options.BlurRadius, (v, f) => S().SetBlurRadius((int)v, f), left: 0);
+        AddSlider(PixelatePanel, L.T("pixelate|Block"), 2, 64, 1, L.T("Pixelate block size"), L.T("Size of one square, in picture pixels"), Px, () => S().Options.PixelateBlock, (v, f) => S().SetPixelateBlock((int)v, f), left: 0);
 
         AddSwatches(HighlightPanel, "EditorHighlight", s_highlightSwatches, () => S().Options.HighlightColorValue, c => S().SetHighlightColor(c));
-        AddCheck(HighlightPanel, "Freehand", "Freehand highlight", "Draw the highlight with the mouse instead of a rectangle (with a rectangle, Shift keeps it square)", () => S().Options.HighlightFreehand, v => S().SetHighlightFreehand(v));
-        _hlWidth = AddSlider(HighlightPanel, "Width", 2, 80, 1, "Highlighter width", "Width of the freehand highlighter, in picture pixels", Px, () => S().Options.HighlightWidth, (v, f) => S().SetHighlightWidth(v, f));
+        AddCheck(HighlightPanel, L.T("Freehand"), L.T("Freehand highlight"), L.T("Draw the highlight with the mouse instead of a rectangle (with a rectangle, Shift keeps it square)"), () => S().Options.HighlightFreehand, v => S().SetHighlightFreehand(v));
+        _hlWidth = AddSlider(HighlightPanel, L.T("Width"), 2, 80, 1, L.T("Highlighter width"), L.T("Width of the freehand highlighter, in picture pixels"), Px, () => S().Options.HighlightWidth, (v, f) => S().SetHighlightWidth(v, f));
 
-        AddSlider(SpotlightPanel, "Dim", 0, 95, 5, "Spotlight darkness", "How dark the outside of the box is", Pct, () => S().Options.SpotDim * 100, (v, f) => S().SetSpotDim(v / 100, f), left: 0);
-        AddSlider(SpotlightPanel, "Blur", 0, 40, 1, "Spotlight blur radius", "How blurred the outside of the box is, in picture pixels (the strongest, with a gradient)", Px, () => S().Options.SpotRadius, (v, f) => S().SetSpotRadius((int)v, f));
-        AddCheck(SpotlightPanel, "Gradient", "Spotlight gradient blur", "The blur grows with the distance from the box", () => S().Options.SpotGradient, v => S().SetSpotGradient(v));
-        _spotFalloff = AddSlider(SpotlightPanel, "Falloff", 5, 100, 5, "Spotlight falloff", "Distance over which the blur reaches full strength, in % of the picture's shorter side", Pct, () => S().Options.SpotFalloffPercent, (v, f) => S().SetSpotFalloff((int)v, f));
+        AddSlider(SpotlightPanel, L.T("spotlight|Dim"), 0, 95, 5, L.T("Spotlight darkness"), L.T("How dark the outside of the box is"), Pct, () => S().Options.SpotDim * 100, (v, f) => S().SetSpotDim(v / 100, f), left: 0);
+        AddSlider(SpotlightPanel, L.T("spotlight|Blur"), 0, 40, 1, L.T("Spotlight blur radius"), L.T("How blurred the outside of the box is, in picture pixels (the strongest, with a gradient)"), Px, () => S().Options.SpotRadius, (v, f) => S().SetSpotRadius((int)v, f));
+        AddCheck(SpotlightPanel, L.T("Gradient"), L.T("Spotlight gradient blur"), L.T("The blur grows with the distance from the box"), () => S().Options.SpotGradient, v => S().SetSpotGradient(v));
+        _spotFalloff = AddSlider(SpotlightPanel, L.T("Falloff"), 5, 100, 5, L.T("Spotlight falloff"), L.T("Distance over which the blur reaches full strength, in % of the picture's shorter side"), Pct, () => S().Options.SpotFalloffPercent, (v, f) => S().SetSpotFalloff((int)v, f));
 
-        AddSlider(MagnifyPanel, "Zoom", 1.25, 8, 0.25, "Magnify zoom", "How much the copy is enlarged (the proportions of the source are kept)", v => $"{v:0.##}x", () => S().Options.MagnifyZoom, (v, f) => S().SetMagnifyZoom(v, f), left: 0);
-        AddCheck(MagnifyPanel, "Outline", "Magnify outline", "A frame around the enlarged copy", () => S().Options.MagnifyOutline, v => S().SetMagnifyOutline(v));
+        AddSlider(MagnifyPanel, L.T("Zoom"), 1.25, 8, 0.25, L.T("Magnify zoom"), L.T("How much the copy is enlarged (the proportions of the source are kept)"), v => L.T("factor|{n}x", ("n", v.ToString("0.##", L.FormatCulture))), () => S().Options.MagnifyZoom, (v, f) => S().SetMagnifyZoom(v, f), left: 0);
+        AddCheck(MagnifyPanel, L.T("magnify|Outline"), L.T("Magnify outline"), L.T("A frame around the enlarged copy"), () => S().Options.MagnifyOutline, v => S().SetMagnifyOutline(v));
         AddSwatches(MagnifyPanel, "EditorOutline", s_outlineSwatches, () => S().Options.MagnifyOutlineColorValue, c => S().SetMagnifyOutlineColor(c), left: 8);
-        AddCheck(MagnifyPanel, "Smooth", "Magnify smoothing", "Smooth the enlarged copy instead of showing crisp pixels", () => S().Options.MagnifySmooth, v => S().SetMagnifySmooth(v));
+        AddCheck(MagnifyPanel, L.T("Smooth"), L.T("Magnify smoothing"), L.T("Smooth the enlarged copy instead of showing crisp pixels"), () => S().Options.MagnifySmooth, v => S().SetMagnifySmooth(v));
 
-        AddSlider(ImagePanel, "Opacity", 10, 100, 5, "Image opacity", "How opaque the inserted image is", Pct, () => S().Options.ImageOpacity * 100, (v, f) => S().SetImageOpacity(v / 100, f), left: 0);
+        AddSlider(ImagePanel, L.T("Opacity"), 10, 100, 5, L.T("Image opacity"), L.T("How opaque the inserted image is"), Pct, () => S().Options.ImageOpacity * 100, (v, f) => S().SetImageOpacity(v / 100, f), left: 0);
     }
 
     private void BuildAdjustPopup()
@@ -206,9 +255,9 @@ public partial class EditorToolbar : UserControl
             s.ValueChanged += (_, _) => AdjustSliderChanged(s);
             return s;
         }
-        _brightness = Row(0, "Brightness", -100, 100, "Brightness", "Brightness, -100 to 100", out _brightnessText);
-        _contrast = Row(1, "Contrast", -100, 100, "Contrast", "Contrast, -100 to 100", out _contrastText);
-        _sharpness = Row(2, "Sharpness", 0, 200, "Sharpness", "Sharpness (unsharp mask), 0 to 200 %", out _sharpnessText);
+        _brightness = Row(0, L.T("Brightness"), -100, 100, L.T("Brightness"), L.T("Brightness, -100 to 100"), out _brightnessText);
+        _contrast = Row(1, L.T("Contrast"), -100, 100, L.T("Contrast"), L.T("Contrast, -100 to 100"), out _contrastText);
+        _sharpness = Row(2, L.T("Sharpness"), 0, 200, L.T("Sharpness"), L.T("Sharpness (unsharp mask), 0 to 200 %"), out _sharpnessText);
     }
 
     private static string Signed(double v) => v > 0 ? $"+{Math.Round(v)}" : $"{Math.Round(v)}";
@@ -217,7 +266,7 @@ public partial class EditorToolbar : UserControl
     {
         _brightnessText.Text = Signed(_brightness.Value);
         _contrastText.Text = Signed(_contrast.Value);
-        _sharpnessText.Text = $"{Math.Round(_sharpness.Value)}%";
+        _sharpnessText.Text = Pct(_sharpness.Value);
     }
 
     private void AdjustSliderChanged(Slider changed)
@@ -239,7 +288,7 @@ public partial class EditorToolbar : UserControl
     }
 
     /// <summary>Shows the zoom as a percentage (physical pixels per picture pixel).</summary>
-    internal void SetZoom(double zoom) => ZoomText.Text = $"{Math.Round(zoom * 100)}%";
+    internal void SetZoom(double zoom) => ZoomText.Text = Pct(zoom * 100);
 
     private static Kind KindFor(EditorSession s)
     {
@@ -307,7 +356,7 @@ public partial class EditorToolbar : UserControl
             _spotFalloff.Visibility = Show(gradient);
 
             WidthSlider.Value = s.Options.Width;
-            WidthText.Text = $"{Math.Round(s.Options.Width)} px";
+            WidthText.Text = Px(s.Options.Width);
             FontSlider.Value = s.Options.FontSize;
             FontText.Text = $"{Math.Round(s.Options.FontSize)}";
             BoldCheck.IsChecked = s.Options.Bold;

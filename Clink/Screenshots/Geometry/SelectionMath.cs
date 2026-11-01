@@ -143,7 +143,13 @@ internal static class SelectionMath
     // ------------------------------------------------------------------ text and boxes
 
     /// <summary>"1280 x 720": the size label, in the physical pixels the PNG will have.</summary>
-    public static string SizeLabel(RectI r) => $"{r.Width} x {r.Height}";
+    public static string SizeLabel(RectI r) => SizeLabel(r.Width, r.Height);
+
+    /// <summary>The one catalog text for "width x height" (the sign between the numbers is translated once); the digits stay invariant.</summary>
+    public static string SizeLabel(int width, int height) =>
+        Clink.Services.Localization.L.T("{width} x {height}",
+            ("width", width.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+            ("height", height.ToString(System.Globalization.CultureInfo.InvariantCulture)));
 
     /// <summary>
     /// Where the size label goes: above the selection's top-left corner, and inside the selection (at its top-left) when there is no
