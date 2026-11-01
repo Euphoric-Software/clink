@@ -216,6 +216,12 @@ internal sealed class Settings
     /// absent. Named FeedFloor* so that a settings import treats it as this installation's own (never imported). Left out while null.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? FeedFloorFailingSince { get; set; }
+    /// <summary>
+    /// Hidden developer switch (no UI, never written by default): asks the recording's encoder for off | vbr | lowlatency-off |
+    /// vbr-lowlatency-off | vbr-bframes (<see cref="Clink.Encode.EncoderExperiments.Parse"/>). Null or "off" is the normal setup; an unknown value
+    /// is kept as written and treated as off (with a log warning). A size target keeps the encoder CBR. Per installation: never imported.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? EncoderExperiment { get; set; }
 
     // ---- v3 (v0.2.5) ----
     /// <summary>dark | light</summary>

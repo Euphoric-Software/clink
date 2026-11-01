@@ -7,7 +7,7 @@ using Clink.Services;
 namespace Clink;
 
 /// <summary>
-/// `Clink.exe --selftest [seconds] [outFolder] [--codec h264|hevc|av1] [--quiet] [--record]`: runs the pipeline headless, saves a clip,
+/// `Clink.exe --selftest [seconds] [outFolder] [--codec h264|hevc|av1] [--encoder-experiment off|vbr|lowlatency-off|vbr-lowlatency-off|vbr-bframes] [--quiet] [--record]`: runs the pipeline headless, saves a clip,
 /// prints what happened. --record also records for the whole length (a clip halfway), stops, and probes both files. The clip goes to outFolder (default: the clips folder from settings); --codec overrides the codec
 /// setting; --quiet skips the click sound.
 /// </summary>
@@ -20,10 +20,11 @@ internal static class SelfTest
         int seconds = 8, rest = 1; // rest: first argument after the optional length
         if (args.Length > 1 && int.TryParse(args[1], out int s)) { seconds = Math.Clamp(s, 2, 600); rest = 2; }
         bool quiet = args.Any(a => a.Equals("--quiet", StringComparison.OrdinalIgnoreCase));
-        string? codecArg = null, outDir = null;
+        string? codecArg = null, outDir = null, experimentArg = null;
         for (int i = rest; i < args.Length; i++)
         {
             if (args[i].Equals("--codec", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length) codecArg = args[++i];
+            else if (args[i].Equals("--encoder-experiment", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length) experimentArg = args[++i];
             else if (!args[i].StartsWith("--", StringComparison.Ordinal)) outDir ??= args[i];
         }
         var settings = Settings.Load();
@@ -75,7 +76,10 @@ internal static class SelfTest
             HdrKnee = settings.HdrKnee, HdrPeak = settings.HdrPeak,
             ClipsFolder = outDir ?? settings.ClipsFolder,
             GopSeconds = Math.Clamp(settings.KeyframeSeconds, 0.25f, 5f),
+            // --encoder-experiment <mode> wins over the hidden setting, so experiments never edit the real settings.json.
+            EncoderTuning = Encode.EncoderExperiments.Resolve(experimentArg ?? settings.EncoderExperiment, Capabilities.SizeTargetBytes(settings.SizeTarget) > 0),
         };
+        if (cfg.EncoderTuning != null) Say($"  encoder experiment: {cfg.EncoderTuning}{(experimentArg != null ? " (from --encoder-experiment)" : " (from settings)")}");
 
         using var engine = new Engine.Engine();
         engine.Start(cfg);
@@ -116,7 +120,7 @@ internal static class SelfTest
                 Say($"  recording {rs.Seconds:0.0}s written={rs.BytesWritten / 1_048_576.0:0.0} MB queue={rs.QueueBytes / 1024} KB dropped={rs.Dropped}");
             var st = engine.GetStats();
             string audio = string.Join(", ", st.Audio.Select(a => $"{a.Name}:{(a.Running ? "ok" : "off")}"));
-            Say($"  t={i + 1}s capture={st.CaptureFrames} in={st.FramesIn} out={st.FramesOut} dropped={st.Dropped} buffered={st.BufferedSeconds:0.0}s game={st.Game ?? "-"} audio=[{audio}]");
+            Say($"  t={i + 1}s capture={st.CaptureFrames} in={st.FramesIn} out={st.FramesOut} inflight={st.FramesIn - st.FramesOut} dropped={st.Dropped} buffered={st.BufferedSeconds:0.0}s game={st.Game ?? "-"} audio=[{audio}]");
         }
         if (record)
         {
