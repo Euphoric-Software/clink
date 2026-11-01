@@ -37,6 +37,7 @@ internal static class RecycleBin
     internal static void Recycle(string path, nint owner)
     {
         string full = System.IO.Path.GetFullPath(path);
+        TestGuard.Check(full);   // test mode only: never recycle a file from the real folders
         if (owner == 0) owner = OwnerHandle();
         lock (Lock)
         {

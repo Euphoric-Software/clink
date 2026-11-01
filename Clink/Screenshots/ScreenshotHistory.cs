@@ -280,6 +280,7 @@ internal sealed class ScreenshotHistory
     private void Save()
     {
         string? dir = System.IO.Path.GetDirectoryName(_file);
+        TestGuard.Check(_file);
         if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
         var model = new FileModel { Entries = _entries, Roots = _roots.Count > 0 ? _roots : null, Unknown = _unknown };
         AtomicFile.WriteAllText(_file, JsonSerializer.Serialize(model, s_json));

@@ -499,6 +499,7 @@ public partial class RegionOverlayWindow : Window, ICaptureExcludedWindow
             var picker = new InsertImagePicker(new InsertPickerModel(_setup?.Recent), canPaste) { Owner = this };
             picker.SourceInitialized += (_, _) => ScreenPlacement.ExcludeFromCapture(new WindowInteropHelper(picker).Handle);   // like the overlay: not in a replay clip
             bool chosen;
+            TestGuard.CheckLaunch("the insert-image picker");
             _state?.Suspend();   // the picker and the file dialog take the input: no idle cancel while they are open
             try { chosen = picker.ShowDialog() == true; }
             finally { _state?.Resume(); }

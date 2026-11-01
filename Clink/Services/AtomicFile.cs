@@ -15,6 +15,7 @@ internal static class AtomicFile
 
     public static void WriteAllText(string path, string text)
     {
+        TestGuard.Check(path);   // test mode only: refuses the true real settings folder
         string tmp = path + ".tmp";
         string bak = BackupPath(path);
         using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16))
@@ -49,7 +50,7 @@ internal static class AtomicFile
                 primary = ex;
                 Log.Warn($"{Path.GetFileName(path)}: {ex.Message}; trying the backup");
                 string why = ex is System.Text.Json.JsonException { LineNumber: long line } ? $"error on line {line + 1}" : ex.Message;
-                try { File.Copy(path, path + ".unreadable", overwrite: true); why += $"; kept as {Path.GetFileName(path)}.unreadable"; }
+                try { TestGuard.Check(path + ".unreadable"); File.Copy(path, path + ".unreadable", overwrite: true); why += $"; kept as {Path.GetFileName(path)}.unreadable"; }
                 catch (Exception cex) { Log.Warn($"{Path.GetFileName(path)}: could not keep a copy: {cex.Message}"); }
                 unreadable?.Invoke(why);
             }

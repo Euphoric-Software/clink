@@ -201,8 +201,10 @@ internal static class TestRunner
             foreach (var (name, method) in tests)
             {
                 ResetShared(before, scratch);
+                TestGuard.CurrentTest = name;
                 var sw = Stopwatch.StartNew();
                 var outcome = ExecuteWatched(method, noSkip);
+                TestGuard.CurrentTest = null;
                 ResetShared(before, scratch);
                 switch (outcome.State)
                 {
@@ -214,9 +216,12 @@ internal static class TestRunner
         }
         finally
         {
+            DrainUi();
             ResetShared(before, null);
             try { Directory.Delete(scratch, recursive: true); } catch { }
         }
+        // Work a test left behind that ran after the last test (a queued save) and was refused by the guard fails the run.
+        foreach (string refused in TestGuard.TakeViolations()) { failed++; Print("FAIL  (after the last test)  " + refused.Replace("\r", "").Replace('\n', ' ')); }
         Print($"{passed} passed, {failed} failed, {skipped} skipped ({total.ElapsedMilliseconds} ms)");
         return failed;
     }
@@ -227,7 +232,7 @@ internal static class TestRunner
         Func<System.Net.Http.HttpRequestMessage, CancellationToken, Task<System.Net.Http.HttpResponseMessage>>? UpdaterHttp, FeedTrust? FeedTrust,
         TimeSpan? FeedTimeout, Packaging? Packaging, Func<string, TimeSpan, Updater.PreflightResult>? Preflight, IReadOnlyList<Version>? Runtimes, bool? Elevated,
         Func<DateTimeOffset>? UpdaterClock, TimeSpan? DownloadAnswerTimeout, TimeSpan? DownloadReadTimeout, Action<string>? SendObserver, Action<string>? Browser,
-        TimeSpan? DownloadTotalTimeout, long? DownloadMinRate, TimeSpan? DownloadRateWindow, (string? Stable, string? Dev)? FloorSeeds)
+        TimeSpan? DownloadTotalTimeout, long? DownloadMinRate, TimeSpan? DownloadRateWindow, (string? Stable, string? Dev)? FloorSeeds, string? DefaultClips)
     {
         public static Shared Capture() => new(Settings.DirOverride, ClipLibrary.IndexPathOverride, Updater.UpdatesDirOverride,
             AppController.InstanceSuffix, AppController.DevHotkeys, AppController.DevAcceptImport, AppController.DevToken, AppController.DevRecord, AppController.DevQuiet, AppController.DevQuietRecord, AppController.DevNoMarker, AppController.DevDemoStatus,
@@ -235,7 +240,7 @@ internal static class TestRunner
             Updater.HttpOverride, Updater.FeedOverride, Updater.FeedTimeoutOverride,
             Updater.PackagingOverride, Updater.PreflightOverride, DotNetRuntimes.Override, Updater.IsElevatedOverride,
             Updater.ClockOverride, Updater.DownloadAnswerTimeoutOverride, Updater.DownloadReadTimeoutOverride, Updater.SendObserver, Updater.BrowserOverride,
-            Updater.DownloadTotalTimeoutOverride, Updater.DownloadMinRateOverride, Updater.DownloadRateWindowOverride, Updater.FloorSeedOverride);
+            Updater.DownloadTotalTimeoutOverride, Updater.DownloadMinRateOverride, Updater.DownloadRateWindowOverride, Updater.FloorSeedOverride, Settings.DefaultClipsFolderOverride);
     }
 
     /// <summary>The feed trust a test starts with: On, with a made-up base and two keys that never signed anything (tests that need a feed bring their own).</summary>
@@ -266,9 +271,13 @@ internal static class TestRunner
     {
         List<string> outer;
         lock (s_strays) { outer = new List<string>(s_strays); s_strays.Clear(); }
+        string[] outerViolations = TestGuard.TakeViolations();   // the enclosing test's refusals: a nested run must not consume them
         try
         {
             var outcome = Execute(method, noSkip);
+            DrainUi();
+            TestGuard.SweepWindows();   // a window that was shown (and is not allowed) is a violation, and is closed
+            foreach (string refused in TestGuard.TakeViolations()) RecordStray(refused);   // a write to a true user folder, a launch, a shown window: refused (TestGuard)
             string[] strays;
             lock (s_strays) strays = s_strays.ToArray();
             if (strays.Length == 0) return outcome;
@@ -278,7 +287,23 @@ internal static class TestRunner
         finally
         {
             lock (s_strays) { s_strays.Clear(); s_strays.AddRange(outer); }
+            TestGuard.AddViolations(outerViolations);
         }
+    }
+
+    /// <summary>
+    /// Runs what the test left queued for the UI thread while its scratch folder is still in force. The tests run inside one UI-thread
+    /// call, so the dispatcher does not pump until the run is over; a save a background thread asked for (the updater's checks and
+    /// downloads: <see cref="Settings.Save"/> queues it onto the UI thread) used to run only then, after the settings folder was put
+    /// back, and wrote the real %APPDATA%\Clink\settings.json. Now it runs here, in the folder of the test that asked for it.
+    /// </summary>
+    private static void DrainUi()
+    {
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher == null || !dispatcher.CheckAccess()) return;
+        var frame = new System.Windows.Threading.DispatcherFrame();
+        dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.ApplicationIdle, new Action(() => frame.Continue = false));
+        System.Windows.Threading.Dispatcher.PushFrame(frame);
     }
 
     /// <summary>
@@ -303,6 +328,7 @@ internal static class TestRunner
         Settings.DirOverride = scratch ?? before.SettingsDir;
         Settings.RealDirOverride = scratch != null ? Path.Combine(scratch, "RealClink") : before.RealDir;
         ClipLibrary.IndexPathOverride = scratch != null ? Path.Combine(scratch, "clips.json") : before.ClipIndex;
+        Settings.DefaultClipsFolderOverride = scratch != null ? Path.Combine(scratch, "Clips") : before.DefaultClips;   // a fresh Settings keeps its clips (and screenshots) folder in scratch, never in Videos\Clink
         Updater.UpdatesDirOverride = scratch != null ? Path.Combine(scratch, "updates") : before.UpdatesDir;
         // No test leaves a fake network or feed behind for the next, and during a test any request the test did not fake fails it: it
         // throws (so it never reaches the network) and is recorded as a stray, which fails the test after it ran even when the code under
@@ -330,6 +356,8 @@ internal static class TestRunner
         Updater.PackagingOverride = scratch != null ? Packaging.SelfContained : before.Packaging;   // tests run as the portable flavour (updates\ folder, Clink.exe) unless they say otherwise
         Updater.PreflightOverride = scratch != null ? static (_, _) => new(0, false, null) : before.Preflight;   // never a real process; a test installs its own fake
         DotNetRuntimes.Override = scratch != null ? new[] { new Version(10, 0, 0) } : before.Runtimes;
+        UI.Toasts.ShowOverride = scratch != null ? static _ => { } : null;   // a toast is built but never put on the screen (the controller raises them for notices a test provokes); a test installs its own to look at them
+        Updater.LaunchOverride = null;   // no launch seam left over: the next test that would start the apply is refused (TestGuard), not served by a stale fake
         Updater.IsElevatedOverride = before.Elevated;   // null = ask Windows; a test that pretends to be elevated does not leave it so
         Settings.ThawSaves();
         Settings.SeedDefaults = scratch == null;   // off during a test (the older tests pin exact hotkey lists); the seeding tests turn it on themselves

@@ -45,6 +45,7 @@ internal sealed partial class AppController
             var window = new CopiumConsentWindow(CopiumConsentWindow.Mode.Consent, ConsentGate.OffersAutoUpload(context), excludeFromCapture: fromScreenshot || owner == null);
             if (owner != null) { window.Owner = owner; window.WindowStartupLocation = WindowStartupLocation.CenterOwner; }
             Hotkeys.GrantForeground();   // asked for by a hotkey / toast: the dialog must be able to come forward
+            TestGuard.CheckLaunch("the Copium consent window");
             window.ShowDialog();
             return Task.FromResult(window.Answer);
         }
@@ -77,6 +78,7 @@ internal sealed partial class AppController
             var owner = ActiveOwner();
             var window = new CopiumConsentWindow(CopiumConsentWindow.Mode.ConfirmCloudSharing, offerAutoUpload: false, excludeFromCapture: owner == null);
             if (owner != null) { window.Owner = owner; window.WindowStartupLocation = WindowStartupLocation.CenterOwner; }
+            TestGuard.CheckLaunch("the cloud sharing confirm window");
             return window.ShowDialog() == true;
         }
         catch (Exception ex)

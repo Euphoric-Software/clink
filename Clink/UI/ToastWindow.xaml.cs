@@ -206,8 +206,19 @@ internal sealed class Toasts : IScreenshotToasts
         return $"{game}{Capabilities.FormatClipLength(e.Duration)} · {Capabilities.FormatBytes(e.Size)}";
     }
 
+    /// <summary>
+    /// Stands in for putting a toast on the screen in the unit tests: gets the toast (built, never shown). Null otherwise. In test mode with
+    /// no override a toast is refused and recorded (<see cref="TestGuard.CheckLaunch"/>): a test must not show anything on the owner's screen.
+    /// </summary>
+    internal static Action<ToastWindow>? ShowOverride { get; set; }
+
     private void Add(ToastWindow t)
     {
+        if (TestGuard.Active)
+        {
+            if (ShowOverride is { } fake) { fake(t); return; }
+            TestGuard.CheckLaunch("a toast: " + t.Kind + " " + t.TitleText.Text);
+        }
         _open.Add(t);
         t.Closed += (_, _) => { if (_open.Remove(t)) Layout(); };   // the others move up only once the fade-out has finished
         t.Opacity = 0;             // shown invisible, placed, then faded in: no flash at the wrong spot
@@ -612,6 +623,7 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         if (!app.RequestTrim(Entry))
         {
             var main = System.Windows.Application.Current?.MainWindow;
+            TestGuard.CheckLaunch("the trim window");
             new TrimWindow(Entry) { Owner = main?.IsVisible == true ? main : null }.Show();
         }
     }
@@ -638,7 +650,7 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
             if (!CopiumClient.IsHttpsUrl(url, out var page)) Log.Warn("toast: not opened: the clip's link is not an https address");
             else
             {
-                try { Process.Start(new ProcessStartInfo(page.AbsoluteUri) { UseShellExecute = true }); }
+                try { TestGuard.Start(new ProcessStartInfo(page.AbsoluteUri) { UseShellExecute = true }); }
                 catch (Exception ex) { AppController.Instance.Say("Could not open the browser: " + ex.Message); }
             }
         }
@@ -774,7 +786,7 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         // Uploaded: the page on Copium (an https address only: it came from the server); otherwise the file.
         if (Shot != null && !_preview && _shotLink != null && Uri.TryCreate(Shot.CopiumPageUrl, UriKind.Absolute, out var page) && page.Scheme == Uri.UriSchemeHttps)
         {
-            try { Process.Start(new ProcessStartInfo(page.AbsoluteUri) { UseShellExecute = true }); }
+            try { TestGuard.Start(new ProcessStartInfo(page.AbsoluteUri) { UseShellExecute = true }); }
             catch (Exception ex) { AppController.Instance.Say("Could not open the browser: " + ex.Message); }
             Dismiss();
             return;
@@ -790,7 +802,7 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
             }
             else
             {
-                try { Process.Start(new ProcessStartInfo(Shot.Path) { UseShellExecute = true }); }
+                try { TestGuard.Start(new ProcessStartInfo(Shot.Path) { UseShellExecute = true }); }
                 catch (Exception ex) { AppController.Instance.Say("Could not open the screenshot: " + ex.Message); }
             }
         }

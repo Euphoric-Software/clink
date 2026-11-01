@@ -137,7 +137,14 @@ internal sealed class Updater : IDisposable
     public static Packaging OwnPackaging => PackagingOverride ?? PackagingInfo.Current.Packaging;
 
     /// <summary>The base updates folder shared by every Clink exe of this user: SelfContained copies use it directly, Framework copies its <c>fx</c> subfolder (<see cref="UpdatesDirFor"/>).</summary>
-    private static string UpdatesRoot => UpdatesDirOverride ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Clink", "updates");
+    private static string UpdatesRoot => UpdatesDirOverride ?? GuardedRealUpdates();
+
+    private static string GuardedRealUpdates()
+    {
+        string real = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Clink", "updates");
+        TestGuard.Check(real);   // test mode only: the updates folder of the real install is never used by a test
+        return real;
+    }
     /// <summary>Updates folder of <paramref name="packaging"/>: <c>updates</c> (SelfContained, as ever) or <c>updates\fx</c> (Framework). A copy never looks into the other one.</summary>
     internal static string UpdatesDirFor(Packaging packaging) => packaging == Packaging.Framework ? Path.Combine(UpdatesRoot, "fx") : UpdatesRoot;
     public static string UpdatesDir => UpdatesDirFor(OwnPackaging);
@@ -950,7 +957,7 @@ internal sealed class Updater : IDisposable
         try
         {
             if (BrowserOverride != null) BrowserOverride(page);
-            else Process.Start(new ProcessStartInfo(page) { UseShellExecute = true })?.Dispose();
+            else TestGuard.Start(new ProcessStartInfo(page) { UseShellExecute = true })?.Dispose();
             return null;
         }
         catch (Exception ex) { return "Could not open the browser: " + Describe(ex); }
@@ -1126,6 +1133,13 @@ internal sealed class Updater : IDisposable
     /// <summary>Runs an exe with <see cref="PreflightVerb"/>, waits up to the timeout. Replaced by a fake in the unit tests (no test starts a real process); null otherwise.</summary>
     internal static Func<string, TimeSpan, PreflightResult>? PreflightOverride { get; set; }
 
+    /// <summary>
+    /// Stands in for starting the downloaded exe in <see cref="StartApply"/> in the unit tests: gets the start info it would run and says
+    /// whether the process started and kept running. Null otherwise (a real run). In test mode with no override the launch is refused
+    /// and recorded (<see cref="TestGuard.Start(ProcessStartInfo)"/>): a fake installer that is not a PE file makes Windows open a modal dialog.
+    /// </summary>
+    internal static Func<ProcessStartInfo, bool>? LaunchOverride { get; set; }
+
     private static PreflightResult RunPreflightProcess(string exe, TimeSpan timeout)
     {
         try
@@ -1138,7 +1152,7 @@ internal sealed class Updater : IDisposable
             };
             psi.ArgumentList.Add(PreflightVerb);
             psi.Environment["DOTNET_DISABLE_GUI_ERRORS"] = "1";   // a missing runtime must fail quietly (exit code), not open a dialog
-            using var p = Process.Start(psi) ?? throw new InvalidOperationException("could not start the process");
+            using var p = TestGuard.Start(psi) ?? throw new InvalidOperationException("could not start the process");
             if (!p.WaitForExit((int)timeout.TotalMilliseconds))
             {
                 try { p.Kill(entireProcessTree: true); } catch { }
@@ -1315,7 +1329,13 @@ internal sealed class Updater : IDisposable
         try { File.WriteAllText(marker, $"the update process did not finish\n{DateTime.Now:yyyy-MM-dd HH:mm:ss} {targetExePath}"); } catch { }
         try
         {
-            using var p = Process.Start(psi) ?? throw new InvalidOperationException("could not start the updater process");
+            if (LaunchOverride is { } launch)
+            {
+                // A unit test stands in for the process: true = it started and kept running, false = it exited right away.
+                if (!launch(psi)) throw new InvalidOperationException("the update process exited right away (exit code unknown)");
+                return;
+            }
+            using var p = TestGuard.Start(psi) ?? throw new InvalidOperationException("could not start the updater process");
             // It waits for this process to exit before doing anything, so leaving early always means it failed.
             if (p.WaitForExit(2000)) throw new InvalidOperationException($"the update process exited right away (exit code {p.ExitCode})");
         }
@@ -1433,7 +1453,7 @@ internal sealed class Updater : IDisposable
         {
             var psi = new ProcessStartInfo(exe) { UseShellExecute = true, WorkingDirectory = Path.GetDirectoryName(exe) ?? "" };
             foreach (string a in args) psi.ArgumentList.Add(a);
-            Process.Start(psi)?.Dispose();
+            TestGuard.Start(psi)?.Dispose();
             return null;
         }
         catch (Exception ex) { return ex; }

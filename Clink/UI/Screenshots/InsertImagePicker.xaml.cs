@@ -99,6 +99,7 @@ public partial class InsertImagePicker : Window
             Filter = "Pictures (PNG, JPG, BMP)|*.png;*.jpg;*.jpeg;*.bmp|All files|*.*",
             CheckFileExists = true,
         };
+        TestGuard.CheckLaunch("the insert-image file dialog");
         if (dialog.ShowDialog(this) != true) return;
         PickedPath = dialog.FileName;
         DialogResult = true;

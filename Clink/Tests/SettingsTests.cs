@@ -996,6 +996,19 @@ internal static class SettingsTests
     }
 
     [UnitTest]
+    public static void The_real_default_clips_folder_is_Clink_under_Videos()
+    {
+        string? saved = Settings.DefaultClipsFolderOverride;
+        try
+        {
+            Settings.DefaultClipsFolderOverride = null;
+            // a path computation only: nothing is created or written
+            Check.Equal(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "Clink"), Settings.DefaultClipsFolder);
+        }
+        finally { Settings.DefaultClipsFolderOverride = saved; }
+    }
+
+    [UnitTest]
     public static void A_value_of_the_wrong_kind_or_a_null_for_a_number_is_unreadable()
     {
         using var dir = new TempDir();
@@ -1007,7 +1020,7 @@ internal static class SettingsTests
         Check.Equal(45, s.BufferSeconds);
         Check.Equal(60, s.Fps);
         Check.True(s.CaptureCursor);
-        Check.Equal(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "Clink"), s.ClipsFolder);
+        Check.Equal(Settings.DefaultClipsFolder, s.ClipsFolder);
         Check.False(s.CopiumPlus);
         Check.Equal(7, s.ToastClip.Seconds);
         Check.Equal(0.9f, s.HdrKnee);          // a number in quotes is fine
@@ -1180,9 +1193,16 @@ internal static class SettingsTests
         Settings.DirOverride = dir.Path;
         Check.Equal(dir.Path, Settings.Dir);
         Check.Equal(dir.File("settings.json"), Settings.FilePath);
-        Settings.DirOverride = null;
-        Settings.RealDirOverride = null;   // the runner points the real Clink's folder at a scratch one too
-        Check.Equal(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Clink"), Settings.Dir);
+        // Only a path computation under the null overrides, then the runner's scratch folders go straight back: work this test (or a thread
+        // it started) queued must never run, or be drained, with the settings folder pointing at the true real one.
+        string? savedDir = Settings.DirOverride, savedReal = Settings.RealDirOverride;
+        try
+        {
+            Settings.DirOverride = null;
+            Settings.RealDirOverride = null;   // the runner points the real Clink's folder at a scratch one too
+            Check.Equal(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Clink"), Settings.Dir);
+        }
+        finally { Settings.DirOverride = savedDir; Settings.RealDirOverride = savedReal; }
     }
 
     // ------------------------------------------------------------------ hotkey helpers

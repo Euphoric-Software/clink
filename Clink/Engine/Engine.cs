@@ -557,6 +557,7 @@ internal sealed unsafe class Engine : IDisposable
         // The engine's own pick wins (live fullscreen detection or the manual Game process); the hint covers the rest (device
         // Game track, a save before the next poll picks the hint up).
         string game = _gameName ?? (string.IsNullOrEmpty(gameHint) ? "" : gameHint);
+        Services.TestGuard.Check(_cfg.ClipsFolder);
         Directory.CreateDirectory(_cfg.ClipsFolder);
         string baseName = string.IsNullOrEmpty(game) ? "Clip" : SanitizeName(game);
         string path = Path.Combine(_cfg.ClipsFolder, $"{baseName} {DateTime.Now:yyyy-MM-dd HH-mm-ss}.mp4");
@@ -628,6 +629,7 @@ internal sealed unsafe class Engine : IDisposable
         if (IsRecording) throw new InvalidOperationException("Already recording");
         // The file-system work first, outside the lock: a slow folder (a network share) must not hold up DetachRecorder.
         string folder = Path.GetFullPath(options.Folder);
+        Services.TestGuard.Check(folder);
         Directory.CreateDirectory(folder);
         long free = FreeBytes(folder);
         if (free >= 0 && free < MinFreeBytes) throw new IOException($"Not enough free disk space to record ({free / 1_048_576} MB free, 1024 MB needed)");

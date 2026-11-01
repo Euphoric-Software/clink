@@ -638,6 +638,7 @@ public partial class ClipsPane
         string body = ClipDeleter.BulkConfirmBody(ok.Count, ok.Count(r => r.IsShared), unselectedTrims, blocked.Count, false);
         var owner = Window.GetWindow(this) ?? Application.Current?.MainWindow;
         var dialog = new ClipDeleteConfirmWindow(ClipDeleter.BulkConfirmTitle(ok.Count, false), body, "Delete", owner);
+        TestGuard.CheckLaunch("the delete confirm window");
         if (dialog.ShowDialog() != true || !dialog.Confirmed) return null;
         nint handle = OwnerHandle(owner);
         SetBarStatus("Deleting…");
@@ -707,6 +708,7 @@ public partial class ClipsPane
         string body = ClipDeleter.BulkConfirmBody(ok.Count, ok.Count(r => r.HasLink), 0, blocked, true, withoutFile);
         var owner = Window.GetWindow(this) ?? Application.Current?.MainWindow;
         var dialog = new ClipDeleteConfirmWindow(ClipDeleter.BulkConfirmTitle(ok.Count, true), body, "Delete", owner);
+        TestGuard.CheckLaunch("the delete confirm window");
         if (dialog.ShowDialog() != true || !dialog.Confirmed) return null;
         nint handle = OwnerHandle(owner);
         SetBarStatus("Deleting…");
