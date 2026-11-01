@@ -114,7 +114,13 @@ internal sealed class Settings
     public string VoiceApp { get; set; } = "auto";
     public bool ClickSound { get; set; } = true;
     public double ClickVolume { get; set; } = 0.5;
-    public string ClipsFolder { get; set; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "Clink");
+    public string ClipsFolder { get; set; } = DefaultClipsFolder;
+
+    /// <summary>Test seam: where the default clips folder (and so the default screenshots folder, inside it) points; null = <c>Videos\Clink</c>. Only the unit-test runner sets it.</summary>
+    internal static string? DefaultClipsFolderOverride { get; set; }
+
+    /// <summary>The clips folder a fresh install uses, <c>Videos\Clink</c> (<see cref="DefaultClipsFolderOverride"/> in a unit test).</summary>
+    internal static string DefaultClipsFolder => DefaultClipsFolderOverride ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "Clink");
     public string? CopiumTokenProtected { get; set; }
     /// <summary>The Copium username shown beside the linked account (a display cache of what "Sign in with Copium" or /api/me said). Follows the token: cleared without one, taken over with it by an import.</summary>
     public string? CopiumAccountName { get; set; }
@@ -452,7 +458,7 @@ internal sealed class Settings
 
     private static bool KeepUnreadableCopy()
     {
-        try { File.Copy(FilePath, FilePath + ".unreadable", overwrite: true); return true; }
+        try { TestGuard.Check(FilePath + ".unreadable"); File.Copy(FilePath, FilePath + ".unreadable", overwrite: true); return true; }
         catch (Exception ex) { Log.Warn("settings.json: could not keep a copy: " + ex.Message); return false; }
     }
 
@@ -622,7 +628,7 @@ internal sealed class Settings
         if (string.IsNullOrWhiteSpace(Theme)) Theme = SettingsDefaults.Theme;
         if (string.IsNullOrWhiteSpace(Accent)) Accent = SettingsDefaults.Accent;
         else Accent = Clink.UI.ThemeManager.UpgradeAccent(Accent) ?? SettingsDefaults.Accent;
-        if (string.IsNullOrWhiteSpace(ClipsFolder)) ClipsFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "Clink");
+        if (string.IsNullOrWhiteSpace(ClipsFolder)) ClipsFolder = DefaultClipsFolder;
         if (string.IsNullOrWhiteSpace(ScreenshotsFolder)) ScreenshotsFolder = null;
         // A relative path (a hand edit, an import) would resolve against the current directory, which is System32 at sign-in: the default instead.
         else if (!IsFullPath(ScreenshotsFolder.Trim())) ScreenshotsFolder = null;
@@ -820,6 +826,7 @@ internal sealed class Settings
                 if (s_frozen) return;
                 Sanitize();
                 SchemaVersion = CurrentSchema;
+                TestGuard.Check(FilePath);
                 Directory.CreateDirectory(Dir);
                 KeepPreV3Copy();
                 AtomicFile.WriteAllText(FilePath, JsonSerializer.Serialize(this, s_json));
@@ -859,6 +866,7 @@ internal sealed class Settings
         {
             string path = Path.Combine(Dir, "settings.pre-v3.json");
             if (File.Exists(path)) return;
+            TestGuard.Check(path);
             using var fs = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
             byte[] bytes = new UTF8Encoding(false).GetBytes(old);
             fs.Write(bytes, 0, bytes.Length);

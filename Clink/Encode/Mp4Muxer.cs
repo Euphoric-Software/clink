@@ -98,6 +98,8 @@ internal sealed class Mp4Muxer : IDisposable
 
     private Mp4Muxer(string finalPath, string dataPath, VideoTrackDesc video, IEnumerable<AudioTrackDesc> audio, long origin100ns, bool aligned, bool progressive, bool resume)
     {
+        Services.TestGuard.Check(finalPath);
+        Services.TestGuard.Check(dataPath);
         _finalPath = finalPath;
         _actualFinalPath = finalPath;
         _tempPath = dataPath;

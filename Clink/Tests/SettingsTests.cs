@@ -996,6 +996,19 @@ internal static class SettingsTests
     }
 
     [UnitTest]
+    public static void The_real_default_clips_folder_is_Clink_under_Videos()
+    {
+        string? saved = Settings.DefaultClipsFolderOverride;
+        try
+        {
+            Settings.DefaultClipsFolderOverride = null;
+            // a path computation only: nothing is created or written
+            Check.Equal(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "Clink"), Settings.DefaultClipsFolder);
+        }
+        finally { Settings.DefaultClipsFolderOverride = saved; }
+    }
+
+    [UnitTest]
     public static void A_value_of_the_wrong_kind_or_a_null_for_a_number_is_unreadable()
     {
         using var dir = new TempDir();
@@ -1007,7 +1020,7 @@ internal static class SettingsTests
         Check.Equal(45, s.BufferSeconds);
         Check.Equal(60, s.Fps);
         Check.True(s.CaptureCursor);
-        Check.Equal(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "Clink"), s.ClipsFolder);
+        Check.Equal(Settings.DefaultClipsFolder, s.ClipsFolder);
         Check.False(s.CopiumPlus);
         Check.Equal(7, s.ToastClip.Seconds);
         Check.Equal(0.9f, s.HdrKnee);          // a number in quotes is fine

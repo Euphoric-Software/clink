@@ -335,8 +335,9 @@ internal static class TestRunnerTests
         ui.BeginInvoke(new Action(() => { dirWhenRun = Settings.Dir; wroteScratch = File.Exists(Settings.FilePath); }));   // queued after the save
         Check.False(File.Exists(scratch.File("settings.json")), "the save has not run yet");
 
-        // The real runner's hooks: no restore, the end of the run as TestRunner.Run does it.
-        var session = new TestRunner.Session(Methods(nameof(Passes)).Select((m, i) => ($"T{i}", m.Item2)).ToList(),
+        // The real runner's hooks: no restore, the end of the run as TestRunner.Run does it. No test in this session: each test's own
+        // drain (ExecuteWatched) would run the queue first, and this is about the end of the run's.
+        var session = new TestRunner.Session(new List<(string, System.Reflection.MethodInfo)>(),
             noSkip: false, limit: TimeSpan.FromSeconds(60), before: () => { }, after: () => { }, cleanup: () => TestRunner.EndOfRun(scratch.Path),
             print: _ => { }, exit: _ => { });
         Check.Equal(0, session.Run());
@@ -347,6 +348,22 @@ internal static class TestRunnerTests
         Check.False(File.Exists(Path.Combine(fakeReal, "settings.json")));
         Check.Equal(scratch.Path, Settings.Dir, "the settings were not pointed back at the real folder");
         Check.Equal(fakeReal, Settings.RealDir);
+    }
+
+    [UnitTest]
+    public static void A_refusal_outside_any_test_fails_the_run_after_the_cleanup()
+    {
+        // The real runner passes the guard's refusals that no test took (e.g. a queued save the end of the run's drain ran): each fails the run.
+        var lines = new List<string>();
+        bool cleaned = false;
+        var session = new TestRunner.Session(Methods(nameof(Passes)).Select((m, i) => ($"T{i}", m.Item2)).ToList(),
+            noSkip: false, limit: TimeSpan.FromSeconds(60), before: () => { }, after: () => { }, cleanup: () => cleaned = true,
+            print: lines.Add, exit: _ => { }, leftovers: () => { Check.True(cleaned, "asked after the cleanup"); return new[] { "test guard: a write was refused" }; });
+        Check.Equal(1, session.Run());
+        Check.Equal(3, lines.Count);
+        Check.True(lines[0].StartsWith("PASS  T0"), lines[0]);
+        Check.Equal("FAIL  (after the last test)  test guard: a write was refused", lines[1]);
+        Check.True(lines[2].StartsWith("1 passed, 1 failed, 0 skipped"), lines[2]);
     }
 
     [UnitTest]

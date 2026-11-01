@@ -1402,6 +1402,8 @@ internal sealed class ScreenshotService
         string? overwritePath = null, string? editedFrom = null)
     {
         if (image.Width <= 0 || image.Height <= 0) throw new InvalidOperationException("The picture is empty");
+        TestGuard.Check(folder);
+        if (overwritePath != null) TestGuard.Check(overwritePath);
         Directory.CreateDirectory(folder);
         byte[] png = PngFile.Encode(bitmap ?? image.ToBitmapSource());
         string baseName = ScreenshotNaming.BaseName(game, when);

@@ -402,7 +402,7 @@ public partial class ShareWindow : Window, ICaptureExcludedWindow
             if (_closed) return;
             if (state != FileState.Present) { _state = state; ShowState(); return; }
             SetStatus(null);
-            Process.Start("explorer.exe", $"/select,\"{path}\"");
+            TestGuard.Start("explorer.exe", $"/select,\"{path}\"");
         }
         catch (Exception ex)
         {
