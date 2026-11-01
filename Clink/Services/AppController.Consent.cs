@@ -124,5 +124,5 @@ internal sealed partial class AppController
     }
 
     /// <summary>The line that stands in for a refused share: footer, notice. Same text everywhere (hotkey, pipe, buttons that are still showing).</summary>
-    internal const string CloudOffText = ConsentGate.CloudOffText;
+    internal static string CloudOffText => ConsentGate.CloudOffText;   // (a property: slice S3b makes ConsentGate's text translated, which a const cannot be)
 }

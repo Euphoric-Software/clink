@@ -1176,7 +1176,7 @@ public partial class MainWindow : Window
         UpdateButton.Visibility = v != null ? Visibility.Visible : Visibility.Collapsed;
         UpdateNowButton.Content = UpdateButtonText(v?.ToString() ?? "", v != null);
         UpdateNowButton.Visibility = v != null ? Visibility.Visible : Visibility.Collapsed;
-        string? problem = UpdateProblemLine(_app.Updater.InstallProblem, _app.Updater.LastError, _app.Updater.CheckFailed, AppController.IsDev);
+        string? problem = UpdateProblemLine(_app.Updater.InstallProblem, _app.Updater.LastErrorText, _app.Updater.CheckFailed, AppController.IsDev, _app.Updater.LastErrorIsDevMode);
         UpdateProblemText.Text = problem ?? "";
         UpdateProblemText.Visibility = problem != null ? Visibility.Visible : Visibility.Collapsed;
         bool canUpdate = _app.Updater.UpdatesEnabled;
@@ -1205,13 +1205,13 @@ public partial class MainWindow : Window
     /// failed check is called one. A --dev instance never looks for updates: the version line says so, so the "last check failed:
     /// updates are off in dev mode" the updater leaves as its status (Updater.LastError) is not shown a second time as a problem.
     /// </summary>
-    internal static string? UpdateProblemLine(string? installProblem, string? lastError, bool checkFailed, bool isDev) =>
+    internal static string? UpdateProblemLine(string? installProblem, string? lastError, bool checkFailed, bool isDev, bool? lastErrorIsDevMode = null) =>
         installProblem
-            ?? (lastError is string err && !(isDev && string.Equals(err, Updater.DevModeNote, StringComparison.OrdinalIgnoreCase))
+            ?? (lastError is string err && !(isDev && (lastErrorIsDevMode ?? string.Equals(err, Updater.DevModeNote, StringComparison.OrdinalIgnoreCase)))
                 ? (checkFailed ? L.T("Last check failed: {error}", ("error", err)) : L.T("Update problem: {error}", ("error", err))) : null);
 
     /// <summary>Why there is nothing to check: a --dev instance never looks for updates; a build without a signed update feed has no updates at all.</summary>
-    private static string NoUpdatesText => AppController.IsDev ? Updater.DevModeNote : Updater.NoUpdatesNote;
+    private static string NoUpdatesText => AppController.IsDev ? Updater.DevModeDisplay : Updater.NoUpdatesDisplay;
 
     private void Update_Click(object sender, RoutedEventArgs e) => _app.UpdateNow();
 

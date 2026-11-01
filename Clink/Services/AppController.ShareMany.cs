@@ -1,6 +1,7 @@
 using System.IO;
 using System.Windows;
 using Clink.Screenshots;
+using Clink.Services.Localization;
 using Clink.UI;
 
 namespace Clink.Services;
@@ -28,7 +29,8 @@ internal sealed partial class AppController
     internal Action<string, string>? BulkNoticeSink { get; set; }
 
     /// <summary>The bulk upload's error without a Copium token.</summary>
-    internal const string BulkNoTokenText = "Sign in with Copium under App → Copium to upload";
+    internal static string BulkNoTokenText => BulkNoTokenNote.Shown;
+    internal static Note BulkNoTokenNote => Note.Of("Sign in with Copium under App → Copium to upload");
 
     private enum StepKind { Uploaded, Refused, Failed, Stop }
     private readonly record struct Step(StepKind Kind, string? Error = null);
@@ -64,7 +66,7 @@ internal sealed partial class AppController
                 else window.Show();
             }
             catch { if (ReferenceEquals(_shareFilesWindow, window)) _shareFilesWindow = null; throw; }
-            Say(screenshots ? "Drag the screenshots where you want to share them" : "Drag the clips where you want to share them");
+            if (screenshots) SayT("Drag the screenshots where you want to share them"); else SayT("Drag the clips where you want to share them");
             return true;
         }
         catch (Exception ex)
@@ -90,13 +92,13 @@ internal sealed partial class AppController
         int total = entries.Count;
         string? folder = SaveFolderPicker is { } picker ? picker() : PickSaveFolder(owner);
         if (string.IsNullOrWhiteSpace(folder)) return new BulkSaveResult(0, total, null, null, true);
-        string? problem = FolderProblem(folder);
+        var problem = FolderProblem(folder);
         if (problem != null)
         {
-            Say("Not saved: " + problem);
-            return new BulkSaveResult(0, total, folder, problem, false);
+            SayT("Not saved: {reason}", ("reason", problem));
+            return new BulkSaveResult(0, total, folder, problem.Shown, false);
         }
-        Say(total == 1 ? "Saving a copy…" : $"Saving {total} copies…");
+        if (total == 1) SayT("Saving a copy…"); else Say(Note.PluralOf("Saving {count} copies…", total));
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token, ct);
         var taken = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         int saved = 0, unreachable = 0, busy = 0;
@@ -161,7 +163,7 @@ internal sealed partial class AppController
             }
         }
         catch (Exception ex) { Log.Warn("save copies: could not remember the folder: " + ex.Message); }
-        Say(cancelled ? "Save cancelled" : BulkActions.SaveSummary(saved, total, firstError, unreachable, busy));
+        if (cancelled) SayT("Save cancelled"); else Say(BulkActions.SaveSummary(saved, total, firstError, unreachable, busy));   // (the summary is worded by BulkActions: slice S2)
         return new BulkSaveResult(saved, total, folder, firstError, cancelled, unreachable, busy);
     }
 
@@ -189,14 +191,14 @@ internal sealed partial class AppController
     {
         bool ok = await ShareAsync(entry, progress, context: ConsentContext.ClipShare, quiet: true, released: release);
         if (ok) return new Step(StepKind.Uploaded);
-        if (_cts.IsCancellationRequested) return new Step(StepKind.Stop, "Clink is closing");
+        if (_cts.IsCancellationRequested) return new Step(StepKind.Stop, L.T("Clink is closing"));
         // No token (the quiet path) or a rejected token: every further clip would fail the same way, so the batch stops.
         if (LastShareOutcome == ShareOutcome.Failed && (ShareTokenRejected || string.IsNullOrWhiteSpace(Settings.CopiumToken)))
-            return new Step(StepKind.Stop, ShareTokenRejected ? (ShareError ?? "Copium rejected the token") : BulkNoTokenText);
+            return new Step(StepKind.Stop, ShareTokenRejected ? (ShareError ?? L.T("Copium rejected the token")) : BulkNoTokenText);
         return LastShareOutcome switch
         {
             ShareOutcome.Refused => new Step(StepKind.Refused),
-            ShareOutcome.Declined => new Step(StepKind.Stop, ShareError ?? "Not uploaded: sharing with Copium is not enabled"),
+            ShareOutcome.Declined => new Step(StepKind.Stop, ShareError ?? L.T("Not uploaded: sharing with Copium is not enabled")),
             _ => new Step(StepKind.Failed, ShareError),
         };
     }
@@ -208,10 +210,10 @@ internal sealed partial class AppController
         bool ok = await Screenshots.UploadAsync(entry, manual: true, askAs: ConsentContext.ScreenshotUploadLibrary, batch: true, batchProgress: progress,
             batchProblem: text => problem ??= text);   // the service tells a batch's problems here, not in a toast each
         if (ok && !string.IsNullOrEmpty(entry.CopiumLink)) return new Step(StepKind.Uploaded);
-        if (_cts.IsCancellationRequested) return new Step(StepKind.Stop, "Clink is closing");
+        if (_cts.IsCancellationRequested) return new Step(StepKind.Stop, L.T("Clink is closing"));
         if (!Settings.CloudSharingEnabled) return new Step(StepKind.Stop, CloudOffText);
         if (string.IsNullOrWhiteSpace(Settings.CopiumToken)) return new Step(StepKind.Stop, BulkNoTokenText);
-        if (Screenshots.TokenRejections != rejectionsBefore && Screenshots.CopiumTokenRejected) return new Step(StepKind.Stop, problem ?? "Copium rejected the token");
+        if (Screenshots.TokenRejections != rejectionsBefore && Screenshots.CopiumTokenRejected) return new Step(StepKind.Stop, problem ?? L.T("Copium rejected the token"));
         return new Step(StepKind.Failed, problem);
     }
 
@@ -220,19 +222,18 @@ internal sealed partial class AppController
     {
         int total = items.Count;
         var links = new List<string>();
-        BulkShareResult Early(string error, bool declined = false)
+        BulkShareResult Early(Note why, bool declined = false)
         {
-            Say(error);
-            return new BulkShareResult(0, 0, total, links, 0, 0, 0, error, declined, false);
+            Say(why);
+            return new BulkShareResult(0, 0, total, links, 0, 0, 0, why.Shown, declined, false);
         }
-        if (!Settings.CloudSharingEnabled) return Early(CloudOffText);
-        if (string.IsNullOrWhiteSpace(Settings.CopiumToken)) return Early(BulkNoTokenText);
+        if (!Settings.CloudSharingEnabled) return Early(Note.Verbatim(CloudOffText));   // (worded by ConsentGate: slice S3b)
+        if (string.IsNullOrWhiteSpace(Settings.CopiumToken)) return Early(BulkNoTokenNote);
         bool needsUpload = false;   // the question is asked only when something will actually be uploaded (not linked already, not over the limit)
         foreach (var item in items) if (string.IsNullOrEmpty(linkOf(item)) && !refused(item)) { needsUpload = true; break; }
         if (needsUpload && !await EnsureCopiumConsentAsync(context))
         {
-            string why = Settings.CloudSharingEnabled ? "Not uploaded: sharing with Copium is not enabled" : CloudOffText;
-            Say(why);
+            if (Settings.CloudSharingEnabled) SayT("Not uploaded: sharing with Copium is not enabled"); else Say(CloudOffText);
             return new BulkShareResult(0, 0, total, links, 0, 0, 0, null, true, false);
         }
         int uploaded = 0, already = 0, refusedN = 0, busy = 0, failed = 0;
@@ -249,7 +250,7 @@ internal sealed partial class AppController
             if (!join && begin != null && !begin(i)) { busy++; continue; }
             Step step;
             try { step = await upload(item, join ? null : progressFor(item), () => begin?.Invoke(-1)); }
-            catch (OperationCanceledException) { step = new Step(StepKind.Stop, "Upload cancelled"); }
+            catch (OperationCanceledException) { step = new Step(StepKind.Stop, L.T("Upload cancelled")); }
             catch (Exception ex)
             {
                 Log.Error("bulk upload", ex);
@@ -259,7 +260,7 @@ internal sealed partial class AppController
             else if (step.Kind == StepKind.Refused) refusedN++;
             else if (step.Kind == StepKind.Stop)
             {
-                stopError = step.Error ?? "Stopped";
+                stopError = step.Error ?? L.T("bulk|Stopped");
                 notTried = total - i - 1;
                 if (failed == 0) firstError = stopError;   // nothing failed: the stop reason is also the first error (what the bar shows when nothing was tried)
                 break;
@@ -271,8 +272,8 @@ internal sealed partial class AppController
         bool notCopied = links.Count > 0 && !TryCopyToClipboard(BulkActions.JoinLinks(links));
         var result = new BulkShareResult(uploaded, already, total, links, refusedN, busy, failed, firstError, false, cancelled, stopError, notTried, notCopied);
         string summary = BulkActions.UploadSummary(result, screenshots);
-        string title = notCopied ? "Links not copied" : links.Count > 0 ? "Links copied" : "Nothing uploaded";
-        Say(summary);
+        string title = notCopied ? L.T("Links not copied") : links.Count > 0 ? L.T("Links copied") : L.T("Nothing uploaded");
+        Say(summary);   // (worded by BulkActions: slice S2)
         if (BulkNoticeSink is { } sink) sink(title, summary);
         else
         {
@@ -283,7 +284,7 @@ internal sealed partial class AppController
     }
 
     /// <summary>The bulk save's error when the folder the copies go to disappeared in the middle (a USB drive unplugged, a share dropped).</summary>
-    internal const string FolderGoneText = "The folder is no longer there";
+    internal static string FolderGoneText => L.T("The folder is no longer there");
 
     private static bool FolderStillThere(string folder)
     {
@@ -292,25 +293,26 @@ internal sealed partial class AppController
     }
 
     /// <summary>A copy failed because the target folder is gone (not the source file): the bulk save stops.</summary>
-    private sealed class FolderGoneException(Exception inner) : IOException(FolderGoneText, inner);
+    private sealed class FolderGoneException(Exception inner) : IOException(L.TIn("en", "The folder is no longer there"), inner);   // (the message is English: it goes to the log)
 
     /// <summary>Why the folder cannot take copies (null = it can): it must exist and lie outside Clink's clips folder.</summary>
-    private string? FolderProblem(string folder)
+    private Note? FolderProblem(string folder)
     {
         try
         {
-            if (!Directory.Exists(folder)) return "That folder is not there";
+            if (!Directory.Exists(folder)) return Note.Of("That folder is not there");
         }
-        catch (Exception) { return "That folder is not there"; }
+        catch (Exception) { return Note.Of("That folder is not there"); }
         // the folder judged as a file inside it (a name no clip has), so the same rule as a single save applies
-        return SaveCopy.TargetProblem(Path.Combine(folder, ".clink-folder-check"), Path.Combine(Path.GetTempPath(), ".clink-folder-source"), Settings.ClipsFolder);
+        // (SaveCopy words it itself, in the language of the UI: kept as it is, until SaveCopy hands out a Note)
+        return SaveCopy.TargetProblem(Path.Combine(folder, ".clink-folder-check"), Path.Combine(Path.GetTempPath(), ".clink-folder-source"), Settings.ClipsFolder) is string tp ? Note.Verbatim(tp) : null;
     }
 
     private string? PickSaveFolder(Window? owner)
     {
         var dialog = new Microsoft.Win32.OpenFolderDialog
         {
-            Title = "Save copies of the clips to",
+            Title = L.T("Save copies of the clips to"),
             InitialDirectory = SaveCopy.InitialFolder(Settings.SaveCopyFolder, Environment.GetFolderPath(Environment.SpecialFolder.MyVideos)),
         };
         TestGuard.CheckLaunch("the save-copies folder dialog");

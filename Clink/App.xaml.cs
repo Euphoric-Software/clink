@@ -149,7 +149,7 @@ public partial class App : System.Windows.Application
             Log.Error("Startup failed", ex);
             try { _controller?.Dispose(); } catch { }
             AppController.ReleaseSingleInstance();
-            try { MessageBox.Show("Clink could not start: " + ex.Message + "\n\nDetails: " + (Log.Path ?? Settings.Dir), "Clink", MessageBoxButton.OK, MessageBoxImage.Error); } catch { }
+            try { MessageBox.Show(L.T("Clink could not start: {error}\n\nDetails: {details}", ("error", ex.Message), ("details", L.Ltr(Log.Path ?? Settings.Dir))), "Clink", MessageBoxButton.OK, MessageBoxImage.Error); } catch { }
             Shutdown(1);
         }
     }
