@@ -1,14 +1,17 @@
+using Clink.Services.Localization;
+
 namespace Clink.Services;
 
 /// <summary>What a video clip's Share button can do when it opens a menu.</summary>
 internal enum ShareChoice { Upload, CopyLink, ShareFile, SaveCopy }
 
-/// <summary>One menu entry: <paramref name="Header"/> carries its access key (underscore), <paramref name="ToolTip"/> says what it does.</summary>
+/// <summary>One menu entry: <paramref name="Header"/> carries its access key (underscore), <paramref name="ToolTip"/> says what it does. Both are in the UI language already.</summary>
 internal sealed record ShareChoiceItem(ShareChoice Choice, string Header, string ToolTip);
 
 /// <summary>
 /// The Share button of a video clip (clip list row, clip-saved toast): with a Copium token and cloud sharing on it opens a menu
-/// (upload / copy link, share the file, save a copy); otherwise it does what it always did. Pure.
+/// (upload / copy link, share the file, save a copy); otherwise it does what it always did. Pure. The texts are looked up when asked
+/// for (the labels are properties, not constants), so they follow the UI language; callers compare labels only against labels from here.
 /// </summary>
 internal static class ShareChoices
 {
@@ -19,25 +22,25 @@ internal static class ShareChoices
         return new[]
         {
             hasLink
-                ? new ShareChoiceItem(ShareChoice.CopyLink, "_Copy link", "Copy the clip's Copium link")
-                : new ShareChoiceItem(ShareChoice.Upload, "_Upload to Copium", "Upload to your Copium account and copy the link"),
-            new ShareChoiceItem(ShareChoice.ShareFile, "_Share file…", "Drag or copy the file into Discord, a browser or a folder"),
-            new ShareChoiceItem(ShareChoice.SaveCopy, "S_ave a copy…", "Save a copy of the clip file to another folder"),
+                ? new ShareChoiceItem(ShareChoice.CopyLink, L.T("_Copy link"), L.T("Copy the clip's Copium link"))
+                : new ShareChoiceItem(ShareChoice.Upload, L.T("_Upload to Copium"), L.T("Upload to your Copium account and copy the link")),
+            new ShareChoiceItem(ShareChoice.ShareFile, L.T("_Share file…"), L.T("Drag or copy the file into Discord, a browser or a folder")),
+            new ShareChoiceItem(ShareChoice.SaveCopy, L.T("S_ave a copy…"), L.T("Save a copy of the clip file to another folder")),
         };
     }
 
     // The split button (where there is a menu): a main "Share" half that opens the share window, and a "▾" half that opens the menu.
 
     /// <summary>The label of the main half of the split button.</summary>
-    public const string SplitMainLabel = "Share";
-    /// <summary>The label of the arrow half.</summary>
+    public static string SplitMainLabel => L.T("Share");
+    /// <summary>The label of the arrow half (a glyph, not a word).</summary>
     public const string SplitArrowLabel = "▾";
     /// <summary>The accessible name of the main half (it opens the share window).</summary>
-    public const string SplitMainName = "Share file";
+    public static string SplitMainName => L.T("Share file");
     /// <summary>The accessible name of the arrow half (it opens the menu).</summary>
-    public const string SplitArrowName = "Share options";
-    public const string SplitMainTip = "Open the share window: drag the file into Discord, a browser or a folder";
-    public const string SplitArrowTip = "More share options";
+    public static string SplitArrowName => L.T("Share options");
+    public static string SplitMainTip => L.T("Open the share window: drag the file into Discord, a browser or a folder");
+    public static string SplitArrowTip => L.T("More share options");
     /// <summary>What the main half runs: the same as the menu's "Share file…".</summary>
     public const ShareChoice SplitMainChoice = ShareChoice.ShareFile;
 
@@ -56,9 +59,9 @@ internal static class ShareChoices
         if (For(hasToken, cloudOn, false) == null) return null;
         return new[]
         {
-            new ShareChoiceItem(ShareChoice.Upload, "Save & _upload to Copium", "Save the trim, then upload it to your Copium account and copy the link"),
-            new ShareChoiceItem(ShareChoice.ShareFile, "Save & s_hare file…", "Save the trim, then drag or copy the file into Discord, a browser or a folder"),
-            new ShareChoiceItem(ShareChoice.SaveCopy, "Save & save a _copy…", "Save the trim, then save a copy of the file to another folder"),
+            new ShareChoiceItem(ShareChoice.Upload, L.T("Save & _upload to Copium"), L.T("Save the trim, then upload it to your Copium account and copy the link")),
+            new ShareChoiceItem(ShareChoice.ShareFile, L.T("Save & s_hare file…"), L.T("Save the trim, then drag or copy the file into Discord, a browser or a folder")),
+            new ShareChoiceItem(ShareChoice.SaveCopy, L.T("Save & save a _copy…"), L.T("Save the trim, then save a copy of the file to another folder")),
         };
     }
 
@@ -73,11 +76,11 @@ internal static class ShareChoices
 
     /// <summary>The clip row's Share button (the main half when split): "Share", else today's "Copy link" / "Share".</summary>
     public static string ButtonLabel(bool hasToken, bool cloudOn, bool hasLink) =>
-        IsSplit(hasToken, cloudOn, hasLink) ? SplitMainLabel : hasLink ? "Copy link" : "Share";
+        IsSplit(hasToken, cloudOn, hasLink) ? SplitMainLabel : hasLink ? L.T("Copy link") : L.T("Share");
 
     /// <summary>The clip-saved toast's Share button (the main half when split): "Share", else today's "Copy link" / "Share to Copium" / "Share".</summary>
     public static string ToastLabel(bool hasToken, bool cloudOn, bool hasLink) =>
-        IsSplit(hasToken, cloudOn, hasLink) ? SplitMainLabel : hasLink ? "Copy link" : hasToken ? "Share to Copium" : "Share";
+        IsSplit(hasToken, cloudOn, hasLink) ? SplitMainLabel : hasLink ? L.T("Copy link") : hasToken ? L.T("Share to Copium") : L.T("Share");
 
     /// <summary>The accessible name of the main half when split; null when the button acts directly (its label names it).</summary>
     public static string? ButtonName(bool hasToken, bool cloudOn, bool hasLink) =>

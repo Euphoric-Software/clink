@@ -1,3 +1,5 @@
+using Clink.Services.Localization;
+
 namespace Clink.Services;
 
 /// <summary>
@@ -7,23 +9,23 @@ namespace Clink.Services;
 /// </summary>
 internal sealed class CopiumWelcomeModel
 {
-    internal const string Title = "You're connected to Copium";
-    internal const string AutoUploadLabel = "Automatically upload every screenshot I take";
-    internal const string AutoUploadDetail = "Each screenshot is uploaded to your Copium account and gets a link you can share. Anyone with the link can see it.";
-    internal const string ClipsLine = "Clips are only uploaded when you share them.";
-    internal const string ChangeLaterLine = "You can change this any time in Clink's settings or from the version number at the bottom of the window.";
-    internal const string StartLabel = "Start sharing";
-    internal const string NotNowLabel = "Not now";
-    internal const string CloseLabel = "Close";
+    internal static string Title => L.T("You're connected to Copium");
+    internal static string AutoUploadLabel => L.T("Automatically upload every screenshot I take");
+    internal static string AutoUploadDetail => L.T("Each screenshot is uploaded to your Copium account and gets a link you can share. Anyone with the link can see it.");
+    internal static string ClipsLine => L.T("Clips are only uploaded when you share them.");
+    internal static string ChangeLaterLine => L.T("You can change this any time in Clink's settings or from the version number at the bottom of the window.");
+    internal static string StartLabel => L.T("Start sharing");
+    internal static string NotNowLabel => L.T("Not now");
+    internal static string CloseLabel => L.T("Close");
     internal const int MaxNameChars = 40;
 
     /// <summary>"Signed in as {Username}" (the name isolated and cut); "Signed in" when there is no name.</summary>
     internal static string SignedInLine(string? username)
     {
         string name = (username ?? "").Trim();
-        if (name.Length == 0) return "Signed in";
+        if (name.Length == 0) return L.T("Signed in");
         if (name.Length > MaxNameChars) name = name[..MaxNameChars].TrimEnd() + "…";
-        return "Signed in as " + CopiumCardModel.Iso(name);
+        return L.T("Signed in as {name}", ("name", CopiumCardModel.Iso(name)));
     }
 
     private readonly Action<bool, bool> _apply;

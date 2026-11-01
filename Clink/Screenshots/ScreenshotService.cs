@@ -503,20 +503,21 @@ internal sealed class ScreenshotService
         {
             Log.Warn("screenshot: upload failed: " + ex.Message);
             toast.Failed();
+            string userText = CopiumErrors.UserText(ex);   // the log has the English Message; the notification speaks the user's language
             if (ex is CopiumHttpException refusal && CopiumClient.IsTypeRefusal(refusal.StatusCode, refusal.ErrorText))
             {
                 CopiumImagesRefused = true;
-                Problem(L.T("Copium did not accept the image"), L.T("Saved locally. Automatic uploads are paused until Clink restarts; the Upload button on a screenshot notification still tries. ({error})", ("error", ex.Message)), L.T("Copium doesn't accept this file type"));
+                Problem(L.T("Copium did not accept the image"), L.T("Saved locally. Automatic uploads are paused until Clink restarts; the Upload button on a screenshot notification still tries. ({error})", ("error", userText)), L.T("Copium doesn't accept this file type"));
             }
             else if (ex is CopiumHttpException tokenRefusal && CopiumClient.IsTokenRejection(tokenRefusal.StatusCode, tokenRefusal.ErrorText))
             {
                 // Every further try would fail the same way: pause until the token is changed, and say so once.
                 _rejectedToken = token;
                 Interlocked.Increment(ref _tokenRejections);
-                Problem(L.T("Copium token rejected"), L.T("Saved locally. Check the token in Settings → App → Copium; automatic uploads are paused until it is changed. ({error})", ("error", ex.Message)),
+                Problem(L.T("Copium token rejected"), L.T("Saved locally. Check the token in Settings → App → Copium; automatic uploads are paused until it is changed. ({error})", ("error", userText)),
                     L.T("Copium rejected the token (HTTP {status})", ("status", tokenRefusal.StatusCode)));
             }
-            else Problem(L.T("Screenshot not uploaded"), L.T("Saved locally. {error}", ("error", ex.Message)), ex.Message);
+            else Problem(L.T("Screenshot not uploaded"), L.T("Saved locally. {error}", ("error", userText)), userText);
             return false;
         }
         finally

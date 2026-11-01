@@ -65,12 +65,7 @@ internal static class L10nTreeClipsTests
         string t = text.Trim();
         // fake clip / game names and file names the rows show (user data), and a Copium link (a URL)
         if (t is "Neon Drift" or "Neon Drift (trim)" or "Clip.mp4" or "shot-1.png" || t.StartsWith("https://", StringComparison.Ordinal)) return true;
-        // the labels and tips of the Share split button come from Services/ShareChoices.cs (slice S3b, not this one); each is listed here by its
-        // exact text so a new hard-coded string next to them is still found
-        if (t is "Share" or "Copy link" or "Upload" or "Share file…" or "▾"
-            or "Share file" or "Share options" or "More share options"
-            or "Open the share window: drag the file into Discord, a browser or a folder") return true;
-        return false;
+        return false;   // (the Share split button's labels and tips now come from the catalog; the "▾" glyph has no letter)
     }
 
     private static void Arrange(UIElement ui)

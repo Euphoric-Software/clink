@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Input;
 using System.Windows.Interop;
 using Clink.Services;
+using Clink.Services.Localization;
 
 namespace Clink.UI;
 
@@ -16,7 +17,7 @@ public partial class CopiumConsentWindow : Window, ICaptureExcludedWindow
     public enum Mode { Consent, ConfirmCloudSharing }
 
     /// <summary>The warning shown in both modes: sharing is public and cannot be taken back by Clink.</summary>
-    internal const string WarningTextValue = "Anything you upload is immediately publicly accessible to anyone who has the link. Links are not private and cannot be recalled by Clink.";
+    internal static string WarningTextValue => L.T("Anything you upload is immediately publicly accessible to anyone who has the link. Links are not private and cannot be recalled by Clink.");
 
     private readonly bool _excludeFromCapture;
     private readonly Mode _mode;
@@ -39,11 +40,11 @@ public partial class CopiumConsentWindow : Window, ICaptureExcludedWindow
         AutoUploadCheck.Visibility = mode == Mode.Consent && offerAutoUpload ? Visibility.Visible : Visibility.Collapsed;
         if (mode == Mode.ConfirmCloudSharing)
         {
-            Title = "Allow cloud sharing?";
-            TitleText.Text = "Allow cloud sharing?";
-            BodyText.Text = "Turning cloud sharing on lets Clink upload clips and screenshots to your Copium account when you ask it to, and shows the sharing buttons again.";
-            EnableButton.Content = "Yes, allow cloud sharing";
-            NotNowButton.Content = "Cancel";
+            Title = L.T("Allow cloud sharing?");
+            TitleText.Text = L.T("Allow cloud sharing?");
+            BodyText.Text = L.T("Turning cloud sharing on lets Clink upload clips and screenshots to your Copium account when you ask it to, and shows the sharing buttons again.");
+            EnableButton.Content = L.T("Yes, allow cloud sharing");
+            NotNowButton.Content = L.T("Cancel");
             DontAskButton.Visibility = Visibility.Collapsed;
         }
         if (excludeFromCapture)

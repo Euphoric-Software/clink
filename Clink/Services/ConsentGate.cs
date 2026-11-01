@@ -1,3 +1,5 @@
+using Clink.Services.Localization;
+
 namespace Clink.Services;
 
 /// <summary>What asked to share: the gate shows the same pop-up for all of them, but a screenshot context also offers "upload every screenshot".</summary>
@@ -34,8 +36,8 @@ internal readonly record struct ConsentAnswer(ConsentChoice Choice, bool AutoUpl
 /// </summary>
 internal sealed class ConsentGate
 {
-    public const string CloudOffTitle = "Cloud sharing is off";
-    public const string CloudOffText = "Cloud sharing is off — enable it under App → Cloud sharing";
+    public static string CloudOffTitle => L.T("Cloud sharing is off");
+    public static string CloudOffText => L.T("Cloud sharing is off — enable it under App → Cloud sharing");
 
     private readonly Settings _settings;
     private TaskCompletionSource<bool>? _asking;
