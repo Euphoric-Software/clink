@@ -1193,16 +1193,21 @@ internal static class SettingsTests
         Settings.DirOverride = dir.Path;
         Check.Equal(dir.Path, Settings.Dir);
         Check.Equal(dir.File("settings.json"), Settings.FilePath);
-        // Only a path computation under the null overrides, then the runner's scratch folders go straight back: work this test (or a thread
-        // it started) queued must never run, or be drained, with the settings folder pointing at the true real one.
-        string? savedDir = Settings.DirOverride, savedReal = Settings.RealDirOverride;
-        try
-        {
-            Settings.DirOverride = null;
-            Settings.RealDirOverride = null;   // the runner points the real Clink's folder at a scratch one too
-            Check.Equal(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Clink"), Settings.Dir);
-        }
-        finally { Settings.DirOverride = savedDir; Settings.RealDirOverride = savedReal; }
+        // Without the override the settings are in the real Clink's folder: checked with a made-up one, and the true one (%APPDATA%\Clink)
+        // is only read as a string while the override is still set. Settings.Dir never resolves to the true folder during a test, so a
+        // save queued for the UI thread (or a thread started by an earlier test) cannot land in the user's real settings.json.
+        using var home = new TempDir();
+        string real = home.File(@"AppData\Roaming\Clink");
+        Settings.RealDirOverride = real;
+        Settings.DirOverride = null;
+        Check.Equal(real, Settings.RealDir);
+        Check.Equal(real, Settings.Dir, "no override: the real folder");
+        Check.Equal(Path.Combine(real, "settings.json"), Settings.FilePath);
+        Settings.DirOverride = dir.Path;
+        Check.Equal(real, Settings.RealDir, "an override does not move the real folder");
+        Settings.RealDirOverride = null;   // DirOverride is still set, so Settings.Dir is not the real folder at any point
+        Check.Equal(dir.Path, Settings.Dir);
+        Check.Equal(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Clink"), Settings.RealDir);
     }
 
     // ------------------------------------------------------------------ hotkey helpers

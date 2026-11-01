@@ -14,7 +14,9 @@ replay length is yours to set, 45 seconds by default); press a key, hear a click
 <sub>Recording a game: capture settings and audio tracks on the left, your clips on the right. More under
 [Screenshots of Clink](#screenshots-of-clink); the screenshot tool itself is under [Taking screenshots](#taking-screenshots).</sub>
 
-* Single `Clink.exe`, no installer, no background services. Needs the .NET 10 Desktop Runtime (Windows 10 2004+ / Windows 11; HDR and per-process audio need Windows 11).
+Full guides: [docs.euphoric.software/clink](https://docs.euphoric.software/clink/).
+
+* One portable `Clink.exe` (self-contained, nothing to install) or a per-user `Clink-Setup.exe` installer; no background services. Windows 10 version 2004 (build 19041) or later, including Windows 11, 64-bit (on Windows 10 the yellow capture border cannot be hidden).
 * Captures with Windows Graphics Capture, so borderless **and** exclusive-fullscreen games work.
 * **HDR done right**: on an HDR display it captures the FP16 scRGB frame and tone-maps it on the GPU using the
   display's SDR white level, so clips look like the game instead of grey and washed out.
@@ -71,8 +73,8 @@ replay length is yours to set, 45 seconds by default); press a key, hear a click
   in the background (slowly, oldest first, after N days and/or when the local folder is over N GB), or whenever you
   say so: *Archive now…* moves what is due, or every local clip, with progress and a result.
 * Shows which monitor it is capturing; click another one on the little map to switch.
-* **Sharing is opt-in.** Nothing is uploaded until you say yes once: the first time you share with a token saved (or press
-  an *Upload* button), Clink asks *Share with Copium?* and warns that **anything you upload is immediately publicly
+* **Sharing is opt-in.** Nothing is uploaded until you say yes once: the first time you upload with a token saved (choose
+  *Upload to Copium*, or press an *Upload* button), Clink asks *Share with Copium?* and warns that **anything you upload is immediately publicly
   accessible to anyone who has the link; links are not private and cannot be recalled by Clink**. *Not now* leaves it
   at that, *Enable Copium sharing* agrees (Enter never does: *Not now* is the default button), and *Don't ask again* only
   stops Clink asking on its own (sharing a clip or a screenshot yourself still asks until you say yes). Under
@@ -115,7 +117,7 @@ A ShareX-style screenshot tool that lives next to the clip recorder (its own fol
   *Open | Edit | Upload or Copy link | Folder*; *Upload* shows when a token is set, cloud sharing is on and no automatic
   upload follows.
 * **Settings**: folder (default `Screenshots` inside the clips folder), copy image to clipboard, magnifier, after-capture mode,
-  upload options. Files are named `Game yyyy-MM-dd HH-mm-ss.png` (the game only while it is being recorded).
+  upload options. Files are named `Game yyyy-MM-dd HH-mm-ss.png` (`Screenshot yyyy-MM-dd HH-mm-ss.png` when no game is being recorded or the picture is not on the recorded monitor).
 
 ## Screenshots of Clink
 
@@ -158,18 +160,20 @@ All screenshots are of Clink itself (the dark theme with the default accent unle
 
 ## Installing & updating
 
-1. Download `Clink.exe` from the [Releases](../../releases/latest) page. Put it anywhere (Desktop, `C:\Tools`, a
-   USB stick) and run it. There is no installer; settings live in `%APPDATA%\Clink`, downloaded updates in
-   `%LOCALAPPDATA%\Clink`.
-2. It needs the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0). If it is missing,
-   Windows shows a dialog with the download link on first run.
+1. Download from [euphoric.software](https://euphoric.software/#clink-card-title): `Clink.exe` is portable (put it anywhere,
+   Desktop, `C:\Tools`, a USB stick, and run it); `Clink-Setup.exe` is a per-user installer (no admin rights; if the .NET 10 Desktop Runtime is missing it offers to install it, and only
+   that step asks for administrator approval). Settings
+   live in `%APPDATA%\Clink`, downloaded updates in `%LOCALAPPDATA%\Clink`.
+2. `Clink.exe` is self-contained and needs no .NET runtime. The [Releases](../../releases/latest) page also has
+   `Clink-framework.exe`, a smaller build that needs the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0)
+   (it is what `Clink-Setup.exe` installs).
 3. The exe is not code-signed (yet, see [ROADMAP.md](ROADMAP.md)), so SmartScreen may show "Windows protected your
    PC" the first time: *More info* → *Run anyway*. After that it does not ask again for that file.
 
-**Updates are automatic.** Clink checks [GitHub Releases](../../releases) when it starts and every 6 hours after
-that. When a newer version exists it downloads the new `Clink.exe` to `%LOCALAPPDATA%\Clink\updates`, checks it
-against the `Clink.exe.sha256` published with the release (this catches a corrupted download; it does not prove who
-built the file, which is what code signing is for, see [ROADMAP.md](ROADMAP.md)), and installs it the next time
+**Updates are automatic.** Clink checks a signed update feed (`dl.euphoric.software`) when it starts and every 6 hours after
+that. When a newer version exists it downloads the new exe to `%LOCALAPPDATA%\Clink\updates`, checks it
+against the feed's signed manifest (the signature proves the feed published it, which catches a corrupted or tampered download; it is
+not code signing of the exe itself, see [ROADMAP.md](ROADMAP.md)), and installs it the next time
 Clink starts, so a recording session is never interrupted. The footer and the tray menu show **Update to vX.Y.Z** to
 install it right away instead. Before installing, the file is hashed again against what was verified, and the exe is
 swapped in by renaming with the previous `Clink.exe` kept as `Clink.exe.bak` until the new one has started, so a
@@ -177,14 +181,14 @@ failed install never leaves you without a working Clink: a new exe that does not
 download is not tried again on every start. If an update cannot be installed (for example `Clink.exe`
 lives in a folder you cannot write to, or Clink runs as administrator) Clink says so in the footer, in a tray message
 and under *App → Updates*, and leaves the download in `%LOCALAPPDATA%\Clink\updates` to install by hand. *App →
-Updates* also shows *Last check failed: …* when GitHub could not be reached (it gives up after 30 s) and *Update
+Updates* also shows *Last check failed: …* when the update feed could not be reached (it gives up after 30 s) and *Update
 problem: …* when a download failed. To turn auto-update off, untick *Install updates automatically* under *App →
-Updates*; this takes effect at once (no restart), Clink then never contacts GitHub on its own, and *Check now* (or
+Updates*; this takes effect at once (no restart), Clink then never contacts the update feed on its own, and *Check now* (or
 *Check for updates* in the popup that clicking the version in the footer opens) checks by hand and opens the release
 page if there is something newer.
 
-**Dev builds.** Every push to the `dev` branch publishes a GitHub *prerelease* named `vX.Y.Z-dev.N` (workflow
-`release-dev.yml`, only after the unit tests pass; the 10 newest are kept). Clink ignores them unless you tick *Dev
+**Dev builds.** Every push to the `dev` branch publishes a *prerelease* named `vX.Y.Z-dev.N` (workflow
+`release-dev.yml`, only after the unit tests pass; the 10 newest builds are kept, as prereleases and on the feed) to a separate dev feed (`dl-dev.euphoric.software`). Clink ignores them unless you tick *Dev
 Build* in the popup that opens when you click the version in the footer: it then follows the newest of the latest
 release and the dev builds, and installs it like any update. Dev builds may be unstable. Untick *Dev Build* and
 Clink goes back to releases: unticking checks for updates right away, and from a dev build that is newer than the
@@ -199,7 +203,7 @@ installed on the release channel. The choice is kept in `UseDevBuilds` in
 1. Run `Clink.exe`. The header says *Waiting for a game…* until a game or custom app starts, then *Recording · Overwatch*
    (switch to *Always* under *Capture → Recording* to record whatever is on the monitor, as before).
 2. Press **Alt+C**, the main hotkey (or any other hotkey from your list under *Capture → Hotkeys*), while gaming. It saves
-   the full replay, 45 s by default. You hear a short click; the clip is saved to `Videos\Clink\<game> <date>.mp4` and a
+   the full replay, 45 s by default. You hear a short click; the clip is saved to `Videos\Clink\<game> <date>.mp4` (`Clip <date>.mp4` when no game is detected) and a
    small "Clip saved" toast appears. If nothing was recording you hear the Windows error sound instead and a *Clip not
    saved* notice says why (paused, waiting for a game: add it under *Custom apps*, or the recorder's error); a save that
    fails (disk full) says so the same way. The file is written under a temporary name and renamed when complete, so a
@@ -207,12 +211,9 @@ installed on the release channel. The choice is kept in `UseDevBuilds` in
    program that uses Alt+C itself loses it; pick other keys under *Capture → Hotkeys* if that matters. A file from
    before v0.2.5 with no hotkey for the full replay gets Alt+C for it (left unset when another hotkey already uses
    Alt+C) and says so once, in the footer and a tray balloon.
-3. Click **Share** (in the toast, the clip list or the trim editor). The first time with a token saved, Clink asks
-   *Share with Copium?* (see *Sharing is opt-in*); after *Enable Copium sharing* the clip is uploaded to Copium and the link is
-   copied. With cloud sharing off nothing is uploaded and the Share buttons are hidden (a clip that already has a link
-   can still have it copied). The share hotkey over a game does not open the pop-up: it says *Sharing needs your OK once - open Clink and press Share*. By default the copied link is the raw video file, so pasting it in Discord plays the video inline with no
+3. Click **Share** (in the toast, the clip list or the trim editor). With a token and cloud sharing on, the button is split: *Share* opens the Share window with the file (below), and the *▾* menu offers *Upload to Copium* (*Copy link* once shared), *Share file…* and *Save a copy…*. Pick *Upload to Copium* to upload: the first time, Clink asks *Share with Copium?* (see *Sharing is opt-in*); after *Enable Copium sharing* the clip is uploaded to Copium and the link is copied. Without a token, *Share* opens the Share window. With cloud sharing off nothing is uploaded and the Share buttons are hidden (a clip that already has a link can still have it copied). The share hotkey over a game does not open the pop-up: it says *Sharing needs your OK once — open Clink and press Share*. By default the copied link is the raw video file, so pasting it in Discord plays the video inline with no
    embed card. If you turn on custom embeds on copium.pics, Copium's `link` becomes the share page instead; Clink
-   just uses whatever Copium says to copy. A clip is uploaded once: pressing Share again (or the share hotkey) while
+   just uses whatever Copium says to copy. A clip is uploaded once: choosing *Upload to Copium* again (or using the share hotkey) while
    it uploads waits for that upload. When an upload fails the toast and the clip row say why (*Copium rejected the
    token (…)*, *Copium is having trouble (HTTP 502), try again later*, *Can't reach Copium - check your connection*, …).
    **Without a Copium token** Share does not fail: it opens the **Share window** with the clip's file as a card (its
@@ -253,16 +254,23 @@ installed on the release channel. The choice is kept in `UseDevBuilds` in
    *Save & share*. The *Trim* button on a clip row, the toast's *Trim* and `--trim-last` open the editor directly; a
    second click on a clip that is already open brings its window forward.
 
+**Manual recording.** Besides the replay buffer you can record from now until you stop: press a hotkey with the action
+*Start / stop recording* (add one under *Capture → Hotkeys*; there is no default key), use *Start recording* / *Stop
+recording* in the tray menu, or run `Clink.exe --record` (it toggles). Recordings are saved in the `Recordings` subfolder
+of the clips folder and are not clips (*Share last clip* and `--trim-last` skip them). A long recording is split into
+parts of up to 4 hours. Starting needs 1 GB of free disk space, and the recorder has to be running (not paused and not
+*Waiting for a game…*); pausing, or the game exiting in game-only mode, ends the recording. A recording interrupted by a
+crash is recovered the next time Clink starts.
+
 Copium: make an upload token under *ShareX & API* on copium.pics (it starts with `eup_`) and paste it in the
 Copium box (*App → Copium*, under *Cloud sharing*). It is stored encrypted for your Windows user (DPAPI). Nothing is uploaded
-unless you press Share (or Upload) and have agreed in the *Share with Copium?* pop-up (or you opted in to automatic screenshot uploads: *Upload every screenshot to Copium automatically*, which also needs that yes); saving a token asks once when you have not. Share checks a clip against the limits of the account you say you have: without Copium+ an upload may be at most
+unless you choose *Upload to Copium* (or press an *Upload* button, or use Share last clip) and have agreed in the *Share with Copium?* pop-up (or you opted in to automatic screenshot uploads: *Upload every screenshot to Copium automatically*, which also needs that yes); saving a token asks once when you have not. Share checks a clip against the limits of the account you say you have: without Copium+ an upload may be at most
 **200 MB and 10 minutes** long, with Copium+ (tick *I have Copium+*) **2 GB and 60 minutes**. A clip over the limit is not
 uploaded; Share says so (*Over Copium's free limit (200 MB / 10 min)*, *Over Copium Plus's limit (2 GB / 60 min)*; the footer
 adds how big the clip is and what to do: trim it, or tick *I have Copium+* if you have it) and the toast's button reads
 *Over free limit* / *Over Plus limit*. The *Copium (200 MB, 10 min)* and *Copium Plus (2 GB, 60 min)* size targets keep
 clips of the replay length (or of the length limit, when the replay length is longer) under the size limit; picking
-Copium Plus also ticks *I have Copium+*. The toast's button reads *Share* without a token, *Share to Copium* with one and
-*Copy link* once the clip is shared. Sizes of clips and limits are shown in decimal MB, the unit the limits use.
+Copium Plus also ticks *I have Copium+*. The toast's Share button reads *Share* (with a token it is the split button above; without one it opens the Share window), or *Copy link* when the clip already has a link and no token is saved. With cloud sharing off the toast has no Share button. Sizes of clips and limits are shown in decimal MB, the unit the limits use.
 
 ### The window
 
@@ -460,8 +468,8 @@ copies of another Clink's settings you turned down, `<package>|<time>`, one per 
 | `HdrKnee` / `HdrPeak` | 0.75 / 4 | tone-mapper shoulder: everything below `knee` (relative to SDR white) is untouched, highlights roll off softly above it |
 | `ClickVolume` | 0.5 | 0..1 |
 | `StartMinimized` | false | |
-| `UseDevBuilds` | `false` | Follow the `dev` branch's prereleases (`vX.Y.Z-dev.N`) instead of only releases: the *Dev Build* box in the popup that opens when you click the version in the footer. Per installation, never imported |
-| `UpdateRepo` | *(built in)* | GitHub `owner/repo` whose releases to install, overriding the repository baked into the exe. Only for your own fork: it is logged at start and shown in the version tooltip |
+| `UseDevBuilds` | `false` | Follow the dev builds (`vX.Y.Z-dev.N`) instead of only releases: the *Dev Build* box in the popup that opens when you click the version in the footer. Per installation, never imported |
+| `UpdateRepo` | *(ignored)* | Legacy key, kept so an old `settings.json` round-trips; updates come only from the signed feed |
 
 How `Hotkeys` is put in shape when a file is loaded (nothing that is bound changes what it does): a v0.1 file's single
 `Hotkey` becomes the main hotkey; a full-replay `clip` row that has keys moves to the front and keeps them (an F9 file
@@ -529,8 +537,8 @@ command does not touch it); `--selftest` / `--probe` / `--trim` write `clink-cli
 
 * .NET 10 SDK (`build.ps1` also finds a user-local SDK in `%USERPROFILE%\.dotnet`).
 * `.\build.ps1` → a Release build in `Clink\bin\Release\net10.0-windows10.0.26100.0\win-x64\` (`-Configuration Debug`
-  for a debug one, `-Run` to start it). `.\build.ps1 -Publish` → `dist\Clink.exe` (single file, needs the .NET 10 Desktop
-  Runtime on the target machine; add `-p:SelfContained=true` to the publish for a runtime-free but ~70 MB exe).
+  for a debug one, `-Run` to start it). `.\build.ps1 -Publish` → both flavours: `dist\sc\Clink.exe` (self-contained, portable) and
+  `dist\fx\Clink.exe` (framework-dependent, needs the .NET 10 Desktop Runtime on the target machine).
 * No native dependencies. Win32/COM is reached through CsWin32-generated bindings (`NativeMethods.txt`), Windows
   Graphics Capture through the built-in WinRT projection.
 
@@ -550,6 +558,9 @@ command does not touch it); `--selftest` / `--probe` / `--trim` write `clink-cli
   code. It sets `CLINK_TESTS_NO_SKIP=1`: the runner image has the AAC encoder, so a skip there would mean the mix tests
   had been switched off. `CLINK_EMULATE_ELST=1` runs the tests on a PC as on a Media Foundation that applies the audio edit
   lists of an MP4, which is what the CI runner (Windows Server 2025) has (`Clink\Tests\EditListEmulation.cs`).
+  A test that runs longer than `CLINK_TEST_TIMEOUT_S` seconds (default 120, minimum 1, maximum 86400; the limit in use is printed when the
+  variable is set; not applied while a debugger is attached unless it is set) is reported as `FAIL ... timed out`, the run goes
+  on with the next test on a new thread with a limit of at most 10 s, and the process then exits with code 1.
 * `Clink.exe --dev [folder] [--dev-hotkeys] [--dev-record] [--dev-token] [--dev-quiet]` (hidden; `--dev=<folder>` works too) starts a
   **second Clink next to the real one**, for trying a build out. It has its own data folder (settings, clip index, log
   and clips; `%TEMP%\clink-dev` when no folder is given), its own single-instance mutex and control pipe (named from the
@@ -616,23 +627,23 @@ dev machine, so the published exe always corresponds to a tag. Every push to `ma
 compiled by [`build.yml`](.github/workflows/build.yml), which then runs the unit tests (`--unittest`, see
 [Testing](#testing)).
 
-* **First time**: `.\tools\publish-repo.ps1` creates the GitHub repository (public by default; the updater reads
-  releases anonymously, so it needs to be public), pushes `main` and prints what to do next. It needs Git and the
-  GitHub CLI: `winget install --id Git.Git -e`, `winget install --id GitHub.cli -e`, then `gh auth login`.
-* **Each release**: `.\tools\release.ps1 -Version 0.2.0 [-Message "what changed"]`. The script checks that the
+* **First time**: `.\tools\publish-repo.ps1` creates the GitHub repository, pushes `main` and prints what to do next. It
+  needs Git and the GitHub CLI: `winget install --id Git.Git -e`, `winget install --id GitHub.cli -e`, then `gh auth login`.
+* **Each release**: merge `dev` into `main`, then on `main` run `.\tools\release.ps1 -Version 0.2.0 [-Message "what changed"]`. The script checks that the
   working tree is clean and the tag is new, sets `<Version>` in `Clink\Clink.csproj`, commits `Release v0.2.0`,
   creates the annotated tag `v0.2.0` and pushes both (`git push origin HEAD --follow-tags`). The workflow then runs
-  `dotnet publish -p:Version=0.2.0 -p:UpdateRepo=<owner>/<repo>`, writes `Clink.exe.sha256` and creates the release
-  "Clink v0.2.0" with generated notes and both files attached. Running copies of Clink see it within 6 hours.
-* The asset names matter: the updater downloads the asset called exactly `Clink.exe` and checks it against the first
-  64-hex token of `Clink.exe.sha256`; a release without the `.sha256` file is refused. The exe must also report the
-  version of its tag (the workflow guarantees this with `-p:Version`), or the updater throws it away. `UpdateRepo`
-  tells the exe which repository's releases to watch, so only exes built by the workflow (or a local publish with
-  the same `-p:UpdateRepo=...`) download or install updates; a plain debug build ignores the shared updates folder.
-* A version with a `-` suffix (`0.2.0-beta.1`) is published as a pre-release, which the updater ignores; a build of
-  that pre-release does pick up the final `0.2.0` when it ships. To redo a failed release, delete the tag
-  (`git tag -d v0.2.0; git push origin :refs/tags/v0.2.0`) and run the script again. Running the workflow by hand
-  refuses a version that is already tagged.
+  `dotnet publish -p:Version=0.2.0` for both flavours, packages `Clink.exe`, `Clink-framework.exe` and `Clink-Setup.exe`
+  with their `.sha256` files, signs the update manifest, uploads the binaries and manifest to the update feed bucket and
+  creates the release "Clink v0.2.0" with generated notes and those files attached. Running copies of Clink see it
+  within 6 hours.
+* The updater trusts only the signed feed (the manifest's signature, hashes and the trust anchors in
+  `Clink\Assets\feed.json`), not the GitHub release assets. The exe must report the version of its tag (the workflow
+  guarantees this with `-p:Version`), or the updater throws it away.
+* Only plain `vX.Y.Z` tags publish: `release.yml` refuses any other tag (a `-beta.1` suffix included, although
+  `release.ps1` accepts one) and has no manual-run trigger; dev builds (`vX.Y.Z-dev.N`) come from `release-dev.yml`.
+* A failed run leaves a draft release that blocks the same version. If it failed before *Publish to the update feed*,
+  delete the draft (`gh release delete v0.2.0 --yes`) and use *Re-run all jobs*; if it got that far, release a newer
+  version. Details, secrets and recovery: [docs/RELEASING.md](docs/RELEASING.md).
 * The workflow's actions are pinned to commit SHAs and `.github/dependabot.yml` opens PRs to bump them: whatever code
   runs in that job can publish a release, so a floating tag would be a way in.
 

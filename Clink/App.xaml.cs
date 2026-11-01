@@ -61,7 +61,7 @@ public partial class App : System.Windows.Application
             int failed;
             try { failed = Tests.TestRunner.Run(args); }
             catch (Exception ex) { Log.Error("[unittest] the runner crashed", ex); Console.WriteLine(ex); failed = 1; }
-            // After Run, which drained the UI queue in its finally. Anything queued later (after Shutdown) may recreate a folder here: tolerated, it is only temp.
+            // After Run, which drained the UI queue at its end (after a timeout it ends the process itself and this never runs). Anything queued later (after Shutdown) may recreate a folder here: tolerated, it is only temp.
             try { if (Services.TestGuard.StartupScratch is { } startup && Directory.Exists(startup)) Directory.Delete(startup, recursive: true); } catch { }
             Shutdown(failed == 0 ? 0 : 1);
             return;

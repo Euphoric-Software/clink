@@ -1135,8 +1135,9 @@ internal sealed class Updater : IDisposable
 
     /// <summary>
     /// Stands in for starting the downloaded exe in <see cref="StartApply"/> in the unit tests: gets the start info it would run and says
-    /// whether the process started and kept running. Null otherwise (a real run). In test mode with no override the launch is refused
-    /// and recorded (<see cref="TestGuard.Start(ProcessStartInfo)"/>): a fake installer that is not a PE file makes Windows open a modal dialog.
+    /// whether the process started and kept running. Null otherwise (a real run). A fake installer is no PE file: starting it can take
+    /// Windows many seconds (virus scan), never return, or open a modal dialog, so a test that only needs "the apply was launched" must
+    /// not start it. In test mode with no override the launch is refused and recorded (<see cref="TestGuard.Start(ProcessStartInfo)"/>).
     /// </summary>
     internal static Func<ProcessStartInfo, bool>? LaunchOverride { get; set; }
 

@@ -560,6 +560,14 @@ What the app does since v0.2.5. Where this section and §§1, 3, 6, 9 and 10 dif
   `Class.Method`. Each test prints `PASS`, `FAIL` or `SKIP` (the last two with the reason), then *N passed, M failed,
   K skipped*. Exit code 0 means none failed; 1 means one did, or that the filter matched nothing (a mistyped filter is
   not a pass).
+  - **Time limit.** A watchdog fails a test that runs longer than **`CLINK_TEST_TIMEOUT_S`** seconds (default 120, at least
+    1, at most 86400; a value that is not a number of seconds above 0, up to 86400 gets a warning and the default; the limit in use is printed when the variable is set; no
+    watchdog while a debugger is attached unless the variable is set): `FAIL … timed out after N s`. A thread stuck in a call
+    cannot be aborted, so the run goes on from the next test on a new STA thread (best effort: the UI thread is stuck, so a
+    test that needs it waits at most 10 s), the summary is followed by *N tests ran after a timeout on a non-UI thread; their
+    results are best effort*, and the process exits with code 1. The runner never points the settings folder back at
+    the real one: it runs the UI work the tests queued (a save from a background thread) in its scratch folder first, then
+    deletes that folder, so a run never writes `%APPDATA%\Clink\settings.json`.
   - **Skips.** A test that needs a Windows feature the machine lacks calls `Check.Skip(why)`: the audio mix render
     tests do when Media Foundation is not installed, its AAC encoder is not registered or it cannot start (any other
     trouble with the encoder fails them). A skip is counted apart and is not a failure, unless the environment variable
