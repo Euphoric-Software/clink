@@ -1,4 +1,4 @@
-﻿using System.Runtime.InteropServices;
+using System.Runtime.InteropServices;
 using Windows.Win32;
 using Windows.Win32.Foundation;
 using Windows.Win32.Graphics.Direct3D11;
@@ -27,7 +27,11 @@ internal sealed record VideoEncoderConfig(uint Width, uint Height, uint Fps, uin
 /// from <see cref="OfflineSettings"/> (not from the recording's settings, so a change to those never alters a share copy).
 /// </summary>
 /// <param name="OfflineSettings">Blocking only: the encoder settings (null = <see cref="OfflineEncoderSettings.Default"/>). Ignored by a live encoder.</param>
-internal sealed record VideoEncoderOptions(bool Blocking, ThreadPriority EventThreadPriority, OfflineEncoderSettings? OfflineSettings = null)
+/// <param name="LiveTuning">Live only: the hidden encoder experiment (null = today's setup). A blocking encoder with one is refused.</param>
+/// <param name="QualityVsSpeedBeforeTypes">Live, bench and probe only (null in the app, so today's calls exactly): the QualityVsSpeed to set BEFORE the media types
+/// (after them the MFT accepts the call but keeps its default). When set, the setup after the types makes no QualityVsSpeed call of its own. A blocking encoder with one is refused.</param>
+internal sealed record VideoEncoderOptions(bool Blocking, ThreadPriority EventThreadPriority, OfflineEncoderSettings? OfflineSettings = null, LiveEncoderTuning? LiveTuning = null,
+    uint? QualityVsSpeedBeforeTypes = null)
 {
     public static readonly VideoEncoderOptions Live = new(false, ThreadPriority.AboveNormal);
     public static VideoEncoderOptions Offline(ThreadPriority priority = ThreadPriority.BelowNormal, OfflineEncoderSettings? settings = null)
@@ -79,6 +83,12 @@ internal sealed unsafe class VideoEncoder : IDisposable
     /// <summary>Offline only (always 0 for the recording): ProcessInput / ProcessOutput calls that failed, so a file encode can judge
     /// what it lost (ShareTranscoder.JudgeEncoderLoss).</summary>
     public long InputFailures, OutputFailures;
+    /// <summary>Frames the encoder holds: submitted and not yet output. Low latency off adds a few (the encoder's own delay).</summary>
+    public long FramesInFlight => Interlocked.Read(ref FramesIn) - Interlocked.Read(ref FramesOut);
+    /// <summary>Tuned live encoders only: output samples that carried MFSampleExtension_DecodeTimestamp (the capability probe reads it).</summary>
+    public long OutputsWithDts;
+    /// <summary>What the live recording's ICodecAPI setup ended up as (null: no ICodecAPI, or an offline encoder).</summary>
+    public AppliedTuning? Applied { get; private set; }
     public OutputHandler? OnOutput;
     /// <summary>H.264/HEVC: Annex B parameter sets (MF_MT_MPEG_SEQUENCE_HEADER). AV1: the Sequence Header OBU (from the attribute or the first keyframe).</summary>
     public byte[]? SequenceHeader { get; private set; }
@@ -103,6 +113,11 @@ internal sealed unsafe class VideoEncoder : IDisposable
     /// <param name="options">Null is <see cref="VideoEncoderOptions.Live"/> (the recording).</param>
     public VideoEncoder(D3DDevice d3d, VideoEncoderConfig cfg, VideoEncoderOptions? options = null)
     {
+        // (First, before anything is opened: an offline encoder is pinned to OfflineEncoderSettings, so a share copy can never be tuned.)
+        if (options is { Blocking: true, LiveTuning: not null })
+            throw new ArgumentException("An offline (blocking) encoder cannot take a live encoder tuning", nameof(options));
+        if (options is { Blocking: true, QualityVsSpeedBeforeTypes: not null })
+            throw new ArgumentException("An offline (blocking) encoder cannot take a QualityVsSpeed before the media types", nameof(options));
         Mf.EnsureStarted();
         _d3d = d3d;
         _cfg = cfg;
@@ -138,12 +153,17 @@ internal sealed unsafe class VideoEncoder : IDisposable
             if (Mf.GetU32(attrs, PInvoke.MF_TRANSFORM_ASYNC) == 0) throw new InvalidOperationException("Encoder is not an async MFT");
             if (Mf.GetU32(attrs, PInvoke.MF_SA_D3D11_AWARE) == 0) throw new InvalidOperationException("Encoder is not D3D11-aware");
             Mf.SetU32(attrs, PInvoke.MF_TRANSFORM_ASYNC_UNLOCK, 1);
-            // (An offline encoder takes low latency from its own settings; a live one always sets it, as before.)
-            if (!_options.Blocking || OfflineSettings.LowLatency) { try { Mf.SetU32(attrs, PInvoke.MF_LOW_LATENCY, 1); } catch { } }
+            // (An offline encoder takes low latency from its own settings; a live one always sets it, as before, unless the encoder
+            // experiment asks for it off.)
+            if (_options.Blocking ? OfflineSettings.LowLatency : (_options.LiveTuning?.LowLatency ?? true)) { try { Mf.SetU32(attrs, PInvoke.MF_LOW_LATENCY, 1); } catch { } }
         }
         finally { attrs->Release(); }
 
         _mft->ProcessMessage(MFT_MESSAGE_TYPE.MFT_MESSAGE_SET_D3D_MANAGER, (nuint)_d3d.DeviceManager).Check("MFT_MESSAGE_SET_D3D_MANAGER");
+
+        // The encoder experiment only: ask for the rate mode and low latency before the types too (an encoder may fix its session at
+        // SetOutputType), and the bench / probe's QualityVsSpeed. Without either there is no call at all, not even the QueryInterface.
+        if (NeedsCodecApiBeforeTypes(_options)) ConfigureCodecApiBeforeTypes(_options.LiveTuning);
 
         // Output type
         IMFMediaType* outType = Mf.CreateMediaType();
@@ -300,35 +320,59 @@ internal sealed unsafe class VideoEncoder : IDisposable
         return r;
     }
 
+    /// <summary>Whether the early ICodecAPI step runs: only a live (non-blocking) encoder with a tuning or a QualityVsSpeedBeforeTypes. Otherwise there is no call at all.</summary>
+    internal static bool NeedsCodecApiBeforeTypes(VideoEncoderOptions o) => !o.Blocking && (o.LiveTuning != null || o.QualityVsSpeedBeforeTypes != null);
+
+    /// <summary>Tuned live encoders only (see <see cref="EncoderExperiments.ApplyBeforeTypes"/>). Never throws: with no ICodecAPI yet, it logs and the setup after the types goes on.</summary>
+    private void ConfigureCodecApiBeforeTypes(LiveEncoderTuning? tuning)
+    {
+        try
+        {
+            ICodecAPI* codec = ComUtil.TryQuery<ICodecAPI>(_mft);
+            if (codec == null) { Log.Info("Encoder experiment: no ICodecAPI before the media types; setting it after them only"); return; }
+            try
+            {
+                var port = new ComCodecApiPort(codec);
+                if (tuning != null) EncoderExperiments.ApplyBeforeTypes(port, _cfg, tuning);
+                if (_options.QualityVsSpeedBeforeTypes is { } qvs) QvsBeforeTypes = EncoderExperiments.ApplyQualityVsSpeedBeforeTypes(port, qvs);
+            }
+            finally { codec->Release(); }
+        }
+        catch (Exception ex) { Log.Warn("Encoder experiment: ICodecAPI before the media types: " + ex.Message); }
+    }
+
+    /// <summary>What the QualityVsSpeedBeforeTypes call returned and read back at once (null: the option is not set, or there was no ICodecAPI).</summary>
+    public QvsBeforeTypesResult? QvsBeforeTypes { get; private set; }
+
+    /// <summary>The encoder's own QualityVsSpeed now (GetValue), or null when it cannot be read. Read-only; nothing in the recording calls it (the bench reads it once streaming has begun).</summary>
+    internal uint? ReadQualityVsSpeed()
+    {
+        uint? result = null;
+        WithCodecApi(port => { if (port.GetU32(KnownGuids.CODECAPI_AVEncCommonQualityVsSpeed, out uint back) >= 0) result = back; });
+        return result;
+    }
+
+    /// <summary>Hands <paramref name="use"/> the opened encoder's ICodecAPI (tests and the QualityVsSpeed probe only; nothing in the recording calls it). No-op without an ICodecAPI.</summary>
+    internal void WithCodecApi(Action<ICodecApiPort> use)
+    {
+        ICodecAPI* codec = ComUtil.TryQuery<ICodecAPI>(_mft);
+        if (codec == null) return;
+        try { use(new ComCodecApiPort(codec)); }
+        finally { codec->Release(); }
+    }
+
     private void ConfigureCodecApi()
     {
         ICodecAPI* codec = ComUtil.TryQuery<ICodecAPI>(_mft);
         if (codec == null) return;
         try
         {
-            SetU32(codec, KnownGuids.CODECAPI_AVEncCommonRateControlMode, (uint)eAVEncCommonRateControlMode.eAVEncCommonRateControlMode_CBR);
-            SetU32(codec, KnownGuids.CODECAPI_AVEncCommonMeanBitRate, _cfg.BitrateBps);
-            SetU32(codec, KnownGuids.CODECAPI_AVEncCommonMaxBitRate, _cfg.BitrateBps);
-            SetU32(codec, KnownGuids.CODECAPI_AVEncMPVGOPSize, (uint)Math.Max(1, Math.Round(_cfg.Fps * _cfg.GopSeconds)));
-            SetU32(codec, KnownGuids.CODECAPI_AVEncMPVDefaultBPictureCount, 0);
-            SetBool(codec, KnownGuids.CODECAPI_AVLowLatencyMode, true);
-            SetU32(codec, KnownGuids.CODECAPI_AVEncCommonQualityVsSpeed, 66);
+            // Without a tuning this is the recording's setup as it always was (CBR, mean = max, GOP, no B-frames, low latency on, QvS 66).
+            // On NVENC the post-types QvS is ignored (the encoder keeps its default, read back as 33; measured 2026-11-01), and the bench found the slower presets not worth it.
+            // EncoderExperiments.Apply holds the calls so a test can pin them.
+            Applied = EncoderExperiments.Apply(new ComCodecApiPort(codec), _cfg, _options.LiveTuning, _options.QualityVsSpeedBeforeTypes, QvsBeforeTypes);
         }
         finally { codec->Release(); }
-
-        static void SetU32(ICodecAPI* c, Guid key, uint value)
-        {
-            if (c->IsSupported(&key).Failed) return; // e.g. NVENC MFT has no B-frame count property
-            VARIANT v = default; v.vt = VARENUM.VT_UI4; v.ulVal = value;
-            HRESULT hr = c->SetValue(&key, &v);
-            if (hr.Failed) Log.Warn($"ICodecAPI {key} = {value} not accepted (0x{(uint)hr.Value:X8})");
-        }
-        static void SetBool(ICodecAPI* c, Guid key, bool value)
-        {
-            VARIANT v = default; v.vt = VARENUM.VT_BOOL; v.boolVal = new VARIANT_BOOL((short)(value ? -1 : 0));
-            HRESULT hr = c->SetValue(&key, &v);
-            if (hr.Failed) Log.Warn($"ICodecAPI {key} = {value} not accepted (0x{(uint)hr.Value:X8})");
-        }
     }
 
     /// <summary>
@@ -347,6 +391,7 @@ internal sealed unsafe class VideoEncoder : IDisposable
             SetU32(codec, KnownGuids.CODECAPI_AVEncMPVGOPSize, (uint)Math.Max(1, Math.Round(_cfg.Fps * _cfg.GopSeconds)));
             SetU32(codec, KnownGuids.CODECAPI_AVEncMPVDefaultBPictureCount, s.BFrames);
             SetBool(codec, KnownGuids.CODECAPI_AVLowLatencyMode, s.LowLatency);
+            // On NVENC this post-types value is ignored (the encoder keeps its default, read back as 33; measured 2026-11-01); the bench found the slower presets not worth it.
             SetU32(codec, KnownGuids.CODECAPI_AVEncCommonQualityVsSpeed, s.QualityVsSpeed);
         }
         finally { codec->Release(); }
@@ -390,6 +435,7 @@ internal sealed unsafe class VideoEncoder : IDisposable
             }
             finally { dxgi->Release(); }
         }
+        catch { s->Release(); throw; }   // GetResource failed: the sample is ours until it is returned, or it leaks out of the pool
         finally { buf->Release(); }
         sample = s;
         return true;
@@ -420,6 +466,18 @@ internal sealed unsafe class VideoEncoder : IDisposable
             }
             _pending.Enqueue((nint)sample);
         }
+    }
+
+    /// <summary>
+    /// Whether <see cref="Submit"/> would take one more frame without dropping any: the encoder has a credit, or fewer than four frames are
+    /// waiting. Read only, and valid for a live encoder (it changes nothing in it). The encoder bench, a file reader that has to lose no
+    /// frame, waits for this before each Submit: with that one producer the answer cannot turn false between the check and the call (credits
+    /// only grow on the event thread and the waiting queue only shrinks there), so a live-configured encoder is fed at full speed and
+    /// Submit's drop-the-oldest branch is never taken. The recording never calls this.
+    /// </summary>
+    internal bool HasRoomForSubmit
+    {
+        get { lock (_lock) return !_stop && (_credits > 0 || _pending.Count < MaxPending); }
     }
 
     // ------------------------------------------------------------------ offline use (VideoEncoderOptions.Offline only)
@@ -629,6 +687,13 @@ internal sealed unsafe class VideoEncoder : IDisposable
             long pts;
             sample->GetSampleTime(&pts);
             bool key = Mf.GetU32((IMFAttributes*)sample, PInvoke.MFSampleExtension_CleanPoint) != 0;
+            if (_options.LiveTuning != null)
+            {
+                // The capability probe asks whether a tuned encoder stamps decode times (B-frames would need them: step 4b).
+                Guid dtsKey = PInvoke.MFSampleExtension_DecodeTimestamp;
+                ulong dts;
+                if (((IMFAttributes*)sample)->GetUINT64(&dtsKey, &dts).Succeeded) Interlocked.Increment(ref OutputsWithDts);
+            }
             IMFMediaBuffer* buf;
             sample->ConvertToContiguousBuffer(&buf).Check("ConvertToContiguousBuffer");
             try

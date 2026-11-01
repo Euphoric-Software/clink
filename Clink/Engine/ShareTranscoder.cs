@@ -338,7 +338,7 @@ internal static unsafe class ShareTranscoder
 
     // ------------------------------------------------------------------ what the source holds
 
-    private sealed class SourceVideo
+    internal sealed class SourceVideo
     {
         public uint Stream;
         public Guid Subtype;
@@ -353,7 +353,7 @@ internal static unsafe class ShareTranscoder
     }
 
     /// <summary>The first video stream (selected, every other stream deselected) and the presentation's duration.</summary>
-    private static SourceVideo FindVideo(IMFSourceReader* reader)
+    internal static SourceVideo FindVideo(IMFSourceReader* reader)
     {
         reader->SetStreamSelection(AllStreams, false);
         SourceVideo? found = null;
@@ -864,7 +864,7 @@ internal static unsafe class ShareTranscoder
 
     /// <summary>Asks the reader for NV12 at the output size in BT.709 limited range (the video processor scales on the GPU); MF_E_TOPO_CODEC_NOT_FOUND = no decoder.</summary>
     /// <returns>The decoded frames' default stride in bytes (0 = not given).</returns>
-    private static int SetDecodedType(IMFSourceReader* reader, SourceVideo video, int width, int height)
+    internal static int SetDecodedType(IMFSourceReader* reader, SourceVideo video, int width, int height)
     {
         IMFMediaType* want = Mf.CreateMediaType();
         HRESULT hr;
@@ -894,7 +894,7 @@ internal static unsafe class ShareTranscoder
     }
 
     /// <returns>The decoded frames' default stride in bytes (MF_MT_DEFAULT_STRIDE; 0 = not given or bottom-up).</returns>
-    private static int CheckDecodedType(IMFSourceReader* reader, uint stream, int width, int height)
+    internal static int CheckDecodedType(IMFSourceReader* reader, uint stream, int width, int height)
     {
         IMFMediaType* cur;
         reader->GetCurrentMediaType(stream, &cur).Check("GetCurrentMediaType");
@@ -914,7 +914,7 @@ internal static unsafe class ShareTranscoder
     /// Copies the decoded frame into the encoder's input texture: a GPU copy of the processor's texture (which may be larger than the
     /// frame: decoders pad), or (a frame in system memory: the reader decoded on the CPU) an upload through a staging texture.
     /// </summary>
-    private static void CopyFrame(D3DDevice d3d, IMFSample* sample, ID3D11Texture2D* dst, uint dstSub, int width, int height, int defaultStride, D3D11_BOX* box, ref ID3D11Texture2D* staging)
+    internal static void CopyFrame(D3DDevice d3d, IMFSample* sample, ID3D11Texture2D* dst, uint dstSub, int width, int height, int defaultStride, D3D11_BOX* box, ref ID3D11Texture2D* staging)
     {
         IMFMediaBuffer* buf;
         sample->GetBufferByIndex(0, &buf).Check("GetBufferByIndex");

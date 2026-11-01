@@ -67,6 +67,30 @@ public partial class App : System.Windows.Application
             return;
         }
 
+        if (args.Length > 0 && args[0].Equals(Engine.EncoderBench.Verb, StringComparison.OrdinalIgnoreCase))
+        {
+            // Clink.exe --encoder-bench <reference.mp4> <outFolder> [...] (Engine/EncoderBench.cs): a hidden dev tool. No window, no
+            // single-instance mutex, and no Settings at all: it logs and writes into its own out folder only.
+            AttachParentConsole();
+            int code = 2;
+            var t = new Thread(() =>
+            {
+                try { code = Engine.EncoderBench.Run(args); }
+                catch (Exception ex)
+                {
+                    // Run catches its own failures; this is the last net so an unexpected one is printed, logged and exit code 1, not a crash dialog.
+                    code = 1;
+                    try { Console.WriteLine("encoder-bench: failed: " + ex.Message); } catch { }
+                    try { Log.Error("[encoder-bench] failed", ex); } catch { }
+                }
+            }) { IsBackground = false };
+            t.SetApartmentState(ApartmentState.MTA);
+            t.Start();
+            t.Join();
+            Shutdown(code);
+            return;
+        }
+
         // The command-line modes log to clink-cli.log: the running Clink holds clink.log open.
         if (args.Length > 0 && args[0].Equals("--selftest", StringComparison.OrdinalIgnoreCase))
         {

@@ -1167,6 +1167,7 @@ internal sealed partial class AppController : IDisposable
             VoiceApp = GameProcessTracker.NormalizeName(Settings.VoiceApp),
             HdrKnee = Settings.HdrKnee, HdrPeak = Settings.HdrPeak,
             ClipsFolder = Settings.ClipsFolder,
+            EncoderTuning = Clink.Encode.EncoderExperiments.Resolve(Settings.EncoderExperiment, Capabilities.SizeTargetBytes(Settings.SizeTarget) > 0),
         };
     }
 
