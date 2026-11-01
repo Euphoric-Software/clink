@@ -793,12 +793,12 @@ public partial class MainWindow : Window
         var items = new List<Choice> { new(capture ? L.T("Default microphone") : L.T("Default output"), "") };
         List<AudioDeviceInfo> devices;
         try { devices = WasapiSource.ListDevices(capture, includeInactive: true); } catch { devices = new(); }
-        items.AddRange(devices.Where(d => d.Problem == null).Select(d => new Choice(d.Name, d.Id)));
+        items.AddRange(devices.Where(d => d.ProblemKind == AudioProblemKind.None).Select(d => new Choice(d.Name, d.Id)));
         string id = current ?? "";
         if (id.Length > 0 && !items.Any(i => Same(i.Value, id)))
         {
             var known = devices.FirstOrDefault(d => Same(d.Id, id));
-            items.Add(new Choice(known != null ? L.T("{name} ({problem})", ("name", known.Name), ("problem", known.Problem)) : L.T("Saved device (not connected)"), id));
+            items.Add(new Choice(known != null ? L.T("{name} ({problem})", ("name", known.Name), ("problem", EngineStatusText.DeviceProblem(known.ProblemKind))) : L.T("Saved device (not connected)"), id));
         }
         Refill(combo, items, id);
     }
@@ -865,7 +865,7 @@ public partial class MainWindow : Window
             try { outputs = WasapiSource.ListDevices(false, includeInactive: true); } catch { outputs = new(); }
             var known = outputs.FirstOrDefault(d => Same(d.Id, id));   // v1 value: a bare render endpoint id
             items.Add(new Choice(known == null ? L.T("Saved device (not connected)")
-                : known.Problem != null ? L.T("Output: {name} ({problem})", ("name", known.Name), ("problem", known.Problem))
+                : known.ProblemKind != AudioProblemKind.None ? L.T("Output: {name} ({problem})", ("name", known.Name), ("problem", EngineStatusText.DeviceProblem(known.ProblemKind)))
                 : L.T("Output: {name}", ("name", known.Name)), id));
         }
         Refill(AllDeviceCombo, items, id);
@@ -938,12 +938,12 @@ public partial class MainWindow : Window
     }
 
     /// <summary>The footer while the engine does not run (clips on, no demo): the error, why nothing records, or the engine's own status.</summary>
-    internal static string IdleFooterLine(RecordingState state, string? engineError, string engineStatus) => state switch
+    internal static string IdleFooterLine(RecordingState state, string? engineError, string engineStatus, Clink.Engine.EngineError? errorInfo = null, Clink.Engine.EngineStatusKind? statusKind = null) => state switch
     {
-        RecordingState.Error => engineError ?? L.T("Error"),
+        RecordingState.Error => errorInfo != null ? EngineStatusText.Error(errorInfo) : engineError ?? L.T("Error"),
         RecordingState.WaitingForGame => L.T("Not recording until a game or custom app runs (Capture → Recording)"),
         RecordingState.Paused => L.T("Recording paused"),
-        _ => engineStatus,
+        _ => statusKind is { } kind ? EngineStatusText.Status(kind) : engineStatus,
     };
 
     /// <summary>The line under the recording mode: the detected game and how it was found, or what is being waited for.</summary>
@@ -992,14 +992,15 @@ public partial class MainWindow : Window
             }
             // Each entry says what the track is actually capturing ("● Game (Overwatch)", "● Game (everything except Discord)",
             // "● Mic (USB Microphone)") or why it is not ("○ Voice (waiting for app)"), so a pick is confirmed here and the
-            // fallback is not mistaken for the real thing. Non-breaking spaces inside an entry: the line wraps between tracks only.
+            // fallback is not mistaken for the real thing. Entries are separated by spaces and the line wraps wherever it must.
+            // TODO(S6): restore U+00A0 inside an entry on the translated text
             AudioStatus.Text = st.Audio.Count == 0 ? L.T("No audio tracks") :
-                string.Join("   ", st.Audio.Select(a => $"{(a.Running ? "●" : "○")} {a.Name}{(a.Detail != null ? $" ({a.Detail})" : "")}".Replace(' ', ' ')));
+                EngineStatusText.AudioLine(st.Audio);
         }
         else
         {
             if (!noticeShowing)
-                FooterText.Text = !_app.Settings.ClipsEnabled || demo != null ? "" : IdleFooterLine(state, eng.Error, eng.Status);
+                FooterText.Text = !_app.Settings.ClipsEnabled || demo != null ? "" : IdleFooterLine(state, eng.Error, eng.Status, eng.ErrorInfo, eng.StatusKind);
             // Never leave the previous run's "● Mix   ● Game" line under a Paused / Error / Starting header: with the pickers
             // right above it, that reads as "my new selection is active".
             AudioStatus.Text = demo != null ? "" : state switch   // the demo status: nothing is really captured, so no audio line
@@ -1007,7 +1008,7 @@ public partial class MainWindow : Window
                 RecordingState.Paused => L.T("Paused"),
                 RecordingState.WaitingForGame => L.T("Starts with the game"),
                 RecordingState.Error => L.T("Not recording"),
-                _ => eng.Status,
+                _ => EngineStatusText.Status(eng.StatusKind),
             };
         }
 
