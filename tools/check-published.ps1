@@ -86,7 +86,7 @@ function Invoke-PublishedExe {
             Stop-ProcessTree -Process $run
         } else { $run.WaitForExit() }
         $code = if ($timedOut) { -1 } else { $run.ExitCode }
-    } finally { foreach ($n in $names) { [System.Environment]::SetEnvironmentVariable($n, $saved[$n]) } }
+    } finally { foreach ($n in $names) { if ($null -eq $saved[$n]) { Remove-Item -LiteralPath "Env:$n" -ErrorAction SilentlyContinue } else { [System.Environment]::SetEnvironmentVariable($n, $saved[$n]) } } }
     if ($timedOut) {
         Start-Sleep -Milliseconds 300
         Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
