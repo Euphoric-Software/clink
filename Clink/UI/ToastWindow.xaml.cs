@@ -322,18 +322,45 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
             else if (canUpload && CloudOn) ShotUploadButton.Visibility = Visibility.Visible;   // (cloud sharing off: no Upload button)
         }
         // Cloud sharing off (Settings → App): nothing on a toast uploads. Existing links stay copyable.
-        if (kind == "clip" && !CloudOn) ShareButton.Visibility = Visibility.Collapsed;
+        if (kind == "clip" && !CloudOn) ShareGroup.Visibility = Visibility.Collapsed;
         // "Share" alone without a token: the button then opens the share window (the file to drag), it does not upload.
         if (kind == "clip")
         {
             ShareButton.Content = ShareChoices.ToastLabel(HasToken, CloudOn, entry?.IsShared == true);
             if (ShareChoices.ButtonName(HasToken, CloudOn, entry?.IsShared == true) is { } name) System.Windows.Automation.AutomationProperties.SetName(ShareButton, name);
+            if (ShareChoices.IsSplit(HasToken, CloudOn, entry?.IsShared == true))
+                ApplySplitLayout();
         }
         _hide.Interval = duration;
         _hide.Tick += (_, _) => { if (!_busy && !_menuOpen) Dismiss(); };
         MouseEnter += (_, _) => _hide.Stop();
         MouseLeave += (_, _) => { if (!_busy && !_dismissed && !_menuOpen) _hide.Start(); };
         SourceInitialized += (_, _) => ScreenPlacement.ExcludeFromCaptureUnlessDocShots(new WindowInteropHelper(this).Handle);
+    }
+
+    /// <summary>The widest busy status of the main half ("Saving… 100%" is shorter): it sets the main half's width so the layout does not shift while the percentage grows.</summary>
+    internal const string WidestShareStatus = "Uploading… 100%";
+
+    /// <summary>
+    /// The split button: Share (the share window) and ▾ (the menu), as on a clip row. The card is 330 wide, so the row gets 6 px gaps
+    /// (plain mode keeps 8) and the main half is exactly as wide as <see cref="WidestShareStatus"/> needs (measured with the real
+    /// style, font and padding), not a fixed 132: it holds the longest busy status without growing, so the arrow, Trim and Folder stay put.
+    /// </summary>
+    internal void ApplySplitLayout()
+    {
+        object? label = ShareButton.Content;
+        ShareButton.Style = (Style)FindResource("AccentSplitMain");
+        ShareButton.MinWidth = 0;
+        ShareButton.Content = WidestShareStatus;
+        ShareButton.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        ShareButton.MinWidth = Math.Ceiling(ShareButton.DesiredSize.Width);
+        ShareButton.Content = label;
+        ShareButton.ToolTip = ShareChoices.SplitMainTip;
+        ShareArrow.Content = ShareChoices.SplitArrowLabel;
+        ShareArrow.ToolTip = ShareChoices.SplitArrowTip;
+        System.Windows.Automation.AutomationProperties.SetName(ShareArrow, ShareChoices.SplitArrowName);
+        ShareArrow.Visibility = Visibility.Visible;
+        TrimButton.Margin = FolderButton.Margin = new Thickness(6, 0, 0, 0);
     }
 
     /// <summary>
@@ -393,22 +420,46 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
     private async void Share_Click(object sender, RoutedEventArgs e)
     {
         if (Entry == null || _busy || _preview) return;
-        if (ShareChoices.For(HasToken, CloudOn, Entry.IsShared) is { } items)
+        if (ShareChoices.IsSplit(HasToken, CloudOn, Entry.IsShared))
         {
-            _hide.Stop();   // the menu is open: the toast stays (it restarts when the menu closes without a choice)
-            bool picked = false;
-            _menuOpen = true;
-            _menu = ShareMenu.Open(ShareButton, items, choice =>
-            {
-                picked = true;
-                _ = RunChoiceAsync(choice);
-            }, onClosed: () => { _menuOpen = false; if (!picked && !_busy && !_dismissed && !IsMouseOver) StartTimer(); });
+            // the "Share" half of the split button: what "Share file…" does in the menu
+            _hide.Stop();
+            await RunChoiceAsync(ShareChoices.SplitMainChoice);
             return;
         }
         await UploadAsync();
     }
 
-    private async Task RunChoiceAsync(ShareChoice choice)
+    /// <summary>The "▾" half: the menu with every option.</summary>
+    private void ShareArrow_Click(object sender, RoutedEventArgs e) => OpenShareMenu();
+
+    /// <summary>Alt+Down / Shift+F10 on the "Share" half open the menu too.</summary>
+    private void ShareButton_KeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (ShareArrow.Visibility != Visibility.Visible || !ShareMenu.IsOpenKey(e)) return;
+        e.Handled = true;
+        OpenShareMenu();
+    }
+
+    private void OpenShareMenu()
+    {
+        if (Entry == null || _busy || _preview || _menuOpen) return;
+        if (ShareChoices.For(HasToken, CloudOn, Entry.IsShared) is not { } items) return;
+        _hide.Stop();   // the menu is open: the toast stays (it restarts when the menu closes without a choice)
+        bool picked = false;
+        _menuOpen = true;
+        // PlacementTarget is the arrow (same window as the toast: CaptureExclusion finds the toast through it); the menu drops from the left edge of the whole button
+        _menu = ShareMenu.Open(ShareArrow, items, choice =>
+        {
+            picked = true;
+            _ = RunChoiceAsync(choice);
+        }, onClosed: () => { _menuOpen = false; if (!picked && !_busy && !_dismissed && !IsMouseOver) StartTimer(); }, below: ShareButton);
+    }
+
+    /// <summary>Both halves of the split button (the one button when plain) on or off.</summary>
+    private void SetShareEnabled(bool enabled) => ShareButton.IsEnabled = ShareArrow.IsEnabled = enabled;
+
+    internal async Task RunChoiceAsync(ShareChoice choice)
     {
         try
         {
@@ -417,9 +468,7 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
                 case ShareChoice.ShareFile:
                     if (Entry == null) break;
                     if (AppController.Instance.ShareFile(Entry)) { Dismiss(); break; }   // the share window took over
-                    SetShareStatus("Share failed");
-                    ShareButton.ToolTip = AppController.ShareWindowFailedText;
-                    ShowSubtitle(AppController.ShareWindowFailedText, wrap: true);
+                    ShowShareFailure("Share failed", AppController.ShareWindowFailedText, AppController.ShareWindowFailedText);
                     _hide.Interval = TimeSpan.FromSeconds(8);
                     _hide.Start();
                     break;
@@ -427,7 +476,13 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
                 default: await UploadAsync(); break;   // Upload / Copy link: what the button did before
             }
         }
-        catch (Exception ex) { Log.Error("toast share choice", ex); _busy = false; }
+        catch (Exception ex)
+        {
+            // e.g. the save dialog threw after "Saving…" disabled both halves: put the label and both halves back, and let the toast time out
+            Log.Error("toast share choice", ex);
+            _busy = false;
+            if (!_dismissed) { RestoreShareLabel(); StartTimer(); }
+        }
     }
 
     /// <summary>"Save a copy…" from the toast: the dialog is owned by the toast, which stays up while it is open and while it copies.</summary>
@@ -439,11 +494,13 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         _hide.Stop();
         ShareButton.ToolTip = null;
         SetShareStatus("Saving…");
+        SetShareEnabled(false);
         var progress = new Progress<double>(p => SetShareStatus($"Saving… {p:P0}"));
         SaveResult result;
         try { result = await app.SaveCopyAsync(Entry, this, progress); }
         finally { _busy = false; }
         if (_dismissed) return;
+        SetShareEnabled(true);
         switch (result.Outcome)
         {
             case SaveOutcome.Saved:
@@ -460,16 +517,33 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
                 StartTimer();
                 break;
             default:
-                SetShareStatus("Save failed");
-                ShareButton.ToolTip = result.Error;
-                if (result.Error is string why) ShowSubtitle(why, wrap: true);
+                ShowShareFailure("Save failed", result.Error, result.Error);
                 _hide.Interval = TimeSpan.FromSeconds(8);
                 _hide.Start();
                 break;
         }
     }
 
-    /// <summary>A status in place of the Share label ("Saving… 40%", "Upload failed"): the label's accessible name ("Share options") no longer fits it, so the content speaks for itself.</summary>
+    /// <summary>
+    /// A failure. Plain button: the short <paramref name="label"/> replaces the button text, <paramref name="tip"/> is its tooltip and
+    /// <paramref name="subtitle"/> (if any) goes below. Split button: the main half opens the share window, so it keeps reading "Share"
+    /// (name "Share file"); the failure goes to the subtitle and to the main half's tooltip instead.
+    /// </summary>
+    private void ShowShareFailure(string label, string? tip, string? subtitle)
+    {
+        if (ShareArrow.Visibility != Visibility.Visible)
+        {
+            SetShareStatus(label);
+            ShareButton.ToolTip = tip;
+            if (subtitle != null) ShowSubtitle(subtitle, wrap: true);
+            return;
+        }
+        ShowSubtitle(subtitle ?? tip ?? label, wrap: true);
+        RestoreShareLabel();
+        ShareButton.ToolTip = tip ?? label;
+    }
+
+    /// <summary>A busy status in place of the Share label ("Saving… 40%") or a plain-button failure: the label's accessible name ("Share file", split button only) no longer fits it, so the content speaks for itself.</summary>
     private void SetShareStatus(string text)
     {
         ShareButton.Content = text;
@@ -482,6 +556,8 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         ShareButton.Content = ShareChoices.ToastLabel(HasToken, CloudOn, Entry?.IsShared == true);
         if (ShareChoices.ButtonName(HasToken, CloudOn, Entry?.IsShared == true) is { } name)
             System.Windows.Automation.AutomationProperties.SetName(ShareButton, name);
+        if (ShareArrow.Visibility == Visibility.Visible) ShareButton.ToolTip = ShareChoices.SplitMainTip;
+        SetShareEnabled(true);
     }
 
     private void ShowSubtitle(string text, bool wrap)
@@ -499,7 +575,7 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         if (Entry == null || _busy || _preview) return;
         _busy = true;
         _hide.Stop();
-        ShareButton.IsEnabled = false;
+        SetShareEnabled(false);
         ShareButton.ToolTip = null;
         SetShareStatus("Uploading…");
         var progress = new Progress<double>(p => SetShareStatus($"Uploading… {p:P0}"));
@@ -513,26 +589,17 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         {
             // "Not now" in the Share with Copium? pop-up, or cloud sharing off: nothing failed. The button is as it was (or gone).
             RestoreShareLabel();
-            ShareButton.IsEnabled = true;
-            if (!CloudOn) ShareButton.Visibility = Visibility.Collapsed;
+            if (!CloudOn) ShareGroup.Visibility = Visibility.Collapsed;
             StartTimer();
             return;
         }
         // Short labels (the card is 330 wide); the full refusal or failure reason is the tooltip. The rare "could not open the share
         // window" (no token) is no upload failure: the subtitle below names it.
-        SetShareStatus(app.ShareRefusal != null ? (app.Settings.CopiumPlus ? "Over Plus limit" : "Over free limit")
-            : app.LastShareOutcome == ShareOutcome.WindowFailed ? "Share failed" : "Upload failed");
-        ShareButton.ToolTip = app.ShareRefusal ?? app.ShareError;
-        if (app.ShareRefusal == null && app.ShareError is string why)
-        {
-            // The reason belongs here, where the user is looking: the footer that also has it is usually in the tray.
-            Subtitle.Text = why;
-            Subtitle.ToolTip = why;
-            Subtitle.TextWrapping = TextWrapping.Wrap;
-            UpdateLayout();
-            _owner?.Relayout();          // it may have grown a line: keep the stack inside the work area
-        }
-        ShareButton.IsEnabled = true;
+        // The reason belongs in the subtitle, where the user is looking: the footer that also has it is usually in the tray.
+        ShowShareFailure(app.ShareRefusal != null ? (app.Settings.CopiumPlus ? "Over Plus limit" : "Over free limit")
+                : app.LastShareOutcome == ShareOutcome.WindowFailed ? "Share failed" : "Upload failed",
+            app.ShareRefusal ?? app.ShareError, app.ShareRefusal == null ? app.ShareError : null);
+        SetShareEnabled(true);
         _hide.Interval = TimeSpan.FromSeconds(8);
         _hide.Start();
     }

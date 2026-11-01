@@ -452,12 +452,40 @@ public partial class ClipsPane : UserControl
         var row = RowOf(sender);
         if (row == null) return;
         if (row.IsUploading || row.IsDeleting) return;
-        if (row.ShareMenuItems is { } items && sender is Button button)
+        await ShareAsync(row);   // the plain button (no menu): the split button has its own handlers below
+    }
+
+    /// <summary>The "Share" half of the split button: the share window, as "Share file…" in the menu.</summary>
+    private void ShareMain_Click(object sender, RoutedEventArgs e)
+    {
+        var row = RowOf(sender);
+        if (row == null || row.IsUploading || row.IsDeleting) return;
+        _ = RunShareChoiceAsync(row, ShareChoices.SplitMainChoice);
+    }
+
+    /// <summary>The "▾" half: the menu with every option.</summary>
+    private void ShareArrow_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button arrow && (arrow.Parent as Panel)?.Children.OfType<Button>().FirstOrDefault() is { } main)
+            OpenShareMenu(RowOf(arrow), arrow, main);
+    }
+
+    /// <summary>Alt+Down / Shift+F10 on the "Share" half open the menu too.</summary>
+    private void ShareMain_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (!ShareMenu.IsOpenKey(e) || sender is not Button main) return;
+        if ((main.Parent as Panel)?.Children.OfType<Button>().LastOrDefault() is { } arrow && arrow != main)
         {
-            ShareMenu.Open(button, items, choice => _ = RunShareChoiceAsync(row, choice));
-            return;
+            e.Handled = true;
+            OpenShareMenu(RowOf(main), arrow, main);
         }
-        await ShareAsync(row);
+    }
+
+    private void OpenShareMenu(ClipRow? row, Button arrow, Button main)
+    {
+        if (row == null || row.IsUploading || row.IsDeleting) return;
+        if (row.ShareMenuItems is { } items)
+            ShareMenu.Open(arrow, items, choice => _ = RunShareChoiceAsync(row, choice), below: main);   // drops from the whole split button
     }
 
     private async Task RunShareChoiceAsync(ClipRow row, ShareChoice choice)
@@ -1031,14 +1059,18 @@ internal sealed class ClipRow : INotifyPropertyChanged
         }
     }
     public string ShareLabel => ShareChoices.ButtonLabel(HasToken, CloudOn, HasLink);
-    /// <summary>"Share options" while the button opens a menu; null (the label names it) otherwise.</summary>
+    /// <summary>"Share file" for the main half of the split button; null (the label names it) for the plain button.</summary>
     public string? ShareName => ShareChoices.ButtonName(HasToken, CloudOn, HasLink);
+    /// <summary>The Share button is split (a token and cloud sharing on).</summary>
+    public bool ShareSplit => ShareChoices.IsSplit(HasToken, CloudOn, HasLink);
+    /// <summary>The plain Share button shows: the button shows and it is not split.</summary>
+    public bool SharePlainVisible => ShareChoices.PlainVisible(HasToken, CloudOn, HasLink);
     /// <summary>The menu to show for this row's Share button, or null when it acts directly.</summary>
     public IReadOnlyList<ShareChoiceItem>? ShareMenuItems => ShareChoices.For(HasToken, CloudOn, HasLink);
     private static bool HasToken => AppController.Instance?.HasCopiumToken == true;
     private static bool CloudOn => AppController.Instance?.Settings.CloudSharingEnabled != false;
     /// <summary>The Share button shows: always for a clip that has a link (Copy link needs no network), otherwise only while cloud sharing is on (Settings → App).</summary>
-    public bool ShareVisible => HasLink || AppController.Instance?.Settings.CloudSharingEnabled != false;
+    public bool ShareVisible => ShareChoices.Visible(CloudOn, HasLink);
     public bool HasLink => !string.IsNullOrEmpty(Entry.CopiumLink);
     public string? Link => Entry.CopiumLink;
     public bool IsShared => Entry.IsShared;
@@ -1131,7 +1163,7 @@ internal sealed class ClipRow : INotifyPropertyChanged
 
     public void Refresh()
     {
-        foreach (var p in new[] { nameof(ShareLabel), nameof(ShareName), nameof(ShareVisible), nameof(HasLink), nameof(Link), nameof(Meta), nameof(CloudMeta), nameof(Title), nameof(IsShared), nameof(IsTrim), nameof(IsArchived), nameof(IsLocalOnly), nameof(ArchiveTip), nameof(ToggleName), nameof(SelectName) })
+        foreach (var p in new[] { nameof(ShareLabel), nameof(ShareName), nameof(ShareVisible), nameof(ShareSplit), nameof(SharePlainVisible), nameof(HasLink), nameof(Link), nameof(Meta), nameof(CloudMeta), nameof(Title), nameof(IsShared), nameof(IsTrim), nameof(IsArchived), nameof(IsLocalOnly), nameof(ArchiveTip), nameof(ToggleName), nameof(SelectName) })
             Raise(p);
     }
 
