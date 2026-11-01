@@ -268,6 +268,22 @@ try {
         Assert-True (-not ([System.IO.File]::ReadAllText((Join-Path $warnDir 'iscc-args.txt')) -match '/Qp')) 'ISCC was called with /Qp, which suppresses warnings'
     }
 
+    Invoke-Test 'package.ps1 fails when ISCC reports a message that has not been defined for a language (both ISCC wordings), with exit code 0' {
+        $i = 0
+        foreach ($warning in 'Warning: A message named "ButtonNext" has not been defined for the "hindi" language. Will use the English message from Default.isl.',
+                             'Warning: Custom message "ClinkRetryYes" has not been defined for the "arabic" language. Will use the custom message from the first language in which it was defined.') {
+            $i++
+            $o = Get-ScratchFolder "pkg-iscc-undef$i"
+            $d = Get-ScratchFolder "fake-iscc-undef$i"
+            $c = Join-Path $d 'ISCC.cmd'
+            [System.IO.File]::WriteAllText($c, "@echo off`r`necho Line 3: $warning`r`necho x> `"$(Join-Path $o 'Clink-Setup.exe')`"`r`nexit /b 0`r`n", [System.Text.Encoding]::ASCII)
+            $r = Invoke-ScriptChild $packageScript @('-ExePath', $scExe, '-FrameworkExePath', $fxExe, '-Version', '0.4.2', '-OutDir', $o, '-MinRuntime', '10.0.0', '-IsccPath', $c, '-RuntimeInfoPath', $runtimeInfo, '-RequireInstaller', '-SkipVersionCheck', '-SkipSetupSizeCheck')
+            Assert-True ($r.Code -ne 0) "a missing translation was accepted ($i): $($r.Out)"
+            Assert-True (($r.Out + $r.Err) -match 'has not been defined for the') "the missing-translation warning is not reported ($i): $($r.Out) $($r.Err)"
+            Assert-True (-not (Test-Path -LiteralPath (Join-Path $o 'package.json'))) "wrote package.json after a missing translation ($i)"
+        }
+    }
+
     Invoke-Test 'package.ps1 -RequireInstaller passes all four /D values (runtime url, sha256, version, absolute NoticesFile) and lists the notices in package.json' {
         $out = Get-ScratchFolder 'pkg- spaced out'   # a space in the path: the recorded arguments must still match
         $fake = New-FakeIscc 'fake iscc spaced' (Join-Path $out 'Clink-Setup.exe')
