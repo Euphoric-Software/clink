@@ -60,6 +60,10 @@
                 </Grid>
             </Border>
 
+            <!-- Several clips over the Discord plan's limit: only a note, no copies are made here (the one-clip Share window makes them) -->
+            <TextBlock x:Name="OverNote" Style="{StaticResource MutedText}" Margin="18,8,16,0" TextWrapping="Wrap" Visibility="Collapsed"
+                       AutomationProperties.LiveSetting="Polite" />
+
             <!-- What just happened, files left out, or why the card is greyed out; two lines are reserved so the window does not jump -->
             <TextBlock x:Name="StatusText" Style="{StaticResource MutedText}" Margin="18,8,16,0" MinHeight="32" TextWrapping="Wrap" Text="" />
 

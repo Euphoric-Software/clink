@@ -25,6 +25,7 @@ public partial class ShareFilesWindow : Window, ICaptureExcludedWindow
     private const int DiscordLimit = 10;
 
     private readonly IReadOnlyList<ShareFileItem> _items;
+    private readonly bool _screenshots;
     private List<string> _present;
     private bool _checking, _closed, _dragArmed, _openingFolder, _looking;
     private string? _thumbFor;   // the file the card's thumbnail is of
@@ -35,6 +36,7 @@ public partial class ShareFilesWindow : Window, ICaptureExcludedWindow
     internal ShareFilesWindow(IReadOnlyList<ShareFileItem> items, bool screenshots)
     {
         _items = items;
+        _screenshots = screenshots;
         InitializeComponent();
         AppIcons.Attach(this);
         Title = TitleText.Text = TitleFor(items.Count, screenshots);
@@ -51,12 +53,12 @@ public partial class ShareFilesWindow : Window, ICaptureExcludedWindow
         SourceInitialized += (_, _) =>
         {
             ScreenPlacement.ExcludeFromCaptureUnlessDocShots(new WindowInteropHelper(this).Handle);
-            AppController.Instance!.StateChanged += UpdateTopmost;
+            AppController.Instance!.StateChanged += OnStateTick;
         };
         Closed += (_, _) =>
         {
             _closed = true;
-            AppController.Instance!.StateChanged -= UpdateTopmost;
+            AppController.Instance!.StateChanged -= OnStateTick;
         };
     }
 
@@ -109,6 +111,7 @@ public partial class ShareFilesWindow : Window, ICaptureExcludedWindow
         string? summary = _looking && !any ? null : BulkActions.ShareFilesSummary(_present.Count, _items.Count);
         if (summary != null) SetStatus(summary, "Warn"); else if (_statusIsSummary) SetStatus(null);
         _statusIsSummary = summary != null;
+        ShowOverNote();
         var folders = _present.Select(p => Path.GetDirectoryName(p) ?? "").Distinct(StringComparer.OrdinalIgnoreCase).Count();
         bool oneFolder = any && folders == 1;
         FolderButton.IsEnabled = oneFolder;
@@ -117,6 +120,42 @@ public partial class ShareFilesWindow : Window, ICaptureExcludedWindow
     }
 
     private bool _statusIsSummary;
+
+    /// <summary>
+    /// "2 files are over Discord free (20 MB): share them one at a time." when two or more of the files that were found (clips, not
+    /// screenshots) are over the user's Discord plan, "1 file is over Discord free (20 MB): share it on its own." for one (its own
+    /// Share window offers the smaller copy); null otherwise. No copies are made in this window.
+    /// </summary>
+    internal static string? OverNoteFor(IEnumerable<ShareFileItem> items, bool screenshots, ShareFitTarget target)
+        => screenshots ? null : ShareFitModel.MultiFileNote(target, items.Count(i => ShareFitModel.StateFor(i.Size, target).Kind == ShareFitStateKind.Over));
+
+    private void ShowOverNote()
+    {
+        string? note = null;
+        try
+        {
+            if (AppController.Instance is { } app)
+                note = OverNoteFor(_items.Where(i => _present.Contains(i.Path)), _screenshots, ShareFitModel.ForSettings(app.Settings));
+        }
+        catch (Exception ex) { Log.Warn("share files window: " + ex.Message); }
+        bool changed = (note ?? "") != OverNote.Text;
+        OverNote.Text = note ?? "";
+        OverNote.Visibility = note == null ? Visibility.Collapsed : Visibility.Visible;
+        if (changed && note != null) { OverNoteAnnouncements++; ShareWindow.RaiseLive(OverNote); }   // LiveSetting alone announces nothing
+    }
+
+    /// <summary>How many times the note was announced to a screen reader (its text changed to some text); for the tests.</summary>
+    internal int OverNoteAnnouncements { get; private set; }
+
+    /// <summary>The controller's once-a-second tick: the Topmost rule, and the note follows a changed Discord plan while the window is open.</summary>
+    internal void OnStateTick()
+    {
+        UpdateTopmost();
+        if (!_closed) ShowOverNote();
+    }
+
+    /// <summary>The note currently shown (null when hidden).</summary>
+    internal string? OverNoteText => OverNote.Visibility == Visibility.Visible ? OverNote.Text : null;
 
     private void SetStatus(string? text, string brush = "Accent2")
     {

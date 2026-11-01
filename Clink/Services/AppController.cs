@@ -166,7 +166,7 @@ internal sealed partial class AppController : IDisposable
     private Task<ClipEntry?>? _saveTask;    // the save in flight (UI thread): its clip once in the library, null if it failed
     private DateTime _clipRefusedAt = DateTime.MinValue;   // a clip turned down before any save started (not recording, --clip at startup)
     // Copium uploads in flight (UI thread); Announced: started by ShareLast, which reports a failure itself.
-    private readonly Dictionary<ClipEntry, (Task<bool> Task, bool Announced)> _uploads = new(ReferenceEqualityComparer.Instance);
+    private readonly Dictionary<ClipEntry, (Task<ShareOutcome> Task, bool Announced)> _uploads = new(ReferenceEqualityComparer.Instance);
 
     /// <summary>The clip is being uploaded to Copium now (from the clip list, the share hotkey, the tray or a toast: all go through the same upload record). UI thread.</summary>
     internal bool IsUploading(ClipEntry entry) => _uploads.Keys.Any(e => ReferenceEquals(e, entry) || string.Equals(e.Path, entry.Path, StringComparison.OrdinalIgnoreCase));
@@ -594,6 +594,8 @@ internal sealed partial class AppController : IDisposable
         else if (GameOnly) { Log.Info("Recording mode: only while a game or custom app runs"); PollGame(); }
         else StartEngine();
         Archive.Start();
+        try { ShareCache.Current.StartSchedule(); }   // smaller share copies: cleaned up shortly after start and hourly, on a pool thread
+        catch (Exception ex) { Log.Warn("share cache: cleanup not scheduled: " + ex.Message); }   // a bad root must not stop the start
         ScheduleAccountRefresh();   // Copium account name / Copium+ read once, a few seconds from now, in the background
         ApplyStatusDot();
         if (!IsDev) Updater.StartBackgroundChecks();   // a --dev instance never contacts the update feed (and a build without one never contacts anything)
@@ -726,6 +728,9 @@ internal sealed partial class AppController : IDisposable
 
     // ------------------------------------------------------------------ updates
 
+    /// <summary>Test seam: receives (title, text) of every <see cref="NotifyProblem"/> instead of a toast or balloon.</summary>
+    internal Action<string, string>? ProblemSink { get; set; }
+
     private static bool MainWindowVisible => System.Windows.Application.Current?.MainWindow?.IsVisible == true;
 
     /// <summary>
@@ -744,6 +749,7 @@ internal sealed partial class AppController : IDisposable
     /// </summary>
     private void NotifyProblem(string title, string text, bool overGame = false)
     {
+        if (ProblemSink is { } sink) { sink(title, text); return; }
         if (MainWindowInFront) return;
         if (overGame || Hotkeys.GameInFront()) Toasts.ShowProblem(title, text);
         else ShowBalloon(title, text);
@@ -1603,15 +1609,19 @@ internal sealed partial class AppController : IDisposable
         }
         else entry = NewestShareable();
         bool ok = false, joined = false, windowOpened = false;
+        string? afterCopy = null;   // this call's own "declined after the smaller copy was made" reason (not the shared LastShareOutcome)
         if (entry == null) Say("No clips to share yet");
         else
         {
             // A second press during the same upload gets the same result: the press that started it reports a failure, once.
             joined = _uploads.TryGetValue(entry, out var running) && running.Announced;
-            ok = await ShareAsync(entry, announce: true, context: ConsentContext.ShareLast);
+            ok = await ShareAsync(entry, announce: true, context: ConsentContext.ShareLast, declinedAfterCopy: reason => afterCopy = reason);
             // no Copium token: the share window is the answer, not a problem; the user's own "Not now" is not one either
             windowOpened = LastShareOutcome is ShareOutcome.FileShareOpened or ShareOutcome.Declined;
         }
+        // The user answered no question here: the copy took minutes and the sign-in, plan or switches changed meanwhile (the startup
+        // account check can do it unasked). Without this the hotkey shows "Making a smaller copy…" and then nothing.
+        if (afterCopy != null) { NotifyProblem("Clip not uploaded", afterCopy, overGame: UserNotificationState.FullScreenInFront()); return; }
         // The hotkey, the tray item and --share-last have no UI of their own, and the window is usually in the tray, minimized or
         // behind the game: a refusal (or a failure) that only reached the footer would be invisible (NotifyProblem: a toast over
         // the game, a tray balloon otherwise).
@@ -1627,10 +1637,17 @@ internal sealed partial class AppController : IDisposable
     /// refuse it after a long upload; Share says so up front. A clip exactly at a limit passes. Pure.
     /// </summary>
     internal static string? ShareRefusalFor(long size, double duration, bool plus)
+        => ShareSizeOver(size, plus) ? "Over " + Capabilities.CopiumLimits(plus).Label : ShareLengthRefusalFor(duration, plus);
+
+    /// <summary>"Over Copium's free limit (200 MB / 10 min)" when the clip is longer than the account takes, else null. A smaller copy cannot help with this. Pure.</summary>
+    internal static string? ShareLengthRefusalFor(double duration, bool plus)
     {
-        var (maxBytes, maxSeconds, label) = Capabilities.CopiumLimits(plus);
-        return size > maxBytes || duration > maxSeconds ? "Over " + label : null;
+        var (_, maxSeconds, label) = Capabilities.CopiumLimits(plus);
+        return duration > maxSeconds ? "Over " + label : null;
     }
+
+    /// <summary>The clip is bigger than the account takes (a smaller copy can fix this). A clip exactly at the limit is not over. Pure.</summary>
+    internal static bool ShareSizeOver(long size, bool plus) => size > Capabilities.CopiumLimits(plus).Bytes;
 
     /// <summary>The footer line for a clip <see cref="ShareRefusalFor"/> turned down: what the account takes, how big the clip is, what to do about it.</summary>
     internal static string ShareRefusalNotice(long size, double duration, bool plus)
@@ -1652,8 +1669,10 @@ internal sealed partial class AppController : IDisposable
     /// (<see cref="LastShareOutcome"/> is then <see cref="ShareOutcome.FileShareOpened"/>, and the result is false without a
     /// <see cref="ShareError"/>). Returns true only when a link was copied or the clip was uploaded.
     /// </summary>
+    /// <param name="allowFit">A clip over the size limit (not the length limit) is uploaded through a smaller copy made first (<see cref="MakeShareCopyAsync"/>) instead of refused; a bulk upload passes false.</param>
     /// <param name="announce">From the hotkey / tray / --share-last, which have no progress UI of their own: unless the window is in front, a toast says the upload started; and no window opens over a game.</param>
-    public async Task<bool> ShareAsync(ClipEntry entry, IProgress<double>? progress = null, bool announce = false, ConsentContext context = ConsentContext.ClipShare, bool quiet = false, Action? released = null)
+    /// <param name="declinedAfterCopy">Called once, with the reason, when this call made a smaller copy and then declined to upload it because the sign-in, plan or switches changed meanwhile (outcome <see cref="ShareOutcome.Declined"/>). Per call, so concurrent shares cannot mix their reasons up; it runs on the awaiting context, never blocks, and is not called for a prompt the user answered.</param>
+    public async Task<bool> ShareAsync(ClipEntry entry, IProgress<double>? progress = null, bool announce = false, ConsentContext context = ConsentContext.ClipShare, bool quiet = false, Action? released = null, bool allowFit = true, Action<string>? declinedAfterCopy = null)
     {
         ShareRefusal = null;
         ShareError = null;
@@ -1741,10 +1760,22 @@ internal sealed partial class AppController : IDisposable
             return false;
         }
         // Copium refuses clips over the account's limits (200 MB / 10 min free, 2 GB / 60 min with Copium+): say so now instead of uploading for a while and failing.
-        if (ShareRefusalFor(entry.Size, entry.Duration, Settings.CopiumPlus) is string refusal)
+        // A clip that is only over the size limit goes on (allowFit) to be uploaded through a smaller copy; the length limit, and every
+        // clip of a bulk upload, still refuse here.
+        bool needsCopy = allowFit && ShareSizeOver(entry.Size, Settings.CopiumPlus) && ShareLengthRefusalFor(entry.Duration, Settings.CopiumPlus) == null;
+        if (!needsCopy && ShareRefusalFor(entry.Size, entry.Duration, Settings.CopiumPlus) is string refusal)
         {
             ShareRefusal = refusal;
             Say(ShareRefusalNotice(entry.Size, entry.Duration, Settings.CopiumPlus));
+            LastShareOutcome = ShareOutcome.Refused;
+            return false;
+        }
+        // No smaller copies here (as administrator, a redirected cache folder): known at once, so refuse before any job, mark or toast.
+        if (needsCopy && !ShareCopiesAvailable)
+        {
+            string unavailable = ShareFitModel.UnavailableText(ShareFitModel.ForCopium(Settings.CopiumPlus), ShareCache.ElevatedReason, entry.Size);
+            ShareRefusal = unavailable;
+            Say(unavailable);
             LastShareOutcome = ShareOutcome.Refused;
             return false;
         }
@@ -1753,38 +1784,92 @@ internal sealed partial class AppController : IDisposable
         if (_uploads.TryGetValue(entry, out var running))
         {
             Say("Already uploading this clip…");
-            if (announce && !MainWindowInFront) Toasts.ShowUploading(entry, "Already uploading to Copium…");
+            if (announce && !MainWindowInFront) ShowUploadToast(entry, "Already uploading to Copium…");
             released?.Invoke();   // this caller's row is not the uploader: it must not keep showing the progress
-            bool joinedOk = await running.Task;
-            LastShareOutcome = joinedOk ? ShareOutcome.Uploaded : ShareOutcome.Failed;
-            return joinedOk;
+            var joinedOutcome = await running.Task;
+            LastShareOutcome = joinedOutcome;   // the running upload's own outcome (a refusal stays a refusal)
+            return joinedOutcome == ShareOutcome.Uploaded;
         }
-        var done = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        bool plusAtStart = Settings.CopiumPlus;   // the plan the copy is made for: compared again after the copy
+        var done = new TaskCompletionSource<ShareOutcome>(TaskCreationOptions.RunContinuationsAsynchronously);
         _uploads[entry] = (done.Task, announce);
         bool ok = false;
+        bool declined = false;   // consent, cloud sharing or the token changed during the copy: nothing is uploaded
         bool killed = false;   // stopped by the cloud kill switch: a neutral "not shared", not a failure
+        bool fitRefused = false;   // no smaller copy could be made (or the clip is too long): refused, with ShareRefusal saying why
+        ShareCopyResult? copy = null;   // the smaller copy being uploaded; disposed when the upload is over (it holds the cache's in-use mark)
         using var uploadCts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);   // this upload only: the cloud kill switch cancels it
         _uploadCancels.Add(uploadCts);
         try
         {
-            Say("Uploading to Copium…");
-            if (announce && !MainWindowInFront) Toasts.ShowUploading(entry);
+            // The start line and toast. For a copy they wait for the copy's first report: a refusal known at once (a game in front, no
+            // room, a clip that is too long) must not be preceded by a "Making a smaller copy" that was never going to happen.
+            bool toast = announce && !MainWindowInFront;   // read here: the copy's reports come from a worker thread
+            var announced = new System.Runtime.CompilerServices.StrongBox<int>();
+            bool Announce(string text)   // once per upload; false when it had been said already
+            {
+                if (Interlocked.Exchange(ref announced.Value, 1) != 0) return false;
+                Say(text);
+                if (toast) ShowUploadToast(entry, text);
+                return true;
+            }
             string title = (entry.Game ?? "Clip") + " " + entry.Created.ToString("yyyy-MM-dd HH:mm");
             string path = entry.Path;
-            // Off the UI thread: opening an archived clip on an unreachable share blocks in the FileStream constructor for ~20 s.
-            // The callers' Progress<T> were made on the UI thread and still report there.
-            var up = await Task.Run(() => CopiumClient.UploadAsync(token, path, title, progress, uploadCts.Token));
-            entry.CopiumLink = up.Link;
-            entry.CopiumPageUrl = up.PageUrl;
-            entry.CopiumId = up.Id;
-            Library.Update(entry);
-            if (!quiet)
+            if (!needsCopy) Announce("Uploading to Copium…");
+            else
             {
-                CopyToClipboard(up.Link);
-                Say("Uploaded, link copied");
-                Toasts.ShowShared(entry, up.Link);
+                var fit = await FitForCopiumAsync(entry, progress, () => Announce(CopyingToastText), uploadCts.Token);
+                copy = fit.Copy;
+                path = fit.Path;
+                if (fit.Refusal != null)
+                {
+                    fitRefused = true;
+                    ShareRefusal = fit.Refusal;
+                    Say(fit.Notice ?? fit.Refusal);
+                }
+                else if (!(Settings.CloudSharingEnabled && Settings.CopiumConsent && Settings.CopiumToken == token && Settings.CopiumPlus == plusAtStart))
+                {
+                    // The copy can take minutes: sharing was switched off, consent withdrawn, the token or the plan changed (a manual
+                    // sign-out keeps the token's server side, so it is not cancelled) while it was made. Nothing is uploaded.
+                    declined = true;
+                    copy?.Dispose();
+                    copy = null;
+                    string why;
+                    if (!Settings.CloudSharingEnabled)
+                    {
+                        ShareError = CloudOffText;
+                        why = CloudOffText;
+                    }
+                    else if (!Settings.CopiumConsent) why = "Not shared: sharing with Copium is not enabled";
+                    else if (Settings.CopiumToken != token) why = "Not shared: the Copium sign-in changed while the copy was made";
+                    else why = "Not shared: your Copium plan changed while the copy was made. Share it again";
+                    Say(why);
+                    declinedAfterCopy?.Invoke(why);
+                }
+                else
+                {
+                    SetSharePhase(entry, SharePhase.Uploading);
+                    progress?.Report(0);   // the row / toast / trim line goes from "Making a smaller copy..." to "Uploading..."
+                    if (!Announce("Uploading to Copium…")) Say("Uploading to Copium…");   // no copy was made (it fits, or one was ready): the toast says the upload started
+                }
             }
-            ok = true;
+            if (!fitRefused && !declined)
+            {
+                // Off the UI thread: opening an archived clip on an unreachable share blocks in the FileStream constructor for ~20 s.
+                // The callers' Progress<T> were made on the UI thread and still report there.
+                var up = await Task.Run(() => CopiumClient.UploadAsync(token, path, title, progress, uploadCts.Token));
+                entry.CopiumLink = up.Link;   // the link belongs to the original clip, whichever file went up
+                entry.CopiumPageUrl = up.PageUrl;
+                entry.CopiumId = up.Id;
+                Library.Update(entry);
+                if (!quiet)
+                {
+                    CopyToClipboard(up.Link);
+                    Say("Uploaded, link copied");
+                    Toasts.ShowShared(entry, up.Link);
+                }
+                ok = true;
+            }
         }
         catch (Exception ex)
         {
@@ -1806,12 +1891,144 @@ internal sealed partial class AppController : IDisposable
         }
         finally
         {
+            copy?.Dispose();
+            ClearSharePhase(entry);
             _uploads.Remove(entry);
             _uploadCancels.Remove(uploadCts);
-            LastShareOutcome = ok ? ShareOutcome.Uploaded : killed ? ShareOutcome.Declined : ShareOutcome.Failed;   // before the waiting asks continue, which read it
-            done.SetResult(ok);
+            var outcome = ok ? ShareOutcome.Uploaded : killed || declined ? ShareOutcome.Declined : fitRefused ? ShareOutcome.Refused : ShareOutcome.Failed;
+            LastShareOutcome = outcome;   // before the waiting asks continue, which read it
+            done.SetResult(outcome);
         }
         return ok;
+    }
+
+    internal const string CopyingToastText = "Making a smaller copy for Copium…";
+
+    /// <summary>Test seam: receives the "upload started" toast text instead of the real toast (a unit test must not put a window on the screen).</summary>
+    internal Action<ClipEntry, string>? UploadToastSink { get; set; }
+    private void ShowUploadToast(ClipEntry entry, string text)
+    {
+        if (UploadToastSink is { } sink) sink(entry, text);
+        else Toasts.ShowUploading(entry, text);   // posts to the UI thread: any thread may call
+    }
+
+    private enum SharePhase { Waiting, Copying, Uploading }
+    private readonly Dictionary<string, SharePhase> _sharePhases = new(StringComparer.OrdinalIgnoreCase);   // by clip path; guarded by itself
+
+    private void SetSharePhase(ClipEntry entry, SharePhase phase) { lock (_sharePhases) _sharePhases[entry.Path] = phase; }
+    private void ClearSharePhase(ClipEntry entry) { lock (_sharePhases) _sharePhases.Remove(entry.Path); }
+
+    /// <summary>
+    /// The line a row, a toast or the trim editor shows for the progress <paramref name="p"/> (0..1) of a clip's <see cref="ShareAsync"/>:
+    /// "Making a smaller copy for Copium... 40%" while the copy is made ("Waiting..." for the slot behind another copy), else "Uploading… 40%".
+    /// </summary>
+    internal string ShareProgressText(ClipEntry entry, double p)
+    {
+        SharePhase phase;
+        lock (_sharePhases) phase = _sharePhases.TryGetValue(entry.Path, out var found) ? found : SharePhase.Uploading;
+        return phase switch
+        {
+            SharePhase.Copying => ShareFitModel.WorkingText(ShareFitModel.ForCopium(Settings.CopiumPlus), null, p),
+            SharePhase.Waiting => ShareFitModel.WaitingText,
+            _ => $"Uploading… {p:P0}",
+        };
+    }
+
+    /// <summary>What <see cref="FitForCopiumAsync"/> found: the file to upload (and the copy to dispose afterwards), or why nothing is uploaded.</summary>
+    private sealed record FitOutcome(string Path, string? Refusal, string? Notice, ShareCopyResult? Copy);
+
+    /// <summary>
+    /// The copy's reports (any thread) for one upload: the share phase, the caller's progress, and <paramref name="first"/> once, at the
+    /// first report (the copy has really started). <see cref="Close"/> after the copy is made: a late report then changes nothing, so
+    /// it cannot set the phase after the switch to uploading or after the clean-up.
+    /// </summary>
+    private sealed class CopyReports(AppController app, ClipEntry entry, IProgress<double>? progress, Action? first) : IProgress<ShareCopyProgress>
+    {
+        private bool _closed, _started;   // guarded by app._sharePhases
+
+        public void Report(ShareCopyProgress value)
+        {
+            bool isFirst = false;
+            lock (app._sharePhases)
+            {
+                if (_closed) return;
+                app._sharePhases[entry.Path] = value.Stage == ShareCopyStage.Waiting ? SharePhase.Waiting : SharePhase.Copying;
+                if (!_started && value.Stage == ShareCopyStage.Working)   // a wait is not the copy: the job still checks the game, the disk and the plan
+                {
+                    isFirst = true;
+                    _started = true;
+                }
+            }
+            if (isFirst) first?.Invoke();
+            progress?.Report(value.Fraction);
+        }
+
+        public void Close()
+        {
+            lock (app._sharePhases) _closed = true;
+        }
+    }
+
+    /// <summary>
+    /// A clip over Copium's size limit: reads its real length (a folder-scanned clip has none) and checks that limit, then makes the
+    /// smaller copy (<see cref="MakeShareCopyAsync"/>; <paramref name="ct"/> cancels it and removes its part file). The outcome says what
+    /// to upload, or the refusal: no copy fits, it could not be made, a game is in front with copies during games off, smaller copies are
+    /// not available here (as administrator) and the original is too big.
+    /// </summary>
+    private async Task<FitOutcome> FitForCopiumAsync(ClipEntry entry, IProgress<double>? progress, Action? copyStarted, CancellationToken ct)
+    {
+        bool plus = Settings.CopiumPlus;
+        var target = ShareFitModel.ForCopium(plus);
+        double seconds = entry.Duration;
+        if (seconds <= 0)
+        {
+            string src = entry.Path;
+            double keyframe = Settings.KeyframeSeconds;
+            try { seconds = await Task.Run(() => ShareTranscoderImpl.Probe(src, keyframe).DurationSeconds, ct); }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { Log.Warn("share: could not read the clip's length: " + ex.Message); }
+            if (ShareLengthRefusalFor(seconds, plus) is string tooLong)
+                return new FitOutcome(entry.Path, tooLong, ShareRefusalNotice(entry.Size, seconds, plus), null);
+        }
+        var reports = new CopyReports(this, entry, progress, copyStarted);
+        ShareCopyResult result;
+        try { result = await MakeShareCopyAsync(entry, target, reports, ct); }
+        finally { reports.Close(); }
+        if (result.Outcome == ShareCopyOutcome.UseCopy)
+        {
+            // A last look at what is about to go up: a copy over the limit or over the length would only be refused by Copium.
+            string? refusal = null;
+            if (result.Bytes > target.LimitBytes)
+                refusal = ShareFitModel.FailedText(target, ShareFitModel.StayedTooBigReason, result.OriginalBytes > 0 ? result.OriginalBytes : entry.Size);
+            else if (ShareLengthRefusalFor(result.Seconds, plus) is string copyTooLong)
+                refusal = copyTooLong;
+            if (refusal != null)
+            {
+                Log.Info($"Copium upload: the copy is not usable ({result.Bytes} bytes, {result.Seconds:0.#} s): {refusal}");
+                result.Dispose();
+                return new FitOutcome(entry.Path, refusal, refusal, null);
+            }
+            return new FitOutcome(result.Path, null, null, result);
+        }
+        if (result.Outcome == ShareCopyOutcome.UseOriginal && result.Error == null)
+        {
+            result.Dispose();
+            return new FitOutcome(entry.Path, null, null, null);   // it fits after all
+        }
+        try
+        {
+            if (result.Outcome == ShareCopyOutcome.Cancelled)
+            {
+                ct.ThrowIfCancellationRequested();   // the kill switch or quitting
+                throw new IOException("making the smaller copy was cancelled");   // another asker of the same copy cancelled it
+            }
+            long original = result.OriginalBytes > 0 ? result.OriginalBytes : entry.Size;
+            string text = ShareFitModel.Text(ShareFitModel.StateFor(result), target, original, seconds)
+                ?? "Over " + Capabilities.CopiumLimits(plus).Label;
+            Log.Info($"Copium upload: no smaller copy ({result.Outcome}, {result.ErrorKind}): {text}");
+            return new FitOutcome(entry.Path, text, text, null);
+        }
+        finally { result.Dispose(); }
     }
 
     /// <summary>Test seam: the detected game, or a full-screen application, has the screen (no window or dialog may open over it).</summary>
@@ -2158,6 +2375,7 @@ internal sealed partial class AppController : IDisposable
         Log.Info("Quitting");
         _cts.Cancel();
         try { WaitForSaves(ExitStopLimit); } catch (Exception ex) { Log.Warn("Exit: saves: " + ex.Message); }   // a running "Save a copy" removes its .clinkpart within 4 s
+        try { WaitForShareCopies(ExitStopLimit); } catch (Exception ex) { Log.Warn("Exit: share copies: " + ex.Message); }   // a running smaller copy deletes its unfinished file within 4 s
         try { _signIn?.Shutdown(); } catch (Exception ex) { Log.Warn("Exit: sign-in: " + ex.Message); }   // no network wait: a late approval is simply never stored
         _timer?.Stop();
         CopiumClient.UploadTooLarge -= OnUploadTooLarge;
@@ -2166,6 +2384,7 @@ internal sealed partial class AppController : IDisposable
         SystemEvents.PowerModeChanged -= OnPowerModeChanged;
         try { Hotkeys.Uninstall(); } catch { }
         try { Archive.Stop(); } catch { }
+        try { ShareCache.DisposeCurrent(); } catch { }
         try { _screenshots?.CancelUploads(ExitStopLimit); } catch (Exception ex) { Log.Warn("Exit: screenshot uploads: " + ex.Message); }   // a running upload ends within 4 s (the HTTP call is cancelled)
         try { Toasts.CloseAll(); } catch { }
         try { _dot?.Close(); _dot = null; } catch { }

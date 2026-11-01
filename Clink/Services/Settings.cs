@@ -167,6 +167,14 @@ internal sealed class Settings
     public string SizeTarget { get; set; } = SettingsDefaults.SizeTarget;
     /// <summary>The user has Copium+: Share no longer refuses clips over Copium's free limits (200 MB / 10 min per upload).</summary>
     public bool CopiumPlus { get; set; }
+    /// <summary>
+    /// "free" | "basic" | "nitro" (<see cref="DiscordPlans"/>): the Discord plan whose upload limit Share makes a smaller copy for (20 MB / 50 MB /
+    /// 1 GB; the bytes and labels come from <see cref="Capabilities.SizeTargets"/> only). Null in a file that never had it: <see cref="Normalize"/>
+    /// takes it from the recording size target (discord50 = basic, discord500 = nitro, anything else = free). An unknown value is "free".
+    /// </summary>
+    public string? DiscordPlan { get; set; }
+    /// <summary>Share may make a smaller copy while a game is in front (at low GPU priority). Off: it refuses with "open Clink to make a smaller copy".</summary>
+    public bool ShareCopiesDuringGames { get; set; } = true;
     /// <summary>The "Set up your audio" banner on the Capture tab was dismissed (the audio group was hovered over or an audio option changed); it never shows again.</summary>
     public bool AudioSetupSeen { get; set; }
     /// <summary>The user pressed "Don't show again" on the "yellow border" notice (the border could not be hidden). Until then it shows once per app launch; Reset in the settings clears it.</summary>
@@ -601,6 +609,23 @@ internal sealed class Settings
         return HasKey(obj, nameof(Hotkeys)) ? 2 : 1;
     }
 
+    /// <summary>The Discord plan ids, in the order the SHARING card lists them.</summary>
+    internal static readonly string[] DiscordPlans = { "free", "basic", "nitro" };
+
+    /// <summary>
+    /// A valid <see cref="DiscordPlan"/>: a known id in any case ("Nitro" = "nitro"); nothing (null) = the recording size target's plan
+    /// (discord50 = basic, discord500 = nitro, discord10, copium and none = free); anything else = free.
+    /// </summary>
+    internal static string NormalizeDiscordPlan(string? plan, string? sizeTarget)
+    {
+        if (plan == null)
+            return Capabilities.SizeTargetFor(sizeTarget).Id switch { "discord50" => "basic", "discord500" => "nitro", _ => "free" };
+        string p = plan.Trim();
+        foreach (string known in DiscordPlans)
+            if (string.Equals(known, p, StringComparison.OrdinalIgnoreCase)) return known;
+        return "free";
+    }
+
     /// <summary>
     /// A hand-edited or merged settings.json can carry null where an object or list is expected ("Hotkeys": null); nothing
     /// downstream null-checks these, so they are given their defaults once here instead of crashing Start() half-way. Ends with
@@ -625,6 +650,7 @@ internal sealed class Settings
         ToastPosition ??= "bottom-right";
         StatusDotPosition ??= "top-right";
         SizeTarget ??= SettingsDefaults.SizeTarget;
+        DiscordPlan = NormalizeDiscordPlan(DiscordPlan, SizeTarget);
         if (string.IsNullOrWhiteSpace(Theme)) Theme = SettingsDefaults.Theme;
         if (string.IsNullOrWhiteSpace(Accent)) Accent = SettingsDefaults.Accent;
         else Accent = Clink.UI.ThemeManager.UpgradeAccent(Accent) ?? SettingsDefaults.Accent;

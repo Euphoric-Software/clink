@@ -834,7 +834,7 @@ public partial class TrimWindow : Window
             else if (share)
             {
                 StatusText.Text = "Uploading…";
-                var progress = new Progress<double>(p => StatusText.Text = $"Uploading… {p:P0}");
+                var progress = new Progress<double>(p => StatusText.Text = app.ShareProgressText(result, p));
                 bool ok = await app.ShareAsync(result, progress, context: ConsentContext.TrimShare);
                 if (!ok && app.LastShareOutcome == ShareOutcome.Declined)
                 {
