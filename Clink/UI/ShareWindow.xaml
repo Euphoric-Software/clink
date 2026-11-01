@@ -55,8 +55,23 @@
                 </Grid>
             </Border>
 
+            <!-- A clip over the Discord plan's limit (Settings → Clips → Sharing): the smaller copy. Shown only then (ShareFitModel has every text). -->
+            <StackPanel x:Name="FitPanel" Margin="18,8,16,0" Visibility="Collapsed">
+                <TextBlock x:Name="FitText" Style="{StaticResource MutedText}" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
+                <ProgressBar x:Name="FitProgress" Height="6" Minimum="0" Maximum="1" Margin="0,8,0,0" Visibility="Collapsed"
+                             AutomationProperties.Name="Smaller copy progress" />
+                <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                    <Button x:Name="MakeCopyButton" Style="{StaticResource AccentButton}" Click="MakeCopy_Click" Margin="0,0,8,0" Visibility="Collapsed"
+                            ToolTip="Make a smaller copy of this clip for Discord; the clip itself is not changed" />
+                    <Button x:Name="CancelCopyButton" Click="CancelCopy_Click" Margin="0,0,8,0" Visibility="Collapsed"
+                            AutomationProperties.Name="Cancel the smaller copy" ToolTip="Stop making the smaller copy" />
+                    <Button x:Name="UseOriginalButton" Click="UseOriginal_Click" Margin="0,0,8,0" Visibility="Collapsed"
+                            AutomationProperties.Name="Use the original clip" ToolTip="Share the original clip instead of the smaller copy" />
+                </StackPanel>
+            </StackPanel>
+
             <!-- What just happened (file copied, dropped) or why the card is greyed out; two lines are reserved so the window does not jump -->
-            <TextBlock x:Name="StatusText" Style="{StaticResource MutedText}" Margin="18,8,16,0" MinHeight="32" Text="" />
+            <TextBlock x:Name="StatusText" Style="{StaticResource MutedText}" Margin="18,8,16,0" MinHeight="32" Text="" AutomationProperties.LiveSetting="Polite" />
 
             <Grid Margin="16,4,16,16">
                 <StackPanel Orientation="Horizontal">

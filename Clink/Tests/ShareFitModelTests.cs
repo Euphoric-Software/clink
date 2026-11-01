@@ -51,6 +51,24 @@ internal static class ShareFitModelTests
     }
 
     [UnitTest]
+    public static void The_Discord_plan_choices_are_the_three_exact_labels_in_order_from_the_size_targets()
+    {
+        var choices = ShareFitModel.DiscordPlanChoices();
+        Check.Equal(new[] { "free", "basic", "nitro" }, choices.Select(c => c.Id).ToArray());
+        Check.Equal(new[] { "Discord free (20 MB)", "Discord Nitro Basic (50 MB)", "Discord Nitro (1 GB)" }, choices.Select(c => c.Label).ToArray());
+        foreach (var (id, label) in choices) Check.Equal(ShareFitModel.ForPlan(id).Label, label, id + ": one source for the label");
+    }
+
+    [UnitTest]
+    public static void The_preparing_state_has_its_text_and_a_clip_of_unknown_length_has_a_can_not_fit_text()
+    {
+        Check.Equal("Preparing...", ShareFitModel.Text(ShareFitState.Preparing, Free, 46_000_000, 45));
+        Check.Equal(ShareFitStateKind.Preparing, ShareFitState.Preparing.Kind);
+        Check.Equal("This clip can't fit in 20 MB. Trim it to about 0:55.", ShareFitModel.CantFitText(Free, 0, 55), "a clip found in the folder has no length");
+        Check.Equal("This clip can't fit in 20 MB.", ShareFitModel.CantFitText(Free, 0, 0));
+    }
+
+    [UnitTest]
     public static void The_share_window_texts_are_exactly_the_designed_ones()
     {
         Check.Equal("Too big for Discord free (20 MB): this clip is 46 MB", ShareFitModel.OverText(Free, 46_000_000));
@@ -80,10 +98,48 @@ internal static class ShareFitModelTests
         Check.Equal("Making a smaller copy for Copium... 40%", ShareFitModel.WorkingText(ShareFitModel.ForCopium(false), DesignPlan(), 0.4));
         Check.Equal("2 files are over Discord free (20 MB): share them one at a time.", ShareFitModel.MultiFileNote(Free, 2));
         Check.Equal("3 files are over Discord Nitro Basic (50 MB): share them one at a time.", ShareFitModel.MultiFileNote(ShareFitModel.ForPlan("basic"), 3));
-        Check.Null(ShareFitModel.MultiFileNote(Free, 1), "one file needs no note");
+        Check.Equal("1 file is over Discord free (20 MB): share it on its own.", ShareFitModel.MultiFileNote(Free, 1), "one file gets a note too");
+        Check.Equal("1 file is over Discord Nitro Basic (50 MB): share it on its own.", ShareFitModel.MultiFileNote(ShareFitModel.ForPlan("basic"), 1), "the label comes from the plan");
         Check.Null(ShareFitModel.MultiFileNote(Free, 0));
+        Check.Null(ShareFitModel.MultiFileNote(Free, -1));
         Check.Equal("there is not enough free disk space (about 111 MB are needed)", ShareFitModel.LowDiskReason(20_000_000));
         Check.Equal(44_000_000L + 64L * 1024 * 1024, ShareFitModel.RequiredFreeBytes(20_000_000), "2.2 x the limit + 64 MB");
+    }
+
+    [UnitTest]
+    public static void The_make_button_is_offered_after_over_a_refusal_and_a_failure_another_try_may_cure_and_never_otherwise()
+    {
+        Check.True(ShareFitModel.CanMakeCopy(ShareFitState.Over), "Over");
+        Check.True(ShareFitModel.CanMakeCopy(ShareFitState.Refused("Too big for Discord free (20 MB): open Clink to make a smaller copy")), "Refused: asking again may work");
+        Check.True(ShareFitModel.CanMakeCopy(ShareFitState.Failed(ShareFitModel.LowDiskReason(20_000_000), ShareCopyError.LowDisk)), "Failed: the disk");
+        Check.True(ShareFitModel.CanMakeCopy(ShareFitState.Failed("something odd")), "Failed with no kind given: another try");
+        Check.False(ShareFitModel.CanMakeCopy(ShareFitState.Failed(ShareFitModel.StayedTooBigReason)), "stayed too big: the same again, trim the clip");
+        Check.False(ShareFitModel.CanMakeCopy(ShareFitState.CantFit(55)), "CantFit");
+        Check.False(ShareFitModel.CanMakeCopy(ShareFitState.Unavailable(ShareCache.ElevatedReason)), "Unavailable");
+        foreach (var s in new[] { ShareFitState.Fits, ShareFitState.Preparing, ShareFitState.Waiting, ShareFitState.Working(0.2, null) })
+            Check.False(ShareFitModel.CanMakeCopy(s), s.Kind + ": busy or nothing to make");
+    }
+
+    [UnitTest]
+    public static void A_failed_state_carries_the_failure_kind_and_the_button_comes_back_only_for_kinds_a_retry_can_cure()
+    {
+        static ShareFitState Of(ShareCopyError kind) => ShareFitModel.StateFor(new ShareCopyResult(ShareCopyOutcome.Failed, "x.mp4", 1) { ErrorKind = kind, Error = "why" });
+        foreach (var kind in new[] { ShareCopyError.LowDisk, ShareCopyError.DiskFull, ShareCopyError.GpuLost, ShareCopyError.Failed })
+        {
+            var s = Of(kind);
+            Check.Equal(kind, s.ErrorKind);
+            Check.True(ShareFitModel.CanMakeCopy(s), kind + ": another try may work (button)");
+        }
+        foreach (var kind in new[] { ShareCopyError.StayedTooBig, ShareCopyError.DecoderMissing, ShareCopyError.Unsupported, ShareCopyError.NoHardwareEncoder, ShareCopyError.Unreadable })
+        {
+            var s = Of(kind);
+            Check.Equal(kind, s.ErrorKind);
+            Check.False(ShareFitModel.CanMakeCopy(s), kind + ": the same every time (no button)");
+        }
+        // Stayed too big is told by its kind, whatever the words say.
+        var big = ShareFitModel.StateFor(new ShareCopyResult(ShareCopyOutcome.Failed, "x.mp4", 1) { ErrorKind = ShareCopyError.StayedTooBig, Error = "other words", MaxSeconds = 30 });
+        Check.Contains(ShareFitModel.Text(big, new ShareFitTarget(20_000_000, 0, "Discord free (20 MB)"), 40_000_000, 60)!, "30");
+        Check.Equal(ShareCopyError.StayedTooBig, ShareFitState.Failed(ShareFitModel.StayedTooBigReason).ErrorKind, "the old constructor still tells it");
     }
 
     [UnitTest]

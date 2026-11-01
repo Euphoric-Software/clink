@@ -466,6 +466,7 @@ public partial class MainWindow : Window
         FillBitrate(s);
         FillCodecs();
         Fill(SizeTargetCombo, Capabilities.SizeTargets.Select(t => new Choice(t.Name, t.Id)).ToArray(), s.SizeTarget);
+        FillSharingCard(s);
         Fill(ModeCombo, new[] { new Choice("Only while a game or custom app is running", "game"), new Choice("Always (whenever Clink runs)", "always") }, s.RecordingMode);
         _customApps.Clear();
         foreach (var a in (s.CustomApps ?? new()).Select(GameProcessTracker.NormalizeName).Where(a => a.Length > 0 && !IsAuto(a)).Distinct(StringComparer.OrdinalIgnoreCase)) _customApps.Add(a);
@@ -669,6 +670,38 @@ public partial class MainWindow : Window
         s.Save();
         UpdateEstimates();
         ScheduleRestart();
+    }
+
+    /// <summary>
+    /// The SHARING card (Clips tab): "My Discord plan" (labels and limits from <see cref="ShareFitModel.DiscordPlanChoices"/>, one source)
+    /// and "Make smaller copies during games". Filling it is not a user's choice: no setting is written.
+    /// </summary>
+    internal void FillSharingCard(Settings s)
+    {
+        bool was = _filling;
+        _filling = true;
+        try
+        {
+            string plan = Settings.NormalizeDiscordPlan(s.DiscordPlan, s.SizeTarget);
+            Fill(DiscordPlanCombo, ShareFitModel.DiscordPlanChoices().Select(p => new Choice(p.Label, p.Id)).ToArray(), plan);
+            ShareCopiesDuringGamesCheck.IsChecked = s.ShareCopiesDuringGames;
+        }
+        finally { _filling = was; }
+    }
+
+    private void DiscordPlanChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_loading || _filling) return;
+        var s = _app.Settings;
+        s.DiscordPlan = Selected<string>(DiscordPlanCombo) ?? Settings.NormalizeDiscordPlan(null, s.SizeTarget);
+        s.Save();   // an open Share window sees the new plan within a second (it looks at the setting on every state tick)
+    }
+
+    private void ShareCopiesDuringGamesChanged(object sender, RoutedEventArgs e)
+    {
+        if (_loading || _filling) return;
+        _app.Settings.ShareCopiesDuringGames = ShareCopiesDuringGamesCheck.IsChecked == true;
+        _app.Settings.Save();
     }
 
     private void SizeTargetCombo_DropDownOpened(object sender, EventArgs e) => _pickingSizeTarget = true;

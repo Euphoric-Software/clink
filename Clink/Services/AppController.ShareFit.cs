@@ -9,7 +9,7 @@ internal enum ShareCopyOutcome
 {
     /// <summary>Share <see cref="ShareCopyResult.Path"/>: the smaller copy (made now, or found in the cache). Dispose the result when done with the file.</summary>
     UseCopy,
-    /// <summary>Share the original: it fits (<see cref="ShareCopyResult.Error"/> is null), or smaller copies are not available here (Error says why: as administrator, a redirected cache folder).</summary>
+    /// <summary>Share the original: it fits (<see cref="ShareCopyResult.Error"/> is null), or smaller copies are not available here (Error says why: as administrator, known at once; a redirected cache folder, found when the copy starts).</summary>
     UseOriginal,
     /// <summary>Not even the lowest quality fits; <see cref="ShareCopyResult.MaxSeconds"/> is the length to trim to. The original is not shared.</summary>
     CantFit,
@@ -25,7 +25,7 @@ internal enum ShareCopyOutcome
 internal enum ShareCopyError
 {
     None,
-    /// <summary>The share cache is not usable: Clink runs as administrator, or the cache folder is redirected (UseOriginal).</summary>
+    /// <summary>The share cache is not usable: Clink runs as administrator (known at once), or the cache folder turned out to be redirected when the copy started (UseOriginal).</summary>
     CacheUnavailable,
     /// <summary>A game is in front and copies during games are off (Refused).</summary>
     GameInFront,
@@ -47,6 +47,10 @@ internal enum ShareCopyError
 /// <summary>
 /// Where a running copy is: Waiting for the one-at-a-time slot (the clip was already looked at and planned), or Working on it
 /// (<see cref="ShareCopyProgress.Plan"/> set for a re-encode, null for a stream copy).
+/// <para>
+/// One exception to "already looked at": a Make that finds a cancelled job of the same clip still cleaning up reports Waiting first,
+/// <b>before</b> the clip is looked at (it waits for that job, then starts afresh).
+/// </para>
 /// </summary>
 internal enum ShareCopyStage { Waiting, Working }
 
@@ -87,8 +91,9 @@ internal sealed record ShareCopyResult(ShareCopyOutcome Outcome, string Path, lo
     /// For an asker that goes away without cancelling (a closed window): <paramref name="pending"/> is the task
     /// <see cref="AppController.MakeShareCopyAsync"/> or <see cref="AppController.FindShareCopyAsync"/> gave (that very task, not a wrapper
     /// such as Task.Run's: the asker is known by it). At once, the asker's progress listener is removed from the job (the job no longer
-    /// references it, and no new Report call reaches it; one already under way on the worker thread may still finish, and a
-    /// <c>Progress&lt;T&gt;</c> may still deliver what it had posted, so a closed window ignores late callbacks) and the asker's in-use mark is
+    /// references it, and no Report call starts after Abandon returns: one already under way on the worker thread finishes first, so
+    /// a sink must not wait for the thread that abandons; a <c>Progress&lt;T&gt;</c> may still deliver what it had posted, so a closed window
+    /// ignores late callbacks) and the asker's in-use mark is
     /// released; the job runs on, and the result is disposed when it arrives. Calling it twice is fine. (Cancelling is the token passed to
     /// those methods, and stops the job.)
     /// </summary>
@@ -114,12 +119,22 @@ internal sealed partial class AppController
     /// <summary>Test seam: the adapter the copy runs on (null = <see cref="ShareAdapterLuid"/>'s own lookup).</summary>
     internal Func<LUID?>? AdapterLuidOverride { get; set; }
 
+    /// <summary>Test seam (static: asks are not tied to a controller): called with an asker's sink after its listening is stored and before it is attached to the job, so a test can make the asker leave in that gap.</summary>
+    internal static Action<IProgress<ShareCopyProgress>>? ListenGapHook { get; set; }
+
+    /// <summary>Test seam (static): called with a sink on the thread that disposes its listening, right after the disposed flag is set and before the wait for a call in flight.</summary>
+    internal static Action<IProgress<ShareCopyProgress>>? ListeningDisposedHook { get; set; }
+
     private readonly SemaphoreSlim _shareGate = new(1, 1);   // one transcode at a time: a second job waits
     private readonly Dictionary<string, ShareJob> _shareJobs = new(StringComparer.Ordinal);   // by cache key (source path, size, time, limit); guarded by itself
 
     private ShareCache ShareCacheInUse => ShareCacheOverride ?? ShareCache.Current;
 
-    /// <summary>Whether smaller copies can be made here (false as administrator or with a redirected cache folder), for the cache in use (the test seam's when set).</summary>
+    /// <summary>
+    /// Whether smaller copies can be made here, for the cache in use (the test seam's when set): false as administrator. It does <b>not</b>
+    /// know about a redirected cache folder (that is only found when a copy starts: the job then answers UseOriginal / CacheUnavailable),
+    /// so it must not be used to hide the "Make a copy" button.
+    /// </summary>
     internal bool ShareCopiesAvailable => ShareCacheInUse.IsAvailable;
 
     /// <summary>The adapter that drives the selected monitor (the capture adapter, so the recording's encoder and the copy's share a GPU); null when it cannot be told.</summary>
@@ -163,22 +178,22 @@ internal sealed partial class AppController
         }
 
         /// <summary>
-        /// An asker listens from now on; a late one is told where the job is at once. Disposing what this returns removes the listener: no
-        /// Report call to it starts after that, and the job drops its reference to it.
+        /// An asker listens from now on: <paramref name="l"/> (created and stored by the asker <b>first</b>, so that a Leave always finds
+        /// it) joins the job's list, and a late one has the job's last report queued for it (the catch-up). A listening that was
+        /// disposed already (the asker left before it got here) is skipped. Nothing is delivered here: the caller then calls
+        /// <see cref="Listening.Deliver"/>. Disposing a listening removes it: no Report call to its sink starts after Dispose returns, and
+        /// the job drops its reference to it.
         /// Each listener gets the reports in the job's order: the catch-up is queued before any later report can reach the listener (both
-        /// under the job's lock), and one thread at a time delivers a listener's queue, outside every lock.
+        /// under the job's lock), and one thread at a time delivers a listener's queue, outside the job's lock.
         /// </summary>
-        public IDisposable Join(IProgress<ShareCopyProgress>? listener)
+        public void Attach(Listening l)
         {
-            if (listener == null) return NoListener.Instance;
-            var l = new Listening(this, listener);
             lock (_gate)
             {
+                if (l.IsDisposed) return;
                 _listeners.Add(l);
                 if (_last != null) l.Queue(_last);
             }
-            l.Deliver();
-            return l;
         }
 
         public void Report(ShareCopyProgress progress)
@@ -198,17 +213,21 @@ internal sealed partial class AppController
             lock (_gate) _listeners.Remove(l);
         }
 
-        private sealed class Listening(ShareJob job, IProgress<ShareCopyProgress> sink) : IDisposable
+        public sealed class Listening(ShareJob job, IProgress<ShareCopyProgress> sink) : IDisposable
         {
             private ShareJob? _job = job;
-            private IProgress<ShareCopyProgress>? _sink = sink;
-            private readonly object _gate = new();   // guards _pending and _delivering (never held while the sink runs)
+            private readonly IProgress<ShareCopyProgress> _sink = sink;
+            private readonly object _gate = new();       // guards _pending and _delivering (never held while the sink runs)
+            private readonly object _callGate = new();   // held around every sink call: Dispose waits on it, so nothing reaches the sink once Dispose has returned
             private readonly Queue<ShareCopyProgress> _pending = new();
             private bool _delivering;
+            private volatile bool _disposed;             // set before Dispose waits on _callGate; read inside it before every sink call
+
+            public bool IsDisposed => _disposed;
 
             public void Queue(ShareCopyProgress progress)
             {
-                lock (_gate) { if (Volatile.Read(ref _sink) != null) _pending.Enqueue(progress); }
+                lock (_gate) { if (!_disposed) _pending.Enqueue(progress); }
             }
 
             /// <summary>Delivers what is queued, in order; returns at once when another thread is delivering (it takes what was queued).</summary>
@@ -220,29 +239,30 @@ internal sealed partial class AppController
                     ShareCopyProgress next;
                     lock (_gate)
                     {
-                        if (_pending.Count == 0 || Volatile.Read(ref _sink) == null) { _pending.Clear(); _delivering = false; return; }
+                        if (_pending.Count == 0 || _disposed) { _pending.Clear(); _delivering = false; return; }
                         next = _pending.Dequeue();
                     }
-                    var sink = Volatile.Read(ref _sink);   // null once removed: no call starts after that
-                    if (sink == null) continue;
-                    try { sink.Report(next); }
-                    catch (Exception ex) { Log.Warn("share copy: a progress handler failed: " + ex.Message); }
+                    // The disposed flag is looked at inside the lock Dispose waits on, and the call is made inside it too: a call that
+                    // has started finishes before Dispose returns, and none starts after (a sink must not wait for the thread that disposes).
+                    lock (_callGate)
+                    {
+                        if (_disposed) continue;
+                        try { _sink.Report(next); }
+                        catch (Exception ex) { Log.Warn("share copy: a progress handler failed: " + ex.Message); }
+                    }
                 }
             }
 
             public void Dispose()
             {
-                Volatile.Write(ref _sink, null);
+                _disposed = true;                    // no call starts from here on: each one looks at this flag inside _callGate...
+                ListeningDisposedHook?.Invoke(_sink);   // test seam: the flag is set, the wait for the call in flight comes next
+                lock (_callGate) { }                 // ...so waiting for the lock waits for the one in flight (a lock is not fair: setting the flag only inside it could let the next queued call in first)
                 lock (_gate) _pending.Clear();
                 Interlocked.Exchange(ref _job, null)?.Remove(this);
             }
         }
 
-        private sealed class NoListener : IDisposable
-        {
-            public static readonly NoListener Instance = new();
-            public void Dispose() { }
-        }
     }
 
     /// <summary>
@@ -253,18 +273,40 @@ internal sealed partial class AppController
     {
         private readonly object _gate = new();
         private IProgress<ShareCopyProgress>? _listener = listener;
-        private IDisposable? _listening, _lease;
+        private ShareJob.Listening? _listening;
+        private IDisposable? _lease;
         private bool _left;
 
-        /// <summary>Listens to <paramref name="job"/> (unless the asker left already).</summary>
+        /// <summary>
+        /// Listens to <paramref name="job"/> (unless the asker left already). The listening is created and stored under the ask's lock
+        /// <b>first</b>, and only then attached to the job, so <see cref="Leave"/> (or <see cref="Done"/>) always finds it, whatever the
+        /// job does meanwhile. A Leave in between disposes it, and the attach then skips it. Delivery checks the listening's disposed flag
+        /// under the lock it is disposed under, so nothing reaches the sink after Leave has returned.
+        /// </summary>
         public void Listen(ShareJob job)
         {
-            IProgress<ShareCopyProgress>? l;
-            lock (_gate) { if (_left || _listener == null) return; l = _listener; }
-            var listening = job.Join(l);
-            bool drop;
-            lock (_gate) { drop = _left; if (!drop) _listening = listening; }
-            if (drop) listening.Dispose();
+            ShareJob.Listening listening;
+            IProgress<ShareCopyProgress> sink;
+            lock (_gate)
+            {
+                if (_left || _listener == null || _listening != null) return;
+                sink = _listener;
+                listening = _listening = new ShareJob.Listening(job, sink);
+            }
+            ListenGapHook?.Invoke(sink);   // test seam: the gap between storing the listening and attaching it
+            job.Attach(listening);
+            listening.Deliver();
+        }
+
+        /// <summary>Tells the asker where its request is, without a job (it waits for a cancelled job of its clip to clean up). Not after it left.</summary>
+        public void Say(ShareCopyProgress progress)
+        {
+            lock (_gate)   // the sink is called under the lock Leave takes: nothing reaches it once Leave has returned
+            {
+                if (_left) return;
+                try { _listener?.Report(progress); }
+                catch (Exception ex) { Log.Warn("share copy: a progress handler failed: " + ex.Message); }
+            }
         }
 
         /// <summary>Keeps the asker's mark, so leaving releases it at once (it is also the result's <see cref="ShareCopyResult.Lease"/>).</summary>
@@ -299,7 +341,12 @@ internal sealed partial class AppController
     internal static void LeaveShareAsk(Task pending)
     {
         if (s_shareAsks.TryGetValue(pending, out var ask)) ask.Leave();
-        else Log.Warn("share copy: Abandon was given a task that is not a share-copy ask (a wrapper?): the asker stays listening and keeps its mark until it ends");
+        else
+        {
+            const string msg = "share copy: Abandon was given a task that is not a share-copy ask (a wrapper?): the asker stays listening and keeps its mark until it ends";
+            Log.Warn(msg);
+            System.Diagnostics.Debug.Fail(msg);
+        }
     }
 
     /// <summary>An IProgress that calls back on the reporting thread (Progress&lt;T&gt; posts to the thread pool and can reorder).</summary>
@@ -333,11 +380,11 @@ internal sealed partial class AppController
     /// <item>A clip that cannot fit (<see cref="ShareCopyOutcome.CantFit"/>), cannot be read, or would be refused is answered at once:
     /// the clip is looked at and planned before the job queues for the one-at-a-time slot; only the copy itself waits.</item>
     /// </list>
-    /// A clip that fits the limit, or when smaller copies are not available here (as administrator, a redirected cache folder), is
+    /// A clip that fits the limit, or when smaller copies are not available here (as administrator; or a redirected cache folder, found when the copy starts), is
     /// <see cref="ShareCopyOutcome.UseOriginal"/>. Progress is reported from the worker thread (a report that comes while an asker's
     /// catch-up is being delivered follows it on that asker's thread, so each asker sees the job's order). An asker that comes while a
-    /// cancelled job of the same clip is still cleaning up waits for it (its own <paramref name="ct"/> ends that wait as Cancelled, before
-    /// anything is started) and then starts afresh.
+    /// cancelled job of the same clip is still cleaning up reports <see cref="ShareCopyStage.Waiting"/> at once, before the clip is looked
+    /// at, and waits for it (its own <paramref name="ct"/> ends that wait as Cancelled, before anything is started) and then starts afresh.
     /// </summary>
     public Task<ShareCopyResult> MakeShareCopyAsync(ClipEntry entry, ShareFitTarget target, IProgress<ShareCopyProgress>? progress, CancellationToken ct)
     {
@@ -357,7 +404,7 @@ internal sealed partial class AppController
     /// <item>The clip's file is gone: <see cref="ShareCopyOutcome.Failed"/> with <see cref="ShareCopyError.FileMissing"/>.</item>
     /// <item>A job for this clip and limit is running: joins it with its own in-use mark, reports where it is at once and then its
     /// progress, and gives its result (as <see cref="MakeShareCopyAsync"/> would).</item>
-    /// <item>Smaller copies are not available here (as administrator, a redirected cache folder) and no job is running:
+    /// <item>Smaller copies are not available here (as administrator; a redirected cache folder is only found when a copy starts, so Find returns null for it) and no job is running:
     /// <see cref="ShareCopyOutcome.UseOriginal"/> with <see cref="ShareCopyError.CacheUnavailable"/> and
     /// <see cref="ShareCache.ElevatedReason"/>.</item>
     /// <item>A finished copy is in the cache and can be reused: it, as <see cref="ShareCopyOutcome.UseCopy"/> with
@@ -458,6 +505,7 @@ internal sealed partial class AppController
                     return reused;
                 }
                 // A job of this clip is being cancelled: wait for it to clean up, unless this asker cancels first (nothing is started then).
+                ask.Say(new ShareCopyProgress(ShareCopyStage.Waiting, 0, null));
                 try { await gone!.WaitAsync(ct).ConfigureAwait(false); } catch (Exception) { }
                 if (ct.IsCancellationRequested) return original with { Outcome = ShareCopyOutcome.Cancelled };
             }
