@@ -39,6 +39,11 @@ internal sealed record ShareTranscodeResult(string Path, long SizeBytes, TimeSpa
     /// <summary>Re-encode only: frames the hardware encoder did not take (ProcessInput failed), a few of which a copy survives (each is a
     /// gap in time, not damage); 0 for a stream copy.</summary>
     public int DroppedInputFrames { get; init; }
+
+    /// <summary>Re-encode only (0 for a stream copy): the rate of the frames that went into the encoder, measured from their timestamps
+    /// ((submitted - 1) / (last - first)). It differs from <see cref="Fps"/> when the source's header understates or overstates its
+    /// real rate (a 30 fps header on 60 fps content keeps every frame, so the bitrate was planned for half the frames per second).</summary>
+    public double MeasuredFps { get; init; }
 }
 
 /// <summary>Why a smaller copy could not be made (<see cref="ShareTranscodeException"/>).</summary>
@@ -620,11 +625,11 @@ internal static unsafe class ShareTranscoder
     // ------------------------------------------------------------------ the re-encode
 
     /// <summary>
-    /// True when the source's rate is at or below the output's (<paramref name="sourceFps"/> &lt;= <paramref name="fps"/> + 0.01): then no
-    /// frame is dropped. 59.94 against 60, 29.97 against 30, a 60 fps header on a clip that really runs at 59.9, and the same rate all
-    /// count. Unknown (0) does not count.
+    /// True when the source's rate is at or below the output's, within 2% (<paramref name="sourceFps"/> &lt;= <paramref name="fps"/> * 1.02):
+    /// then no frame is dropped. 59.94 against 60, 29.97 against 30, a 60.02 header on a clip that really runs at 59.9, a clip that
+    /// runs at 60.3, and the same rate all count (slotting such a clip would drop frames at slot boundaries). Unknown (0) does not count.
     /// </summary>
-    internal static bool KeepsEveryFrame(double sourceFps, int fps) => sourceFps > 0 && sourceFps <= fps + 0.01;
+    internal static bool KeepsEveryFrame(double sourceFps, int fps) => sourceFps > 0 && sourceFps <= fps * 1.02;
 
     /// <summary>
     /// Whether a frame at <paramref name="ts"/> is kept for an output of <paramref name="fps"/> that started at <paramref name="first"/>.
@@ -658,7 +663,7 @@ internal static unsafe class ShareTranscoder
     /// <summary>
     /// Whether the encoder's frame counts show real damage. Returns the failure to throw, or null when the copy is good. The copy fails
     /// when fewer frames came out of the encoder than went in: one missing in the middle of a GOP corrupts every later P-frame. It also
-    /// fails when more than max(2, 1% of <paramref name="sourceFrames"/>) frames never went in (ProcessInput failed). A few input-side
+    /// fails when more than max(2, 1% of <paramref name="submitted"/>) frames never went in (ProcessInput failed). A few input-side
     /// losses, or ProcessOutput failures with every frame still out, only give a <paramref name="warning"/> (the counts) and keep the copy.
     /// </summary>
     /// <param name="droppedInput">Frames that were submitted but never went in.</param>
@@ -666,7 +671,7 @@ internal static unsafe class ShareTranscoder
         long inputFailures, long outputFailures, out long droppedInput, out string? warning)
     {
         droppedInput = Math.Max(inputFailures, Math.Max(0, submitted - framesIn));
-        double allowed = Math.Max(2, sourceFrames * 0.01);
+        double allowed = Math.Max(2, submitted * 0.01);
         string counts = $"{encoder}: {framesOut} of {framesIn} frames out, {submitted} submitted, {droppedInput} never went in " +
                         $"({inputFailures} ProcessInput and {outputFailures} ProcessOutput failures, {sourceFrames} source frames)";
         warning = null;
@@ -679,6 +684,11 @@ internal static unsafe class ShareTranscoder
         if (droppedInput > 0 || outputFailures > 0 || framesOut > framesIn) warning = counts;
         return null;
     }
+
+    /// <summary>The rate of <paramref name="submitted"/> frames stamped from <paramref name="first"/> to <paramref name="last"/> (100 ns): the
+    /// intervals between them over the time they span; 0 when fewer than two frames or no time.</summary>
+    internal static double MeasuredRate(long submitted, long first, long last)
+        => submitted >= 2 && last > first ? (submitted - 1) * 10_000_000.0 / (last - first) : 0;
 
     internal static ShareTranscodeResult Transcode(string src, string dst, ShareTranscodeRequest req, IProgress<double>? progress, CancellationToken ct)
     {
@@ -743,6 +753,7 @@ internal static unsafe class ShareTranscoder
             var report = new ProgressReporter(progress, video.ExpectedFrames);
             long origin = long.MinValue, lastSlot = -1, decoded = 0;
             int submitted = 0;
+            long firstKept = 0, lastKept = 0;
             uint gridFps = MuxGridFps(video.Fps, fps);
             var box = new D3D11_BOX { left = 0, top = 0, front = 0, right = (uint)req.Width, bottom = (uint)req.Height, back = 1 };
 
@@ -793,6 +804,8 @@ internal static unsafe class ShareTranscoder
                             }
                             finally { dstTex->Release(); }
                             encoder.SubmitBlocking(input, ts, ct);
+                            if (submitted == 0) firstKept = ts;
+                            lastKept = ts;
                             submitted++;
                         }
                         report.Frame(decoded);
@@ -809,6 +822,7 @@ internal static unsafe class ShareTranscoder
             // it. A few frames that never went in only leave a gap in time (JudgeEncoderLoss).
             long framesIn = Interlocked.Read(ref encoder.FramesIn), framesOut = Interlocked.Read(ref encoder.FramesOut);
             long inFailed = Interlocked.Read(ref encoder.InputFailures), outFailed = Interlocked.Read(ref encoder.OutputFailures);
+            double measuredFps = MeasuredRate(submitted, firstKept, lastKept);
             if (JudgeEncoderLoss(encoder.EncoderName, decoded, submitted, framesIn, framesOut, inFailed, outFailed, out long droppedInput, out string? lossWarning) is { } loss)
                 throw loss;
             if (lossWarning != null) Log.Warn($"share copy of {Path.GetFileName(src)}: the encoder lost a few frames, the copy is kept: {lossWarning}");
@@ -817,10 +831,11 @@ internal static unsafe class ShareTranscoder
             ct.ThrowIfCancellationRequested();
             var done = mux.Finish();   // the last step that can fail: from here the copy is complete under its name
             report.Done();
-            Log.Info($"share copy: {Path.GetFileName(src)} -> {req.Width}x{req.Height}@{fps} {req.VideoBitrateBps / 1e6:0.##} Mbps ({encoder.EncoderName}{(gpuDecode ? "" : ", CPU decode")}{(Interlocked.Read(ref UploadedFrames) > uploadedBefore ? ", frames uploaded from system memory" : "")}{(gridFps == 0 ? ", source timestamps kept" : "")}): {decoded} decoded, {done.VideoSamples} encoded{(droppedInput > 0 ? $", {droppedInput} dropped at the encoder's input" : "")}, {done.SizeBytes / 1048576.0:0.0} MB");
+            Log.Info($"share copy: {Path.GetFileName(src)} -> {req.Width}x{req.Height}@{fps} {req.VideoBitrateBps / 1e6:0.##} Mbps ({encoder.EncoderName}{(gpuDecode ? "" : ", CPU decode")}{(Interlocked.Read(ref UploadedFrames) > uploadedBefore ? ", frames uploaded from system memory" : "")}{(gridFps == 0 ? ", source timestamps kept" : "")}): {decoded} decoded, kept {measuredFps:0.##} fps, {done.VideoSamples} encoded{(droppedInput > 0 ? $", {droppedInput} dropped at the encoder's input" : "")}, {done.SizeBytes / 1048576.0:0.0} MB");
             return new ShareTranscodeResult(done.Path, done.SizeBytes, FrameSpan(done, fps), done.VideoSamples, req.Width, req.Height, fps, done.AudioTracks, encoder.EncoderName)
             {
                 DroppedInputFrames = (int)Math.Min(int.MaxValue, droppedInput),
+                MeasuredFps = measuredFps,
             };
         }
         catch (Exception ex)
@@ -938,7 +953,26 @@ internal static unsafe class ShareTranscoder
 
     // IMF2DBuffer (not in the generated bindings): IUnknown, then Lock2D(BYTE** scanline0, LONG* pitch), Unlock2D().
     private static readonly Guid IID_IMF2DBuffer = new("7DC9D5F9-9ED9-44ec-9BBF-0600BB589FBB");
-    private const int Lock2DSlot = 3, Unlock2DSlot = 4;
+    private const int Lock2DSlot = 3, Unlock2DSlot = 4, GetContiguousLengthSlot = 7;   // 5 GetScanline0AndPitch, 6 IsContiguousFormat, 7 GetContiguousLength(DWORD*)
+
+    /// <summary>
+    /// How many rows the Y plane of a 2D NV12 buffer has, so the UV plane starts at scan0 + pitch * rows. The buffer's contiguous length
+    /// is stride * rows * 3 / 2 for the stride it was sized with (the pitch, or the width when packed); rows is the frame's
+    /// <paramref name="height"/> or a few more (a padded buffer: 1088 for 1080). 0 when the numbers do not add up (an odd length, rows
+    /// below the height or implausibly many): the caller then uses the contiguous copy.
+    /// </summary>
+    internal static int Nv12LumaRows(long contiguousLength, int pitch, int width, int height)
+    {
+        if (contiguousLength <= 0 || pitch < width || width <= 0 || height <= 0) return 0;
+        foreach (int stride in pitch == width ? new[] { pitch } : new[] { pitch, width })
+        {
+            long twice = contiguousLength * 2, per = 3L * stride;
+            if (twice % per != 0) continue;
+            long rows = twice / per;
+            if (rows >= height && rows <= height + 64) return (int)rows;
+        }
+        return 0;
+    }
 
     /// <summary>
     /// A frame in system memory into the encoder's texture. The rows are read at the buffer's own pitch: a 2D buffer's (IMF2DBuffer.Lock2D)
@@ -970,11 +1004,20 @@ internal static unsafe class ShareTranscoder
                             try
                             {
                                 // NV12 in a 2D buffer: the Y plane, then the interleaved UV plane at half height, both at the pitch.
+                                // The UV plane starts after the Y plane's rows, which may be more than the frame's height (a padded
+                                // buffer): the rows come from the buffer's contiguous length, and a buffer whose numbers do not add up
+                                // is read through the contiguous copy below.
                                 if (pitch >= width)
                                 {
-                                    CopyPlanes(d3d, scan0, pitch, scan0 + (long)pitch * height, width, height, dst, dstSub, box, staging);
-                                    Interlocked.Increment(ref UploadedFrames2D);
-                                    return;
+                                    uint contiguous = 0;
+                                    int hr = ((delegate* unmanaged[Stdcall]<void*, uint*, int>)vtbl[GetContiguousLengthSlot])(b2d, &contiguous);
+                                    int rows = hr >= 0 ? Nv12LumaRows(contiguous, pitch, width, height) : 0;
+                                    if (rows > 0)
+                                    {
+                                        CopyPlanes(d3d, scan0, pitch, scan0 + (long)pitch * rows, width, height, dst, dstSub, box, staging);
+                                        Interlocked.Increment(ref UploadedFrames2D);
+                                        return;
+                                    }
                                 }
                             }
                             finally { ((delegate* unmanaged[Stdcall]<void*, int>)vtbl[Unlock2DSlot])(b2d); }

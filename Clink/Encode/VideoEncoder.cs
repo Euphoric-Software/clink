@@ -493,8 +493,8 @@ internal sealed unsafe class VideoEncoder : IDisposable
     /// <summary>
     /// Offline: the end of the input. Waits until every waiting frame is in the encoder, then sends END_OF_STREAM and COMMAND_DRAIN and
     /// waits for METransformDrainComplete, so every frame submitted has come out through <see cref="OnOutput"/> when this returns.
-    /// If no drain-complete event comes for <see cref="StallTimeout"/> but FramesOut has reached FramesIn, it logs that and returns
-    /// normally; it throws only when frames are still owed. Nothing may be submitted afterwards.
+    /// If no drain-complete event comes within a short grace (1.5 s) after FramesOut reached FramesIn, it logs that and returns
+    /// normally; it throws when frames are still owed for <see cref="StallTimeout"/>, and when the encoder reported an error. Nothing may be submitted afterwards.
     /// </summary>
     public void Drain(CancellationToken ct)
     {
@@ -515,23 +515,35 @@ internal sealed unsafe class VideoEncoder : IDisposable
         }
         long lastOut = Interlocked.Read(ref FramesOut);
         since.Restart();
+        var allOut = new System.Diagnostics.Stopwatch();   // runs once every frame that went in has come out
         while (!_drained.Wait(50, ct))
         {
             ThrowIfFailed();
             long now = Interlocked.Read(ref FramesOut);
-            if (now != lastOut) { lastOut = now; since.Restart(); }
-            if (since.Elapsed <= StallTimeout) continue;
-            // Some drivers never send METransformDrainComplete. When every frame that went in has come out, nothing is missing, so
-            // that is not a failure (the caller checks the counts again). Only a drain that still owes frames fails.
             long framesIn = Interlocked.Read(ref FramesIn);
+            if (now != lastOut) { lastOut = now; since.Restart(); }
+            // Some drivers never send METransformDrainComplete. When every frame that went in has come out, nothing is missing, so a short
+            // wait for the event is enough and it is not a failure (the caller checks the counts again).
             if (now >= framesIn)
             {
-                Log.Warn($"{EncoderName}: no drain-complete event after {StallTimeout.TotalSeconds:0} s, but all {framesIn} frames came out; treating the drain as done");
-                return;
+                if (!allOut.IsRunning) allOut.Restart();
+                if (allOut.Elapsed >= DrainGrace)
+                {
+                    Log.Warn($"{EncoderName}: no drain-complete event {DrainGrace.TotalSeconds:0.#} s after the last of {framesIn} frames came out; treating the drain as done");
+                    return;
+                }
+                continue;
             }
-            throw new TimeoutException($"The encoder did not finish draining in {StallTimeout.TotalSeconds:0} s ({now} of {framesIn} frames out)");
+            allOut.Reset();
+            // Only a drain that still owes frames fails.
+            if (since.Elapsed > StallTimeout)
+                throw new TimeoutException($"The encoder did not finish draining in {StallTimeout.TotalSeconds:0} s ({now} of {framesIn} frames out)");
         }
+        ThrowIfFailed();   // the event can arrive on the first wait, with the encoder having failed
     }
+
+    /// <summary>How long Drain waits for METransformDrainComplete once every frame that went in has come out.</summary>
+    private static readonly TimeSpan DrainGrace = TimeSpan.FromSeconds(1.5);
 
     private void FeedLocked(IMFSample* sample)
     {

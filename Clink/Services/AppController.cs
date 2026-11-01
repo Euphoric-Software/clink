@@ -2157,6 +2157,7 @@ internal sealed partial class AppController : IDisposable
         Log.Info("Quitting");
         _cts.Cancel();
         try { WaitForSaves(ExitStopLimit); } catch (Exception ex) { Log.Warn("Exit: saves: " + ex.Message); }   // a running "Save a copy" removes its .clinkpart within 4 s
+        try { WaitForShareCopies(ExitStopLimit); } catch (Exception ex) { Log.Warn("Exit: share copies: " + ex.Message); }   // a running smaller copy deletes its unfinished file within 4 s
         try { _signIn?.Shutdown(); } catch (Exception ex) { Log.Warn("Exit: sign-in: " + ex.Message); }   // no network wait: a late approval is simply never stored
         _timer?.Stop();
         CopiumClient.UploadTooLarge -= OnUploadTooLarge;

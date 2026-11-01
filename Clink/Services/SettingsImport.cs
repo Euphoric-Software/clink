@@ -372,6 +372,8 @@ internal static class SettingsImport
     {
         ("video quality", new[] { nameof(Settings.Resolution), nameof(Settings.Fps), nameof(Settings.BitrateMbps), nameof(Settings.Codec), nameof(Settings.HdrKnee), nameof(Settings.HdrPeak), nameof(Settings.KeyframeSeconds), nameof(Settings.CaptureCursor) }),
         ("size target", new[] { nameof(Settings.SizeTarget) }),
+        ("Discord plan", new[] { nameof(Settings.DiscordPlan) }),
+        ("sharing", new[] { nameof(Settings.ShareCopiesDuringGames) }),
         ("monitor", new[] { nameof(Settings.MonitorDevice) }),
         ("replay length", new[] { nameof(Settings.BufferSeconds) }),
         ("recording mode", new[] { nameof(Settings.RecordingMode), nameof(Settings.CustomApps) }),
