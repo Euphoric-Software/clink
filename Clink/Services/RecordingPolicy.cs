@@ -53,7 +53,7 @@ internal static class RecordingPolicy
 
     /// <summary><see cref="StatusLine"/> as a note.</summary>
     public static Note StatusLineNote(double seconds, string? game) =>
-        game != null ? Note.Of("Recording {elapsed} · {game}", ("elapsed", Elapsed(seconds)), ("game", game)) : Note.Of("Recording {elapsed}", ("elapsed", Elapsed(seconds)));
+        game != null ? Note.Of("Recording {elapsed} · {game}", ("elapsed", Elapsed(seconds)), ("game", Note.Isolate(game))) : Note.Of("Recording {elapsed}", ("elapsed", Elapsed(seconds)));
 
     /// <summary>The subtitle of the "Recording saved" toast: "12:34 · 1.2 GB".</summary>
     public static string SavedSummary(double seconds, long bytes) => SavedSummaryNote(seconds, bytes).Shown;
@@ -88,9 +88,8 @@ internal static class RecordingPolicy
                 RecordingEndReason.Unrecoverable => withError ? L.T("The recording could not be saved: {error}", ("error", r.Error)) : L.T("The recording could not be saved."),
                 _ => "",
             };
-            // (a space between the sentences: S6 moves this to L.JoinSentences)
-            string kept = r.Path == null ? "" : " " + (r.Reason == RecordingEndReason.DiskFull ? L.T("The recording was saved.") : L.T("The recording was recovered and saved."));
-            return why + kept;
+            string? kept = r.Path == null ? null : r.Reason == RecordingEndReason.DiskFull ? L.T("The recording was saved.") : L.T("The recording was recovered and saved.");
+            return L.JoinSentences(why, kept);
         }));
     }
 }

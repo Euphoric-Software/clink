@@ -32,7 +32,10 @@ public partial class ArchiveWindow : Window
         InitializeComponent();
         _destination = (app.Settings.ArchivePath ?? "").Trim();
         DestinationText.Text = _destination.Length > 0 ? L.Ltr(_destination) : L.T("No archive location is set");
-        DestinationText.ToolTip = _destination.Length > 0 ? _destination : null;
+        // a bare path reads left to right (a path is not translated); "No archive location is set" is a sentence and follows the window's direction
+        if (_destination.Length > 0) DestinationText.FlowDirection = FlowDirection.LeftToRight;
+        else DestinationText.ClearValue(FrameworkElement.FlowDirectionProperty);
+        DestinationText.ToolTip = _destination.Length > 0 ? L.Ltr(_destination) : null;
         DueRule.Text = RuleText(app.Settings.ArchiveAfterDays, app.Settings.ArchiveWhenLocalExceedsGB);
         Loaded += async (_, _) => { _ = ShowDestinationAsync(); await RefreshCountsAsync(first: true); };
         Closing += (_, _) => { if (_running) _cts?.Cancel(); };

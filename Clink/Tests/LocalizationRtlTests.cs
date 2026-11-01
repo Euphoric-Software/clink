@@ -157,7 +157,7 @@ internal static class LocalizationRtlTests
 
             var child = new Grid();
             var w2 = new Window { Content = child };
-            RtlWindows.OnWindowLoaded(w2, new RoutedEventArgs(FrameworkElement.LoadedEvent, new Button()));   // Loaded of a child bubbling up: not the window's own
+            RtlWindows.OnWindowLoaded(w2, new RoutedEventArgs(FrameworkElement.LoadedEvent, new Button()));   // defensive: only the window's own Loaded counts
             Check.Equal(FlowDirection.LeftToRight, child.FlowDirection, "a child's Loaded is ignored");
 
             var dot = new StatusDotWindow();

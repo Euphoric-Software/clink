@@ -154,7 +154,7 @@
                             <StackPanel Orientation="Horizontal">
                                 <!-- just the count (the word would squeeze the title at the narrowest window); the tooltip and UIA name say "N trims of <title>" -->
                                 <TextBlock Text="{Binding ChildCount}" Foreground="{TemplateBinding Foreground}" VerticalAlignment="Center" />
-                                <TextBlock x:Name="Chevron" Style="{StaticResource Glyph}" Text="&#xE76C;" FontSize="10" Margin="6,1,0,0" Foreground="{TemplateBinding Foreground}" />
+                                <TextBlock x:Name="Chevron" Style="{StaticResource Glyph}" Text="&#xE76C;" l:RtlMirror.Glyph="True" FontSize="10" Margin="6,1,0,0" Foreground="{TemplateBinding Foreground}" />
                             </StackPanel>
                         </Border>
                         <ControlTemplate.Triggers>
@@ -190,7 +190,7 @@
                         <Border.Clip>
                             <RectangleGeometry Rect="0,0,88,50" RadiusX="4" RadiusY="4" />
                         </Border.Clip>
-                        <Image Source="{Binding Thumbnail}" Stretch="UniformToFill" />
+                        <Image Source="{Binding Thumbnail}" Stretch="UniformToFill" FlowDirection="LeftToRight" />
                     </Border>
                     <StackPanel Grid.Column="2" Margin="10,0,8,0" VerticalAlignment="Center">
                         <DockPanel LastChildFill="False">
@@ -258,7 +258,7 @@
                         <Border.Clip>
                             <RectangleGeometry Rect="0,0,88,50" RadiusX="4" RadiusY="4" />
                         </Border.Clip>
-                        <Image Source="{Binding Thumbnail}" Stretch="UniformToFill" />
+                        <Image Source="{Binding Thumbnail}" Stretch="UniformToFill" FlowDirection="LeftToRight" />
                     </Border>
                     <StackPanel Grid.Column="2" Margin="10,0,8,0" VerticalAlignment="Center">
                         <DockPanel LastChildFill="False">
@@ -297,7 +297,7 @@
                         <Border.Clip>
                             <RectangleGeometry Rect="0,0,176,99" RadiusX="4" RadiusY="4" />
                         </Border.Clip>
-                        <Image Source="{Binding Thumbnail}" Stretch="UniformToFill" />
+                        <Image Source="{Binding Thumbnail}" Stretch="UniformToFill" FlowDirection="LeftToRight" />
                     </Border>
                     <StackPanel Grid.Column="2" Margin="10,0,0,0" VerticalAlignment="Top">
                         <DockPanel LastChildFill="False">

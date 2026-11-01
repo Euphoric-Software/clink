@@ -197,7 +197,7 @@ internal sealed class ScreenshotRow : INotifyPropertyChanged
     {
         get
         {
-            string date = Entry.Created.ToString("MMM d, HH:mm", L.FormatCulture);
+            string date = L.Isolate(Entry.Created.ToString("MMM d, HH:mm", L.FormatCulture));
             // the generic "Screenshot" is a word, not a name: a whole sentence (a gendered article or a case ending cannot be added to a slot)
             return string.IsNullOrWhiteSpace(Entry.Game) ? L.T("Select Screenshot, {date}", ("date", date)) : L.T("Select {title}, {date}", ("title", Title), ("date", date));
         }
@@ -239,13 +239,13 @@ internal sealed class ScreenshotRow : INotifyPropertyChanged
         _ => L.T("Not deleted: the file could not be moved to the Recycle Bin (or the Windows confirmation was declined)"),
     };
 
-    public static string TitleFor(ScreenshotEntry e) => string.IsNullOrWhiteSpace(e.Game) ? L.T("Screenshot") : L.Ltr(e.Game!);
+    public static string TitleFor(ScreenshotEntry e) => string.IsNullOrWhiteSpace(e.Game) ? L.T("Screenshot") : L.Isolate(e.Game!);
 
     /// <summary>"1920×1080 · 412 KB · Oct 25, 14:03" (the size of the picture is left out when it is not known).</summary>
     public static string MetaFor(ScreenshotEntry e, int width, int height)
     {
-        string dims = width > 0 && height > 0 ? $"{width}×{height} · " : "";
-        return $"{dims}{L.Bytes(e.Size)} · {e.Created.ToString("MMM d, HH:mm", L.FormatCulture)}";
+        string dims = width > 0 && height > 0 ? L.Ltr($"{width}×{height}") + " · " : "";
+        return $"{dims}{L.Bytes(e.Size)} · {L.Isolate(e.Created.ToString("MMM d, HH:mm", L.FormatCulture))}";
     }
 
     public string Title => TitleFor(Entry);

@@ -66,6 +66,7 @@ public partial class TrimWindow : Window
     {
         _entry = entry;
         InitializeComponent();
+        if (L.IsRtl) HintText.FlowDirection = FlowDirection.RightToLeft;   // the transport row is pinned left to right; the hint is a sentence
         // The texts with key names in them (the {l:T} extension takes no arguments), and the toggle's glyph + word.
         PlayButton.ToolTip = L.T("Play / pause ({keys})", ("keys", L.Ltr("Space")));
         SetInButton.ToolTip = L.T("Set the start to the playhead ({keys})", ("keys", L.Ltr("I")));
@@ -435,7 +436,7 @@ public partial class TrimWindow : Window
             MixNote.Visibility = Visibility.Collapsed;
             return;
         }
-        MixNote.Text = older == null ? baked! : baked == null ? older : older + " " + baked;   // (a space between sentences: S6 moves this to L.JoinSentences)
+        MixNote.Text = L.JoinSentences(older, baked);
         MixNote.Visibility = Visibility.Visible;
     }
 

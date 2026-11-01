@@ -702,7 +702,7 @@ public partial class ClipsPane
         if (ok.Count == 0)
         {
             MarkSkipped();
-            return withoutFile > 0 && blocked == 0 ? L.T("Nothing was deleted.") + " " + ClipDeleter.WithoutFileText(withoutFile)
+            return withoutFile > 0 && blocked == 0 ? L.JoinSentences(L.T("Nothing was deleted."), ClipDeleter.WithoutFileText(withoutFile))
                 : plan.Count(ClipDeleter.ShotSkip.Uploading) == blocked && blocked > 0 ? L.T("Nothing was deleted: the screenshots are uploading.")
                 : L.T("Nothing was deleted: the screenshots can't be deleted right now.");
         }

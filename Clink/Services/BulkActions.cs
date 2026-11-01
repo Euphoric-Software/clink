@@ -141,7 +141,7 @@ internal static class BulkActions
         }
         if (notTried > 0) why.Add(L.Plural("{count} were not tried.", notTried));
         if (cancelled) why.Add(L.T("Cancelled."));
-        if (links == 0) return string.Join(" ", why.Prepend(L.T("Nothing was uploaded.")));
+        if (links == 0) return L.JoinSentences(why.Prepend(L.T("Nothing was uploaded.")));
         int toUpload = total - alreadyLinked;
         // "Uploaded {count}": the noun agrees with the number shown. "Uploaded {uploaded} of {count}": it agrees with {count}, the noun's own number.
         string? head = toUpload <= 0 ? null
@@ -156,7 +156,7 @@ internal static class BulkActions
         parts.Add(onClipboard);
         parts.AddRange(why);
         if (notCopied && canRetryCopy) parts.Add(L.T("Use Copy links to try again."));
-        return string.Join(" ", parts);
+        return L.JoinSentences(parts);
     });
 
     /// <summary>
@@ -245,7 +245,7 @@ internal static class BulkActions
         if (busy > 0) why.Add(L.Plural("{count} were busy.", busy));
         if (saved >= total && total > 0) return L.Plural("Saved {count} copies.", saved);
         string head = saved == 0 ? L.T("Nothing was saved.") : L.Plural("Saved {saved} of {count} copies.", total, ("saved", saved));
-        return string.Join(" ", why.Prepend(head));
+        return L.JoinSentences(why.Prepend(head));
     });
 
     /// <summary>The warning under the share window's card when files were left out, or null when every file is there.</summary>

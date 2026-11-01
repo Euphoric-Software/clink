@@ -104,7 +104,7 @@ internal sealed class ClipDeleter
             : isTrim
                 ? L.Plural("Trimmed clip has {count} trims. Delete just the full clip, or the clip and its trims? Everything goes to the Recycle Bin, where you can restore it.", trimCount)
                 : L.Plural("Clip has {count} trims. Delete just the full clip, or the clip and its trims? Everything goes to the Recycle Bin, where you can restore it.", trimCount);
-        if (shared) text += " " + L.T("The shared link keeps working.");
+        if (shared) text = L.JoinSentences(text, L.T("The shared link keeps working."));
         return text;
     }
 
@@ -258,7 +258,7 @@ internal sealed class ClipDeleter
         if (unselectedTrims > 0) parts.Add(L.Plural("{count} trims of the selected clips are not selected: they stay in the list and move to the top level.", unselectedTrims));
         if (blocked > 0) parts.Add(L.Plural("{count} can't be deleted right now and will be skipped.", blocked));
         if (withoutFile > 0) parts.Add(WithoutFileText(withoutFile));
-        return string.Join(" ", parts);
+        return L.JoinSentences(parts);
     }
 
     /// <summary>"1 without a file was left. Use Remove from list for it." (a screenshot row whose file is gone is never part of a bulk delete: the delete would drop its Copium link record).</summary>
@@ -397,7 +397,7 @@ internal sealed class ClipDeleter
         var parts = new List<string> { first };
         if (hasTrims) parts.Add(L.T("Its trims stay in the list."));
         if (shared) parts.Add(L.T("The shared link keeps working."));
-        return string.Join(" ", parts);
+        return L.JoinSentences(parts);
     }
 
     /// <summary>What the row says when a delete did not happen.</summary>

@@ -117,7 +117,7 @@ internal sealed partial class AppController
         if (Settings.ClickSound) ClickSound.Play(Settings.ClickVolume);
         SayT("Recording started");
         string stop = RecordHotkeyLabel is string keys ? L.T("Press {keys} to stop", ("keys", L.Ltr(keys))) : L.T("Stop it from the tray menu");
-        Toasts.ShowRecordStarted(CurrentGame != null ? L.T("{game} · {hint}", ("game", CurrentGame), ("hint", stop)) : stop);
+        Toasts.ShowRecordStarted(CurrentGame != null ? L.T("{game} · {hint}", ("game", L.Isolate(CurrentGame)), ("hint", stop)) : stop);
         RaiseStateChanged();
     }
 
@@ -303,7 +303,7 @@ internal sealed partial class AppController
         else
         {
             SayT("Recording saved ({summary})", ("summary", summary));
-            Toasts.ShowRecordSaved(r.Game != null ? L.T("{game} · {summary}", ("game", r.Game), ("summary", summary.Shown)) : summary.Shown);
+            Toasts.ShowRecordSaved(r.Game != null ? L.T("{game} · {summary}", ("game", L.Isolate(r.Game)), ("summary", summary.Shown)) : summary.Shown);
         }
         // Recordings are not handed to the archive (it works on the clips folder's own files, which these are not, and they can be
         // hours long) and ClipSaved is for the clip toast / list highlight: the library's Changed event refreshes the list.

@@ -758,7 +758,7 @@ internal static unsafe class ShareTranscoder
             }
             catch (Exception ex) when (ex is InvalidOperationException or COMException)
             {
-                throw new ShareTranscodeException(ShareTranscodeFailure.NoHardwareEncoder, Note.Of("reason|no hardware H.264 encoder could be opened on {adapter}", ("adapter", d3d.AdapterName)), ex);
+                throw new ShareTranscodeException(ShareTranscodeFailure.NoHardwareEncoder, Note.Of("reason|no hardware H.264 encoder could be opened on {adapter}", ("adapter", Note.Ltr(d3d.AdapterName))), ex);
             }
             encoder.OnOutput = (pts, key, annexB) => outputs.Enqueue((pts, key, annexB.ToArray()));
 

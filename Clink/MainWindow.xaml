@@ -293,7 +293,7 @@
                                                 <ColumnDefinition Width="Auto" />
                                                 <ColumnDefinition Width="Auto" />
                                             </Grid.ColumnDefinitions>
-                                            <TextBox x:Name="CustomAppBox" KeyDown="CustomAppBox_KeyDown" ToolTip="{l:T 'Exe name, e.g. overwatch or RocketLeague.exe · Enter adds it'}" />
+                                            <TextBox x:Name="CustomAppBox" FlowDirection="LeftToRight" KeyDown="CustomAppBox_KeyDown" ToolTip="{l:T 'Exe name, e.g. overwatch or RocketLeague.exe · Enter adds it'}" />
                                             <Button Grid.Column="1" Content="{l:T 'Add'}" Margin="6,0,0,0" Click="AddApp_Click" />
                                             <ComboBox x:Name="RunningAppsCombo" Grid.Column="2" Margin="6,0,0,0" MinWidth="150" MaxWidth="190" DropDownOpened="RunningAppsCombo_DropDownOpened" DropDownClosed="RunningAppsCombo_DropDownClosed" SelectionChanged="RunningAppsCombo_SelectionChanged"
                                                       ItemContainerStyle="{StaticResource ChoiceItem}" ItemTemplate="{StaticResource SourceLabel}" ToolTip="{l:T 'Pick one of the apps running right now'}" />
@@ -332,7 +332,7 @@
                                                 <ColumnDefinition Width="Auto" />
                                                 <ColumnDefinition Width="Auto" />
                                             </Grid.ColumnDefinitions>
-                                            <TextBox x:Name="ClipsFolderBox" LostFocus="ClipsFolderBox_LostFocus" KeyDown="PathBox_KeyDown" ToolTip="{l:T 'Where new clips are saved'}" />
+                                            <TextBox x:Name="ClipsFolderBox" FlowDirection="LeftToRight" LostFocus="ClipsFolderBox_LostFocus" KeyDown="PathBox_KeyDown" ToolTip="{l:T 'Where new clips are saved'}" />
                                             <Button Grid.Column="1" Content="{l:T 'Browse…'}" Margin="6,0,0,0" Click="BrowseClips_Click" />
                                             <Button Grid.Column="2" Style="{StaticResource GlyphButton}" Content="&#xE8B7;" Margin="6,0,0,0" Click="Folder_Click" ToolTip="{l:T 'Open the folder'}" />
                                         </Grid>
@@ -344,7 +344,7 @@
                                                 <ColumnDefinition Width="Auto" />
                                                 <ColumnDefinition Width="Auto" />
                                             </Grid.ColumnDefinitions>
-                                            <TextBox x:Name="ArchivePathBox" LostFocus="ArchivePathBox_LostFocus" KeyDown="PathBox_KeyDown" ToolTip="{l:T '\\\\nas\\clips, D:\\Clips, … Sign in to a share once in Explorer; Clink never asks for credentials'}" />
+                                            <TextBox x:Name="ArchivePathBox" FlowDirection="LeftToRight" LostFocus="ArchivePathBox_LostFocus" KeyDown="PathBox_KeyDown" ToolTip="{l:T '\\\\nas\\clips, D:\\Clips, … Sign in to a share once in Explorer; Clink never asks for credentials'}" />
                                             <Button Grid.Column="1" Content="{l:T 'Browse…'}" Margin="6,0,0,0" Click="BrowseArchive_Click" />
                                             <Button x:Name="ArchiveTestButton" Grid.Column="2" Content="{l:T 'verb|Test'}" Margin="6,0,0,0" Click="ArchiveTest_Click" ToolTip="{l:T 'Reachable? Writable? Free space?'}" />
                                         </Grid>
@@ -413,7 +413,7 @@
                                                     <ColumnDefinition Width="Auto" />
                                                     <ColumnDefinition Width="Auto" />
                                                 </Grid.ColumnDefinitions>
-                                                <TextBox x:Name="ScreenshotFolderBox" LostFocus="ScreenshotFolderBox_LostFocus" KeyDown="PathBox_KeyDown"
+                                                <TextBox x:Name="ScreenshotFolderBox" FlowDirection="LeftToRight" LostFocus="ScreenshotFolderBox_LostFocus" KeyDown="PathBox_KeyDown"
                                                          ToolTip="{l:T 'Where screenshots are saved (PNG). Empty = a Screenshots folder inside the clips folder'}" />
                                                 <Button Grid.Column="1" Content="{l:T 'Browse…'}" Margin="6,0,0,0" Click="BrowseScreenshots_Click" />
                                                 <Button Grid.Column="2" Style="{StaticResource GlyphButton}" Content="&#xE8B7;" Margin="6,0,0,0" Click="OpenScreenshots_Click" ToolTip="{l:T 'Open the folder'}" />
@@ -566,7 +566,7 @@
                                         <!-- "Sign in with Copium": what shows is decided by CopiumCardModel (MainWindow.RenderCopiumCard); all texts are set from there as plain text -->
                                         <!-- signed in via Connect -->
                                         <StackPanel x:Name="CopiumSignedInPanel" Visibility="Collapsed" Margin="0,0,0,10">
-                                            <TextBlock x:Name="CopiumSignedInText" FlowDirection="LeftToRight" TextTrimming="CharacterEllipsis" FontWeight="SemiBold" AutomationProperties.LiveSetting="Polite" />
+                                            <TextBlock x:Name="CopiumSignedInText" TextTrimming="CharacterEllipsis" FontWeight="SemiBold" AutomationProperties.LiveSetting="Polite" />
                                             <TextBlock x:Name="CopiumUnverifiedNote" Style="{StaticResource Hint}" Margin="0,2,0,0" TextWrapping="Wrap" Visibility="Collapsed" AutomationProperties.LiveSetting="Polite" />
                                             <Button x:Name="CopiumSignOutButton" HorizontalAlignment="Left" Margin="0,8,0,0" Click="CopiumSignOut_Click"
                                                     AutomationProperties.Name="{l:T 'Sign out of Copium'}" />
@@ -609,7 +609,7 @@
                                         <Border x:Name="CopiumCleanupPanel" Visibility="Collapsed" Margin="0,0,0,10" Padding="10" BorderThickness="1"
                                                 BorderBrush="{DynamicResource Warn}" Background="{DynamicResource WarnTint}" CornerRadius="6">
                                             <StackPanel>
-                                                <TextBlock x:Name="CopiumCleanupText" TextWrapping="Wrap" FlowDirection="LeftToRight" AutomationProperties.LiveSetting="Polite" />
+                                                <TextBlock x:Name="CopiumCleanupText" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
                                                 <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
                                                     <Button x:Name="CopiumCleanupOpenButton" Click="CopiumCleanupOpen_Click" />
                                                     <Button x:Name="CopiumCleanupDismissButton" Click="CopiumCleanupDismiss_Click" Margin="8,0,0,0" AutomationProperties.Name="{l:T 'Dismiss this note'}" />

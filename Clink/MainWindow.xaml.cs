@@ -609,7 +609,7 @@ public partial class MainWindow : Window
         var (w, h) = mon != null ? AppController.OutputSize(mon, _app.Settings.Resolution) : (0u, 0u);
         var fallback = Capabilities.Codec(Capabilities.EffectiveCodec(id, w, h));
         if (info.Supported && fallback != null && fallback.Id != info.Id)
-            CodecDescription.Text = L.T("{codec} cannot encode {size}; recording uses {fallback} instead. {codec} – {description}", ("codec", info.Name), ("size", L.Ltr($"{w}×{h}")),("fallback", fallback.Name), ("description", info.Description));
+            CodecDescription.Text = L.T("{codec} cannot encode {size}; recording uses {fallback} instead. {codec} – {description}", ("codec", info.Name), ("size", L.Ltr($"{w}×{h}")), ("fallback", fallback.Name), ("description", info.Description));
         else if (info.Supported)
             CodecDescription.Text = info.EncoderName != null   // "NVIDIA H.264", as in the footer
                 ? L.T("{codec} – {description}  ·  {encoder}", ("codec", info.Name), ("description", info.Description), ("encoder", info.EncoderName.Replace(" Encoder MFT", "")))
@@ -829,7 +829,7 @@ public partial class MainWindow : Window
         if (id.Length > 0 && !items.Any(i => Same(i.Value, id)))
         {
             var known = devices.FirstOrDefault(d => Same(d.Id, id));
-            items.Add(new Choice(known != null ? L.T("{name} ({problem})", ("name", known.Name), ("problem", EngineStatusText.DeviceProblem(known.ProblemKind))) : L.T("Saved device (not connected)"), id));
+            items.Add(new Choice(known != null ? L.T("{name} ({problem})", ("name", L.Isolate(known.Name)), ("problem", EngineStatusText.DeviceProblem(known.ProblemKind))) : L.T("Saved device (not connected)"), id));
         }
         Refill(combo, items, id);
     }
@@ -843,7 +843,7 @@ public partial class MainWindow : Window
     {
         string title = c.Title.Trim();
         if (title.Length > 48) title = title[..47] + "…";
-        return title.Length == 0 ? c.Name : L.T("{name} — {title}", ("name", c.Name), ("title", title));
+        return title.Length == 0 ? c.Name : L.T("{name} — {title}", ("name", L.Isolate(c.Name)), ("title", L.Isolate(title)));
     }
 
     /// <summary>Game track: auto-detect or a running app; a configured name that is not running stays selectable so it is not lost.</summary>
@@ -856,7 +856,7 @@ public partial class MainWindow : Window
         if (apps.Count > 0) items.Add(new Choice(L.T("Running apps"), "", true));
         items.AddRange(apps.Select(c => new Choice(AppLabel(c), c.Name)));
         AddDeviceChoices(items, current);
-        if (!IsAuto(current) && !IsDeviceValue(current) && !items.Any(i => Same(i.Value, current))) items.Add(new Choice(L.T("{name} (not running)", ("name", current)), current));
+        if (!IsAuto(current) && !IsDeviceValue(current) && !items.Any(i => Same(i.Value, current))) items.Add(new Choice(L.T("{name} (not running)", ("name", L.Isolate(current))), current));
         Refill(GameCombo, items, current);
     }
 
@@ -871,7 +871,7 @@ public partial class MainWindow : Window
         if (others.Count > 0) items.Add(new Choice(L.T("Other running apps"), "", true));
         items.AddRange(others.Select(c => new Choice(AppLabel(c), c.Name)));
         AddDeviceChoices(items, current);
-        if (!IsAuto(current) && !IsDeviceValue(current) && !items.Any(i => Same(i.Value, current))) items.Add(new Choice(L.T("{name} (not running)", ("name", current)), current));
+        if (!IsAuto(current) && !IsDeviceValue(current) && !items.Any(i => Same(i.Value, current))) items.Add(new Choice(L.T("{name} (not running)", ("name", L.Isolate(current))), current));
         Refill(VoiceCombo, items, current);
     }
 
@@ -896,8 +896,8 @@ public partial class MainWindow : Window
             try { outputs = WasapiSource.ListDevices(false, includeInactive: true); } catch { outputs = new(); }
             var known = outputs.FirstOrDefault(d => Same(d.Id, id));   // v1 value: a bare render endpoint id
             items.Add(new Choice(known == null ? L.T("Saved device (not connected)")
-                : known.ProblemKind != AudioProblemKind.None ? L.T("Output: {name} ({problem})", ("name", known.Name), ("problem", EngineStatusText.DeviceProblem(known.ProblemKind)))
-                : L.T("Output: {name}", ("name", known.Name)), id));
+                : known.ProblemKind != AudioProblemKind.None ? L.T("Output: {name} ({problem})", ("name", L.Isolate(known.Name)), ("problem", EngineStatusText.DeviceProblem(known.ProblemKind)))
+                : L.T("Output: {name}", ("name", L.Isolate(known.Name))), id));
         }
         Refill(AllDeviceCombo, items, id);
     }
@@ -952,7 +952,7 @@ public partial class MainWindow : Window
     internal static string MonitorLabelText(Clink.Native.MonitorInfo? m)
     {
         if (m == null) return L.T("No monitor");
-        string monitorName = L.Ltr(string.IsNullOrEmpty(m.FriendlyName) ? m.ShortName : m.FriendlyName);
+        string monitorName = L.Isolate(string.IsNullOrEmpty(m.FriendlyName) ? m.ShortName : m.FriendlyName);
         return m.IsPrimary
             ? L.T("{name}  ·  {size}  ·  primary", ("name", monitorName), ("size", L.Ltr($"{m.Width}×{m.Height}")))
             : L.T("{name}  ·  {size}", ("name", monitorName), ("size", L.Ltr($"{m.Width}×{m.Height}")));
@@ -964,7 +964,7 @@ public partial class MainWindow : Window
         encoder = encoder.Replace(" Encoder MFT", "");
         string buffered = bufferedSeconds.ToString("0", L.FormatCulture);
         return game != null
-            ? L.T("{game} · {encoder} · buffer {seconds}s · {dropped} dropped", ("game", L.Ltr(game)), ("encoder", encoder), ("seconds", buffered), ("dropped", dropped))
+            ? L.T("{game} · {encoder} · buffer {seconds}s · {dropped} dropped", ("game", L.Isolate(game)), ("encoder", encoder), ("seconds", buffered), ("dropped", dropped))
             : L.T("{encoder} · buffer {seconds}s · {dropped} dropped", ("encoder", encoder), ("seconds", buffered), ("dropped", dropped));
     }
 
@@ -983,9 +983,9 @@ public partial class MainWindow : Window
         string source = sourceId switch { "fullscreen" => L.T("fullscreen window"), "library" => L.T("game library folder"), "custom" => L.T("custom app"), _ => "" };
         return gameOnly
             ? game != null
-                ? (source.Length > 0 ? L.T("Detected: {game} ({source})", ("game", L.Ltr(game)), ("source", source)) : L.T("Detected: {game}", ("game", L.Ltr(game))))
+                ? (source.Length > 0 ? L.T("Detected: {game} ({source})", ("game", L.Isolate(game)), ("source", source)) : L.T("Detected: {game}", ("game", L.Isolate(game))))
                 : L.T("Waiting for a game… detected by a fullscreen window on the captured monitor, a known game-library folder (Steam, Epic, Riot, Battle.net, Ubisoft, EA, GOG, Xbox, Rockstar) or a custom app below.")
-            : game != null ? L.T("Recording whenever Clink runs · game: {game}", ("game", L.Ltr(game))) : L.T("Recording whenever Clink runs.");
+            : game != null ? L.T("Recording whenever Clink runs · game: {game}", ("game", L.Isolate(game))) : L.T("Recording whenever Clink runs.");
     }
 
     // ------------------------------------------------------------------ status
@@ -1024,7 +1024,6 @@ public partial class MainWindow : Window
             // Each entry says what the track is actually capturing ("● Game (Overwatch)", "● Game (everything except Discord)",
             // "● Mic (USB Microphone)") or why it is not ("○ Voice (waiting for app)"), so a pick is confirmed here and the
             // fallback is not mistaken for the real thing. Entries are separated by spaces and the line wraps wherever it must.
-            // TODO(S6): restore U+00A0 inside an entry on the translated text
             AudioStatus.Text = st.Audio.Count == 0 ? L.T("No audio tracks") :
                 EngineStatusText.AudioLine(st.Audio);
         }
@@ -1160,8 +1159,8 @@ public partial class MainWindow : Window
     internal static string ImportBannerText(ForeignSettings copy)
     {
         return copy.Differences.Count > 0
-            ? L.T("Clink also has settings saved {saved} by a copy started from inside {app} ({changes})", ("saved", copy.SavedLocalText), ("app", L.Ltr(copy.FriendlyName ?? "")), ("changes", SettingsImport.LabelList(copy.Differences)))
-            : L.T("Clink also has settings saved {saved} by a copy started from inside {app}", ("saved", copy.SavedLocalText), ("app", L.Ltr(copy.FriendlyName ?? "")));
+            ? L.T("Clink also has settings saved {saved} by a copy started from inside {app} ({changes})", ("saved", copy.SavedLocalText), ("app", L.Isolate(copy.FriendlyName ?? "")), ("changes", SettingsImport.LabelList(copy.Differences)))
+            : L.T("Clink also has settings saved {saved} by a copy started from inside {app}", ("saved", copy.SavedLocalText), ("app", L.Isolate(copy.FriendlyName ?? "")));
     }
 
     private void ImportUse_Click(object sender, RoutedEventArgs e)

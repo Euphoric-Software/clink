@@ -161,7 +161,7 @@ public partial class EditorToolbar : UserControl
         row.Children.Add(Label(label));
         var slider = new Slider { Minimum = min, Maximum = max, Width = 110, IsSnapToTickEnabled = true, TickFrequency = step, SmallChange = step, LargeChange = step * 4, VerticalAlignment = VerticalAlignment.Center, ToolTip = tip };
         System.Windows.Automation.AutomationProperties.SetName(slider, name);
-        var text = new TextBlock { Style = (Style)FindResource("MutedText"), Width = 44, Margin = new Thickness(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.NoWrap };
+        var text = new TextBlock { Style = (Style)FindResource("MutedText"), Width = 44, Margin = new Thickness(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.NoWrap, FlowDirection = FlowDirection.LeftToRight };
         slider.ValueChanged += (_, e) =>
         {
             text.Text = format(e.NewValue);
@@ -245,7 +245,7 @@ public partial class EditorToolbar : UserControl
             System.Windows.Automation.AutomationProperties.SetName(s, name);
             Grid.SetRow(s, row);
             Grid.SetColumn(s, 1);
-            text = new TextBlock { Style = (Style)FindResource("MutedText"), Width = 44, TextAlignment = TextAlignment.Right, Margin = new Thickness(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.NoWrap };
+            text = new TextBlock { Style = (Style)FindResource("MutedText"), Width = 44, TextAlignment = TextAlignment.Right, Margin = new Thickness(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.NoWrap, FlowDirection = FlowDirection.LeftToRight };
             Grid.SetRow(text, row);
             Grid.SetColumn(text, 2);
             AdjustGrid.Children.Add(l);

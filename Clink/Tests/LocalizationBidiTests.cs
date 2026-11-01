@@ -45,6 +45,7 @@ internal static class LocalizationBidiTests
         ("LRI-PDI", "\u2066", "\u2069"),
         ("LRO-PDF", "\u202D", "\u202C"),
         ("LRM", "\u200E", "\u200E"),
+        ("LRM+LRE-PDF", "\u200E\u202A", "\u202C\u200E"),
     };
 
     [UnitTest]
@@ -63,7 +64,7 @@ internal static class LocalizationBidiTests
 
             // in Arabic text the neutral sign flips the two numbers (1080 x 1920) ...
             bool ltr = SizeReadsLeftToRight(text);
-            if (name == "LRM") Check.True(ltr, "LRM keeps 1920x1080 in order in Arabic text");
+            if (name.StartsWith("LRM")) Check.True(ltr, name + " keeps 1920x1080 in order in Arabic text");
             else Check.False(ltr, name + ": WPF does not apply this mark, the size is flipped in Arabic text (if this fails, WPF honours it now: L.Isolate may use it)");
         }
     }
@@ -117,9 +118,10 @@ internal static class LocalizationBidiTests
         foreach (string code in new[] { "ar", L.PseudoRtlCode })
             using (L.Scope(code))
             {
-                Check.Equal("\u200E" + Size + "\u200E", L.Ltr(Size), code + ": wrapped in left-to-right marks");
+                Check.Equal("\u200E\u202A" + Size + "\u202C\u200E", L.Ltr(Size), code + ": left-to-right mark, embedding, text, end of embedding, mark");
                 Check.Equal("", L.Ltr(""));
                 Check.True(SizeReadsLeftToRight(ArabicBefore + L.Ltr(Size) + ArabicAfter), code + ": the size reads 1920x1080 in Arabic text");
+                Check.Equal("\u200E\u202A" + "C:\\Users\\x" + "\u202C\u200E", L.Ltr("C:\\Users\\x"));
             }
     }
 
@@ -136,11 +138,28 @@ internal static class LocalizationBidiTests
         }
         using (L.Scope("ar"))
         {
-            Check.Equal("Monitor \u200E" + Size + "\u200E", note.Shown, "right-to-left: marked");
+            Check.Equal("Monitor \u200E\u202A" + Size + "\u202C\u200E", note.Shown, "right-to-left: marked");
             Check.Equal("Monitor " + Size, note.English, "the log has no marks");
             Check.Equal("Monitor " + Size, note.ToString());
         }
     }
+
+    [UnitTest]
+    public static void Isolate_first_strong_letter_skips_digits_and_the_byte_order_mark_and_knows_the_astral_right_to_left_blocks()
+    {
+        using var _ = L.Scope("ar");
+        const string Rtl = "\u200F", Ltr = "\u200E";
+        Check.Equal(Ltr + "\u0661\u0662 abc" + Ltr, L.Isolate("\u0661\u0662 abc"), "Arabic-Indic digits are not strong: the first letter decides");
+        Check.Equal(Ltr + "\u06F1\u06F2 abc" + Ltr, L.Isolate("\u06F1\u06F2 abc"), "extended Arabic-Indic digits are not strong");
+        Check.Equal(Rtl + "\u0661 \u0627" + Rtl, L.Isolate("\u0661 \u0627"));
+        Check.Equal(Ltr + "\uFEFFabc" + Ltr, L.Isolate("\uFEFFabc"), "the byte order mark is not strong");
+        Check.Equal(Rtl + "\uFEFF\u0627" + Rtl, L.Isolate("\uFEFF\u0627"));
+        Check.Equal(Rtl + "\uD802\uDC00 a" + Rtl, L.Isolate("\uD802\uDC00 a"), "U+10800 (Cypriot syllabary block start, right-to-left)");
+        Check.Equal(Rtl + "\uD83A\uDD00 a" + Rtl, L.Isolate("\uD83A\uDD00 a"), "U+1E900 Adlam");
+        Check.Equal(Ltr + "\uD835\uDC00 a" + Ltr, L.Isolate("\uD835\uDC00 a"), "a mathematical letter outside the right-to-left blocks is left-to-right");
+        Check.Equal(Ltr + "\uD83D" + Ltr, L.Isolate("\uD83D"), "a lone surrogate does not throw");
+    }
+
     [UnitTest]
     public static void Inside_InEnglish_the_language_answers_English()
     {

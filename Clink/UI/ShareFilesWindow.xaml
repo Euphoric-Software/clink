@@ -44,11 +44,11 @@
                         </Border.Clip>
                         <Grid>
                             <TextBlock Style="{StaticResource Glyph}" Text="&#xE8B9;" FontSize="26" HorizontalAlignment="Center" />
-                            <Image x:Name="ThumbImage" Stretch="UniformToFill" />
+                            <Image x:Name="ThumbImage" Stretch="UniformToFill" FlowDirection="LeftToRight" />
                             <!-- Accent2 on Bg: the pair the theme tests hold to 4.5:1 -->
                             <Border x:Name="MoreBadge" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="6" Padding="7,2" CornerRadius="9"
                                     Background="{DynamicResource Bg}" BorderBrush="{DynamicResource Accent2}" BorderThickness="1" Visibility="Collapsed">
-                                <TextBlock x:Name="MoreText" Foreground="{DynamicResource Accent2}" FontWeight="SemiBold" FontSize="12" />
+                                <TextBlock x:Name="MoreText" Foreground="{DynamicResource Accent2}" FontWeight="SemiBold" FontSize="12" FlowDirection="LeftToRight" />
                             </Border>
                         </Grid>
                     </Border>

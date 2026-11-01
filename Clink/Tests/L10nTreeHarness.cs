@@ -47,7 +47,7 @@ internal static class L10nTreeHarness
     /// <summary>The text with every pseudo frame (and the frames inside frames) cut out.</summary>
     internal static string StripFrames(string text)
     {
-        string r = text, p;
+        string r = text.Replace('\u00A0', ' '), p;   // (the audio line keeps the spaces of an entry together with U+00A0, inside the frames too)
         do { p = r; r = s_frame.Replace(r, " "); } while (r != p);
         return r;
     }

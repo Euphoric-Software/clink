@@ -1058,7 +1058,7 @@ internal sealed class ClipRow : INotifyPropertyChanged
     public ClipRow(ClipEntry e) { Entry = e; }
 
     public string Title => string.IsNullOrEmpty(Entry.Game) ? (Entry.IsTrim ? L.T("Trimmed clip") : L.T("Clip"))
-        : Entry.IsTrim ? L.T("{game} (trim)", ("game", L.Ltr(Entry.Game!))) : L.Ltr(Entry.Game!);
+        : Entry.IsTrim ? L.T("{game} (trim)", ("game", L.Isolate(Entry.Game!))) : L.Isolate(Entry.Game!);
     /// <summary><see cref="Title"/> when it names a game, null when the clip has none (the generic "Clip" / "Trimmed clip" must not be dropped into a {title} slot).</summary>
     public string? GameTitle => string.IsNullOrEmpty(Entry.Game) ? null : Title;
     public string Meta
@@ -1067,7 +1067,7 @@ internal sealed class ClipRow : INotifyPropertyChanged
         {
             string dur = Entry.Duration > 0 ? L.ClipLength(Entry.Duration) + " · " : "";
             // Decimal MB everywhere a size is shown: the unit of the Copium / Discord limits and of the Share pre-check.
-            return $"{Entry.Created.ToString("MMM d, HH:mm", L.FormatCulture)} · {dur}{L.Bytes(Entry.Size)}";
+            return $"{L.Isolate(Entry.Created.ToString("MMM d, HH:mm", L.FormatCulture))} · {dur}{L.Bytes(Entry.Size)}";
         }
     }
     /// <summary>Shared tab: date, size and where the local copy is (or that it is gone).</summary>
@@ -1078,7 +1078,7 @@ internal sealed class ClipRow : INotifyPropertyChanged
             string size = Entry.Size > 0 ? $" · {L.Bytes(Entry.Size)}" : "";
             string where = HasLocalFile ? (Entry.IsArchived ? " · " + L.T("in the archive") : "")
                 : !Entry.IsArchived ? " · " + LocalDeleted : DeletedFromArchive ? " · " + DeletedFromArchiveText : " · " + ArchiveOffline;
-            return $"{Entry.Created.ToString("MMM d, yyyy HH:mm", L.FormatCulture)}{size}{where}";
+            return $"{L.Isolate(Entry.Created.ToString("MMM d, yyyy HH:mm", L.FormatCulture))}{size}{where}";
         }
     }
     public string ShareLabel => ShareChoices.ButtonLabel(HasToken, CloudOn, HasLink);
@@ -1101,7 +1101,7 @@ internal sealed class ClipRow : INotifyPropertyChanged
     public bool IsArchived => Entry.IsArchived;
     public bool IsLocalOnly => !Entry.IsShared && !Entry.IsTrim && !Entry.IsArchived;
     public string ArchiveTip => Entry.IsArchived
-        ? L.T("Archived {date} → {folder}", ("date", Entry.ArchivedAt!.Value.ToString("MMM d, HH:mm", L.FormatCulture)), ("folder", L.Ltr(System.IO.Path.GetDirectoryName(Entry.Path) ?? "")))
+        ? L.T("Archived {date} → {folder}", ("date", L.Isolate(Entry.ArchivedAt!.Value.ToString("MMM d, HH:mm", L.FormatCulture))), ("folder", L.Ltr(System.IO.Path.GetDirectoryName(Entry.Path) ?? "")))
         : "";
 
     /// <summary>The file is there (checked on a worker; true until known so rows do not flicker).</summary>
@@ -1160,7 +1160,7 @@ internal sealed class ClipRow : INotifyPropertyChanged
     {
         get
         {
-            string date = Entry.Created.ToString("MMM d, HH:mm", L.FormatCulture);
+            string date = L.Isolate(Entry.Created.ToString("MMM d, HH:mm", L.FormatCulture));
             // the generic "Clip" / "Trimmed clip" is a word, not a name: whole sentences (a gendered article or a case ending cannot be added to a slot)
             if (GameTitle is { } game) return L.T("Select {title}, {date}", ("title", game), ("date", date));
             return Entry.IsTrim ? L.T("Select Trimmed clip, {date}", ("date", date)) : L.T("Select Clip, {date}", ("date", date));

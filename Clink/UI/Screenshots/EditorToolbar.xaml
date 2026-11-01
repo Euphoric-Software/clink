@@ -27,8 +27,8 @@
                              Margin="0,0,4,0" Padding="10,4" />
                 <RadioButton x:Name="CropTool" Style="{StaticResource PillRadio}" Content="{l:T 'Crop'}" GroupName="EditorTool" Click="Tool_Click" Tag="Crop" AutomationProperties.Name="{l:T 'Crop tool'}"
                              Margin="0,0,10,0" Padding="10,4" />
-                <Button x:Name="UndoButton" Style="{StaticResource GlyphButton}" Content="&#xE7A7;" Click="Undo_Click" AutomationProperties.Name="{l:T 'Undo'}" Margin="0,0,4,0" />
-                <Button x:Name="RedoButton" Style="{StaticResource GlyphButton}" Content="&#xE7A6;" Click="Redo_Click" AutomationProperties.Name="{l:T 'Redo'}" />
+                <Button x:Name="UndoButton" Style="{StaticResource GlyphButton}" Content="&#xE7A7;" l:RtlMirror.Glyph="True" Click="Undo_Click" AutomationProperties.Name="{l:T 'Undo'}" Margin="0,0,4,0" />
+                <Button x:Name="RedoButton" Style="{StaticResource GlyphButton}" Content="&#xE7A6;" l:RtlMirror.Glyph="True" Click="Redo_Click" AutomationProperties.Name="{l:T 'Redo'}" />
             </StackPanel>
             <!-- the capture overlay's editing (compact): no zoom / copy / save, a Cancel and a Done instead -->
             <StackPanel x:Name="OverlayPanel" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0" Visibility="Collapsed">
@@ -93,13 +93,13 @@
                 <TextBlock Style="{StaticResource MutedText}" Text="{l:T 'Width'}" VerticalAlignment="Center" Margin="0,0,8,0" />
                 <Slider x:Name="WidthSlider" Minimum="1" Maximum="40" Width="110" IsSnapToTickEnabled="True" TickFrequency="1" VerticalAlignment="Center"
                         ValueChanged="Width_Changed" LostMouseCapture="Slider_LostCapture" AutomationProperties.Name="{l:T 'Line width'}" ToolTip="{l:T 'Line width in picture pixels'}" />
-                <TextBlock x:Name="WidthText" Style="{StaticResource MutedText}" Width="34" Margin="8,0,0,0" VerticalAlignment="Center" />
+                <TextBlock x:Name="WidthText" Style="{StaticResource MutedText}" MinWidth="34" Margin="8,0,0,0" VerticalAlignment="Center" FlowDirection="LeftToRight" />
             </StackPanel>
             <StackPanel x:Name="TextPanel" Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0" Visibility="Collapsed">
                 <TextBlock Style="{StaticResource MutedText}" Text="{l:T 'Size'}" VerticalAlignment="Center" Margin="0,0,8,0" />
                 <Slider x:Name="FontSlider" Minimum="10" Maximum="120" Width="110" IsSnapToTickEnabled="True" TickFrequency="1" VerticalAlignment="Center"
                         ValueChanged="Font_Changed" LostMouseCapture="Slider_LostCapture" AutomationProperties.Name="{l:T 'Text size'}" ToolTip="{l:T 'Text size in picture pixels'}" />
-                <TextBlock x:Name="FontText" Style="{StaticResource MutedText}" Width="34" Margin="8,0,12,0" VerticalAlignment="Center" Text="28" />
+                <TextBlock x:Name="FontText" Style="{StaticResource MutedText}" MinWidth="34" Margin="8,0,12,0" VerticalAlignment="Center" Text="28" FlowDirection="LeftToRight" />
                 <CheckBox x:Name="BoldCheck" Content="{l:T 'Bold'}" VerticalAlignment="Center" Margin="0,0,12,0" Checked="Bold_Changed" Unchecked="Bold_Changed" AutomationProperties.Name="{l:T 'Bold text'}" />
                 <RadioButton x:Name="BackdropNone" Style="{StaticResource PillRadio}" Content="{l:T 'No backdrop'}" GroupName="EditorBackdrop" Click="Backdrop_Click" Tag="None" Margin="0,0,4,0" Padding="9,3"
                              AutomationProperties.Name="{l:T 'No text backdrop'}" ToolTip="{l:T 'Plain text'}" />

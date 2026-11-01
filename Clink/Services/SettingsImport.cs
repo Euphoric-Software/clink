@@ -72,7 +72,7 @@ internal static class AppDataRedirect
     public static string NoticeFor(string friendlyName) => NoticeNoteFor(friendlyName).Shown;
 
     internal static Note NoticeNoteFor(string friendlyName) =>
-        Note.Of("Clink was started from inside {app}: Windows keeps a private copy of its settings for that app, so changes made now are not seen by Clink started from Explorer or the Start menu", ("app", Note.Ltr(friendlyName)));
+        Note.Of("Clink was started from inside {app}: Windows keeps a private copy of its settings for that app, so changes made now are not seen by Clink started from Explorer or the Start menu", ("app", Note.Isolate(friendlyName)));
 
     /// <summary>
     /// Looks at where <see cref="Settings.Dir"/> really is and sets <see cref="Package"/>, <see cref="FriendlyName"/> and

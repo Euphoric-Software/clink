@@ -55,13 +55,18 @@ internal static class ToastShareLayoutTests
             var toast = SplitToast(label);
             LayOut(toast);
             double available = RowAvailable(toast);
-            double needed = toast.ClipButtons.DesiredSize.Width - toast.ClipButtons.Margin.Left;
-            Check.True(needed <= available - RequiredSlack,
-                $"split row with \"{label}\" needs {needed:0.0} px of {available:0.0} px (slack {available - needed:0.0}, wants {RequiredSlack:0})");
-            // really arranged: Folder's right edge is inside the card's content area
+            // really arranged: Folder's right edge is inside the card's content area, and Folder is on Share's row (one row, as in English before the row could wrap)
             double folderRight = toast.FolderButton.TranslatePoint(new Point(toast.FolderButton.ActualWidth, 0), toast.Card).X;
             double contentRight = CardWidth - toast.Card.BorderThickness.Right - toast.Card.Padding.Right;
             Check.True(folderRight <= contentRight - RequiredSlack, $"Folder ends at {folderRight:0.0}, the content area at {contentRight:0.0} (\"{label}\")");
+            Check.Near(toast.ShareButton.TranslatePoint(new Point(0, 0), toast.Card).Y, toast.FolderButton.TranslatePoint(new Point(0, 0), toast.Card).Y, 0.5, $"Folder is on Share's row (\"{label}\")");
+            Check.Near(toast.ShareButton.ActualHeight, toast.FolderButton.ActualHeight, 0.5, $"Folder is as high as Share (\"{label}\")");
+            Check.Near(toast.TrimButton.ActualHeight, toast.FolderButton.ActualHeight, 0.5, $"Trim is as high as Folder (\"{label}\")");
+            // a WrapPanel's DesiredSize.Width is its widest line, so the width the whole row wants is measured with all the room there is
+            toast.ClipButtons.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+            double needed = toast.ClipButtons.DesiredSize.Width - toast.ClipButtons.Margin.Left;
+            Check.True(needed <= available - RequiredSlack,
+                $"split row with \"{label}\" needs {needed:0.0} px of {available:0.0} px (slack {available - needed:0.0}, wants {RequiredSlack:0})");
             if (label == "Share") mainWidth = toast.ShareButton.ActualWidth;
             else Check.Near(mainWidth, toast.ShareButton.ActualWidth, 0.01, "the main half does not grow from \"Share\" to \"Uploading… 100%\": the layout does not shift");
         }
@@ -71,10 +76,21 @@ internal static class ToastShareLayoutTests
     public static void The_plain_toast_button_row_is_unchanged()
     {
         var toast = new ToastWindow();
-        Check.Equal(new Thickness(8, 0, 0, 0), toast.TrimButton.Margin, "Trim keeps its 8 px gap");
-        Check.Equal(new Thickness(8, 0, 0, 0), toast.FolderButton.Margin, "Folder keeps its 8 px gap");
+        // The row is a WrapPanel (a longer language wraps instead of running off the card): each button carries a 4 px bottom margin as the gap
+        // between wrapped rows and the panel's own -4 bottom margin cancels it, so a single row (English) is laid out exactly as before.
+        Check.Equal(new Thickness(8, 0, 0, 4), toast.TrimButton.Margin, "Trim keeps its 8 px gap");
+        Check.Equal(new Thickness(8, 0, 0, 4), toast.FolderButton.Margin, "Folder keeps its 8 px gap");
+        Check.Equal(new Thickness(16, 10, 0, -4), toast.ClipButtons.Margin, "the row sits where it did: the bottom margins net to zero");
+        Check.True(toast.ClipButtons is WrapPanel, "the row wraps");
         Check.Equal(132.0, toast.ShareButton.MinWidth, "the plain button keeps MinWidth 132");
         Check.True(toast.ShareArrow.Visibility == Visibility.Collapsed, "no arrow");
+        // English lays the plain row out on one row: Share, Trim and Folder at the same top and equally high
+        LayOut(toast);
+        double top = toast.ShareButton.TranslatePoint(new Point(0, 0), toast.Card).Y;
+        Check.Near(top, toast.TrimButton.TranslatePoint(new Point(0, 0), toast.Card).Y, 0.5, "Trim is on Share's row");
+        Check.Near(top, toast.FolderButton.TranslatePoint(new Point(0, 0), toast.Card).Y, 0.5, "Folder is on Share's row");
+        Check.Near(toast.ShareButton.ActualHeight, toast.FolderButton.ActualHeight, 0.5, "Folder is as high as Share");
+        Check.Near(toast.ShareButton.ActualHeight, toast.TrimButton.ActualHeight, 0.5, "Trim is as high as Share");
     }
 
     [UnitTest]

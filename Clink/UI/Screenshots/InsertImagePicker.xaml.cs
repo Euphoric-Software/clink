@@ -57,12 +57,12 @@ public partial class InsertImagePicker : Window
         var tiles = new List<(Image Image, string Path)>();
         foreach (var e in items)
         {
-            var image = new Image { Width = ThumbnailWidth, Height = 100, Stretch = Stretch.Uniform, SnapsToDevicePixels = true };
+            var image = new Image { Width = ThumbnailWidth, Height = 100, Stretch = Stretch.Uniform, SnapsToDevicePixels = true, FlowDirection = FlowDirection.LeftToRight };
             RenderOptions.SetBitmapScalingMode(image, BitmapScalingMode.HighQuality);
             var caption = new TextBlock
             {
                 Style = (Style)FindResource("MutedText"),
-                Text = L.T("{when}  ·  {size}", ("when", e.Created.ToString("MMM d, HH:mm", L.FormatCulture)), ("size", SelectionMath.SizeLabel(e.Width, e.Height))),
+                Text = L.T("{when}  ·  {size}", ("when", L.Isolate(e.Created.ToString("MMM d, HH:mm", L.FormatCulture))), ("size", L.Ltr(SelectionMath.SizeLabel(e.Width, e.Height)))),
                 FontSize = 11,
                 TextTrimming = TextTrimming.CharacterEllipsis,
                 TextWrapping = TextWrapping.NoWrap,

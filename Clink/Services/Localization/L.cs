@@ -491,10 +491,11 @@ internal static class L
     }, FormatCulture);
 
     /// <summary>
-    /// Keeps left-to-right text (a file name, a path, a hotkey, a URL) intact inside right-to-left text. Wraps it in U+200E (left-to-right mark) on both sides when
-    /// the language is right-to-left; returns it unchanged otherwise. WPF ignores LRE/LRO/LRI/FSI...PDF/PDI (see <see cref="Isolate"/>), so the mark is what keeps the text in order.
+    /// Keeps left-to-right text (a file name, a path, a hotkey, a URL) intact inside right-to-left text. Under a right-to-left language it returns U+200E U+202A (LRE) text U+202C (PDF) U+200E;
+    /// returns it unchanged otherwise. WPF ignores LRE/LRO/LRI/FSI...PDF/PDI (see <see cref="Isolate"/>), so there the two U+200E marks keep the text in order; the Win32 surfaces
+    /// (MessageBox, tray menu, shell balloons) honour the LRE...PDF embedding but not WPF's marks alone, which is what keeps a path with right-to-left folder names in component order there.
     /// </summary>
-    public static string Ltr(string text) => IsRtl && text.Length > 0 ? "\u200E" + text + "\u200E" : text;
+    public static string Ltr(string text) => IsRtl && text.Length > 0 ? "\u200E\u202A" + text + "\u202C\u200E" : text;
 
     /// <summary>
     /// Keeps a piece of text whose direction is not known in advance (a monitor name, a window title, a size such as 1920x1080 whose neutral
@@ -511,12 +512,24 @@ internal static class L
         return mark + text + mark;
     }
 
+    /// <summary>The first strong letter decides. Arabic-Indic and extended Arabic-Indic digits and the byte order mark are in the right-to-left blocks but are not letters; surrogate pairs are decoded (Old South Arabian, Hatran, Adlam and the like are right-to-left).</summary>
     private static bool FirstStrongIsRtl(string text)
     {
-        foreach (char c in text)
+        for (int i = 0; i < text.Length; i++)
         {
-            if (c is >= '\u0590' and <= '\u08FF' or >= '\uFB1D' and <= '\uFDFF' or >= '\uFE70' and <= '\uFEFF') return true;
-            if (char.IsLetter(c)) return false;
+            int at = i, cp = text[i];
+            if (char.IsHighSurrogate(text[i]) && i + 1 < text.Length && char.IsLowSurrogate(text[i + 1])) { cp = char.ConvertToUtf32(text[i], text[i + 1]); i++; }
+            if (cp is >= 0x0660 and <= 0x0669 or >= 0x06F0 and <= 0x06F9 or 0xFEFF) continue;
+            if (cp is >= 0x0590 and <= 0x08FF or >= 0xFB1D and <= 0xFDFF or >= 0xFE70 and <= 0xFEFF or >= 0x10800 and <= 0x10FFF or >= 0x1E800 and <= 0x1EFFF)
+            {
+                // in the right-to-left blocks but not letters: marks (the harakat U+064B-065F), format characters (U+0600-0605, U+06DD), punctuation and symbols (U+060C, U+061B, U+061F)
+                if (CharUnicodeInfo.GetUnicodeCategory(text, at) is UnicodeCategory.NonSpacingMark or UnicodeCategory.EnclosingMark or UnicodeCategory.Format
+                    or UnicodeCategory.ConnectorPunctuation or UnicodeCategory.DashPunctuation or UnicodeCategory.OpenPunctuation or UnicodeCategory.ClosePunctuation
+                    or UnicodeCategory.InitialQuotePunctuation or UnicodeCategory.FinalQuotePunctuation or UnicodeCategory.OtherPunctuation
+                    or UnicodeCategory.MathSymbol or UnicodeCategory.CurrencySymbol or UnicodeCategory.ModifierSymbol or UnicodeCategory.OtherSymbol) continue;
+                return true;
+            }
+            if (char.IsLetter(text, at)) return false;
         }
         return false;
     }

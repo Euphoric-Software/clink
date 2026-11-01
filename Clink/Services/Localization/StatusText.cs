@@ -56,7 +56,7 @@ internal static class EngineStatusText
     public static string Detail(AudioDetailKind kind, string? arg) => kind switch
     {
         AudioDetailKind.Everything => L.T("audio-detail|everything"),
-        AudioDetailKind.EverythingExcept => L.T("audio-detail|everything except {app}", ("app", arg)),
+        AudioDetailKind.EverythingExcept => L.T("audio-detail|everything except {app}", ("app", arg == null ? null : L.Isolate(arg))),
         AudioDetailKind.MixParts => L.T("audio-detail|game + mic + voice, always track 1"),
         AudioDetailKind.WaitingForApp => L.T("audio-detail|waiting for app"),
         AudioDetailKind.NotConnectedOrDisabled => L.T("audio-detail|not connected or disabled"),
@@ -66,7 +66,7 @@ internal static class EngineStatusText
         AudioDetailKind.NotOutputDevice => L.T("audio-detail|not an output device"),
         AudioDetailKind.NotInputDevice => L.T("audio-detail|not an input device"),
         AudioDetailKind.AudioServiceDown => L.T("audio-detail|Windows Audio service not running"),
-        _ => arg ?? "",   // Name (an app or device name) and Other (a system text): as they are
+        _ => L.Isolate(arg ?? ""),   // Name (an app or device name) and Other (a system text): as they are
     };
 
     /// <summary>The detail of a track: its source's detail, with "mix only" for a track that is only part of the mix; null for none.</summary>
@@ -82,7 +82,8 @@ internal static class EngineStatusText
     {
         string name = Track(track.Kind);
         string? detail = Detail(track);
-        return (track.Running ? "●" : "○") + " " + (detail == null ? name : L.T("audio-line|{name} ({detail})", ("name", name), ("detail", detail)));
+        // the spaces inside one entry do not break, so a wrapping line breaks between entries (and keeps "● Game (everything)" together)
+        return ((track.Running ? "●" : "○") + " " + (detail == null ? name : L.T("audio-line|{name} ({detail})", ("name", name), ("detail", detail)))).Replace(' ', '\u00A0');
     }
 
     /// <summary>The audio line of the main window: the entries side by side, or "No audio tracks" (the caller's text) when there are none.</summary>

@@ -25,7 +25,7 @@ internal sealed class ReplayLengthSlider : FrameworkElement
         seconds < 60 ? L.T("unit|{n} s", ("n", seconds))
         : seconds < 3600 ? L.T("unit|{n} m", ("n", seconds / 60))
         : L.T("unit|{n} h", ("n", seconds / 3600));
-    private const double LabelWidth = 50, PadLeft = 7, PadRight = 10;
+    private const double MinLabelWidth = 50, PadLeft = 7, PadRight = 10;
     private const double TrackY = 22, TrackHeight = 4, ThumbRadius = 7, ControlHeight = 50;
     private static readonly double s_logMin = Math.Log(Minimum), s_logSpan = Math.Log(Maximum) - Math.Log(Minimum);
 
@@ -38,6 +38,7 @@ internal sealed class ReplayLengthSlider : FrameworkElement
 
     public ReplayLengthSlider()
     {
+        FlowDirection = FlowDirection.LeftToRight;   // the scale runs left to right in every language (a local value: the window root is right-to-left)
         Focusable = true;
         FocusVisualStyle = null;   // keyboard focus is drawn by OnRender (accent ring on the thumb), not as a rectangle around the row
         Height = ControlHeight;
@@ -89,7 +90,37 @@ internal sealed class ReplayLengthSlider : FrameworkElement
     public static int StepFor(int seconds) => seconds < 60 ? 1 : seconds < 300 ? 5 : seconds < 900 ? 15 : seconds < 1800 ? 30 : 60;
 
     private double TrackLeft => PadLeft + ThumbRadius;
-    private double TrackRight => Math.Max(TrackLeft + 10, ActualWidth - LabelWidth - PadRight - ThumbRadius);
+    private double TrackRight => Math.Max(TrackLeft + 10, ActualWidth - LabelWidth() - PadRight - ThumbRadius);
+
+    private readonly List<(double X, double Width)> _drawnCaptions = new();
+    private double _labelWidth = MinLabelWidth;
+    private string? _labelWidthCode;     // the language and the scale the width was worked out for (compared, not concatenated: no string per call)
+    private double _labelWidthPpd;
+
+    /// <summary>
+    /// The room kept at the right for the value label: 50, or the widest value the language can write ("1 h", "59 m 59 s" ...) plus a little, so
+    /// a longer language does not run the label over the track (English stays at 50). Worked out once per language.
+    /// </summary>
+    internal double LabelWidthPx => LabelWidth();
+
+    /// <summary>The tick captions the last render drew (left edge and width), for a test: a caption that would run into its neighbour is left out.</summary>
+    internal IReadOnlyList<(double X, double Width)> DrawnCaptions => _drawnCaptions;
+
+    private double LabelWidth()
+    {
+        double ppd = VisualTreeHelper.GetDpi(this).PixelsPerDip;
+        string code = L.Code;
+        if (_labelWidthPpd == ppd && string.Equals(_labelWidthCode, code, StringComparison.Ordinal)) return _labelWidth;
+        _labelWidthCode = code;
+        _labelWidthPpd = ppd;
+        double widest = 0;
+        var family = TryFindResource("UiFont") as FontFamily ?? new FontFamily("Segoe UI");
+        var bold = new Typeface(family, FontStyles.Normal, FontWeights.SemiBold, FontStretches.Normal);
+        foreach (int seconds in new[] { Minimum, 59, 885, 1770, Maximum })   // "59 s", "14:45", "29:30", "1 h": the widest shapes a value takes
+            widest = Math.Max(widest, new FormattedText(Capabilities.FormatDuration(seconds), L.UiCulture, FlowDirection.LeftToRight, bold, 13, Brushes.Black, ppd).WidthIncludingTrailingWhitespace);
+        _labelWidth = Math.Max(MinLabelWidth, Math.Ceiling(widest) + 6);
+        return _labelWidth;
+    }
     private double XOf(int seconds) => TrackLeft + Fraction(seconds) * (TrackRight - TrackLeft);
     private double FractionAt(double x) => Math.Clamp((x - TrackLeft) / (TrackRight - TrackLeft), 0, 1);
 
@@ -200,20 +231,31 @@ internal sealed class ReplayLengthSlider : FrameworkElement
             double xl = XOf(_limit);
             dc.DrawRectangle(overLimit, null, new Rect(xl, TrackY - TrackHeight / 2, Math.Max(0, right - xl), TrackHeight));
         }
-        var ideal = new FormattedText(L.T("replay-length|ideal"), CultureInfo.CurrentCulture, FlowDirection.LeftToRight, face, 10, accent2, ppd);
+        var ideal = new FormattedText(L.T("replay-length|ideal"), L.UiCulture, FlowDirection.LeftToRight, face, 10, accent2, ppd);
         dc.DrawText(ideal, new Point((zl + zr) / 2 - ideal.Width / 2, TrackY - TrackHeight / 2 - 4 - ideal.Height));
 
-        // ticks + labels
+        // ticks + labels. The ticks are always drawn; a caption that would run into the one before it (a longer language) is left out, the first and the last stay.
         var tickPen = new Pen(muted, 1) { StartLineCap = PenLineCap.Flat };
+        var captions = new List<(double X, FormattedText Text)>();
         for (int i = 0; i < s_ticks.Length; i++)
         {
-            int sec = s_ticks[i];
-            string label = TickLabel(sec);
-            double x = Math.Round(XOf(sec)) + 0.5;
+            double x = Math.Round(XOf(s_ticks[i])) + 0.5;
             dc.DrawLine(tickPen, new Point(x, TrackY + TrackHeight / 2 + 3), new Point(x, TrackY + TrackHeight / 2 + 7));
-            var ft = new FormattedText(label, CultureInfo.CurrentCulture, FlowDirection.LeftToRight, face, 10, muted, ppd);
+            var ft = new FormattedText(TickLabel(s_ticks[i]), L.UiCulture, FlowDirection.LeftToRight, face, 10, muted, ppd);
             double tx = i == 0 ? Math.Max(left - ThumbRadius, x - ft.Width / 2) : i == s_ticks.Length - 1 ? Math.Min(right + ThumbRadius - ft.Width, x - ft.Width / 2) : x - ft.Width / 2;
-            dc.DrawText(ft, new Point(tx, TrackY + TrackHeight / 2 + 8));
+            captions.Add((tx, ft));
+        }
+        const double CaptionGap = 4;
+        double lastEnd = double.NegativeInfinity, lastStart = captions[^1].X;
+        _drawnCaptions.Clear();
+        for (int i = 0; i < captions.Count; i++)
+        {
+            var (cx, cft) = captions[i];
+            bool edge = i == 0 || i == captions.Count - 1;
+            if (!edge && (cx < lastEnd + CaptionGap || cx + cft.Width + CaptionGap > lastStart)) continue;
+            dc.DrawText(cft, new Point(cx, TrackY + TrackHeight / 2 + 8));
+            _drawnCaptions.Add((cx, cft.Width));
+            lastEnd = cx + cft.Width;
         }
 
         // thumb
@@ -222,7 +264,7 @@ internal sealed class ReplayLengthSlider : FrameworkElement
         dc.DrawEllipse(Value > _limit ? danger : fg, hot ? new Pen(accent, 2) : null, new Point(tx0, TrackY), ThumbRadius, ThumbRadius);
 
         // value label at the right
-        var val = new FormattedText(Capabilities.FormatDuration(Value), CultureInfo.CurrentCulture, FlowDirection.LeftToRight, bold, 13, fg, ppd) { TextAlignment = TextAlignment.Right };
+        var val = new FormattedText(Capabilities.FormatDuration(Value), L.UiCulture, FlowDirection.LeftToRight, bold, 13, fg, ppd) { TextAlignment = TextAlignment.Right };
         dc.DrawText(val, new Point(w - PadRight + 4, TrackY - val.Height / 2));
     }
 }

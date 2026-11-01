@@ -1470,6 +1470,6 @@ internal sealed class ScreenshotService
         string size = SelectionMath.SizeLabel(e.Width, e.Height);
         if (s.Copied) return L.T("{size} · copied to clipboard", ("size", L.Ltr(size)));
         if (s.ClipboardFailed) return L.T("{size} · clipboard busy, not copied", ("size", L.Ltr(size)));
-        return size;
+        return L.Ltr(size);
     }
 }

@@ -436,7 +436,7 @@ internal static class TestRunner
     }
 
     /// <summary>The process-wide switches a test could change and forget: where the settings, the clip index, the updates, the real Clink's folder and the other apps' packages live, the --dev state, and the updater's fake network and feed trust anchors.</summary>
-    private sealed record Shared(string? SettingsDir, string? ClipIndex, string? UpdatesDir, string InstanceSuffix, bool DevHotkeys, bool DevAcceptImport, bool DevToken, bool DevRecord, bool DevQuiet, bool DevQuietRecord, bool DevNoMarker, string? DevDemoStatus,
+    private sealed record Shared(string? SettingsDir, string? ClipIndex, string? UpdatesDir, string InstanceSuffix, bool DevHotkeys, bool DevAcceptImport, bool DevToken, bool DevRecord, bool DevQuiet, bool DevQuietRecord, bool DevNoMarker, string? DevDemoStatus, string? DevLanguage,
         string? RealDir, string? PackagesRoot,
         Func<System.Net.Http.HttpRequestMessage, CancellationToken, Task<System.Net.Http.HttpResponseMessage>>? UpdaterHttp, FeedTrust? FeedTrust,
         TimeSpan? FeedTimeout, Packaging? Packaging, Func<string, TimeSpan, Updater.PreflightResult>? Preflight, IReadOnlyList<Version>? Runtimes, bool? Elevated,
@@ -444,7 +444,7 @@ internal static class TestRunner
         TimeSpan? DownloadTotalTimeout, long? DownloadMinRate, TimeSpan? DownloadRateWindow, (string? Stable, string? Dev)? FloorSeeds, string? DefaultClips, object LState)
     {
         public static Shared Capture() => new(Settings.DirOverride, ClipLibrary.IndexPathOverride, Updater.UpdatesDirOverride,
-            AppController.InstanceSuffix, AppController.DevHotkeys, AppController.DevAcceptImport, AppController.DevToken, AppController.DevRecord, AppController.DevQuiet, AppController.DevQuietRecord, AppController.DevNoMarker, AppController.DevDemoStatus,
+            AppController.InstanceSuffix, AppController.DevHotkeys, AppController.DevAcceptImport, AppController.DevToken, AppController.DevRecord, AppController.DevQuiet, AppController.DevQuietRecord, AppController.DevNoMarker, AppController.DevDemoStatus, AppController.DevLanguage,
             Settings.RealDirOverride, SettingsImport.PackagesRoot,
             Updater.HttpOverride, Updater.FeedOverride, Updater.FeedTimeoutOverride,
             Updater.PackagingOverride, Updater.PreflightOverride, DotNetRuntimes.Override, Updater.IsElevatedOverride,
@@ -549,6 +549,7 @@ internal static class TestRunner
         AppController.DevQuietRecord = before.DevQuietRecord;
         AppController.DevNoMarker = before.DevNoMarker;
         AppController.DevDemoStatus = before.DevDemoStatus;
+        AppController.DevLanguage = before.DevLanguage;
         // The UI language: English and the embedded catalogs during a test (the English assertions hold on any PC), as it was afterwards.
         if (scratch != null) L.PinEnglish(); else L.Restore(before.LState);
         Settings.DirOverride = scratch ?? before.SettingsDir;

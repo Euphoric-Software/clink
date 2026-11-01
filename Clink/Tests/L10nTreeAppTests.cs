@@ -475,8 +475,8 @@ internal static class L10nTreeAppTests
                 Check.False(n.ToString().Any(marks.Contains), "ToString is English: " + n);
                 Check.Equal(n.English, n.ToString());
             }
-            Check.True(note.Shown.Contains("\u200E" + @"C:\Clips\x.mp4" + "\u200E"), "Shown has the marks");
-            Check.True(nested.Shown.Contains("\u200E" + @"C:\Apps" + "\u200E"), "a nested note's Shown has them too");
+            Check.True(note.Shown.Contains("\u200E\u202A" + @"C:\Clips\x.mp4" + "\u202C\u200E"), "Shown has the marks");
+            Check.True(nested.Shown.Contains("\u200E\u202A" + @"C:\Apps" + "\u202C\u200E"), "a nested note's Shown has them too");
             // even a mark that got into a plain string argument does not reach the English
             Check.False(Note.Of("Cannot start: {error}", ("error", L.Ltr("boom"))).English.Any(marks.Contains), "the safety net strips stray marks");
         }

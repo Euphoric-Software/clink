@@ -62,13 +62,47 @@ internal static class RtlWindows
             s_registered = true;
         }
         EventManager.RegisterClassHandler(typeof(Window), FrameworkElement.LoadedEvent, new RoutedEventHandler(OnWindowLoaded));
+        if (!TestGuard.Active) ApplyAppStyles();   // the tests that call Register must not leave the process-wide tooltip style behind
         return true;
+    }
+
+    /// <summary>
+    /// Every tooltip reads right-to-left in a right-to-left language. A tooltip inherits FlowDirection from the element it belongs to, so
+    /// the tooltip of a control that is pinned left-to-right (the thumbnails, the timeline, the replay-length slider, the editor canvas,
+    /// the monitor map) would read left to right although its text is a sentence. A style setter beats the inherited value, whatever
+    /// element the tooltip belongs to, and reaches tooltips that are created later. The app's own tooltip style (Theme.xaml) stays the base.
+    /// </summary>
+    internal static void ApplyAppStyles()
+    {
+        var app = Application.Current;
+        if (app == null || !L.IsRtl) return;
+        var existing = app.TryFindResource(typeof(System.Windows.Controls.ToolTip)) as Style;
+        if (existing != null && SetsRightToLeft(existing)) return;
+        var style = new Style(typeof(System.Windows.Controls.ToolTip), existing);
+        style.Setters.Add(new Setter(FrameworkElement.FlowDirectionProperty, FlowDirection.RightToLeft));
+        app.Resources[typeof(System.Windows.Controls.ToolTip)] = style;
+    }
+
+    /// <summary>Takes the style of <see cref="ApplyAppStyles"/> away again (the tests).</summary>
+    internal static void RemoveAppStyles()
+    {
+        var app = Application.Current;
+        if (app != null && app.Resources[typeof(System.Windows.Controls.ToolTip)] is Style s && SetsRightToLeft(s)) app.Resources.Remove(typeof(System.Windows.Controls.ToolTip));
+    }
+
+    /// <summary>Whether <paramref name="style"/> (or one it is based on) sets FlowDirection to RightToLeft.</summary>
+    internal static bool SetsRightToLeft(Style? style)
+    {
+        for (; style != null; style = style.BasedOn)
+            foreach (var s in style.Setters)
+                if (s is Setter { Property: { } p, Value: FlowDirection.RightToLeft } && p == FrameworkElement.FlowDirectionProperty) return true;
+        return false;
     }
 
     /// <summary>The Window.Loaded class handler (internal, for the tests: raising Loaded on a window is a test-guard failure).</summary>
     internal static void OnWindowLoaded(object sender, RoutedEventArgs e)
     {
-        if (sender is not Window w || !ReferenceEquals(e.OriginalSource, w)) return;   // Loaded of a child bubbles up too
+        if (sender is not Window w || !ReferenceEquals(e.OriginalSource, w)) return;   // defensive: only the window's own Loaded
         try { ApplyTo(w); }
         catch (Exception ex) { Log.Error("[l10n] could not make " + w.GetType().Name + " right-to-left, it stays left-to-right", ex); }
     }

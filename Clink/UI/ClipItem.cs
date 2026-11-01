@@ -16,13 +16,13 @@ internal sealed class ClipItem : INotifyPropertyChanged
 
     public ClipItem(ClipEntry e) { Entry = e; }
 
-    public string Title => string.IsNullOrEmpty(Entry.Game) ? L.T("Clip") : L.Ltr(Entry.Game!);
+    public string Title => string.IsNullOrEmpty(Entry.Game) ? L.T("Clip") : L.Isolate(Entry.Game!);
     public string Meta
     {
         get
         {
             string dur = Entry.Duration > 0 ? $"{TimeSpan.FromSeconds(Entry.Duration).ToString("m\\:ss", L.FormatCulture)} · " : "";
-            return $"{Entry.Created.ToString("MMM d, HH:mm", L.FormatCulture)} · {dur}{L.Bytes(Entry.Size)}";
+            return $"{L.Isolate(Entry.Created.ToString("MMM d, HH:mm", L.FormatCulture))} · {dur}{L.Bytes(Entry.Size)}";
         }
     }
     public string ShareLabel => string.IsNullOrEmpty(Entry.CopiumLink) ? L.T("Share") : L.T("Copy link");

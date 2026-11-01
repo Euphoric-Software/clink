@@ -233,7 +233,7 @@ internal sealed partial class AppController : IDisposable
         RecordingState.Paused => L.T("Paused"),
         _ when betweenParts => L.T("Recording (resuming…)"),   // between two parts of a recording
         RecordingState.Recording when manualSeconds is double secs => RecordingPolicy.StatusLine(secs, game),
-        RecordingState.Recording => game != null ? L.T("Recording · {game}", ("game", game)) : L.T("status|Recording"),
+        RecordingState.Recording => game != null ? L.T("Recording · {game}", ("game", L.Isolate(game))) : L.T("status|Recording"),
         RecordingState.WaitingForGame => L.T("Waiting for a game…"),
         RecordingState.Error => L.T("Error"),
         _ => L.T("Starting…"),
@@ -710,7 +710,7 @@ internal sealed partial class AppController : IDisposable
         // AppData, so says so; a real one took another copy's settings over on a first start (App.RunNormal), or looks for a copy
         // worth offering (the tray item, below).
         if (AppDataRedirect.NoticeNote is { } redirected) Say(redirected);
-        if (Settings.ImportedFrom is { } taken) SayT("Imported the settings Clink saved while started from inside {app} ({saved})", ("app", Note.Ltr(taken.FriendlyName)), ("saved", taken.SavedLocalText));
+        if (Settings.ImportedFrom is { } taken) SayT("Imported the settings Clink saved while started from inside {app} ({saved})", ("app", Note.Isolate(taken.FriendlyName)), ("saved", taken.SavedLocalText));
         // Settings were imported (now, or by the Clink that restarted into this one) but the clip lists could not be merged: said once,
         // and every later start tries the merge again.
         if (SettingsImport.TakeClipsNoticeNote() is { } clipsNotice) { Say(clipsNotice); ShowBalloon("Clink", clipsNotice.Shown); }
@@ -868,8 +868,8 @@ internal sealed partial class AppController : IDisposable
         if (_updateItem != null) { _updateItem.Text = L.T("Update to v{version}", ("version", L.Ltr(version.ToString()))); _updateItem.Visible = true; }
         var problem = Updater.InstallProblemReason(Environment.ProcessPath ?? "");
         var msg = problem == null
-            ? Note.Of("v{version} downloaded - installs on next start, or click 'Update to v{version}'", ("version", version.ToString()))
-            : Note.Of("v{version} downloaded, but {problem}. Install it by hand from {folder}", ("version", version.ToString()), ("problem", problem), ("folder", Note.Ltr(Updater.UpdatesDir)));
+            ? Note.Of("v{version} downloaded - installs on next start, or click 'Update to v{version}'", ("version", Note.Ltr(version.ToString())))
+            : Note.Of("v{version} downloaded, but {problem}. Install it by hand from {folder}", ("version", Note.Ltr(version.ToString())), ("problem", problem), ("folder", Note.Ltr(Updater.UpdatesDir)));
         Say(msg);
         if (!MainWindowVisible) ShowBalloon(L.T("Clink update ready"), msg.Shown);
         UpdateStateChanged?.Invoke();
@@ -929,20 +929,20 @@ internal sealed partial class AppController : IDisposable
         if (Updater.PendingVersion is { } v && !Updater.ShouldInstall(v, Updater.Current, Settings.UseDevBuilds, allowLeaveDev: true))
         {
             Updater.DropStalePending();
-            SayT("v{version} was downloaded for the other update channel and is not installed - click the version in the footer to check again", ("version", v.ToString()));
+            SayT("v{version} was downloaded for the other update channel and is not installed - click the version in the footer to check again", ("version", Note.Ltr(v.ToString())));
             return;
         }
         string? pending = Updater.PendingPath;
         if (pending == null || Updater.PendingVersion == null || !File.Exists(pending)) { SayT("No update downloaded yet"); return; }
         var problem = Updater.InstallProblemReason(Environment.ProcessPath ?? "");
-        if (problem != null) { SayT("Cannot install v{version}: {problem}. Install it by hand from {folder}", ("version", Updater.PendingVersion.Value.ToString()), ("problem", problem), ("folder", Note.Ltr(Updater.UpdatesDir))); return; }
+        if (problem != null) { SayT("Cannot install v{version}: {problem}. Install it by hand from {folder}", ("version", Note.Ltr(Updater.PendingVersion.Value.ToString())), ("problem", problem), ("folder", Note.Ltr(Updater.UpdatesDir))); return; }
         var version = Updater.PendingVersion.Value;
         _applying = true;
         Updater.ApplyToken token;
         try
         {
             Log.Info($"update: installing v{version} from {pending}");
-            SayT("Checking v{version} before installing…", ("version", version.ToString()));
+            SayT("Checking v{version} before installing…", ("version", Note.Ltr(version.ToString())));
             // The hash of the whole file and the start-up check (up to 15 s) must not hold the window: off the UI thread.
             token = await Task.Run(() => Updater.PrepareApply(pending));
         }
@@ -965,7 +965,7 @@ internal sealed partial class AppController : IDisposable
         {
             _applying = false;
             Log.Warn($"update: v{version} is no longer the update to install; not starting it");
-            SayT("v{version} is no longer the update to install", ("version", version.ToString()));
+            SayT("v{version} is no longer the update to install", ("version", Note.Ltr(version.ToString())));
             return;
         }
         try
@@ -1016,7 +1016,7 @@ internal sealed partial class AppController : IDisposable
         if (_importItem != null)
         {
             _importItem.Visible = copy != null;
-            if (copy != null) _importItem.Text = L.T("Import settings saved {saved} ({app} copy)…", ("saved", copy.SavedLocalText), ("app", L.Ltr(copy.FriendlyName)));
+            if (copy != null) _importItem.Text = L.T("Import settings saved {saved} ({app} copy)…", ("saved", copy.SavedLocalText), ("app", L.Isolate(copy.FriendlyName)));
         }
         if (copy == null) return;
         if (!_importOffered)
@@ -1051,7 +1051,7 @@ internal sealed partial class AppController : IDisposable
     /// </summary>
     internal static string ImportQuestion(ForeignSettings copy)
     {
-        var args = new[] { ("saved", (object?)copy.SavedLocalText), ("app", L.Ltr(copy.FriendlyName)), ("changes", SettingsImport.LabelList(copy.Differences)) };
+        var args = new[] { ("saved", (object?)copy.SavedLocalText), ("app", L.Isolate(copy.FriendlyName)), ("changes", SettingsImport.LabelList(copy.Differences)) };
         return copy.Differences.Count > 0
             ? L.T("Clink also has settings saved {saved} by a copy of Clink that was started from inside {app}.\n\nThey differ from yours in: {changes}.\n\nImport them and restart Clink? Your current settings are kept as settings.pre-import.json (or the next free settings.pre-import.N.json).\n\nIf you say no, Clink keeps your settings and stops asking about this copy. To decide later, cancel or close this message.", args)
             : L.T("Clink also has settings saved {saved} by a copy of Clink that was started from inside {app}.\n\nThey differ from yours in: a few settings.\n\nImport them and restart Clink? Your current settings are kept as settings.pre-import.json (or the next free settings.pre-import.N.json).\n\nIf you say no, Clink keeps your settings and stops asking about this copy. To decide later, cancel or close this message.", args);
@@ -2431,7 +2431,7 @@ internal sealed partial class AppController : IDisposable
         if (text != _trayText)
         {
             _trayText = text;
-            try { _tray.Text = text; } catch { }
+            try { _tray.Text = RtlFirst(text); } catch { }
             if (_statusItem != null) _statusItem.Text = status;
         }
     }
@@ -2444,7 +2444,18 @@ internal sealed partial class AppController : IDisposable
     internal static string TrayText(string name, string status)
     {
         string text = name + " · " + status;
-        return text.Length > 120 ? text[..119] + "…" : text;
+        if (text.Length <= 120) return text;
+        int cut = 119;
+        if (char.IsHighSurrogate(text[cut - 1])) cut--;   // never split a surrogate pair
+        string head = text[..cut];
+        // never leave a left-to-right embedding (L.Ltr's LRE ... PDF) open: close what the cut left open (an LRE costs one PDF, at most a few)
+        int open = 0;
+        foreach (char c in head)
+        {
+            if (c is '\u202A' or '\u202B' or '\u202D' or '\u202E') open++;
+            else if (c == '\u202C' && open > 0) open--;
+        }
+        return head + "…" + new string('\u202C', Math.Min(open, 6));
     }
 
     public void UpdateTrayHotkey()
@@ -2475,10 +2486,18 @@ internal sealed partial class AppController : IDisposable
         if (_screenshotEditItem != null) _screenshotEditItem.Visible = screenshots;
     }
 
+    /// <summary>
+    /// Under a right-to-left language, a right-to-left mark in front of text the shell draws (a tray tooltip, a balloon): Win32 takes the
+    /// direction of the first strong character, and a translation that starts with a left-to-right piece (a hotkey, a path, a name) would lay out left to right.
+    /// </summary>
+    internal static string RtlFirst(string text) => L.IsRtl && text.Length > 0 ? "\u200F" + text : text;
+
     public void ShowBalloon(string title, string text)
     {
         if (IsQuiet) return;   // --dev-quiet: no tray balloon
         if (text.Length > 250) text = text[..249] + "…";   // Shell_NotifyIcon cuts balloon text at 256 characters
+        title = RtlFirst(title);
+        text = RtlFirst(text);
         if (TestGuard.Active && _tray != null) TestGuard.CheckLaunch("a tray balloon: " + title);   // test mode only: nothing is shown
         try { _tray?.ShowBalloonTip(3000, title, text, System.Windows.Forms.ToolTipIcon.None); } catch { }
     }

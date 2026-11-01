@@ -29,7 +29,7 @@ internal sealed unsafe class GdiScreenshotSource : IScreenshotSource
     {
         int w = monitor.Width, h = monitor.Height;
         if (w <= 0 || h <= 0 || (long)w * h > BgraImage.MaxPixels) throw new ScreenshotCaptureException($"{monitor.ShortName} has an unusable size ({w} x {h})",
-            Note.Of("{monitor} has an unusable size ({size})", ("monitor", Note.Ltr(monitor.ShortName)), ("size", SelectionMath.SizeLabel(w, h))));
+            Note.Of("{monitor} has an unusable size ({size})", ("monitor", Note.Ltr(monitor.ShortName)), ("size", Note.Ltr(SelectionMath.SizeLabel(w, h)))));
         var sw = Stopwatch.StartNew();
         HDC screen = default, mem = default;
         HBITMAP dib = default;
@@ -51,7 +51,7 @@ internal sealed unsafe class GdiScreenshotSource : IScreenshotSource
             void* bits = null;
             dib = PInvoke.CreateDIBSection(mem, &bmi, DIB_USAGE.DIB_RGB_COLORS, &bits, HANDLE.Null, 0);
             if (dib.IsNull || bits == null) throw new ScreenshotCaptureException($"The screen copy could not be allocated ({w} x {h})",
-                Note.Of("The screen copy could not be allocated ({size})", ("size", SelectionMath.SizeLabel(w, h))));
+                Note.Of("The screen copy could not be allocated ({size})", ("size", Note.Ltr(SelectionMath.SizeLabel(w, h)))));
 
             old = PInvoke.SelectObject(mem, dib);
             if (old.IsNull) throw new ScreenshotCaptureException($"The screen copy of {monitor.ShortName} could not be prepared (SelectObject failed)",

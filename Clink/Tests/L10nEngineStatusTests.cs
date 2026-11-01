@@ -53,9 +53,9 @@ internal static class L10nEngineStatusTests
         (AudioDetailKind.Other, "0x88890004", "0x88890004", true),
     };
 
-    /// <summary>The audio line entry as the old MainWindow built it.</summary>
+    /// <summary>The audio line entry as the old MainWindow built it: the spaces inside an entry do not break (U+00A0), the entries are three plain spaces apart.</summary>
     private static string OldEntry(string name, bool running, string? detail) =>
-        $"{(running ? "●" : "○")} {name}{(detail != null ? $" ({detail})" : "")}"; // (the old line also ran .Replace(' ', ' '), which changes nothing)
+        $"{(running ? "●" : "○")} {name}{(detail != null ? $" ({detail})" : "")}".Replace(' ', '\u00A0');
 
     // ------------------------------------------------------------------ the enums are covered
 
@@ -150,7 +150,8 @@ internal static class L10nEngineStatusTests
             new AudioTrackStatus(TrackKind.Game, true, AudioDetail.Named("Overwatch")),
             new AudioTrackStatus(TrackKind.Voice, false, AudioDetail.WaitingForApp, MixOnly: true),
         });
-        Check.Equal("● Mix (game + mic + voice, always track 1)   ● Game (Overwatch)   ○ Voice (waiting for app, mix only)", line);
+        Check.Equal(string.Join("   ", new[] { "● Mix (game + mic + voice, always track 1)", "● Game (Overwatch)", "○ Voice (waiting for app, mix only)" }.Select(e => e.Replace(' ', '\u00A0'))), line);
+        Check.False(line.Contains(" ("), "no plain space inside an entry: a wrapping line breaks only between entries");
     }
 
     [UnitTest]

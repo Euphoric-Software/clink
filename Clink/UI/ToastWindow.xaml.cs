@@ -162,7 +162,10 @@ internal sealed class Toasts : IScreenshotToasts
     });
 
     /// <summary>Re-stacks the open toasts after one changed its height.</summary>
-    internal void Relayout() => Post(Layout);
+    internal void Relayout() { RelayoutRequests++; Post(Layout); }
+
+    /// <summary>How many times a toast asked for a re-stack (a test reads it).</summary>
+    internal int RelayoutRequests { get; private set; }
 
     /// <summary>Shows a sample toast of a kind ("clip" | "shared" | "recording" | "screenshot") with the current position and duration, ignoring the enable switch.</summary>
     public void Preview(string kind) => Post(() =>
@@ -206,7 +209,7 @@ internal sealed class Toasts : IScreenshotToasts
         var args = new[] { ("length", (object?)Capabilities.FormatClipLength(e.Duration)), ("size", Capabilities.FormatBytes(e.Size)) };
         return string.IsNullOrEmpty(e.Game)
             ? L.T("{length} · {size}", args)
-            : L.T("{game} · {length} · {size}", args.Append(("game", (object?)e.Game)).ToArray());
+            : L.T("{game} · {length} · {size}", args.Append(("game", (object?)L.Isolate(e.Game))).ToArray());
     }
 
     /// <summary>
@@ -323,7 +326,7 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         _preview = preview;
         TitleText.Text = title;
         Subtitle.Text = subtitle;
-        Subtitle.ToolTip = subtitle;
+        Subtitle.ToolTip = kind == "shared" ? L.Ltr(subtitle) : subtitle;   // (a shared toast's line is the link: a URL stays left to right in a right-to-left tooltip)
         Dot.SetResourceReference(System.Windows.Shapes.Shape.FillProperty, kind switch { "shared" or "info" => "Accent", "recording" or "record" => "Danger", "problem" or "border" => "Warn", "paused" => "Muted", _ => "Good" });
         if (kind is "problem" or "border") Subtitle.TextWrapping = TextWrapping.Wrap;   // the reason is the point: all of it, not an ellipsis
         NoticeButtons.Visibility = kind == "border" ? Visibility.Visible : Visibility.Collapsed;
@@ -349,8 +352,12 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         _hide.Tick += (_, _) => { if (!_busy && !_menuOpen) Dismiss(); };
         MouseEnter += (_, _) => _hide.Stop();
         MouseLeave += (_, _) => { if (!_busy && !_dismissed && !_menuOpen) _hide.Start(); };
+        SizeChanged += (_, e) => NoteSizeChanged(e.HeightChanged);   // a toast that grows (a button row that wraps) re-stacks the others
         SourceInitialized += (_, _) => ScreenPlacement.ExcludeFromCaptureUnlessDocShots(new WindowInteropHelper(this).Handle);
     }
+
+    /// <summary>A toast whose height changed asks its owner to re-stack the open toasts (UI thread; the owner is null for the parameterless v1 constructor).</summary>
+    internal void NoteSizeChanged(bool heightChanged) { if (heightChanged) _owner?.Relayout(); }
 
     /// <summary>The widest busy status of the main half ("Saving… 100%" is shorter): it sets the main half's width so the layout does not shift while the percentage grows.</summary>
     internal static string WidestShareStatus => UploadingText(1.0);
@@ -380,7 +387,7 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         ShareArrow.ToolTip = ShareChoices.SplitArrowTip;
         System.Windows.Automation.AutomationProperties.SetName(ShareArrow, ShareChoices.SplitArrowName);
         ShareArrow.Visibility = Visibility.Visible;
-        TrimButton.Margin = FolderButton.Margin = new Thickness(6, 0, 0, 0);
+        TrimButton.Margin = FolderButton.Margin = new Thickness(6, 0, 0, 4);   // (the 4 px bottom is the gap between wrapped rows, as in the XAML)
     }
 
     /// <summary>
@@ -730,7 +737,7 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         _shotLink = link;
         TitleText.Text = linkCopied ? L.T("Screenshot saved · link copied") : L.T("Screenshot saved · uploaded");
         Subtitle.Text = link;
-        Subtitle.ToolTip = link;
+        Subtitle.ToolTip = L.Ltr(link);   // a URL stays left to right in a right-to-left tooltip
         ShowLinkButton();
         if (!string.IsNullOrEmpty(Shot.CopiumPageUrl)) ShotOpenButton.ToolTip = L.T("Open the screenshot on Copium");
         StartTimer();

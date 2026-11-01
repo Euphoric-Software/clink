@@ -87,7 +87,7 @@
                 <TextBlock x:Name="TitleText" Style="{StaticResource Display}" Text="{l:T 'Trim'}" Margin="16,0,200,0" VerticalAlignment="Center" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
                 <Button x:Name="OpenExternalButton" Style="{StaticResource LinkButton}" Content="{l:T 'Open in default player'}" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,44,0"
                         FontSize="12" Click="OpenExternal_Click" ToolTip="{l:T 'Open the file in your default video player'}" />
-                <Button Style="{StaticResource IconButton}" Content="✕" HorizontalAlignment="Right" Margin="0,0,8,0" Click="Close_Click" />
+                <Button Style="{StaticResource IconButton}" Content="✕" HorizontalAlignment="Right" Margin="0,0,8,0" Click="Close_Click" AutomationProperties.Name="{l:T 'Close'}" />
             </Grid>
 
             <!-- Bottom row: replace / save / share / status (the buttons are for trimming; the status line is the player's too) -->
@@ -131,7 +131,7 @@
             <ui:TimelineControl x:Name="Timeline" DockPanel.Dock="Bottom" Margin="6,0,6,2" />
 
             <!-- Transport row -->
-            <Grid DockPanel.Dock="Bottom" Margin="16,8,16,0">
+            <Grid DockPanel.Dock="Bottom" Margin="16,8,16,0" FlowDirection="LeftToRight">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
@@ -152,7 +152,7 @@
 
             <!-- Video preview (click toggles play) -->
             <Border Background="Black" Margin="1,0,1,0" MouseLeftButtonUp="Preview_Click" Cursor="Hand">
-                <Image x:Name="PreviewImage" Stretch="Uniform" SnapsToDevicePixels="True" />
+                <Image x:Name="PreviewImage" Stretch="Uniform" SnapsToDevicePixels="True" FlowDirection="LeftToRight" />
             </Border>
         </DockPanel>
     </Border>
