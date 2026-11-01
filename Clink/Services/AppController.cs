@@ -728,6 +728,9 @@ internal sealed partial class AppController : IDisposable
 
     // ------------------------------------------------------------------ updates
 
+    /// <summary>Test seam: receives (title, text) of every <see cref="NotifyProblem"/> instead of a toast or balloon.</summary>
+    internal Action<string, string>? ProblemSink { get; set; }
+
     private static bool MainWindowVisible => System.Windows.Application.Current?.MainWindow?.IsVisible == true;
 
     /// <summary>
@@ -746,6 +749,7 @@ internal sealed partial class AppController : IDisposable
     /// </summary>
     private void NotifyProblem(string title, string text, bool overGame = false)
     {
+        if (ProblemSink is { } sink) { sink(title, text); return; }
         if (MainWindowInFront) return;
         if (overGame || Hotkeys.GameInFront()) Toasts.ShowProblem(title, text);
         else ShowBalloon(title, text);
@@ -1604,15 +1608,19 @@ internal sealed partial class AppController : IDisposable
         }
         else entry = NewestShareable();
         bool ok = false, joined = false, windowOpened = false;
+        string? afterCopy = null;   // this call's own "declined after the smaller copy was made" reason (not the shared LastShareOutcome)
         if (entry == null) Say("No clips to share yet");
         else
         {
             // A second press during the same upload gets the same result: the press that started it reports a failure, once.
             joined = _uploads.TryGetValue(entry, out var running) && running.Announced;
-            ok = await ShareAsync(entry, announce: true, context: ConsentContext.ShareLast);
+            ok = await ShareAsync(entry, announce: true, context: ConsentContext.ShareLast, declinedAfterCopy: reason => afterCopy = reason);
             // no Copium token: the share window is the answer, not a problem; the user's own "Not now" is not one either
             windowOpened = LastShareOutcome is ShareOutcome.FileShareOpened or ShareOutcome.Declined;
         }
+        // The user answered no question here: the copy took minutes and the sign-in, plan or switches changed meanwhile (the startup
+        // account check can do it unasked). Without this the hotkey shows "Making a smaller copy…" and then nothing.
+        if (afterCopy != null) { NotifyProblem("Clip not uploaded", afterCopy, overGame: UserNotificationState.FullScreenInFront()); return; }
         // The hotkey, the tray item and --share-last have no UI of their own, and the window is usually in the tray, minimized or
         // behind the game: a refusal (or a failure) that only reached the footer would be invisible (NotifyProblem: a toast over
         // the game, a tray balloon otherwise).
@@ -1662,7 +1670,8 @@ internal sealed partial class AppController : IDisposable
     /// </summary>
     /// <param name="allowFit">A clip over the size limit (not the length limit) is uploaded through a smaller copy made first (<see cref="MakeShareCopyAsync"/>) instead of refused; a bulk upload passes false.</param>
     /// <param name="announce">From the hotkey / tray / --share-last, which have no progress UI of their own: unless the window is in front, a toast says the upload started; and no window opens over a game.</param>
-    public async Task<bool> ShareAsync(ClipEntry entry, IProgress<double>? progress = null, bool announce = false, ConsentContext context = ConsentContext.ClipShare, bool quiet = false, Action? released = null, bool allowFit = true)
+    /// <param name="declinedAfterCopy">Called once, with the reason, when this call made a smaller copy and then declined to upload it because the sign-in, plan or switches changed meanwhile (outcome <see cref="ShareOutcome.Declined"/>). Per call, so concurrent shares cannot mix their reasons up; it runs on the awaiting context, never blocks, and is not called for a prompt the user answered.</param>
+    public async Task<bool> ShareAsync(ClipEntry entry, IProgress<double>? progress = null, bool announce = false, ConsentContext context = ConsentContext.ClipShare, bool quiet = false, Action? released = null, bool allowFit = true, Action<string>? declinedAfterCopy = null)
     {
         ShareRefusal = null;
         ShareError = null;
@@ -1824,14 +1833,17 @@ internal sealed partial class AppController : IDisposable
                     declined = true;
                     copy?.Dispose();
                     copy = null;
+                    string why;
                     if (!Settings.CloudSharingEnabled)
                     {
                         ShareError = CloudOffText;
-                        Say(CloudOffText);
+                        why = CloudOffText;
                     }
-                    else if (!Settings.CopiumConsent) Say("Not shared: sharing with Copium is not enabled");
-                    else if (Settings.CopiumToken != token) Say("Not shared: the Copium sign-in changed while the copy was made");
-                    else Say("Not shared: your Copium plan changed while the copy was made. Share it again");
+                    else if (!Settings.CopiumConsent) why = "Not shared: sharing with Copium is not enabled";
+                    else if (Settings.CopiumToken != token) why = "Not shared: the Copium sign-in changed while the copy was made";
+                    else why = "Not shared: your Copium plan changed while the copy was made. Share it again";
+                    Say(why);
+                    declinedAfterCopy?.Invoke(why);
                 }
                 else
                 {

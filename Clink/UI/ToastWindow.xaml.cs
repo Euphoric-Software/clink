@@ -579,12 +579,23 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         ShareButton.ToolTip = null;
         SetShareStatus("Uploading…");
         var progress = new Progress<double>(p => SetShareStatus(AppController.Instance.ShareProgressText(Entry, p)));
-        bool ok = await AppController.Instance.ShareAsync(Entry, progress);
+        string? afterCopy = null;   // this call's own reason when a smaller copy was made and then not uploaded
+        bool ok = await AppController.Instance.ShareAsync(Entry, progress, declinedAfterCopy: reason => afterCopy = reason);
         _busy = false;
         if (ok) { Dismiss(); return; }   // the "Shared" toast takes over
         var app = AppController.Instance;
         if (app.LastShareOutcome == ShareOutcome.FileShareOpened) { Dismiss(); return; }   // no Copium token: the share window took over
         if (_dismissed) return;          // closed while it was uploading
+        if (afterCopy != null)
+        {
+            // The copy was made but the sign-in or plan changed meanwhile: say so on the button instead of quietly restoring "Share".
+            ShowShareFailure("Not shared", afterCopy, afterCopy);
+            SetShareEnabled(true);
+            if (!CloudOn) ShareGroup.Visibility = Visibility.Collapsed;   // cloud sharing was turned off during the copy: as the Declined branch below, nothing to press (the reason stays in the subtitle)
+            _hide.Interval = TimeSpan.FromSeconds(8);
+            _hide.Start();
+            return;
+        }
         if (app.LastShareOutcome == ShareOutcome.Declined)
         {
             // "Not now" in the Share with Copium? pop-up, or cloud sharing off: nothing failed. The button is as it was (or gone).

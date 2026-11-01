@@ -4,6 +4,7 @@ using System.Net.Http;
 using Clink.Engine;
 using Clink.Screenshots;
 using Clink.Services;
+using Clink.UI;
 
 namespace Clink.Tests;
 
@@ -476,6 +477,186 @@ internal static class ShareCopiumFitTests
         Check.Null(rig.App.ShareRefusal);
         Check.False(rig.Cache.IsInUse(key), "the lease is released");
         Check.False(rig.App.IsUploading(clip));
+        Check.Equal($"Uploading… {0.2:P0}", rig.App.ShareProgressText(clip, 0.2), "the share phase was cleared");
+    }
+
+    // ------------------------------------------------------------------ the reason reaches the caller of that call (hotkey, toast)
+
+    private static ClipEntry InLibrary(Rig rig, long size)
+    {
+        var made = rig.Clip(size);
+        var entry = rig.App.Library.Add(made.Path, 5, size, null, Array.Empty<string>());
+        entry.Size = size;
+        return entry;
+    }
+
+    private static void Settle(int ms)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        ScreenshotUploadTests.Pump(() => sw.ElapsedMilliseconds > ms, "the hotkey path to settle");
+    }
+
+    /// <summary>The hotkey while the copy is made, <paramref name="change"/> applied meanwhile: the problems it raised.</summary>
+    private static (List<(string Title, string Text)> Problems, Rig Rig, ClipEntry Clip) HotkeyDuringTheCopy(Action<Rig> change)
+    {
+        var rig = new Rig();
+        try
+        {
+            var problems = new List<(string, string)>();
+            rig.App.ProblemSink = (t, x) => { lock (problems) problems.Add((t, x)); };
+            var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            rig.Transcoder.Hold = (_, ct) => gate.Task.WaitAsync(ct);
+            var clip = InLibrary(rig, OverSize);
+            rig.App.ShareLast();
+            ScreenshotUploadTests.Pump(() => rig.Transcoder.Writing.Task.IsCompleted, "the copy to start");
+            change(rig);
+            gate.SetResult();
+            ScreenshotUploadTests.Pump(() => !rig.App.IsUploading(clip), "the upload to end");
+            Settle(300);
+            return (problems, rig, clip);
+        }
+        catch
+        {
+            rig.Dispose();   // a timed-out Pump throws: put Settings.DirOverride and CopiumClient.HttpOverride back
+            throw;
+        }
+    }
+
+    [UnitTest]
+    public static void The_hotkey_says_so_when_the_sign_in_changed_during_the_copy()
+    {
+        var (problems, rig, clip) = HotkeyDuringTheCopy(r => r.S.CopiumToken = "eup_other");
+        using (rig)
+        {
+            Check.Equal("Clip not uploaded|" + SignInChangedText, string.Join(";", problems.Select(p => p.Title + "|" + p.Text)), "one problem notification with the reason");
+            Check.Equal(0, rig.Http.Requests, "nothing was uploaded");
+            Check.Null(clip.CopiumLink);
+        }
+    }
+
+    [UnitTest]
+    public static void The_hotkey_says_so_when_the_plan_changed_during_the_copy()
+    {
+        var (problems, rig, clip) = HotkeyDuringTheCopy(r => r.S.CopiumPlus = true);
+        using (rig)
+        {
+            Check.Equal("Clip not uploaded|" + PlanChangedText, string.Join(";", problems.Select(p => p.Title + "|" + p.Text)));
+            Check.Equal(0, rig.Http.Requests);
+            Check.Null(clip.CopiumLink);
+        }
+    }
+
+    [UnitTest]
+    public static void The_hotkey_stays_silent_when_the_user_declined_the_consent_prompt()
+    {
+        using var rig = new Rig();
+        rig.S.CopiumConsent = false;
+        var problems = new List<(string, string)>();
+        rig.App.ProblemSink = (t, x) => { lock (problems) problems.Add((t, x)); };
+        int asked = 0;
+        rig.App.ConsentPromptOverride = _ => { asked++; return Task.FromResult(new ConsentAnswer(ConsentChoice.NotNow)); };
+        InLibrary(rig, 5000);
+        rig.App.ShareLast();
+        ScreenshotUploadTests.Pump(() => rig.App.LastShareOutcome == ShareOutcome.Declined, "the answer");
+        Settle(300);
+        Check.Equal(1, asked);
+        Check.Equal(0, problems.Count, "the user's own Not now is no problem");
+        Check.Equal(0, rig.Http.Requests);
+    }
+
+    [UnitTest]
+    public static void Two_shares_at_once_each_get_their_own_result()
+    {
+        using var rig = new Rig();
+        var gates = new Dictionary<string, TaskCompletionSource>();
+        var declined = rig.Clip(OverSize);
+        var uploaded = rig.Clip(OverSize);
+        foreach (var c in new[] { declined, uploaded }) gates[c.Path] = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        rig.Transcoder.Hold = (src, ct) => gates[src].Task.WaitAsync(ct);
+        var reasonsA = new List<string>();
+        var reasonsB = new List<string>();
+        var a = rig.App.ShareAsync(declined, declinedAfterCopy: reasonsA.Add);
+        ScreenshotUploadTests.Pump(() => rig.Transcoder.Writing.Task.IsCompleted, "the first copy to start");
+        var b = rig.App.ShareAsync(uploaded, declinedAfterCopy: reasonsB.Add);   // waits for the copy slot behind the first
+        ScreenshotUploadTests.Pump(() => rig.App.ShareProgressText(uploaded, 0) == ShareFitModel.WaitingText, "the second clip to wait", 10_000);
+        rig.S.CopiumToken = "eup_other";   // changed while the first copy is made...
+        gates[declined.Path].SetResult();
+        Check.False(Wait(a));
+        rig.S.CopiumToken = "eup_token";   // ...and back before the second one is done
+        gates[uploaded.Path].SetResult();
+        Check.True(Wait(b));
+        Check.Equal(new[] { SignInChangedText }, reasonsA.ToArray(), "the declined share got its reason");
+        Check.Equal(0, reasonsB.Count, "the uploaded one got none");
+        Check.Null(declined.CopiumLink);
+        Check.NotNull(uploaded.CopiumLink);
+        Check.Equal(1, rig.Http.Requests);
+    }
+
+    [UnitTest]
+    public static void The_toast_Share_button_says_Not_shared_with_the_reason_when_the_copy_was_not_uploaded()
+    {
+        using var rig = new Rig();
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        rig.Transcoder.Hold = (_, ct) => gate.Task.WaitAsync(ct);
+        var clip = rig.Clip(OverSize);
+        var toast = new ToastWindow(null!, "clip", clip, null, "Clip saved", "", TimeSpan.FromSeconds(7), false);
+        var choice = toast.RunChoiceAsync(ShareChoice.Upload);
+        ScreenshotUploadTests.Pump(() => rig.Transcoder.Writing.Task.IsCompleted, "the copy to start");
+        rig.S.CopiumToken = "eup_other";
+        gate.SetResult();
+        ScreenshotUploadTests.Pump(() => choice.IsCompleted, "the toast's share");
+        choice.GetAwaiter().GetResult();
+        Check.Equal(SignInChangedText, toast.ShareButton.ToolTip as string, "the reason is the tooltip");
+        Check.Equal(SignInChangedText, toast.Subtitle.Text, "and the line below");
+        Check.True(toast.ShareArrow.Visibility == System.Windows.Visibility.Visible, "a token and cloud sharing on: the split button");
+        Check.Equal(ShareChoices.ToastLabel(true, true, false), toast.ShareButton.Content as string, "a split button keeps its Share label");
+        Check.True(toast.ShareButton.IsEnabled, "and can be pressed again");
+        toast.Dismiss();
+    }
+
+    [UnitTest]
+    public static void A_plain_toast_Share_button_reads_Not_shared_with_the_reason_in_its_tooltip()
+    {
+        using var rig = new Rig();
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        rig.Transcoder.Hold = (_, ct) => gate.Task.WaitAsync(ct);
+        var clip = rig.Clip(OverSize);
+        rig.S.CopiumToken = "";   // built without a token: the plain button
+        var toast = new ToastWindow(null!, "clip", clip, null, "Clip saved", "", TimeSpan.FromSeconds(7), false);
+        Check.True(toast.ShareArrow.Visibility != System.Windows.Visibility.Visible, "no token: the plain button");
+        rig.S.CopiumToken = "eup_token";   // signed in before the share
+        var choice = toast.RunChoiceAsync(ShareChoice.Upload);
+        ScreenshotUploadTests.Pump(() => rig.Transcoder.Writing.Task.IsCompleted, "the copy to start");
+        rig.S.CopiumToken = "eup_other";
+        gate.SetResult();
+        ScreenshotUploadTests.Pump(() => choice.IsCompleted, "the toast's share");
+        choice.GetAwaiter().GetResult();
+        Check.Equal("Not shared", toast.ShareButton.Content as string);
+        Check.Equal(SignInChangedText, toast.ShareButton.ToolTip as string, "the reason is the tooltip");
+        Check.Equal(SignInChangedText, toast.Subtitle.Text, "and the line below");
+        Check.True(toast.ShareButton.IsEnabled, "and can be pressed again");
+        toast.Dismiss();
+    }
+
+    [UnitTest]
+    public static void Cloud_sharing_turned_off_during_the_copy_hides_the_toast_Share_button_and_keeps_the_reason()
+    {
+        using var rig = new Rig();
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        rig.Transcoder.Hold = (_, ct) => gate.Task.WaitAsync(ct);
+        var clip = rig.Clip(OverSize);
+        var toast = new ToastWindow(null!, "clip", clip, null, "Clip saved", "", TimeSpan.FromSeconds(7), false);
+        Check.True(toast.ShareGroup.Visibility == System.Windows.Visibility.Visible, "cloud sharing on: the Share button shows");
+        var choice = toast.RunChoiceAsync(ShareChoice.Upload);
+        ScreenshotUploadTests.Pump(() => rig.Transcoder.Writing.Task.IsCompleted, "the copy to start");
+        rig.S.CloudSharingEnabled = false;
+        gate.SetResult();
+        ScreenshotUploadTests.Pump(() => choice.IsCompleted, "the toast's share");
+        choice.GetAwaiter().GetResult();
+        Check.Equal(AppController.CloudOffText, toast.Subtitle.Text, "the reason stays in the line below");
+        Check.True(toast.ShareGroup.Visibility == System.Windows.Visibility.Collapsed, "nothing left to press");
+        Check.Equal(0, rig.Http.Requests, "nothing went up");
+        toast.Dismiss();
     }
 
     [UnitTest]
