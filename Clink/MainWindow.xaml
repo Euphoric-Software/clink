@@ -680,7 +680,7 @@
 
                                 <TextBlock Style="{StaticResource H}" Text="{l:T 'ABOUT'}" Margin="0,14,0,6" />
                                 <Border Style="{StaticResource Card}">
-                                    <Button x:Name="ThirdPartyNoticesButton" Style="{StaticResource LinkButton}" Content="Third-party notices" FontSize="12" HorizontalAlignment="Left"
+                                    <Button x:Name="ThirdPartyNoticesButton" Style="{StaticResource LinkButton}" Content="{l:T 'Third-party notices'}" FontSize="12" HorizontalAlignment="Left"
                                             Click="ThirdPartyNotices_Click" ToolTip="{l:T 'The licences of the software Clink includes'}" />
                                 </Border>
                             </StackPanel>

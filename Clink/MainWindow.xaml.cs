@@ -57,8 +57,6 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        // ThirdPartyNoticesTests reads this button's literal English Content from the XAML source, so the catalog text is put on it here.
-        ThirdPartyNoticesButton.Content = L.T("Third-party notices");
         AppIcons.Attach(this);   // the taskbar button's own icon size, not WPF's default 32 px frame shrunk to it
         ApplyDevMarker();
         StatusHost.SizeChanged += (_, _) => UpdateHeaderFit();
@@ -2211,9 +2209,8 @@ public partial class MainWindow : Window
         if (reachable && !_archiveReachable) Clips.ArchiveIsBack();
         _archiveReachable = reachable;
         if (!IsLoaded) return;
-        ArchiveStatus.Text = _app.Archive.Status;
-        string t = ArchiveStatus.Text;
-        bool problem = t.Contains("will retry") || t.Contains("unreachable") || t.Contains("denied") || t.Contains("no rule") || t.Contains("archive location");
+        var (statusText, problem) = _app.Archive.ReadStatus();   // the service says whether the line is a problem: nothing here reads its words
+        ArchiveStatus.Text = statusText;
         ArchiveStatus.SetResourceReference(TextBlock.ForegroundProperty, problem ? "Warn" : "Muted");
         // Archive now… works with any location set, whether or not the automatic moves are on.
         bool hasLocation = !string.IsNullOrWhiteSpace(_app.Settings.ArchivePath);
