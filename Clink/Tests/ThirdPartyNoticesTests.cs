@@ -156,7 +156,7 @@ internal static class ThirdPartyNoticesTests
         Check.Equal(ThirdPartyNotices.Load(), window.NoticesText.Text, "the box holds the notices");
         Check.True(window.NoticesText.IsReadOnly, "read-only");
         Check.True(window.NoticesText.IsReadOnlyCaretVisible, "a caret, so the keyboard can move through it");
-        Check.Equal("Third-party notices", AutomationProperties.GetName(window.NoticesText), "automation name of the box");
+        Check.Equal("Third-party notices", AutomationProperties.GetName(window.NoticesText), "automation name of the box");   // (English: the tests run in English)
         Check.Equal("ThirdPartyNoticesWindow", AutomationProperties.GetAutomationId(window), "automation id of the window");
         Check.True(window.CloseButton.IsCancel, "Esc closes");
         Check.False(window.ShowInTaskbar, "no taskbar button");
@@ -172,7 +172,7 @@ internal static class ThirdPartyNoticesTests
         string xaml = File.ReadAllText(Path.Combine(root, "MainWindow.xaml"));
         Check.Contains(xaml, "x:Name=\"ThirdPartyNoticesButton\"");
         Check.Contains(xaml, "Click=\"ThirdPartyNotices_Click\"");
-        Check.Contains(xaml, "Content=\"Third-party notices\"");
+        Check.Contains(xaml, "Content=\"{l:T 'Third-party notices'}\"");   // the text comes from the catalog (key = the English text)
         string code = File.ReadAllText(Path.Combine(root, "MainWindow.xaml.cs"));
         Check.Contains(code, "void ThirdPartyNotices_Click(");
         Check.Contains(code, "ThirdPartyNoticesWindow.ShowFor(this)");
