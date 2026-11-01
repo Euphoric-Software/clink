@@ -1,12 +1,13 @@
 using System.IO;
+using Clink.Services.Localization;
 
 namespace Clink.Services;
 
 /// <summary>"Save a copy…" of a clip file: the pure rules and the safe copy (never leaves a truncated target).</summary>
 internal static class SaveCopy
 {
-    public const string OwnFileText = "That is the clip's own file";
-    public const string InsideClipsText = "Choose a folder outside Clink's clips folder";
+    public static string OwnFileText => L.T("That is the clip's own file");
+    public static string InsideClipsText => L.T("Choose a folder outside Clink's clips folder");
 
     public static string DefaultFileName(string clipPath) => Path.GetFileName(clipPath);
 
@@ -19,7 +20,7 @@ internal static class SaveCopy
     {
         string t, s;
         try { t = Path.GetFullPath(target); s = Path.GetFullPath(source); }
-        catch (Exception) { return "That is not a valid file name"; }
+        catch (Exception) { return L.T("That is not a valid file name"); }
         if (string.Equals(t, s, StringComparison.OrdinalIgnoreCase)) return OwnFileText;
         if (!string.IsNullOrWhiteSpace(clipsFolder))
         {

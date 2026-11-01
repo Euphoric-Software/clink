@@ -1,6 +1,7 @@
 using System.Windows;
 using System.Windows.Input;
 using Clink.Services;
+using Clink.Services.Localization;
 
 namespace Clink.UI;
 
@@ -39,7 +40,7 @@ public partial class ClipDeleteConfirmWindow : Window
             DoNotAskCheck.Visibility = Visibility.Collapsed;
             ClipOnlyButton.Visibility = Visibility.Visible;
             WithTrimsButton.Visibility = Visibility.Visible;
-            WithTrimsButton.Content = $"Delete clip and {ClipGrouping.TrimsLabel(trimCount)}";
+            WithTrimsButton.Content = L.Plural("Delete clip and {count} trims", trimCount);
             if (!string.IsNullOrEmpty(blockedText))
             {
                 BlockedText.Text = blockedText;
