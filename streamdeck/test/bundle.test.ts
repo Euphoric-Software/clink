@@ -13,8 +13,22 @@ import { test } from "node:test";
 const root = path.resolve(import.meta.dirname, "..");
 const bin = path.join(root, "software.euphoric.clink.sdPlugin", "bin");
 
+const buildBundle = (...args: string[]): string => {
+  execFileSync(process.execPath, ["build.mjs", ...args], { cwd: root, stdio: "pipe" });
+  return readFileSync(path.join(bin, "plugin.js"), "utf8");
+};
+
+test("the dev bundle enables dev instances and the production bundle does not", () => {
+  const dev = buildBundle("--dev");
+  assert.ok(!dev.includes("__CLINK_DEV_INSTANCES__"), "flag must be replaced at build time");
+  assert.match(dev, /var devInstances = true;/);
+  const prod = buildBundle();
+  assert.ok(!prod.includes("__CLINK_DEV_INSTANCES__"), "flag must be replaced at build time");
+  assert.match(prod, /var devInstances = false;/);
+});
+
 test("the built bundle loads (module graph) and bin/package.json marks it ESM", async () => {
-  execFileSync(process.execPath, ["build.mjs"], { cwd: root, stdio: "pipe" });
+  buildBundle();
   assert.deepEqual(JSON.parse(readFileSync(path.join(bin, "package.json"), "utf8")), { type: "module" });
   assert.ok(existsSync(path.join(bin, "plugin.js")));
 

@@ -9,10 +9,11 @@ import { scanPipes } from "./discovery.ts";
 import { ClinkClient } from "./pipe-client.ts";
 import { PLUGIN_VERSION } from "./version.ts";
 
-// Hidden global setting (no UI yet): also find Clink dev instances. Edit via the global settings JSON only.
-let devInstances = false;
+// Dev instances: always on in the `build:dev` bundle (compile-time flag), otherwise only via the hidden global setting
+// (no UI yet; edit the global settings JSON).
+let devInstances = __CLINK_DEV_INSTANCES__;
 const applyGlobals = (s: { devInstances?: unknown }): void => {
-  devInstances = s.devInstances === true;
+  devInstances = __CLINK_DEV_INSTANCES__ || s.devInstances === true;
 };
 streamDeck.settings.onDidReceiveGlobalSettings((ev) => applyGlobals(ev.settings));
 
