@@ -186,7 +186,7 @@ internal sealed partial class AppController
 
     private async Task<Step> UploadClipStepAsync(ClipEntry entry, IProgress<double>? progress, Action release)
     {
-        bool ok = await ShareAsync(entry, progress, context: ConsentContext.ClipShare, quiet: true, released: release);
+        bool ok = await ShareAsync(entry, progress, context: ConsentContext.ClipShare, quiet: true, released: release, allowFit: false);   // bulk keeps refusing over-limit clips: no smaller copies in v1
         if (ok) return new Step(StepKind.Uploaded);
         if (_cts.IsCancellationRequested) return new Step(StepKind.Stop, "Clink is closing");
         // No token (the quiet path) or a rejected token: every further clip would fail the same way, so the batch stops.
