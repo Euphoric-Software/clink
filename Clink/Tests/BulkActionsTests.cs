@@ -59,8 +59,8 @@ internal static class BulkActionsTests
     [UnitTest]
     public static void The_share_buttons_follow_the_token_and_cloud_setting()
     {
-        Check.Equal(new[] { "Share \u25BE" }, BulkActions.ShareButtonLabels(true, true, 3, 0).ToArray());
-        Check.Equal(new[] { "Share \u25BE" }, BulkActions.ShareButtonLabels(true, true, 3, 3).ToArray(), "the menu holds Copy links itself");
+        Check.Equal(new[] { "Share" }, BulkActions.ShareButtonLabels(true, true, 3, 0).ToArray());
+        Check.Equal(new[] { "Share" }, BulkActions.ShareButtonLabels(true, true, 3, 3).ToArray(), "the menu holds Copy links itself");
         Check.Equal(new[] { "Share files…" }, BulkActions.ShareButtonLabels(false, true, 3, 0).ToArray(), "no token, none linked");
         Check.Equal(new[] { "Share files…" }, BulkActions.ShareButtonLabels(false, true, 3, 2).ToArray(), "no token, one without a link");
         Check.Equal(new[] { "Share files…", "Copy links" }, BulkActions.ShareButtonLabels(false, true, 3, 3).ToArray(), "no token, cloud on, every clip linked: both, as the clip row offers");
@@ -69,7 +69,14 @@ internal static class BulkActionsTests
         Check.Equal(0, BulkActions.ShareButtonLabels(true, false, 3, 2).Count, "cloud off, one without a link: no button");
         Check.Equal(0, BulkActions.ShareButtonLabels(false, false, 3, 0).Count, "cloud off, none linked: no button");
         Check.Equal(0, BulkActions.ShareButtonLabels(false, false, 0, 0).Count, "nothing selected");
-        Check.Equal(ShareChoices.MenuLabel, BulkActions.ShareButtonLabels(true, true, 1, 0)[0], "the same label as the clip row");
+        Check.Equal(ShareChoices.SplitMainLabel, BulkActions.ShareButtonLabels(true, true, 1, 0)[0], "the same main label as the clip row");
+        Check.True(BulkActions.ShareIsSplit(true, true), "split with a token and cloud sharing on");
+        Check.False(BulkActions.ShareIsSplit(false, true), "no token: plain");
+        Check.False(BulkActions.ShareIsSplit(true, false), "cloud off: plain");
+        Check.Equal(BulkAction.ShareFiles, BulkActions.SplitMainAction, "the main half is the menu\u0027s Share files\u2026");
+        Check.Equal("Share files", BulkActions.SplitMainName);
+        Check.Equal("Open the share window: drag the files into Discord, a browser or a folder", BulkActions.SplitMainTip);
+        Check.True(BulkActions.ShareMenu(true, true, 3, 0, true)!.Any(i => i.Action == BulkActions.SplitMainAction), "the menu still holds Share files\u2026 too");
     }
 
     [UnitTest]

@@ -248,6 +248,75 @@ internal static class ThemeTests
         }
     }
 
+    [UnitTest]
+    public static void The_split_button_styles_have_square_inner_corners_and_a_divider()
+    {
+        var app = RunningApp();
+        var main = new System.Windows.Controls.Button { Style = (Style)app.Resources["AccentSplitMain"] };
+        var arrow = new System.Windows.Controls.Button { Style = (Style)app.Resources["AccentSplitArrow"] };
+        main.ApplyTemplate();
+        arrow.ApplyTemplate();
+        var mainBorder = (System.Windows.Controls.Border)main.Template.FindName("B", main);
+        var arrowBorder = (System.Windows.Controls.Border)arrow.Template.FindName("B", arrow);
+        Check.Equal(new CornerRadius(6, 0, 0, 6), mainBorder.CornerRadius, "Share half: round outside, square inside");
+        Check.Equal(new CornerRadius(0, 6, 6, 0), arrowBorder.CornerRadius, "arrow half: round outside, square inside");
+        var divider = arrow.Template.FindName("Divider", arrow) as System.Windows.Shapes.Rectangle;
+        Check.NotNull(divider, "the arrow half draws the divider");
+        Check.Equal(1.0, divider!.Width, "a 1 px divider");
+        foreach (var style in new[] { "AccentSplitMain", "AccentSplitArrow" })
+        {
+            var template = (System.Windows.Controls.ControlTemplate)((Style)app.Resources[style]).Setters.OfType<Setter>().Single(s => s.Property == System.Windows.Controls.Control.TemplateProperty).Value;
+            var props = template.Triggers.OfType<Trigger>().Select(t => t.Property).ToList();
+            Check.True(props.Contains(UIElement.IsMouseOverProperty) && props.Contains(System.Windows.Controls.Primitives.ButtonBase.IsPressedProperty) && props.Contains(UIElement.IsEnabledProperty),
+                style + " has hover, pressed and disabled looks");
+            Check.True(((Style)app.Resources[style]).Setters.OfType<Setter>().Any(s => s.Property == FrameworkElement.FocusVisualStyleProperty), style + " has its own keyboard focus ring");
+        }
+    }
+
+    [UnitTest]
+    public static void The_split_divider_is_visible_on_every_accent()
+    {
+        // the divider is OnAccent at 40 % over the fill: it must differ from the fill on every theme and accent
+        foreach (var (theme, accent) in AllCombinations())
+        {
+            var t = ThemeManager.Tokens(theme, accent);
+            Color a = t["Accent"], o = t["OnAccent"];
+            Color line = Color.FromRgb((byte)(a.R * 0.6 + o.R * 0.4), (byte)(a.G * 0.6 + o.G * 0.4), (byte)(a.B * 0.6 + o.B * 0.4));
+            double divider = Contrast(line, a);
+            Check.True(divider >= 1.3, $"{theme}/{accent}: the divider is {divider.ToString("0.00", CultureInfo.InvariantCulture)}:1 against the fill, needs 1.3:1");
+        }
+    }
+
+    [UnitTest]
+    public static void The_text_of_every_accent_button_is_OnAccent_not_the_app_wide_Fg()
+    {
+        // the app-wide TextBlock style (Foreground Fg) must not reach the text a ContentPresenter generates inside an accent button
+        var app = RunningApp();
+        var onAccent = ((SolidColorBrush)app.Resources["OnAccent"]).Color;
+        var fg = ((SolidColorBrush)app.Resources["Fg"]).Color;
+        Check.True(onAccent != fg, "the check needs OnAccent and Fg to differ");
+        foreach (string style in new[] { "AccentButton", "AccentSplitMain", "AccentSplitArrow" })
+        {
+            var button = new System.Windows.Controls.Button { Style = (Style)app.Resources[style], Content = style == "AccentSplitArrow" ? "\u25BE" : "Share" };
+            button.Measure(new Size(400, 100));
+            button.Arrange(new Rect(0, 0, button.DesiredSize.Width, button.DesiredSize.Height));
+            button.UpdateLayout();
+            System.Windows.Controls.TextBlock? text = null;
+            var queue = new Queue<DependencyObject>();
+            queue.Enqueue(button);
+            while (queue.Count > 0 && text == null)
+            {
+                var d = queue.Dequeue();
+                if (d is System.Windows.Controls.TextBlock tb) { text = tb; break; }
+                for (int i = 0; i < VisualTreeHelper.GetChildrenCount(d); i++) queue.Enqueue(VisualTreeHelper.GetChild(d, i));
+            }
+            Check.NotNull(text, style + ": the button generates a TextBlock for string content");
+            var brush = text!.Foreground as SolidColorBrush;
+            Check.NotNull(brush, style + ": the text has a solid foreground");
+            Check.Equal(onAccent, brush!.Color, style + ": the text is OnAccent");
+        }
+    }
+
     // ------------------------------------------------------------------ the resources the app carries
 
     [UnitTest]

@@ -73,13 +73,54 @@ internal static class ShareChoicesTests
             foreach (bool cloud in new[] { false, true })
                 foreach (bool link in new[] { false, true })
                 {
-                    bool menu = token && cloud;
-                    string row = menu ? "Share \u25BE" : link ? "Copy link" : "Share";
-                    string toast = menu ? "Share \u25BE" : link ? "Copy link" : token ? "Share to Copium" : "Share";
+                    bool split = token && cloud;
+                    string row = split ? "Share" : link ? "Copy link" : "Share";
+                    string toast = split ? "Share" : link ? "Copy link" : token ? "Share to Copium" : "Share";
+                    Check.Equal(split, ShareChoices.IsSplit(token, cloud, link), $"split {token}/{cloud}/{link}: only where a menu exists");
                     Check.Equal(row, ShareChoices.ButtonLabel(token, cloud, link), $"row {token}/{cloud}/{link}");
                     Check.Equal(toast, ShareChoices.ToastLabel(token, cloud, link), $"toast {token}/{cloud}/{link}");
-                    Check.Equal(menu ? "Share options" : null, ShareChoices.ButtonName(token, cloud, link), $"name {token}/{cloud}/{link}");
+                    Check.Equal(split ? "Share file" : null, ShareChoices.ButtonName(token, cloud, link), $"name {token}/{cloud}/{link}");
                 }
+    }
+
+    [UnitTest]
+    public static void The_split_button_halves_are_named_and_the_main_half_runs_Share_file()
+    {
+        Check.Equal("Share", ShareChoices.SplitMainLabel);
+        Check.Equal("\u25BE", ShareChoices.SplitArrowLabel);
+        Check.Equal("Share options", ShareChoices.SplitArrowName);
+        Check.Equal("More share options", ShareChoices.SplitArrowTip);
+        Check.Equal("Open the share window: drag the file into Discord, a browser or a folder", ShareChoices.SplitMainTip);
+        Check.Equal(ShareChoice.ShareFile, ShareChoices.SplitMainChoice, "the main half is the menu\u0027s Share file\u2026");
+        foreach (bool link in new[] { false, true })
+            Check.True(ShareChoices.For(true, true, link)!.Any(i => i.Choice == ShareChoices.SplitMainChoice), "the menu still holds Share file\u2026 too");
+    }
+
+    [UnitTest]
+    public static void Row_share_controls_are_exclusive_and_the_plain_button_keeps_its_old_visibility()
+    {
+        foreach (bool token in new[] { false, true })
+            foreach (bool? cloud in new bool?[] { true, false, null })
+                foreach (bool link in new[] { false, true })
+                {
+                    bool cloudOn = cloud != false;   // ClipRow.CloudOn: null (unset) means on
+                    string at = $"{token}/{cloud?.ToString() ?? "null"}/{link}";
+                    bool plain = ShareChoices.PlainVisible(token, cloudOn, link), split = ShareChoices.IsSplit(token, cloudOn, link);
+                    Check.False(plain && split, "plain and split never both show: " + at);
+                    Check.True((plain ? 1 : 0) + (split ? 1 : 0) <= 1, "at most one Share control: " + at);
+                    Check.Equal(link || cloudOn, ShareChoices.Visible(cloudOn, link), "Visible is the pre-change ShareVisible: " + at);
+                    if (!split) Check.Equal(link || cloudOn, plain, "plain-case visibility equals the pre-change logic: " + at);
+                    if (split) Check.True(token && cloudOn, "split only with a token and cloud on: " + at);
+                }
+    }
+
+    [UnitTest]
+    public static void Bar_split_main_half_is_off_above_100_clips_and_the_arrow_stays_on()
+    {
+        Check.Equal((true, true), BulkActions.SplitEnabled(1), "one clip");
+        Check.Equal((true, true), BulkActions.SplitEnabled(100), "at the cap");
+        Check.Equal((false, true), BulkActions.SplitEnabled(101), "above the cap: main off, arrow on");
+        Check.Equal((false, true), BulkActions.SplitEnabled(500));
     }
 
     // ------------------------------------------------------------------ SaveCopy (pure)
