@@ -194,31 +194,229 @@ internal static class TestRunner
         Directory.CreateDirectory(scratch);
         var before = Shared.Capture();
         bool noSkip = IsOn(Environment.GetEnvironmentVariable(NoSkipVariable));
-        int passed = 0, failed = 0, skipped = 0;
-        var total = Stopwatch.StartNew();
-        try
+        string? timeoutValue = Environment.GetEnvironmentVariable(TimeoutVariable);
+        var limit = ParseTimeout(timeoutValue, out string? limitNote);
+        bool watch = ShouldWatch(Debugger.IsAttached, timeoutValue);
+        if (!watch) Print($"A debugger is attached: no time limit per test (set {TimeoutVariable} to have one).");
+        else if (limitNote != null) Print(limitNote);
+        // The paths are never put back to the real ones: this process only ends after the run (App.OnStartup shuts down), nothing
+        // here needs %APPDATA%\Clink, and a save a test queued for the UI thread (Settings.Save from a background thread) resolves its
+        // folder when it runs, which can be after the run: it must land in the scratch folder, not in the user's real settings.json.
+        // So the queued UI work is run first (DrainUi), while the scratch folder is still in force, and the scratch folder stays
+        // pointed at afterwards (a late save may recreate it; that is harmless). Same after a takeover, where nothing is drained
+        // (the UI thread is the stuck one) and the process exits at once.
+        var session = new Session(tests, noSkip, limit,
+            before: () => ResetShared(before, scratch), after: () => ResetShared(before, scratch),
+            cleanup: () => EndOfRun(scratch),
+            print: Print, exit: code => Environment.Exit(code == 0 ? 0 : 1), watch: watch);
+        return session.Run();
+    }
+
+    /// <summary>The environment variable that sets the per-test time limit, in seconds (a number of seconds above 0, up to 86400; anything else means <see cref="DefaultTimeout"/>).</summary>
+    internal const string TimeoutVariable = "CLINK_TEST_TIMEOUT_S";
+
+    /// <summary>
+    /// The longest a test may run before it is reported as failed. The slowest test of a full run takes about 12 s (the PM's machine,
+    /// a fake exe handed to Windows can take 10 s more), so this is ten times that: a limit only a hang reaches.
+    /// </summary>
+    internal static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(120);
+
+    /// <summary>The shortest limit that is honoured: a smaller positive value is raised to this.</summary>
+    internal static readonly TimeSpan MinimumTimeout = TimeSpan.FromSeconds(1);
+
+    /// <summary>The time limit for a value of <see cref="TimeoutVariable"/> (see <see cref="ParseTimeout"/>).</summary>
+    internal static TimeSpan TimeoutFrom(string? value) => ParseTimeout(value, out _);
+
+    /// <summary>
+    /// The time limit for a value of <see cref="TimeoutVariable"/>: a number of seconds above 0 and up to 86400, at least
+    /// <see cref="MinimumTimeout"/>; null or empty or anything else is <see cref="DefaultTimeout"/>. <paramref name="note"/> says which
+    /// limit is in use when the variable is set (null when it is not), and warns when the value is no good.
+    /// </summary>
+    internal static TimeSpan ParseTimeout(string? value, out string? note)
+    {
+        string Secs(TimeSpan t) => t.TotalSeconds.ToString("0.###", CultureInfo.InvariantCulture) + " s";
+        if (string.IsNullOrEmpty(value)) { note = null; return DefaultTimeout; }
+        if (!double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out double s) || !(s > 0 && s <= 86400))
         {
-            foreach (var (name, method) in tests)
+            note = $"Warning: {TimeoutVariable}='{value}' is not a number of seconds above 0, up to 86400: using the default of {Secs(DefaultTimeout)} per test.";
+            return DefaultTimeout;
+        }
+        var limit = TimeSpan.FromSeconds(s);
+        if (limit < MinimumTimeout)
+        {
+            note = $"Time limit per test: {Secs(MinimumTimeout)} ({TimeoutVariable}='{value}' is below the minimum of {Secs(MinimumTimeout)}).";
+            return MinimumTimeout;
+        }
+        note = $"Time limit per test: {Secs(limit)} ({TimeoutVariable}).";
+        return limit;
+    }
+
+    /// <summary>
+    /// Whether the watchdog runs: not with a debugger attached (a pause in the debugger would count as a hang and the takeover then
+    /// ends the debug session), unless <see cref="TimeoutVariable"/> is set, which asks for a limit explicitly.
+    /// </summary>
+    internal static bool ShouldWatch(bool debuggerAttached, string? timeoutValue) => !debuggerAttached || !string.IsNullOrEmpty(timeoutValue);
+
+    /// <summary>The limit once a test has timed out and the run went on elsewhere (at most this, whatever the limit was): see <see cref="Session"/>.</summary>
+    internal static readonly TimeSpan AfterTimeoutLimit = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// One run of a list of tests with a time limit per test. The tests run one after the other on the calling thread (they need the
+    /// UI thread). A watchdog timer watches the one running; when it is over the limit the test is reported as a FAIL ("timed out") and
+    /// the rest of the run goes on from the next test on a new thread, because a thread stuck in a call cannot be aborted in .NET: the
+    /// stuck one is left where it is. Whoever finishes the run prints the summary; a takeover then ends the process (the stuck thread
+    /// is the main thread and would keep it alive), the caller of <see cref="Run"/> otherwise just gets the number of failures.
+    /// </summary>
+    internal sealed class Session
+    {
+        private readonly List<(string Name, MethodInfo Method)> _tests;
+        private readonly bool _noSkip;
+        private TimeSpan _limit;
+        private readonly TimeSpan _afterTimeoutLimit;
+        private readonly bool _watch;
+        private readonly Action _before, _after, _cleanup;
+        private readonly Action? _restore;
+        private readonly Action<string> _print;
+        private readonly Action<int> _exit;
+        private readonly object _gate = new();
+        private readonly Stopwatch _total = Stopwatch.StartNew();
+        private readonly ManualResetEventSlim _done = new();
+        private Timer? _watchdog;
+        private int _passed, _failed, _skipped, _generation, _ranAfterTimeout, _current = -1;
+        private long _startedAt;
+        private bool _finished;
+
+        /// <param name="cleanup">Always runs once at the end (runs the queued UI work, deletes the scratch folder).</param>
+        /// <param name="restore">Optional: puts back what needs to be in force after the run; runs before <paramref name="cleanup"/> and only when no takeover happened. The real runner passes none: it never points anything back at the real folders (see <see cref="Run"/>).</param>
+        /// <param name="watch">False: no watchdog (a debugger is attached).</param>
+        /// <param name="afterTimeoutLimit">The cap on the limit once a test has timed out (<see cref="TestRunner.AfterTimeoutLimit"/>).</param>
+        public Session(List<(string Name, MethodInfo Method)> tests, bool noSkip, TimeSpan limit, Action before, Action after, Action cleanup, Action<string> print, Action<int> exit,
+            Action? restore = null, bool watch = true, TimeSpan? afterTimeoutLimit = null)
+        {
+            _tests = tests; _noSkip = noSkip; _limit = limit; _before = before; _after = after; _cleanup = cleanup; _print = print; _exit = exit;
+            _restore = restore; _watch = watch; _afterTimeoutLimit = afterTimeoutLimit ?? AfterTimeoutLimit;
+        }
+
+        /// <summary>The limit now in force: lowered to <c>min(limit, 10 s)</c> after the first timeout, because the thread that is stuck is the UI thread and any test that needs it (a Dispatcher.Invoke) would otherwise cost the whole limit each.</summary>
+        public TimeSpan CurrentLimit { get { lock (_gate) return _limit; } }
+
+        private static TimeSpan PeriodFor(TimeSpan limit) => TimeSpan.FromMilliseconds(Math.Clamp(limit.TotalMilliseconds / 4, 10, 1000));
+
+        /// <summary>Set once the summary is out (by the caller of <see cref="Run"/> or by a takeover).</summary>
+        public WaitHandle Done => _done.WaitHandle;
+
+        /// <summary>The number of failed tests (a timed-out one counts); valid once <see cref="Done"/> is set.</summary>
+        public int Failed => _failed;
+
+        public int Run()
+        {
+            if (_watch)
             {
-                ResetShared(before, scratch);
+                var period = PeriodFor(_limit);
+                _watchdog = new Timer(_ => Watch(), null, period, period);
+            }
+            bool completed;
+            try { completed = Loop(0, 0); }
+            catch
+            {
+                // This thread was superseded while it was stuck before a test (the hook), and the hook then threw: the takeover thread
+                // is running tests, so it is the one that finishes (cleaning up now would pull the rug from under it).
+                if (!Finish(takeover: false, summary: false, unlessSuperseded: true)) { _done.Wait(); return _failed; }
+                throw;
+            }
+            if (completed) Finish(takeover: false, summary: true);
+            else _done.Wait();   // this thread was stuck in a test that has since been reported; the takeover does the rest
+            return _failed;
+        }
+
+        /// <summary>Runs the tests from <paramref name="from"/> on; false when this loop was superseded by a timeout (it then stops, saying nothing).</summary>
+        private bool Loop(int from, int generation)
+        {
+            for (int i = from; i < _tests.Count; i++)
+            {
+                var (name, method) = _tests[i];
+                lock (_gate)
+                {
+                    if (_generation != generation) return false;
+                    _current = i;
+                    _startedAt = Stopwatch.GetTimestamp();
+                    if (generation != 0) _ranAfterTimeout++;
+                }
+                _before();
                 var sw = Stopwatch.StartNew();
-                var outcome = ExecuteWatched(method, noSkip);
-                ResetShared(before, scratch);
+                var outcome = ExecuteWatched(method, _noSkip);
+                lock (_gate)
+                {
+                    if (_generation != generation) return false;   // timed out meanwhile: already reported, the run went on elsewhere
+                    _current = -1;
+                }
+                _after();
                 switch (outcome.State)
                 {
-                    case TestState.Passed: passed++; Print($"PASS  {name}  ({sw.ElapsedMilliseconds} ms)"); break;
-                    case TestState.Skipped: skipped++; Print($"SKIP  {name}  {outcome.Text}"); break;
-                    default: failed++; Print($"FAIL  {name}  {outcome.Text}"); break;
+                    case TestState.Passed: _passed++; _print($"PASS  {name}  ({sw.ElapsedMilliseconds} ms)"); break;
+                    case TestState.Skipped: _skipped++; _print($"SKIP  {name}  {outcome.Text}"); break;
+                    default: _failed++; _print($"FAIL  {name}  {outcome.Text}"); break;
                 }
             }
+            return true;
         }
-        finally
+
+        private void Watch()
         {
-            ResetShared(before, null);
-            try { Directory.Delete(scratch, recursive: true); } catch { }
+            int next, generation;
+            TimeSpan newLimit;
+            lock (_gate)
+            {
+                if (_finished || _current < 0 || Stopwatch.GetElapsedTime(_startedAt) < _limit) return;
+                next = _current + 1;
+                generation = ++_generation;
+                _failed++;
+                _print($"FAIL  {_tests[_current].Name}  timed out after {_limit.TotalSeconds.ToString("0.###", CultureInfo.InvariantCulture)} s (the test is left running on its thread; the run goes on with the next test)");
+                _current = -1;
+                // From here on the UI thread is stuck: a test that calls Dispatcher.Invoke (the theme, the recycle bin) or saves settings
+                // blocks for the whole limit. So the rest of the run gets a short one.
+                _limit = newLimit = _limit < _afterTimeoutLimit ? _limit : _afterTimeoutLimit;
+                _watchdog?.Change(PeriodFor(newLimit), PeriodFor(newLimit));   // under the lock: Finish sets _finished under it before it disposes the timer
+            }
+            var thread = new Thread(() =>
+            {
+                try { if (Loop(next, generation)) Finish(takeover: true, summary: true); }
+                catch (Exception ex)
+                {
+                    // A hook threw on this thread. A later timeout may have superseded it: then the newer thread owns the run, and this says nothing.
+                    lock (_gate) { if (_generation != generation) return; _failed++; }
+                    _print("the runner crashed after a timeout: " + ex);
+                    Finish(takeover: true, summary: false);
+                }
+            }) { IsBackground = true, Name = "unittest-after-timeout" };
+            thread.SetApartmentState(ApartmentState.STA);
+            thread.Start();
         }
-        Print($"{passed} passed, {failed} failed, {skipped} skipped ({total.ElapsedMilliseconds} ms)");
-        return failed;
+
+        /// <summary>Ends the run once; false when it was not this call that did (already finished, or <paramref name="unlessSuperseded"/> and a takeover has happened).</summary>
+        private bool Finish(bool takeover, bool summary, bool unlessSuperseded = false)
+        {
+            bool tookOver;
+            lock (_gate)
+            {
+                if (unlessSuperseded && _generation != 0) return false;
+                if (_finished) return true;
+                _finished = true;   // the watchdog checks this under the same lock: no takeover can start after this point
+                tookOver = takeover || _generation != 0;
+            }
+            _watchdog?.Dispose();
+            // After a takeover a test may still be alive on its stuck thread: the real paths are not put back (see the constructor).
+            if (!tookOver) try { _restore?.Invoke(); } catch { }
+            try { _cleanup(); } catch { }
+            if (summary)
+            {
+                _print($"{_passed} passed, {_failed} failed, {_skipped} skipped ({_total.ElapsedMilliseconds} ms)");
+                if (_ranAfterTimeout > 0) _print($"{_ranAfterTimeout} tests ran after a timeout on a non-UI thread; their results are best effort");
+            }
+            if (tookOver) _exit(_failed);   // the real one ends the process here; before Done, so a waiter that sees Done also sees the exit
+            _done.Set();
+            return true;
+        }
     }
 
     /// <summary>The process-wide switches a test could change and forget: where the settings, the clip index, the updates, the real Clink's folder and the other apps' packages live, the --dev state, and the updater's fake network and feed trust anchors.</summary>
@@ -281,6 +479,27 @@ internal static class TestRunner
         }
     }
 
+    /// <summary>The last thing a run does: runs the queued UI work (<see cref="DrainUi"/>) with the scratch folder still in force, then deletes it. Nothing is pointed back at the real folders.</summary>
+    internal static void EndOfRun(string scratch)
+    {
+        DrainUi();
+        try { Directory.Delete(scratch, recursive: true); } catch { }
+    }
+
+    /// <summary>
+    /// Runs what the test run left queued for the UI thread, while the scratch folder is still in force: the tests run inside one
+    /// UI-thread call, so the dispatcher does not pump until the run is over, and a save a background thread asked for (the updater's
+    /// checks and downloads: <see cref="Settings.Save"/> queues it onto the UI thread) would run only after that. Does nothing off the UI thread.
+    /// </summary>
+    internal static void DrainUi()
+    {
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher == null || !dispatcher.CheckAccess() || dispatcher.HasShutdownStarted) return;
+        var frame = new System.Windows.Threading.DispatcherFrame();
+        dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.ApplicationIdle, new Action(() => frame.Continue = false));
+        System.Windows.Threading.Dispatcher.PushFrame(frame);
+    }
+
     /// <summary>
     /// Puts back what a test may have changed that others would trip over: everything in <paramref name="before"/> (the --dev state, so
     /// no test leaves the process looking like a dev instance), frozen saves, the import state and the redirect findings; and points the
@@ -336,6 +555,7 @@ internal static class TestRunner
         SettingsImport.Reset();
         SettingsImport.PackagesRoot = scratch != null ? Path.Combine(scratch, "Packages") : before.PackagesRoot;
         AppDataRedirect.Reset();
+        Updater.LaunchOverride = null;   // no launch seam left over: a test that starts the apply installs its own
     }
 
     private static bool IsOn(string? value) => value is "1" || string.Equals(value, "true", StringComparison.OrdinalIgnoreCase);

@@ -611,6 +611,12 @@ internal static class PackagingTests
         var up = new Updater(two.Settings(two.ScExe, two.FxExe), V("1.0.0"));
         string exe = two.ScFile, target = Path.Combine(two.Dir.Path, "Clink.exe");
         int launched = 0;
+        // The launch seam is in from the start: a regression that launches after a failed preflight is a clear assertion below, not a
+        // real Process.Start of a file that is no exe (which can take Windows many seconds or never return).
+        var started = new List<System.Diagnostics.ProcessStartInfo>();
+        Updater.LaunchOverride = psi => { started.Add(psi); return false; };
+        try
+        {
         // Only a timeout is left out here: that is not the file's fault (Packaging_a_preflight_timeout_does_not_condemn_the_download).
         foreach (var result in new[] { new Updater.PreflightResult(1, false, null), new Updater.PreflightResult(null, false, "blocked") })
         {
@@ -619,32 +625,46 @@ internal static class PackagingTests
             var ex = Check.Throws<Updater.ApplyRefusedException>(() => up.LaunchApply(exe, target, new[] { "--minimized" }));
             Check.Contains(ex.Message, "not applied");
             Check.Equal(1, launched);
+            Check.Equal(0, started.Count, "a failed preflight launches nothing");
             Check.True(File.Exists(exe + ".failed"), "marked failed, like a bad hash");
             Check.Contains(File.ReadAllText(exe + ".failed"), "preflight failed");
             Check.DoesNotContain(File.ReadAllText(exe + ".failed"), "not applied", "the marker stores the reason, not the prefixed sentence");
             File.Delete(exe + ".failed");
         }
 
-        // A passing preflight goes on to start the apply process, which here cannot start (the file is no real exe): not the preflight's error.
-        Updater.PreflightOverride = (_, _) => { launched++; return new(0, false, null); };
-        launched = 0;
-        try { up.LaunchApply(exe, target, Array.Empty<string>()); Check.Fail("the fake exe cannot have started"); }
-        catch (TestFailure) { throw; }
-        catch (Updater.ApplyRefusedException) { Check.Fail("the preflight passed: the apply process was to be started"); }
-        catch (Exception ex) { Check.DoesNotContain(ex.Message, "not applied"); }
-        Check.Equal(1, launched);
+        // A passing preflight goes on to start the apply process. The launch is faked (see above); here it "exits right away", which
+        // is the failure path: not the preflight's error.
+            Updater.PreflightOverride = (_, _) => { launched++; return new(0, false, null); };
+            launched = 0;
+            try { up.LaunchApply(exe, target, Array.Empty<string>()); Check.Fail("the fake process exited right away: the apply cannot have succeeded"); }
+            catch (TestFailure) { throw; }
+            catch (Updater.ApplyRefusedException) { Check.Fail("the preflight passed: the apply process was to be started"); }
+            catch (Exception ex) { Check.DoesNotContain(ex.Message, "not applied"); Check.Contains(ex.Message, "exited right away"); }
+            Check.Equal(1, launched);
+            Check.Equal(1, started.Count, "the apply was launched once");
+            Check.Equal(exe, started[0].FileName);
+            Check.Equal(new[] { "--apply-update", target, Environment.ProcessId.ToString() }, started[0].ArgumentList.ToArray());
+            Check.True(File.Exists(exe + ".failed"), "a launch that exited right away is marked failed");
 
-        // The split: PrepareApply runs the check once and StartApply (what the window calls back on its UI thread) never runs it again;
-        // a Prepare that fails leaves no token, so there is nothing to Start.
-        launched = 0;
-        File.Delete(exe + ".failed");
-        var token = up.PrepareApply(exe);
-        Check.Equal(1, launched);
-        try { Updater.StartApply(token, target, Array.Empty<string>()); } catch (Exception) { }
-        Check.Equal(1, launched, "starting the apply does not run the start-up check a second time");
-        File.Delete(exe + ".failed");
-        Updater.PreflightOverride = (_, _) => { launched++; return new(1, false, null); };
-        Check.Throws<Updater.ApplyRefusedException>(() => up.PrepareApply(exe), "a failed Prepare gives no token to Start");
+            // The split: PrepareApply runs the check once and StartApply (what the window calls back on its UI thread) never runs it again;
+            // a Prepare that fails leaves no token, so there is nothing to Start.
+            launched = 0;
+            started.Clear();
+            File.Delete(exe + ".failed");
+            var token = up.PrepareApply(exe);
+            Check.Equal(1, launched);
+            Check.Equal(0, started.Count, "preparing starts nothing");
+            Updater.LaunchOverride = psi => { started.Add(psi); return true; };
+            Updater.StartApply(token, target, new[] { "--minimized" });
+            Check.Equal(1, launched);   // "starting the apply does not run the start-up check a second time"
+            Check.Equal(1, started.Count);
+            Check.Equal(new[] { "--apply-update", target, Environment.ProcessId.ToString(), "--minimized" }, started[0].ArgumentList.ToArray());
+            File.Delete(exe + ".failed");
+            Updater.PreflightOverride = (_, _) => { launched++; return new(1, false, null); };
+            Check.Throws<Updater.ApplyRefusedException>(() => up.PrepareApply(exe), "a failed Prepare gives no token to Start");
+            Check.Equal(1, started.Count, "and nothing more was launched");
+        }
+        finally { Updater.LaunchOverride = null; }
     }
 
     [UnitTest]
