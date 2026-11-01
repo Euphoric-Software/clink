@@ -268,7 +268,11 @@ Copium Plus also ticks *I have Copium+*. The toast's button reads *Share* withou
 
 * **Capture**, top to bottom: **Capturing** - the monitor map, resolution / FPS / bitrate / codec with a one-line
   description of each codec (the ones your GPU cannot encode are greyed out; the 1440p / 1080p / 720p presets name the
-  short side, so a portrait 1080×1920 monitor at 1080p records 1080×1920), the **size target** (*None*, the default;
+  short side, so a portrait 1080×1920 monitor at 1080p records 1080×1920; until you pick a bitrate yourself, it follows
+  the codec's default for the 720p / 30, 1080p / 60 or 1440p / 60 preset - 8, 20 or 40 Mbps for H.264, about 65% of
+  that for HEVC (6 / 14 / 25) and 50% for AV1 (4 / 10 / 20), and back again; once you pick one, a codec switch never
+  changes it, and a bitrate that is on none of those presets is never touched. A bitrate picked before this version
+  counts as picked once you pick it again), the **size target** (*None*, the default;
   *Discord free 20 MB*; *Nitro Basic 50 MB*; *Copium 200 MB, 10 min*; *Nitro 1 GB*; *Copium Plus 2 GB, 60 min*: when a
   clip of the replay length would not fit, the encode bitrate is lowered just enough, audio tracks included; it is
   never raised above the bitrate you chose; picking Copium Plus also ticks *I have Copium+*), the **replay length**
@@ -422,7 +426,7 @@ install starts with:
 |---------|-----|-----------------------|
 | Resolution | `Resolution` | `1080p` (also `native`, `1440p`, `720p`) |
 | FPS | `Fps` | 60 |
-| Bitrate | `BitrateMbps` | 20 |
+| Bitrate | `BitrateMbps` | 20 (until you pick a bitrate yourself, switching to HEVC or AV1 moves it to 14 or 10 at 1080p / 60; see Capture) |
 | Codec | `Codec` | `h264` (also `hevc`, `av1`) |
 | Size target | `SizeTarget` | `none` |
 | Capture cursor | `CaptureCursor` | true |
