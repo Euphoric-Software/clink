@@ -453,6 +453,7 @@ internal sealed class RecordingSink
             if (_w == null)
             {
                 _origin = it.Pts;
+                Services.TestGuard.Check(_cfg.FinalPath);
                 Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(_cfg.FinalPath))!);
                 var video = _cfg.Video;
                 if (video.SequenceHeader == null && _cfg.SequenceHeaderProvider?.Invoke() is { } header) video = video with { SequenceHeader = header };

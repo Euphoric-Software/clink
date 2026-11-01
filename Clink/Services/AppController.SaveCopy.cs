@@ -93,6 +93,7 @@ internal sealed partial class AppController
             FileName = SaveCopy.DefaultFileName(entry.Path),
             InitialDirectory = SaveCopy.InitialFolder(Settings.SaveCopyFolder, Environment.GetFolderPath(Environment.SpecialFolder.MyVideos)),
         };
+        TestGuard.CheckLaunch("the save-a-copy dialog");
         bool? ok = owner != null ? dialog.ShowDialog(owner) : dialog.ShowDialog();
         return ok == true ? dialog.FileName : null;
     }

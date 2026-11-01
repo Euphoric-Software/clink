@@ -299,7 +299,8 @@ internal static class DocScreenshotTests
         Check.False(Path.IsPathFullyQualified(shownClips) || Path.IsPathFullyQualified(shownDir) || Path.IsPathFullyQualified(shownShots),
             "a placeholder is not a full path, so the path-box handler would refuse it (it also returns at once in doc-shot mode)");
         Check.Equal(s.ClipsFolder, QuietMode.Shown(false, s.ClipsFolder, QuietMode.DocClipsFolder), "outside doc-shot mode the real path is shown");
-        Check.Equal(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "Clink"), new Settings().ClipsFolder, "the placeholder names the default clips folder");
+        // (Settings.DefaultClipsFolder is scratch in test mode, so comparing against it proves nothing: compare the real default's name.)
+        Check.Equal(Path.GetFileName(TestGuard.TrueClipsDir), Path.GetFileName(shownClips), "the placeholder names the default clips folder");
     }
 
     [UnitTest]

@@ -945,6 +945,7 @@ internal sealed partial class AppController : IDisposable
             + "Import them? Your current settings are kept as settings.pre-import.json (or the next free settings.pre-import.N.json), and Clink restarts.\n\n"
             + "Yes: import and restart.\nNo: keep mine and stop asking about this copy.\nCancel: decide later.";
         var owner = System.Windows.Application.Current?.MainWindow is { IsVisible: true } w ? w : null;
+        TestGuard.CheckLaunch("a message box (import settings)");
         var answer = owner != null
             ? MessageBox.Show(owner, text, "Clink", MessageBoxButton.YesNoCancel, MessageBoxImage.Question)
             : MessageBox.Show(text, "Clink", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
@@ -961,7 +962,7 @@ internal sealed partial class AppController : IDisposable
     internal bool ImportInProgress => _importInProgress;
 
     /// <summary>Starts the process a restart hands over to. The unit tests replace it with one that starts nothing.</summary>
-    internal Action<ProcessStartInfo> StartProcess { get; set; } = psi => Process.Start(psi)?.Dispose();
+    internal Action<ProcessStartInfo> StartProcess { get; set; } = psi => TestGuard.Start(psi)?.Dispose();
 
     /// <summary>What ends this process once its replacement is running (null: <see cref="Quit"/>). The unit tests replace it.</summary>
     internal Action? ExitForRestart { get; set; }
@@ -1351,7 +1352,7 @@ internal sealed partial class AppController : IDisposable
     internal static void OpenCaptureBorderSetting()
     {
         const string uri = "ms-settings:privacy-graphicscapturewithoutborder";
-        try { Process.Start(new ProcessStartInfo(uri) { UseShellExecute = true }); }
+        try { TestGuard.Start(new ProcessStartInfo(uri) { UseShellExecute = true }); }
         catch (Exception ex) { Log.Warn("Could not open " + uri + ": " + ex.Message); }
     }
 
@@ -1863,6 +1864,7 @@ internal sealed partial class AppController : IDisposable
         if (!_ui.CheckAccess()) return _ui.Invoke(() => OpenShareWindow(entry));
         try
         {
+            TestGuard.CheckLaunch("the share window");   // before a window exists or is registered
             bool overGame = OverGame;
             var open = _shareWindows.FirstOrDefault(w => string.Equals(w.Entry.Path, entry.Path, StringComparison.OrdinalIgnoreCase));
             if (open != null) { open.BringForward(activate: !overGame); return true; }
@@ -1936,8 +1938,8 @@ internal sealed partial class AppController : IDisposable
     {
         try
         {
-            if (file != null && File.Exists(file)) Process.Start("explorer.exe", $"/select,\"{file}\"");
-            else { Directory.CreateDirectory(Settings.ClipsFolder); Process.Start("explorer.exe", $"\"{Settings.ClipsFolder}\""); }
+            if (file != null && File.Exists(file)) TestGuard.Start("explorer.exe", $"/select,\"{file}\"");
+            else { TestGuard.CheckLaunch("opening the clips folder"); Directory.CreateDirectory(Settings.ClipsFolder); TestGuard.Start("explorer.exe", $"\"{Settings.ClipsFolder}\""); }
         }
         catch (Exception ex) { Say("Could not open folder: " + ex.Message); }
     }
@@ -2110,6 +2112,7 @@ internal sealed partial class AppController : IDisposable
     {
         if (IsQuiet) return;   // --dev-quiet: no tray balloon
         if (text.Length > 250) text = text[..249] + "…";   // Shell_NotifyIcon cuts balloon text at 256 characters
+        if (TestGuard.Active && _tray != null) TestGuard.CheckLaunch("a tray balloon: " + title);   // test mode only: nothing is shown
         try { _tray?.ShowBalloonTip(3000, title, text, System.Windows.Forms.ToolTipIcon.None); } catch { }
     }
 

@@ -172,6 +172,7 @@ internal sealed class ClipLibrary
         if (_savesFrozen) return;
         try
         {
+            TestGuard.Check(IndexPath);
             Directory.CreateDirectory(System.IO.Path.GetDirectoryName(IndexPath) ?? Settings.Dir);
             AtomicFile.WriteAllText(IndexPath, JsonSerializer.Serialize(_entries, s_json));
         }
