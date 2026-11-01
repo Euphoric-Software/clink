@@ -550,6 +550,9 @@ command does not touch it); `--selftest` / `--probe` / `--trim` write `clink-cli
   code. It sets `CLINK_TESTS_NO_SKIP=1`: the runner image has the AAC encoder, so a skip there would mean the mix tests
   had been switched off. `CLINK_EMULATE_ELST=1` runs the tests on a PC as on a Media Foundation that applies the audio edit
   lists of an MP4, which is what the CI runner (Windows Server 2025) has (`Clink\Tests\EditListEmulation.cs`).
+  A test that runs longer than `CLINK_TEST_TIMEOUT_S` seconds (default 120, minimum 1, maximum 86400; the limit in use is printed when the
+  variable is set; not applied while a debugger is attached unless it is set) is reported as `FAIL ... timed out`, the run goes
+  on with the next test on a new thread with a limit of at most 10 s, and the process then exits with code 1.
 * `Clink.exe --dev [folder] [--dev-hotkeys] [--dev-record] [--dev-token] [--dev-quiet]` (hidden; `--dev=<folder>` works too) starts a
   **second Clink next to the real one**, for trying a build out. It has its own data folder (settings, clip index, log
   and clips; `%TEMP%\clink-dev` when no folder is given), its own single-instance mutex and control pipe (named from the
