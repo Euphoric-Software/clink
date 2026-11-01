@@ -22,6 +22,8 @@ internal enum ShareFitStateKind
     Fits,
     /// <summary>Over the limit, nothing started: "Too big for ..." and the "Make a ... copy" button.</summary>
     Over,
+    /// <summary>"Make a ... copy" was pressed and nothing is reported yet (the clip is being looked at): "Preparing...".</summary>
+    Preparing,
     /// <summary>A copy is being made (<see cref="ShareFitState.Progress"/>, <see cref="ShareFitState.Plan"/> once planned).</summary>
     Working,
     /// <summary>Another copy is being made; this one starts after it.</summary>
@@ -45,14 +47,18 @@ internal sealed record ShareFitState(ShareFitStateKind Kind)
     public ShareCopyResult? Copy { get; init; }
     public int MaxSeconds { get; init; }
     public string? Reason { get; init; }
+    /// <summary>For Failed: why (from <see cref="ShareCopyResult.ErrorKind"/>). None when the state was built from a reason alone.</summary>
+    public ShareCopyError ErrorKind { get; init; }
 
     public static readonly ShareFitState Fits = new(ShareFitStateKind.Fits);
     public static readonly ShareFitState Over = new(ShareFitStateKind.Over);
     public static readonly ShareFitState Waiting = new(ShareFitStateKind.Waiting);
+    public static readonly ShareFitState Preparing = new(ShareFitStateKind.Preparing);
     public static ShareFitState Working(double progress, ShareFitPlan? plan) => new(ShareFitStateKind.Working) { Progress = Math.Clamp(progress, 0, 1), Plan = plan };
     public static ShareFitState Done(ShareCopyResult copy) => new(ShareFitStateKind.Done) { Copy = copy };
     public static ShareFitState CantFit(int maxSeconds) => new(ShareFitStateKind.CantFit) { MaxSeconds = maxSeconds };
-    public static ShareFitState Failed(string reason) => new(ShareFitStateKind.Failed) { Reason = reason };
+    public static ShareFitState Failed(string reason) => new(ShareFitStateKind.Failed) { Reason = reason, ErrorKind = reason == ShareFitModel.StayedTooBigReason ? ShareCopyError.StayedTooBig : ShareCopyError.None };
+    public static ShareFitState Failed(string reason, ShareCopyError kind) => new(ShareFitStateKind.Failed) { Reason = reason, ErrorKind = kind };
     public static ShareFitState Unavailable(string reason) => new(ShareFitStateKind.Unavailable) { Reason = reason };
     public static ShareFitState Refused(string text) => new(ShareFitStateKind.Refused) { Reason = text };
 }
@@ -70,7 +76,14 @@ internal static class ShareFitModel
     public const string Codec = "h264";
     public const string UseOriginalText = "Use the original";
     public const string WaitingText = "Waiting...";
+    public const string PreparingText = "Preparing...";
     public const string CancelText = "Cancel";
+
+    // ---- the "My Discord plan" choices (the SHARING card) ----------------------------------------------------------------------------
+
+    /// <summary>The "My Discord plan" choices in the order the card lists them: the plan id (<see cref="Settings.DiscordPlans"/>) and its label ("Discord free (20 MB)", ...) from <see cref="Capabilities.SizeTargets"/>.</summary>
+    public static IReadOnlyList<(string Id, string Label)> DiscordPlanChoices()
+        => Settings.DiscordPlans.Select(id => (id, Capabilities.SizeTargetFor(TargetIdFor(id)).Name)).ToArray();
 
     /// <summary>A copy needs this much free disk space (the copy, its muxer temporary and some room) before it starts: 2.2 x the limit + 64 MB.</summary>
     public static long RequiredFreeBytes(long limitBytes) => (Math.Max(0, limitBytes) * 11 + 4) / 5 + 64L * 1024 * 1024;   // 2.2 x, rounded up, in integers
@@ -119,7 +132,7 @@ internal static class ShareFitModel
         ShareCopyOutcome.CantFit => ShareFitState.CantFit(result.MaxSeconds),
         ShareCopyOutcome.Refused => ShareFitState.Refused(result.Error ?? ""),
         ShareCopyOutcome.Cancelled => ShareFitState.Over,
-        _ => ShareFitState.Failed(result.Error ?? "something went wrong") with { MaxSeconds = result.MaxSeconds },
+        _ => ShareFitState.Failed(result.Error ?? "something went wrong", result.ErrorKind) with { MaxSeconds = result.MaxSeconds },
     };
 
     // ---- the texts ----------------------------------------------------------------------------------------------------------------
@@ -155,10 +168,11 @@ internal static class ShareFitModel
     /// <summary>"Trim it to about 0:55" (no full stop: the caller adds one or puts it on a line of its own).</summary>
     public static string TrimHint(int maxSeconds) => $"Trim it to about {Capabilities.FormatClipLength(maxSeconds)}";
 
-    /// <summary>"A 3:20 clip can't fit in 20 MB. Trim it to about 0:55." (without a length to trim to: "A 3:20 clip can't fit in 20 MB.")</summary>
+    /// <summary>"A 3:20 clip can't fit in 20 MB. Trim it to about 0:55." (without a length to trim to: "A 3:20 clip can't fit in 20 MB."; a clip of unknown length: "This clip can't fit in 20 MB.")</summary>
     public static string CantFitText(ShareFitTarget target, double clipSeconds, int maxSeconds)
     {
-        string text = $"A {Capabilities.FormatClipLength(clipSeconds)} clip can't fit in {Capabilities.FormatBytes(target.LimitBytes)}.";
+        string clip = clipSeconds > 0 ? $"A {Capabilities.FormatClipLength(clipSeconds)} clip" : "This clip";
+        string text = $"{clip} can't fit in {Capabilities.FormatBytes(target.LimitBytes)}.";
         return maxSeconds > 0 ? $"{text} {TrimHint(maxSeconds)}." : text;
     }
 
@@ -180,9 +194,13 @@ internal static class ShareFitModel
     /// <summary>"Too big for Copium: open Clink to make a smaller copy" (a game is in front and copies during games are off).</summary>
     public static string GameRefusalText(ShareFitTarget target) => $"Too big for {target.ShortLabel}: open Clink to make a smaller copy";
 
-    /// <summary>"2 files are over Discord free (20 MB): share them one at a time." (null for fewer than two files).</summary>
-    public static string? MultiFileNote(ShareFitTarget target, int overCount)
-        => overCount < 2 ? null : $"{overCount} files are over {target.Label}: share them one at a time.";
+    /// <summary>"2 files are over Discord free (20 MB): share them one at a time." and, for one, "1 file is over Discord free (20 MB): share it on its own." (null for none).</summary>
+    public static string? MultiFileNote(ShareFitTarget target, int overCount) => overCount switch
+    {
+        <= 0 => null,
+        1 => $"1 file is over {target.Label}: share it on its own.",
+        _ => $"{overCount} files are over {target.Label}: share them one at a time.",
+    };
 
     /// <summary>The not-enough-disk reason: "there is not enough free disk space (about 2.3 GB are needed)".</summary>
     public static string LowDiskReason(long limitBytes) => $"there is not enough free disk space (about {Capabilities.FormatBytes(RequiredFreeBytes(limitBytes))} are needed)";
@@ -192,15 +210,31 @@ internal static class ShareFitModel
     {
         ShareFitStateKind.Fits => null,
         ShareFitStateKind.Over => OverText(target, originalBytes),
+        ShareFitStateKind.Preparing => PreparingText,
         ShareFitStateKind.Working => WorkingText(target, state.Plan, state.Progress),
         ShareFitStateKind.Waiting => WaitingText,
         ShareFitStateKind.Done => state.Copy is { } c ? DoneDetails(c.Bytes, c.Seconds, c.Label) : "",
         ShareFitStateKind.CantFit => CantFitText(target, clipSeconds, state.MaxSeconds),
-        ShareFitStateKind.Failed => state.Reason == StayedTooBigReason ? StayedTooBigText(target, originalBytes, state.MaxSeconds)
+        ShareFitStateKind.Failed => state.ErrorKind == ShareCopyError.StayedTooBig || state.Reason == StayedTooBigReason ? StayedTooBigText(target, originalBytes, state.MaxSeconds)
             : FailedText(target, state.Reason ?? "something went wrong", originalBytes),
         ShareFitStateKind.Unavailable => UnavailableText(target, state.Reason ?? "not available", originalBytes),
         ShareFitStateKind.Refused => state.Reason ?? GameRefusalText(target),
         _ => null,
+    };
+
+    /// <summary>
+    /// Whether the window offers "Make a ... copy" in a state: Over; Refused (a game came forward while it waited; asking again may
+    /// work); Failed only when another try may work, by <see cref="ShareFitState.ErrorKind"/>: LowDisk, DiskFull, GpuLost, Failed (any
+    /// other error: an I/O error, the copy could not be saved) and None (a state built from a reason alone). Not for StayedTooBig (trim the
+    /// clip), Unsupported, DecoderMissing, NoHardwareEncoder, Unreadable, FileMissing, CacheUnavailable or GameInFront: those fail the same
+    /// way every time. Never for CantFit or Unavailable (nothing to make), nor while a copy is under way or in use. (A cancel is Over.)
+    /// </summary>
+    public static bool CanMakeCopy(ShareFitState state) => state.Kind switch
+    {
+        ShareFitStateKind.Over or ShareFitStateKind.Refused => true,
+        ShareFitStateKind.Failed => state.ErrorKind is ShareCopyError.None or ShareCopyError.LowDisk or ShareCopyError.DiskFull
+            or ShareCopyError.GpuLost or ShareCopyError.Failed,
+        _ => false,
     };
 
     /// <summary>The <see cref="ShareCopyResult.Error"/> of a copy that stayed over the limit through every attempt.</summary>

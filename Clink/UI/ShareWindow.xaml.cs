@@ -61,6 +61,10 @@ public partial class ShareWindow : Window, ICaptureExcludedWindow
     {
         Entry = entry;
         InitializeComponent();
+        // The panel's button texts come from the model only (SetFit keeps them current).
+        MakeCopyButton.Content = ShareFitModel.MakeCopyText(_fitTarget);
+        CancelCopyButton.Content = ShareFitModel.CancelText;
+        UseOriginalButton.Content = ShareFitModel.UseOriginalText;
         AppIcons.Attach(this);   // has its own taskbar button (no owner): the icon size the taskbar draws, not WPF's default frame
         // Cloud sharing off (Settings → App): the file to drag is local, but there is nothing to set up.
         // Already signed in (or a token pasted): nothing to set up either.
@@ -85,13 +89,21 @@ public partial class ShareWindow : Window, ICaptureExcludedWindow
         {
             // Topmost and on the captured monitor: keep it out of the clips, like the toasts and the status dot.
             ScreenPlacement.ExcludeFromCaptureUnlessDocShots(new WindowInteropHelper(this).Handle);
-            AppController.Instance.StateChanged += UpdateTopmost;   // once there is a window; it is let go of when it closes
+            AppController.Instance.StateChanged += OnStateTick;   // once there is a window; it is let go of when it closes
         };
         Closed += (_, _) =>
         {
             _closed = true;
-            AppController.Instance.StateChanged -= UpdateTopmost;
+            AppController.Instance.StateChanged -= OnStateTick;
+            LeaveFit();
         };
+    }
+
+    /// <summary>The controller's once-a-second state tick: the Topmost rule, and a changed Discord plan (or clip size) is looked at again.</summary>
+    internal void OnStateTick()
+    {
+        UpdateTopmost();
+        RefreshFit(comingForward: false);
     }
 
     /// <summary>The line above the card: the no-token explanation, or just what to do with the file when a token exists (Share file…).</summary>
@@ -158,7 +170,10 @@ public partial class ShareWindow : Window, ICaptureExcludedWindow
     private void ShowEntry()
     {
         NameText.Text = Entry.FileName;
-        MetaText.Text = MetaFor(Entry.Size, Entry.Duration);
+        // The card is the file that is shared: the smaller copy's size, length and quality while it is the one.
+        MetaText.Text = _fit.Kind == ShareFitStateKind.Done && _fit.Copy is { } copy
+            ? ShareFitModel.DoneDetails(copy.Bytes, copy.Seconds, copy.Label)
+            : MetaFor(Entry.Size, Entry.Duration);
         if (_thumbSize != Entry.Size) ThumbImage.Source = null;
     }
 
@@ -169,7 +184,9 @@ public partial class ShareWindow : Window, ICaptureExcludedWindow
     /// </summary>
     private async Task CheckAsync()
     {
-        if (_checking || _closed) return;
+        if (_closed) return;
+        RefreshFit(comingForward: true);   // the smaller copy: the plan, the clip's size and a copy made meanwhile (not tied to the file look below)
+        if (_checking) return;
         _checking = true;
         try
         {
@@ -242,8 +259,11 @@ public partial class ShareWindow : Window, ICaptureExcludedWindow
     /// </summary>
     private void SetStatus(string? text, string brush = "Accent2")
     {
-        StatusText.Text = text ?? "";
+        string shown = text ?? "";
+        bool changed = StatusText.Text != shown;
+        StatusText.Text = shown;
         StatusText.SetResourceReference(TextBlock.ForegroundProperty, brush);
+        if (changed && shown.Length > 0) { StatusAnnouncements++; RaiseLive(StatusText); }   // LiveSetting alone announces nothing: code raises the event
     }
 
     // ------------------------------------------------------------------ coming forward, and not over the game
@@ -346,7 +366,9 @@ public partial class ShareWindow : Window, ICaptureExcludedWindow
         {
             SetStatus(null);
             // Copy only: allowing Move would let Explorer move the clip out of the library.
-            var effect = DragDrop.DoDragDrop(Card, FileData(Entry.Path), DragEffects);
+            string? path = SharePathNow();
+            if (path == null) return;
+            var effect = DragDrop.DoDragDrop(Card, FileData(path), DragEffects);
             if (effect == DragEffects) SetStatus("Dropped. The clip stays in your library.");
             // The guard is the allowed effect above; if a target still answers Move, or the file is gone afterwards, the clip may
             // have left the library: say so in the log, and look at the card again (a gone file disables it).
@@ -362,6 +384,270 @@ public partial class ShareWindow : Window, ICaptureExcludedWindow
         }
     }
 
+    // ------------------------------------------------------------------ the smaller copy (a clip over the Discord plan's limit)
+
+    // The sequence (AppController.ShareFit.cs): open / come forward = Find (null: the "Make a ... copy" button); click = Make (at once
+    // "Preparing...": nothing is reported while the clip is probed); Cancel = cancel the token, then a fresh one; close = Abandon the
+    // pending task (the copy goes on in the background and is ready next time). Every ask has a generation: an answer or a report of an
+    // older ask, or one that comes after the window closed, is ignored.
+    private ShareFitState _fit = ShareFitState.Fits;
+    private ShareFitTarget _fitTarget = ShareFitModel.ForPlan(null);
+    private long _fitSize;                 // the clip's size the current ask was made for: another size is another file
+    private bool _fitAsked, _fitDeclined;  // _fitDeclined: "Use the original" was pressed; a copy found later does not take the card back
+    private int _fitGen;
+    private Task? _fitPending;             // exactly the task Make / Find returned (ShareCopyResult.Abandon wants that one)
+    private CancellationTokenSource _fitCts = new();
+    private ShareCopyResult? _fitCopy;     // the copy being shared (Done); disposed when it is no longer
+
+    /// <summary>What the window is showing for the smaller copy.</summary>
+    internal ShareFitStateKind FitKind => _fit.Kind;
+
+    /// <summary>No ask is out (the last Find / Make has been answered or abandoned).</summary>
+    internal bool FitIdle => _fitPending == null;
+
+    /// <summary>The target of the Discord plan the panel was made for.</summary>
+    internal ShareFitTarget FitTarget => _fitTarget;
+
+    /// <summary>The file the card, the drag and Copy file use: the smaller copy while it is the one in use, else the original. Open folder always shows the original.</summary>
+    internal string SharePath => _fit.Kind == ShareFitStateKind.Done && _fit.Copy is { } copy ? copy.Path : Entry.Path;
+
+    /// <summary>The path to share right now, or null (saying so) when the smaller copy was cleaned up since: the panel then looks again.</summary>
+    internal string? SharePathNow()
+    {
+        string path = SharePath;
+        if (_fit.Kind != ShareFitStateKind.Done || File.Exists(path)) return path;
+        LeaveFit();   // drops the copy and what is pending
+        SetFit(ShareFitState.Over);
+        SetStatus("The smaller copy is not there any more. Clink looks again.", "Warn");
+        RefreshFit(comingForward: true);
+        return null;
+    }
+
+    /// <summary>
+    /// Looks at the smaller copy again. A changed Discord plan or clip size starts afresh (the old ask is abandoned: a copy under way
+    /// goes on); <paramref name="comingForward"/> (the window came forward, a drag ended) also asks again when nothing is under way, so a
+    /// copy made meanwhile is found and one that was cleaned up is not offered. Failures, "can't fit" and "not available" stay as they are
+    /// until the plan or the size changes.
+    /// </summary>
+    internal void RefreshFit(bool comingForward)
+    {
+        if (_closed || AppController.Instance is not { } app) return;
+        var target = ShareFitModel.ForSettings(app.Settings);
+        long size = Entry.Size;
+        bool changed = !_fitAsked || target.LimitBytes != _fitTarget.LimitBytes || size != _fitSize;
+        if (changed) { _fitDeclined = false; BeginFit(app, target, size, make: false); return; }
+        if (!comingForward || _fitPending != null) return;
+        if (_fit.Kind is ShareFitStateKind.Over or ShareFitStateKind.Done) BeginFit(app, target, size, make: false);
+    }
+
+    /// <summary>Starts a Find (or, for the button, a Make) for the target; abandons whatever was pending.</summary>
+    private void BeginFit(AppController app, ShareFitTarget target, long size, bool make)
+    {
+        bool keepCopy = !make && _fit.Kind == ShareFitStateKind.Done && target.LimitBytes == _fitTarget.LimitBytes && size == _fitSize;
+        var shown = _fit;
+        LeaveFit(keepCopyOpen: keepCopy);
+        _fitTarget = target;
+        _fitSize = size;
+        _fitAsked = true;
+        var first = ShareFitModel.StateFor(size, target);
+        if (first.Kind == ShareFitStateKind.Fits) { SetFit(ShareFitState.Fits); return; }   // nothing to offer: the panel stays away
+        int gen = _fitGen;
+        if (make)
+        {
+            SetFit(ShareFitState.Preparing);
+            var task = app.MakeShareCopyAsync(Entry, target, new FitSink(this, gen), _fitCts.Token);
+            _fitPending = task;
+            _ = FitAnswerAsync(new WeakReference<ShareWindow>(this), Dispatcher, task, gen);
+        }
+        else
+        {
+            SetFit(keepCopy ? shown : ShareFitState.Over);   // the button is there while the answer is out; a copy in use stays in use
+            var task = app.FindShareCopyAsync(Entry, target, new FitSink(this, gen), _fitCts.Token);
+            _fitPending = task;
+            _ = FitAnswerAsync(new WeakReference<ShareWindow>(this), Dispatcher, task, gen);
+        }
+    }
+
+    /// <summary>The ask's answer: waited for on any thread, then handed to the UI thread (explicitly, not through the await's context).</summary>
+    /// <summary>Static, holding the window only weakly: a window closed while its copy is still made is not kept alive until the copy ends.</summary>
+    private static async Task FitAnswerAsync(WeakReference<ShareWindow> window, Dispatcher dispatcher, Task task, int gen)
+    {
+        ShareCopyResult? result = null;
+        try
+        {
+            await task.ConfigureAwait(false);
+            result = ((Task<ShareCopyResult?>)task).Result;
+        }
+        catch (Exception ex) { Log.Warn("share window: the smaller copy: " + ex.Message); }
+        try
+        {
+            var answer = result;
+            await dispatcher.BeginInvoke(DispatcherPriority.Normal, new Action(() =>
+            {
+                if (window.TryGetTarget(out var w)) w.ApplyFitAnswer(answer, gen);
+                else answer?.Dispose();   // the window is gone
+            }));
+        }
+        catch (Exception) { result?.Dispose(); }   // the dispatcher is shutting down
+    }
+
+    private void ApplyFitAnswer(ShareCopyResult? result, int gen)
+    {
+        if (_closed || gen != _fitGen)
+        {
+            result?.Dispose();   // an older ask or a closed window: not wanted (Abandon released its other mark already)
+            return;
+        }
+        _fitPending = null;
+        if (result == null)
+        {
+            // Nothing found: the button (a Done copy that vanished from the cache goes too).
+            FitDisposeCopy();
+            SetFit(ShareFitModel.StateFor(Entry.Size, _fitTarget));
+            return;
+        }
+        ShareFitState state = ShareFitModel.StateFor(result);
+        if (result.Outcome == ShareCopyOutcome.Failed && result.ErrorKind == ShareCopyError.FileMissing) state = ShareFitState.Fits;   // the card says the file is gone already
+        if (state.Kind == ShareFitStateKind.Done)
+        {
+            if (_fitDeclined) { result.Dispose(); FitDisposeCopy(); SetFit(ShareFitState.Over); return; }   // the user chose the original
+            FitDisposeCopy();
+            _fitCopy = result;
+            SetFit(state);
+            return;
+        }
+        // Not a copy: the result holds nothing else of use.
+        result.Dispose();
+        FitDisposeCopy();
+        SetFit(state);
+    }
+
+    private void FitDisposeCopy()
+    {
+        var old = _fitCopy;
+        _fitCopy = null;
+        old?.Dispose();
+    }
+
+    /// <summary>Leaves the pending ask (the window no longer listens, and the ask's mark is released; the job goes on) and lets go of the copy in use.</summary>
+    private void LeaveFit(bool keepCopyOpen = false)
+    {
+        _fitGen++;   // answers and reports of the old ask are ignored from now on
+        var pending = _fitPending;
+        _fitPending = null;
+        if (pending != null) ShareCopyResult.Abandon(pending);
+        if (!keepCopyOpen) FitDisposeCopy();
+    }
+
+    /// <summary>A progress report from the job's thread, to the UI thread, in order; late ones (another ask, closed) are dropped there.</summary>
+    private sealed class FitSink(ShareWindow window, int gen) : IProgress<ShareCopyProgress>
+    {
+        private ShareWindow? _window = window;
+        public void Report(ShareCopyProgress progress)
+        {
+            var w = _window;
+            if (w == null) return;
+            try { w.Dispatcher.BeginInvoke(DispatcherPriority.Normal, new Action(() => w.OnFitProgress(gen, progress))); }
+            catch (Exception) { }   // the dispatcher is shutting down
+        }
+    }
+
+    private void OnFitProgress(int gen, ShareCopyProgress progress)
+    {
+        if (_closed || gen != _fitGen || _fitPending == null) return;   // not the ask in hand, or it is answered already
+        SetFit(ShareFitModel.StateFor(progress));
+    }
+
+    /// <summary>Shows a state in the panel (texts from <see cref="ShareFitModel"/>) and on the card.</summary>
+    private void SetFit(ShareFitState state)
+    {
+        bool hadFocus = FitPanel.IsKeyboardFocusWithin;   // the pressed button is about to collapse: the focus must not fall out of the window
+        var before = _fit.Kind;
+        _fit = state;
+        var kind = state.Kind;
+        bool busy = kind is ShareFitStateKind.Preparing or ShareFitStateKind.Working or ShareFitStateKind.Waiting;
+        FitPanel.Visibility = kind == ShareFitStateKind.Fits ? Visibility.Collapsed : Visibility.Visible;
+        FitText.Text = ShareFitModel.Text(state, _fitTarget, Entry.Size, Entry.Duration) ?? "";
+        FitText.SetResourceReference(TextBlock.ForegroundProperty, kind is ShareFitStateKind.Failed or ShareFitStateKind.CantFit or ShareFitStateKind.Refused ? "Warn" : "Accent2");
+        MakeCopyButton.Content = ShareFitModel.MakeCopyText(_fitTarget);
+        MakeCopyButton.Visibility = ShareFitModel.CanMakeCopy(state) ? Visibility.Visible : Visibility.Collapsed;
+        CancelCopyButton.Content = ShareFitModel.CancelText;
+        CancelCopyButton.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
+        UseOriginalButton.Content = ShareFitModel.UseOriginalText;
+        UseOriginalButton.Visibility = kind == ShareFitStateKind.Done ? Visibility.Visible : Visibility.Collapsed;
+        FitProgress.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
+        FitProgress.IsIndeterminate = kind is ShareFitStateKind.Preparing or ShareFitStateKind.Waiting;
+        FitProgress.Value = kind == ShareFitStateKind.Working ? state.Progress : 0;   // its name stays fixed (XAML): the bar reports its own value
+        ShowEntry();   // the card's size line follows the copy in use
+        if (kind != before)
+        {
+            // Announced when the kind of state changes, not on every progress tick.
+            FitAnnouncements++;
+            RaiseLive(FitText);
+            if (hadFocus) FocusFor(kind, state).Focus();
+        }
+    }
+
+    /// <summary>The button that takes the keyboard focus when a state replaces the one whose button was pressed: Cancel while busy, "Copy file" after Done (else "Use the original"), the Make button when it is offered, else "Copy file".</summary>
+    internal Button FocusFor(ShareFitStateKind kind, ShareFitState state)
+    {
+        if (kind is ShareFitStateKind.Preparing or ShareFitStateKind.Working or ShareFitStateKind.Waiting) return CancelCopyButton;
+        if (kind == ShareFitStateKind.Done) return CopyButton.IsEnabled ? CopyButton : UseOriginalButton;
+        return ShareFitModel.CanMakeCopy(state) ? MakeCopyButton : CopyButton;
+    }
+
+    /// <summary>How many times the panel's text was announced to a screen reader (the state kind changed); for the tests.</summary>
+    internal int FitAnnouncements { get; private set; }
+
+    /// <summary>How many times the status line was announced (it changed to some text); for the tests.</summary>
+    internal int StatusAnnouncements { get; private set; }
+
+    /// <summary>
+    /// WPF announces a <c>LiveSetting</c> text block only when code raises <c>LiveRegionChanged</c> (the same helper as the main window's
+    /// and the clips pane's). Nothing happens when no screen reader listens or the block is not shown (no peer to build).
+    /// </summary>
+    internal static void RaiseLive(TextBlock tb)
+    {
+        if (!tb.IsVisible || !System.Windows.Automation.Peers.AutomationPeer.ListenerExists(System.Windows.Automation.Peers.AutomationEvents.LiveRegionChanged)) return;
+        try { (System.Windows.Automation.Peers.UIElementAutomationPeer.FromElement(tb) ?? System.Windows.Automation.Peers.UIElementAutomationPeer.CreatePeerForElement(tb))?.RaiseAutomationEvent(System.Windows.Automation.Peers.AutomationEvents.LiveRegionChanged); }
+        catch (Exception ex) { Log.Warn("live region: " + ex.Message); }
+    }
+
+    private void MakeCopy_Click(object sender, RoutedEventArgs e) => MakeCopy();
+
+    /// <summary>The "Make a ... copy" button: a Make for the current plan, "Preparing..." at once. Not on its own: only the button starts a copy. Offered after Over, a refusal and a failure that another try may cure (<see cref="ShareFitModel.CanMakeCopy"/>).</summary>
+    internal void MakeCopy()
+    {
+        if (_closed || !ShareFitModel.CanMakeCopy(_fit) || AppController.Instance is not { } app) return;
+        _fitDeclined = false;
+        BeginFit(app, ShareFitModel.ForSettings(app.Settings), Entry.Size, make: true);
+    }
+
+    private void CancelCopy_Click(object sender, RoutedEventArgs e) => CancelCopy();
+
+    /// <summary>Cancel: stops the copy for everyone who joined it, then a fresh token so the next click works. The panel offers the button again.</summary>
+    internal void CancelCopy()
+    {
+        if (_closed || _fit.Kind is not (ShareFitStateKind.Preparing or ShareFitStateKind.Working or ShareFitStateKind.Waiting)) return;
+        var old = _fitCts;
+        _fitCts = new CancellationTokenSource();
+        try { old.Cancel(); } catch (ObjectDisposedException) { }
+        LeaveFit();   // its Cancelled answer is not needed: the button comes back now (a copy that finished just before the cancel is disposed on arrival)
+        _fitGen++;
+        SetFit(ShareFitState.Over);
+    }
+
+    private void UseOriginal_Click(object sender, RoutedEventArgs e) => UseOriginal();
+
+    /// <summary>"Use the original": the card, the drag and Copy file go back to the clip itself; the button to make (find) the copy comes back.</summary>
+    internal void UseOriginal()
+    {
+        if (_closed || _fit.Kind != ShareFitStateKind.Done) return;
+        _fitDeclined = true;
+        LeaveFit();
+        SetFit(ShareFitState.Over);
+    }
+
     // ------------------------------------------------------------------ buttons
 
     private void CopyFile_Click(object sender, RoutedEventArgs e) => CopyFile();
@@ -371,7 +657,9 @@ public partial class ShareWindow : Window, ICaptureExcludedWindow
         if (_state != FileState.Present) return;
         try
         {
-            Clipboard.SetDataObject(FileData(Entry.Path), true);
+            string? path = SharePathNow();
+            if (path == null) return;
+            Clipboard.SetDataObject(FileData(path), true);
             SetStatus("File copied. Paste it with Ctrl+V into Discord or a folder.");
         }
         catch (Exception ex)
