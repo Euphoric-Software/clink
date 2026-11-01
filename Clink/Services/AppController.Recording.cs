@@ -1,6 +1,7 @@
 using System.IO;
 using System.Windows.Threading;
 using Clink.Engine;
+using Clink.Services.Localization;
 
 namespace Clink.Services;
 
@@ -55,7 +56,7 @@ internal sealed partial class AppController
     private bool RecordingQueued => DateTime.UtcNow < _recordWhenReadyUntil;
 
     /// <summary>The tray item: "Stop recording" while a recording runs, is between two parts, or waits for the recorder.</summary>
-    private string RecordItemText => Engine.IsRecording || _wantRecording || RecordingQueued ? "Stop recording" : "Start recording";
+    private string RecordItemText => Engine.IsRecording || _wantRecording || RecordingQueued ? L.T("Stop recording") : L.T("Start recording");
 
     /// <summary>The keys of the first "record" hotkey that is set, or null.</summary>
     private string? RecordHotkeyLabel =>
@@ -69,8 +70,8 @@ internal sealed partial class AppController
     {
         if (_disposed || _exiting) return;
         if (!Settings.ClipsEnabled) { ClipsOffNotice(); return; }
-        if (_finishing) { Say("Finishing the recording…"); return; }
-        if ((DateTime.UtcNow - _lastRecordToggleAt).TotalMilliseconds < 700) { Say("One moment…"); return; }
+        if (_finishing) { SayT("Finishing the recording…"); return; }
+        if ((DateTime.UtcNow - _lastRecordToggleAt).TotalMilliseconds < 700) { SayT("One moment…"); return; }
         if (Engine.IsRecording || _wantRecording || RecordingQueued) StopRecording(userRequested: true);
         else StartRecording();
     }
@@ -84,22 +85,18 @@ internal sealed partial class AppController
         {
             _lastRecordToggleAt = DateTime.UtcNow;
             if (!RecordingQueued) _recordWhenReadyUntil = DateTime.UtcNow + QueuedStartWindow;
-            Say("Recording starts when the recorder is ready");
+            SayT("Recording starts when the recorder is ready");
             RaiseStateChanged();
             return;
         }
         if (_restarting || _stopping || !Engine.IsRunning)
         {
-            string why = _restarting ? "Clink is restarting"
-                : IsPaused ? "Recording is paused"
-                : waiting ? "Not recording: waiting for a game"
-                : Engine.Error is string err && !_starting ? "Recording failed: " + err
-                : "Not recording yet";
+            var why = NotRecordingNote(waiting);
             Say(why);
             if (!MainWindowInFront)
             {
                 if (Settings.ClickSound) ClickSound.PlayError();
-                NotifyProblem("Recording not started", waiting ? why + ". If your game is not detected, add it under Capture → Recording → Custom apps." : why);
+                NotifyProblem(L.T("Recording not started"), waiting ? L.T("Not recording: waiting for a game. If your game is not detected, add it under Capture → Recording → Custom apps.") : why.Shown);
             }
             return;
         }
@@ -108,9 +105,9 @@ internal sealed partial class AppController
         if (TryStartRecording() is { } problem)
         {
             _wantRecording = false;
-            Say(problem.Text);
+            Say(problem);
             if (Settings.ClickSound) ClickSound.PlayError();
-            NotifyProblem(problem.Title, problem.Text);
+            NotifyProblem(L.T("Recording not started"), problem.Shown);
             return;
         }
         _wantRecording = true;
@@ -118,9 +115,9 @@ internal sealed partial class AppController
         _emptyAutoParts = 0;
         _partRunGen = _engineRunGen;
         if (Settings.ClickSound) ClickSound.Play(Settings.ClickVolume);
-        Say("Recording started");
-        string stop = RecordHotkeyLabel is string keys ? $"Press {keys} to stop" : "Stop it from the tray menu";
-        Toasts.ShowRecordStarted(CurrentGame != null ? $"{CurrentGame} · {stop}" : stop);
+        SayT("Recording started");
+        string stop = RecordHotkeyLabel is string keys ? L.T("Press {keys} to stop", ("keys", L.Ltr(keys))) : L.T("Stop it from the tray menu");
+        Toasts.ShowRecordStarted(CurrentGame != null ? L.T("{game} · {hint}", ("game", CurrentGame), ("hint", stop)) : stop);
         RaiseStateChanged();
     }
 
@@ -137,7 +134,7 @@ internal sealed partial class AppController
             if (!RecordingQueued) return;   // the engine came up first and has acted on it
             if (IsPaused || (GameOnly && _gamePid == 0)) { _recordWhenReadyUntil = DateTime.MinValue; StartRecording(); return; }
             if (Engine.IsRunning) { StartQueuedRecording(); return; }
-            Say("Recording starts when the recorder is ready");
+            SayT("Recording starts when the recorder is ready");
         });
     }
 
@@ -150,8 +147,8 @@ internal sealed partial class AppController
         StartRecording();
     }
 
-    /// <summary>Starts one recording file now. Null when it started, else the (title, text) of why not (nothing has changed then).</summary>
-    private (string Title, string Text)? TryStartRecording()
+    /// <summary>Starts one recording file now. Null when it started, else why not (nothing has changed then); the title is always "Recording not started".</summary>
+    private Note? TryStartRecording()
     {
         try
         {
@@ -161,17 +158,19 @@ internal sealed partial class AppController
         catch (IOException ex)
         {
             Log.Warn("Start recording: " + ex.Message);
-            return ("Recording not started", ex.Message.StartsWith("Not enough free", StringComparison.Ordinal) ? "Not enough free space to record. " + ex.Message : "Could not write the recording: " + ex.Message);
+            return ex.Message.StartsWith("Not enough free", StringComparison.Ordinal)   // (the engine's own English text: its exception message stays as it is)
+                ? Note.Of("Not enough free space to record. {error}", ("error", ex.Message))
+                : Note.Of("Could not write the recording: {error}", ("error", ex.Message));
         }
         catch (UnauthorizedAccessException ex)
         {
             Log.Warn("Start recording: " + ex.Message);
-            return ("Recording not started", "Could not write the recording: " + ex.Message);
+            return Note.Of("Could not write the recording: {error}", ("error", ex.Message));
         }
         catch (Exception ex)   // InvalidOperationException: the engine is not running / already recording
         {
             Log.Warn("Start recording: " + ex.Message);
-            return ("Recording not started", ex.Message);
+            return Note.Verbatim(ex.Message);
         }
     }
 
@@ -189,7 +188,7 @@ internal sealed partial class AppController
         if (userRequested && Settings.ClickSound) ClickSound.Play(Settings.ClickVolume);
         if (!Engine.IsRecording)
         {
-            Say(queued ? "Recording cancelled" : "Recording stopped");
+            if (queued) SayT("Recording cancelled"); else SayT("Recording stopped");
             RaiseStateChanged();
             return;
         }
@@ -234,8 +233,8 @@ internal sealed partial class AppController
         {
             if (_settingsRestartPending) return;
             _settingsRestartPending = true;
-            Say("Settings apply when the recording stops");
-            Toasts.ShowNotice("Settings apply when the recording stops", "The recorder restarts with them afterwards");
+            SayT("Settings apply when the recording stops");
+            Toasts.ShowNotice(L.T("Settings apply when the recording stops"), L.T("The recorder restarts with them afterwards"));
             return;
         }
         StartEngine();
@@ -264,27 +263,27 @@ internal sealed partial class AppController
         else _emptyAutoParts = 0;
         if (!again) _wantRecording = false;
 
-        string summary = RecordingPolicy.SavedSummary(r.DurationSeconds, r.SizeBytes);
+        string summary = RecordingPolicy.SavedSummary(r.DurationSeconds, r.SizeBytes);   // (RecordingPolicy words it; its texts are slice S5's)
         if (RecordingPolicy.Problem(r) is { } problem)
         {
-            Say($"{problem.Title}: {problem.Text}");
+            Say(Note.Of("{title}: {text}", ("title", problem.Title), ("text", problem.Text)));
             if (Settings.ClickSound) ClickSound.PlayError();
             NotifyProblem(problem.Title, problem.Text);
         }
         else if (again)
         {
             // (a part that recorded nothing is not worth a word: the next one is on its way)
-            if (r.Reason != RecordingEndReason.Empty && r.Path != null) Say($"Recording part saved ({summary}), continuing in a new file");
+            if (r.Reason != RecordingEndReason.Empty && r.Path != null) SayT("Recording part saved ({summary}), continuing in a new file", ("summary", summary));
         }
         else if (r.Reason == RecordingEndReason.Empty || r.Path == null)
         {
-            Say("Nothing recorded");
-            Toasts.ShowNotice("Nothing recorded", "The recording had no video, so no file was kept");
+            SayT("Nothing recorded");
+            Toasts.ShowNotice(L.T("Nothing recorded"), L.T("The recording had no video, so no file was kept"));
         }
         else
         {
-            Say($"Recording saved ({summary})");
-            Toasts.ShowRecordSaved(r.Game != null ? $"{r.Game} · {summary}" : summary);
+            SayT("Recording saved ({summary})", ("summary", summary));
+            Toasts.ShowRecordSaved(r.Game != null ? L.T("{game} · {summary}", ("game", r.Game), ("summary", summary)) : summary);
         }
         // Recordings are not handed to the archive (it works on the clips folder's own files, which these are not, and they can be
         // hours long) and ClipSaved is for the clip toast / list highlight: the library's Changed event refreshes the list.
@@ -334,7 +333,7 @@ internal sealed partial class AppController
                         Engine.StartRecording(new RecordingOptions(RecordingsFolder), CurrentGame);
                         _autoPart = true;
                         _partRunGen = _engineRunGen;
-                        Say("Recording continues in a new file");
+                        SayT("Recording continues in a new file");
                         RaiseStateChanged();
                         return;
                     }
@@ -348,16 +347,16 @@ internal sealed partial class AppController
                     {
                         Log.Warn("Next recording part: " + ex.Message);
                         _wantRecording = false;
-                        Say("Recording stopped: " + ex.Message);
-                        NotifyProblem("Recording stopped", "The recording could not continue: " + ex.Message);
+                        SayT("Recording stopped: {error}", ("error", ex.Message));
+                        NotifyProblem(L.T("Recording stopped"), L.T("The recording could not continue: {error}", ("error", ex.Message)));
                         return;
                     }
                 }
                 if (DateTime.UtcNow > deadline)
                 {
                     _wantRecording = false;
-                    Say("Recording stopped: the recorder did not come back");
-                    NotifyProblem("Recording stopped", "The recorder did not come back after the restart, so the recording could not continue");
+                    SayT("Recording stopped: the recorder did not come back");
+                    NotifyProblem(L.T("Recording stopped"), L.T("The recorder did not come back after the restart, so the recording could not continue"));
                     return;
                 }
                 await Task.Delay(500);
@@ -399,9 +398,9 @@ internal sealed partial class AppController
             else Log.Warn("Recovery: " + (r.Error ?? r.Reason.ToString()));   // logged only: it would be said again at every start
         }
         if (n == 0 || _disposed) return;
-        string title = RecordingPolicy.RecoveredTitle(n);
+        string title = RecordingPolicy.RecoveredTitle(n);   // (S5's)
         Say(title);
-        Toasts.ShowNotice(title, "Clink closed while recording; what was written is saved in the Recordings folder");
+        Toasts.ShowNotice(title, L.T("Clink closed while recording; what was written is saved in the Recordings folder"));
     }
 
     /// <summary>

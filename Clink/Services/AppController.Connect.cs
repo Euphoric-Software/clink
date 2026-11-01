@@ -1,3 +1,5 @@
+using Clink.Services.Localization;
+
 namespace Clink.Services;
 
 // "Sign in with Copium": the controller's side of CopiumSignInSession (the rules and the state machine are there, WPF-free and tested).
@@ -82,7 +84,7 @@ internal sealed partial class AppController
         if (SignedInOverride is { } over) { over(state); return; }
         string name = state.Username ?? "";
         // "connected", not "can share": sharing may not be agreed to yet (the welcome asks)
-        try { Toasts.ShowNotice(name.Length == 0 ? "Signed in to Copium" : "Signed in to Copium as " + name, "Your Copium account is connected"); }   // the name is plain text
+        try { Toasts.ShowNotice(name.Length == 0 ? L.T("Signed in to Copium") : L.T("Signed in to Copium as {name}", ("name", name)), L.T("Your Copium account is connected")); }   // the name is plain text
         catch (Exception ex) { Log.Warn("sign-in toast: " + ex.Message); }
         try { Hotkeys.GrantForeground(); }   // best effort: the approval happened in the browser, the window may be allowed forward
         catch (Exception ex) { Log.Warn("sign-in foreground: " + ex.Message); }
