@@ -33,9 +33,8 @@ internal static class L10nTreeMainTests
     private static bool Untranslatable(string text) =>
         Regex.IsMatch(text.Trim(), @"^(\d{3,4}p|AV1|PrintScreen)$");   // codec / resolution names, and the key cap of a hotkey (hotkey names stay English in v0.4.5)
 
-    /// <summary>The harness result without the library pane (ClipsPane is slice S2's: it has its own tree test).</summary>
     private static List<string> Unlocalized(DependencyObject root) =>
-        L10nTreeHarness.Unlocalized(root, Untranslatable).Where(l => !l.Contains("ClipsPane", StringComparison.Ordinal)).ToList();
+        L10nTreeHarness.Unlocalized(root, Untranslatable).ToList();
 
     private static IEnumerable<ItemsControl> ItemsControls(DependencyObject root)
     {
@@ -45,7 +44,7 @@ internal static class L10nTreeMainTests
         while (stack.Count > 0)
         {
             var node = stack.Pop();
-            if (!seen.Add(node) || node is ClipsPane) continue;
+            if (!seen.Add(node)) continue;
             if (node is ItemsControl ic) yield return ic;
             foreach (object child in LogicalTreeHelper.GetChildren(node))
                 if (child is DependencyObject d) stack.Push(d);
@@ -570,7 +569,7 @@ internal static class L10nTreeMainTests
     [UnitTest]
     public static void The_toast_labels_have_no_raw_number_in_the_XAML_and_Populate_sets_them()
     {
-        string? src = FindSourceFolder();
+        string? src = L10nSourceScan.Root();
         if (src == null) return;
         string xaml = File.ReadAllText(Path.Combine(src, "MainWindow.xaml"));
         foreach (string name in new[] { "ToastClipLabel", "ToastSharedLabel", "ToastScreenshotLabel", "ToastRecordingLabel" })
@@ -582,49 +581,26 @@ internal static class L10nTreeMainTests
 
     // ------------------------------------------------------------------ the keys the slice's sources ask for exist in the English catalog
 
-    private static string? FindSourceFolder()
-    {
-        for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir != null; dir = dir.Parent)
-            if (File.Exists(Path.Combine(dir.FullName, "Clink.csproj"))) return dir.FullName;
-        return null;
-    }
-
     [UnitTest]
-    public static void Every_key_in_the_slice_sources_is_in_the_English_catalog()
+    public static void Every_key_in_the_slice_sources_is_in_main_or_core_json()
     {
-        string? root = FindSourceFolder();
-        if (root == null)
-        {
-            // CI always runs from a checkout: finding no sources there means the scan silently stopped checking (a skip would be failed by CLINK_TESTS_NO_SKIP anyway)
-            if (Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == "true") throw new TestFailure("Clink.csproj was not found above " + AppContext.BaseDirectory + ": the key scan read nothing");
-            return;   // not run from a checkout: nothing to read
-        }
-        var english = L.Catalogs.English.Entries;
+        string? root = L10nSourceScan.Root();
+        if (root == null) return;   // not run from a checkout: nothing to read
+        var area = L10nSourceScan.AreaKeys(root, "main");
+        var core = L10nSourceScan.AreaKeys(root, "core");
         var problems = new List<string>();
-        int keys = 0;
 
-        // C#: the first string literal of L.T( / L.TIn("en", / Tr(locale, / Skipped( / SkippedBy( (the helpers of these files that take a key; L.Plural( is not used by them)
-        var code = new Regex(@"(?:L\.T|L\.TIn\(""en"",|Tr\(locale,|Skipped(?:By)?\()\s*\(?\s*""((?:[^""\\]|\\.)*)""", RegexOptions.Compiled);
-        foreach (string file in new[] { "MainWindow.xaml.cs", @"UI\HotkeyListEditor.xaml.cs", @"UI\ReplayLengthSlider.cs", @"Services\Capabilities.cs", @"Services\SettingsImport.cs", @"Services\CopiumCardModel.cs" })
-            foreach (Match m in code.Matches(File.ReadAllText(Path.Combine(root, file))))
-            {
-                string key = m.Groups[1].Value.Replace("\\\"", "\"").Replace("\\\\", "\\");
-                keys++;
-                if (key != "setting|" && !english.ContainsKey(key)) problems.Add(file + ": " + key);   // "setting|" is the prefix SettingsImport.LabelText puts before a label (the labels are checked by their own test)
-            }
+        // the helpers of these files that take a key (L.Plural( is not used by them)
+        var hits = L10nSourceScan.CSharp(root,
+            new[] { "MainWindow.xaml.cs", @"UI\HotkeyListEditor.xaml.cs", @"UI\ReplayLengthSlider.cs", @"Services\Capabilities.cs", @"Services\SettingsImport.cs", @"Services\CopiumCardModel.cs" },
+            new[] { L10nSourceScan.T, L10nSourceScan.TInEn, L10nSourceScan.TrLocale, L10nSourceScan.Skipped, L10nSourceScan.SkippedBy });
+        hits.AddRange(L10nSourceScan.Xaml(root, new[] { "MainWindow.xaml", @"UI\HotkeyListEditor.xaml" }));
+        foreach (var h in hits)
+            if (h.Key != "setting|" && !area.Contains(h.Key) && !core.Contains(h.Key)) problems.Add(h.File + ": " + h.Key);   // "setting|" is the prefix SettingsImport.LabelText puts before a label (the labels are checked by their own test)
 
-        // XAML: {l:T 'key'} (an apostrophe is \', a backslash \\; the attribute is XML-escaped)
-        var xaml = new Regex(@"\{l:T '((?:[^'\\]|\\.)*)'\}", RegexOptions.Compiled);
-        foreach (string file in new[] { "MainWindow.xaml", @"UI\HotkeyListEditor.xaml" })
-            foreach (Match m in xaml.Matches(File.ReadAllText(Path.Combine(root, file))))
-            {
-                string key = System.Net.WebUtility.HtmlDecode(m.Groups[1].Value).Replace("\\'", "'").Replace("\\\\", "\\");
-                keys++;
-                if (!english.ContainsKey(key)) problems.Add(file + ": " + key);
-            }
-
-        Check.True(keys > 250, "found the keys of the slice's sources: " + keys);
-        None(problems, "keys missing from Locales/en");
+        var english = L.Catalogs.English.Entries;
+        Check.True(hits.Count > 250, "found the keys of the slice's sources: " + hits.Count);
+        None(problems, "keys missing from main.json / core.json");
 
         // the sources that hold English as catalog keys (not as L.T( literals)
         foreach (string key in new[]

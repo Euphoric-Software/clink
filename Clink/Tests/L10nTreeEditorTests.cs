@@ -376,55 +376,31 @@ internal static class L10nTreeEditorTests
 
     // ------------------------------------------------------------------ the keys the slice's sources ask for exist in the English catalog
 
-    private static string? FindSourceFolder()
-    {
-        // (the same way the main slice's test finds them: the tests run from a checkout's build output; elsewhere there is nothing to read)
-        for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir != null; dir = dir.Parent)
-            if (File.Exists(Path.Combine(dir.FullName, "Clink.csproj"))) return dir.FullName;
-        return null;
-    }
-
     [UnitTest]
-    public static void Every_key_in_the_slice_sources_is_in_the_English_catalog()
+    public static void Every_key_in_the_slice_sources_is_in_editor_or_core_json()
     {
-        string? root = FindSourceFolder();
+        string? root = L10nSourceScan.Root();
         if (root == null) return;   // not run from a checkout: nothing to read
-        var english = L.Catalogs.English.Entries;
+        var editor = L10nSourceScan.AreaKeys(root, "editor");
+        var core = L10nSourceScan.AreaKeys(root, "core");
         var problems = new List<string>();
-        int keys = 0;
 
         // C#: the first string literal of L.T( / L.Plural( and of the toolbar's Tip( helper
-        var code = new Regex(@"(?:\bL\.(?:T|Plural)|\bTip)\(\s*""((?:[^""\\]|\\.)*)""", RegexOptions.Compiled);
-        foreach (string file in new[]
+        var hits = L10nSourceScan.CSharp(root, new[]
         {
             @"Screenshots\Editing\ComposeQueue.cs", @"Screenshots\Editing\ImageInput.cs", @"Screenshots\ScreenshotService.cs",
             @"Screenshots\Sources\GdiScreenshotSource.cs", @"Screenshots\Sources\FrozenDesktop.cs", @"Screenshots\Geometry\SelectionMath.cs",
             @"UI\Screenshots\EditorCanvas.cs", @"UI\Screenshots\EditorSession.cs", @"UI\Screenshots\EditorToolbar.xaml.cs",
             @"UI\Screenshots\InsertImagePicker.xaml.cs", @"UI\Screenshots\RegionOverlayWindow.xaml.cs", @"UI\Screenshots\ScreenshotEditorWindow.xaml.cs",
-        })
-            foreach (Match m in code.Matches(File.ReadAllText(Path.Combine(root, file))))
-            {
-                string key = Unescape(m.Groups[1].Value);
-                keys++;
-                if (!english.ContainsKey(key)) problems.Add(file + ": " + key);
-            }
-
-        // XAML: {l:T '...'} (an apostrophe is \', a backslash \\; the attribute is XML-escaped)
-        var xaml = new Regex(@"\{l:T '((?:[^'\\]|\\.)*)'\}", RegexOptions.Compiled);
-        foreach (string file in new[]
+        }, new[] { L10nSourceScan.T, L10nSourceScan.Plural, L10nSourceScan.Tip });
+        hits.AddRange(L10nSourceScan.Xaml(root, new[]
         {
             @"UI\Screenshots\EditorToolbar.xaml", @"UI\Screenshots\InsertImagePicker.xaml", @"UI\Screenshots\RegionOverlayWindow.xaml", @"UI\Screenshots\ScreenshotEditorWindow.xaml",
-        })
-            foreach (Match m in xaml.Matches(File.ReadAllText(Path.Combine(root, file))))
-            {
-                string key = Unescape(System.Net.WebUtility.HtmlDecode(m.Groups[1].Value));
-                keys++;
-                if (!english.ContainsKey(key)) problems.Add(file + ": " + key);
-            }
+        }));
+        foreach (var h in hits)
+            if (!editor.Contains(h.Key) && !core.Contains(h.Key)) problems.Add(h.File + ": " + h.Key);
 
-        Check.True(keys > 150, "found the keys of the slice's sources: " + keys);
-        Check.Equal(Array.Empty<string>(), problems.ToArray(), "keys missing from Locales/en");
+        Check.True(hits.Count > 150, "found the keys of the slice's sources: " + hits.Count);
+        Check.Equal(Array.Empty<string>(), problems.ToArray(), "keys missing from editor.json / core.json");
     }
-
-    private static string Unescape(string s) => s.Replace("\\n", "\n").Replace("\\\"", "\"").Replace("\\'", "'").Replace("\\\\", "\\");
 }

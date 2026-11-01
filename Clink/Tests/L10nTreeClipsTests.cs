@@ -749,50 +749,24 @@ internal static class L10nTreeClipsTests
 
     // ------------------------------------------------------------------ every key the slice's sources ask for is in clips.json / core.json, and every clips.json key is used
 
-    private static string? FindSourceFolder()
-    {
-        for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir != null; dir = dir.Parent)
-            if (File.Exists(Path.Combine(dir.FullName, "Clink.csproj"))) return dir.FullName;
-        return null;
-    }
-
     [UnitTest]
     public static void Every_key_in_the_slice_sources_is_in_clips_or_core_json_and_every_clips_key_is_used()
     {
-        string? root = FindSourceFolder();
+        string? root = L10nSourceScan.Root();
         if (root == null) return;   // not run from a checkout: nothing to read
-        static HashSet<string> KeysOf(string file)
-        {
-            using var doc = JsonDocument.Parse(File.ReadAllText(file));
-            return doc.RootElement.EnumerateObject().Select(p => p.Name).ToHashSet(StringComparer.Ordinal);
-        }
-        var clips = KeysOf(Path.Combine(root, "Locales", "en", "clips.json"));
-        var core = KeysOf(Path.Combine(root, "Locales", "en", "core.json"));
-        var used = new HashSet<string>(StringComparer.Ordinal);
+        var clips = L10nSourceScan.AreaKeys(root, "clips");
+        var core = L10nSourceScan.AreaKeys(root, "core");
         var problems = new List<string>();
-        var code = new Regex(@"L\.(?:T|Plural)\(\s*""((?:[^""\\]|\\.)*)""", RegexOptions.Compiled);
-        var xaml = new Regex(@"\{l:T '((?:[^'\\]|\\.)*)'\}", RegexOptions.Compiled);
-        int found = 0;
-        foreach (string file in new[]
+        var hits = L10nSourceScan.CSharp(root, new[]
         {
             @"UI\ClipsPane.xaml.cs", @"UI\ClipsPane.Selection.cs", @"UI\LibraryView.cs", @"UI\ClipItem.cs", @"UI\ClipGrouping.cs",
             @"UI\ClipDeleteConfirmWindow.xaml.cs", @"UI\ShareFilesWindow.xaml.cs", @"Services\ClipDelete.cs", @"Services\BulkActions.cs", @"Services\SaveCopy.cs",
-        })
-            foreach (Match m in code.Matches(File.ReadAllText(Path.Combine(root, file))))
-            {
-                string key = m.Groups[1].Value.Replace("\\\"", "\"").Replace("\\\\", "\\");
-                found++;
-                used.Add(key);
-                if (!clips.Contains(key) && !core.Contains(key)) problems.Add(file + ": " + key);
-            }
-        foreach (string file in new[] { @"UI\ClipsPane.xaml", @"UI\ClipDeleteConfirmWindow.xaml", @"UI\ShareFilesWindow.xaml" })
-            foreach (Match m in xaml.Matches(File.ReadAllText(Path.Combine(root, file))))
-            {
-                string key = System.Net.WebUtility.HtmlDecode(m.Groups[1].Value).Replace("\\'", "'").Replace("\\\\", "\\");
-                found++;
-                used.Add(key);
-                if (!clips.Contains(key) && !core.Contains(key)) problems.Add(file + ": " + key);
-            }
+        }, new[] { L10nSourceScan.T, L10nSourceScan.Plural });
+        hits.AddRange(L10nSourceScan.Xaml(root, new[] { @"UI\ClipsPane.xaml", @"UI\ClipDeleteConfirmWindow.xaml", @"UI\ShareFilesWindow.xaml" }));
+        var used = hits.Select(h => h.Key).ToHashSet(StringComparer.Ordinal);
+        foreach (var h in hits)
+            if (!clips.Contains(h.Key) && !core.Contains(h.Key)) problems.Add(h.File + ": " + h.Key);
+        int found = hits.Count;
         Check.True(found > 200, "found the literals of the slice's sources: " + found);
         Check.Equal(Array.Empty<string>(), problems.ToArray(), "keys the sources ask for that clips.json / core.json lack");
         var unused = clips.Where(k => !used.Contains(k)).OrderBy(k => k, StringComparer.Ordinal).ToArray();
