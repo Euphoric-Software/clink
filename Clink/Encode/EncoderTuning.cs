@@ -44,13 +44,16 @@ internal sealed record LiveEncoderTuning(EncoderMode Mode, bool ForceCbr = false
 /// <param name="Report">The capability probe's lines (tuned encoders only), or null.</param>
 /// <param name="BFramesState">What the B-picture count did: "ok" (set and read back), "unsupported", "rejected", "unverified" (set, not readable) or "reads back N". Empty without a tuning.</param>
 internal sealed record AppliedTuning(EncoderMode Requested, bool Vbr, uint MeanBps, uint MaxBps, bool LowLatency, uint BFrames,
-    uint QualityVsSpeed, uint Gop, string? Fallback, string? Report, string BFramesState = "")
+    uint? QualityVsSpeed, uint Gop, string? Fallback, string? Report, string BFramesState = "")
 {
     /// <summary>The highest bitrate the encoder may reach, in Mbps: what the ring is sized from.</summary>
     public double PeakMbps => MaxBps / 1_000_000.0;
     public string Describe() =>
-        $"rate={(Vbr ? "PeakConstrainedVBR" : "CBR")} mean={MeanBps / 1e6:0.##} Mbps max={MaxBps / 1e6:0.##} Mbps lowLatency={(LowLatency ? "on" : "off")} bframes={BFrames} qvs={QualityVsSpeed} gop={Gop}";
+        $"rate={(Vbr ? "PeakConstrainedVBR" : "CBR")} mean={MeanBps / 1e6:0.##} Mbps max={MaxBps / 1e6:0.##} Mbps lowLatency={(LowLatency ? "on" : "off")} bframes={BFrames} qvs={QualityVsSpeed?.ToString() ?? "n/a"} gop={Gop}";
 }
+
+/// <summary>The QualityVsSpeed call made before the media types (bench / probe only): SetValue's HRESULT and the value GetValue gave right after (null: not readable).</summary>
+internal sealed record QvsBeforeTypesResult(uint Requested, int SetHr, uint? ReadBack);
 
 /// <summary>The ICodecAPI calls the tuning needs, as HRESULTs, so the real COM object can be replaced by a fake.</summary>
 internal interface ICodecApiPort
@@ -136,8 +139,11 @@ internal static class EncoderExperiments
     /// read-back. With a tuning each value is set, read back and judged; a mode that did not take falls back (VBR to CBR, low latency
     /// to on) and says why. Logs one line with what was asked and what applied, and the capability probe once per codec.
     /// </summary>
-    public static AppliedTuning Apply(ICodecApiPort port, VideoEncoderConfig cfg, LiveEncoderTuning? tuning)
+    /// <param name="qvsSetBeforeTypes">Bench / probe only (null = today's setup): QualityVsSpeed was already requested before the media types, so no QualityVsSpeed call is made here.</param>
+    /// <param name="qvsBefore">What that early call returned. The reported (applied) QualityVsSpeed is its read-back, null when the call failed or could not be read; without it, null too.</param>
+    public static AppliedTuning Apply(ICodecApiPort port, VideoEncoderConfig cfg, LiveEncoderTuning? tuning, uint? qvsSetBeforeTypes = null, QvsBeforeTypesResult? qvsBefore = null)
     {
+        uint? qvs = qvsSetBeforeTypes == null ? QualityVsSpeed : (qvsBefore is { SetHr: >= 0 } ? qvsBefore.ReadBack : null);
         uint gop = (uint)Math.Max(1, Math.Round(cfg.Fps * cfg.GopSeconds));
         uint bitrate = cfg.BitrateBps;
         if (tuning == null)
@@ -150,8 +156,8 @@ internal static class EncoderExperiments
             SetUnchecked(port, KnownGuids.CODECAPI_AVEncMPVDefaultBPictureCount, 0);
             int hr = port.SetBool(KnownGuids.CODECAPI_AVLowLatencyMode, true);
             if (hr < 0) Log.Warn($"ICodecAPI {KnownGuids.CODECAPI_AVLowLatencyMode} = True not accepted (0x{(uint)hr:X8})");
-            SetUnchecked(port, KnownGuids.CODECAPI_AVEncCommonQualityVsSpeed, QualityVsSpeed);
-            return new AppliedTuning(EncoderMode.Off, false, bitrate, bitrate, true, 0, QualityVsSpeed, gop, null, null);
+            if (qvsSetBeforeTypes == null) SetUnchecked(port, KnownGuids.CODECAPI_AVEncCommonQualityVsSpeed, QualityVsSpeed);
+            return new AppliedTuning(EncoderMode.Off, false, bitrate, bitrate, true, 0, qvs, gop, null, null);
         }
 
         var fallbacks = new List<string>();
@@ -204,10 +210,10 @@ internal static class EncoderExperiments
             else if (llNow) fallbacks.Add("low latency stays on (reads back on)");
             else appliedLl = false;
         }
-        Checked(port, KnownGuids.CODECAPI_AVEncCommonQualityVsSpeed, QualityVsSpeed);
+        if (qvsSetBeforeTypes == null) Checked(port, KnownGuids.CODECAPI_AVEncCommonQualityVsSpeed, QualityVsSpeed);
 
         string? fb = fallbacks.Count == 0 ? null : string.Join("; ", fallbacks);
-        var applied = new AppliedTuning(tuning.Mode, vbr, bitrate, vbr ? peak : bitrate, appliedLl, bfApplied, QualityVsSpeed, gop, fb, report, bfState);
+        var applied = new AppliedTuning(tuning.Mode, vbr, bitrate, vbr ? peak : bitrate, appliedLl, bfApplied, qvs, gop, fb, report, bfState);
         Log.Info($"Encoder experiment: requested {tuning}; applied {applied.Describe()}" + (fb != null ? $"; fallback: {fb}" : ""));
         return applied;
     }
@@ -231,6 +237,26 @@ internal static class EncoderExperiments
             if (hr < 0) Log.Info($"ICodecAPI LowLatencyMode = {tuning.LowLatency} before the media types: not accepted (0x{(uint)hr:X8}); it is set again after them");
         }
         catch (Exception ex) { Log.Warn("Encoder experiment: setting before the media types failed: " + ex.Message); }
+    }
+
+    /// <summary>
+    /// The bench / probe's QualityVsSpeed, set before the media types (the MFT keeps it only then; set after them it reads back its default).
+    /// One SetValue and one GetValue, nothing else. Never throws; a failure is logged and shows in the result.
+    /// </summary>
+    public static QvsBeforeTypesResult ApplyQualityVsSpeedBeforeTypes(ICodecApiPort port, uint value)
+    {
+        int set = unchecked((int)0x80004005), get = set;
+        uint back = 0;
+        try
+        {
+            set = port.SetU32(KnownGuids.CODECAPI_AVEncCommonQualityVsSpeed, value);
+            get = port.GetU32(KnownGuids.CODECAPI_AVEncCommonQualityVsSpeed, out back);
+        }
+        catch (Exception ex) { Log.Warn("ICodecAPI QualityVsSpeed before the media types: " + ex.Message); }
+        if (set < 0) Log.Warn($"ICodecAPI QualityVsSpeed = {value} before the media types not accepted (0x{(uint)set:X8})");
+        var result = new QvsBeforeTypesResult(value, set, get >= 0 ? back : null);
+        Log.Info($"ICodecAPI QualityVsSpeed = {value} before the media types: SetValue 0x{(uint)set:X8}, reads back {(result.ReadBack?.ToString() ?? "n/a")}");
+        return result;
     }
 
     private static void PreSet(ICodecApiPort port, Guid key, uint value)

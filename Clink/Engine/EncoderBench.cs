@@ -20,15 +20,18 @@ namespace Clink.Engine;
 //
 // Why the numbers mean what a recording would do: the encoder is a VideoEncoder with the LIVE options (VideoEncoderOptions.Live, with
 // LiveTuning for every mode but off), so ConfigureCodecApiBeforeTypes, the media types, ConfigureCodecApi and EncoderExperiments.Apply (with
-// read-back) run exactly as in Engine.VideoLoop; "off" passes the plain Live options, which is today's seven calls. Nothing here adds an
-// option to VideoEncoder: the frames are fed through the same TryAcquireInput / Submit the recording uses, and the only help is that
+// read-back) run exactly as in Engine.VideoLoop; "off" passes the plain Live options, which is today's seven calls (plus the bench's one read after streaming starts). The one bench-only
+// mode, "quality" (not an EncoderMode: the live setting never accepts it), is "off" with VideoEncoderOptions.QualityVsSpeedBeforeTypes = 100
+// (null in the app): the MFT keeps a QualityVsSpeed only when it is set before the media types, so the recording's own 66 after them is
+// not what runs. Otherwise nothing here adds an option to VideoEncoder: the frames are fed through the same TryAcquireInput / Submit the recording uses, and the only help is that
 // this producer WAITS (VideoEncoder.HasRoomForSubmit) instead of calling Submit when it would drop the oldest frame, because a file reader,
 // unlike a capture, can wait. The share-copy path (Offline options, OfflineEncoderSettings, ConfigureOfflineCodecApi) is not touched.
 // This class never reads or writes Settings (no settings.json, no clips folder): the only files it writes are in the out folder.
 
 /// <summary>A parsed <c>--encoder-bench</c> command line.</summary>
 /// <param name="KeyframeSeconds">The GOP length in seconds: 1, as a recording's (EngineConfig.GopSeconds), unless --keyframe-seconds says otherwise.</param>
-internal sealed record BenchArgs(string Reference, string OutFolder, string Codec, IReadOnlyList<double> Mbps, IReadOnlyList<EncoderMode> Modes, double? Seconds, double KeyframeSeconds = 1.0);
+/// <param name="Quality">The bench-only "quality" mode is on the --modes list: CBR like "off", with QualityVsSpeed 100 set before the media types. Not an <see cref="EncoderMode"/> (the live setting never accepts it).</param>
+internal sealed record BenchArgs(string Reference, string OutFolder, string Codec, IReadOnlyList<double> Mbps, IReadOnlyList<EncoderMode> Modes, double? Seconds, double KeyframeSeconds = 1.0, bool Quality = false);
 
 /// <summary>The bitrate of an encoder's output in whole windows (1 s): what a VBR encoder does over time, which a file's mean hides.</summary>
 /// <param name="PerSecondMbps">One value per complete window (the last, partial window is left out).</param>
@@ -87,10 +90,24 @@ internal sealed class BenchAppliedInfo
     public bool LowLatency { get; set; }
     public uint BFrames { get; set; }
     public string BFramesState { get; set; } = "";
-    public uint QualityVsSpeed { get; set; }
+    public uint? QualityVsSpeed { get; set; }
     public uint Gop { get; set; }
     public string? Fallback { get; set; }
     public string? CapabilityReport { get; set; }
+}
+
+/// <summary>The QualityVsSpeed a run asked for, at which stage, and what the encoder said once streaming had begun.</summary>
+internal sealed class BenchQvsInfo
+{
+    /// <summary>The value asked for (null: no ICodecAPI, so no call was made).</summary>
+    public uint? Requested { get; set; }
+    /// <summary>"before-types" (set before the media types, the only stage the encoder keeps it) | "after-types" (the recording's own call, which the NVENC MFT accepts but ignores) | "none".</summary>
+    public string Stage { get; set; } = "";
+    /// <summary>GetValue after BEGIN_STREAMING (when the encoder constructor returned); null = not readable.</summary>
+    public uint? ReadBack { get; set; }
+    /// <summary>Before-types only: SetValue's HRESULT.</summary>
+    public string? SetResult { get; set; }
+    public string Describe() => $"qvs requested {(Requested?.ToString() ?? "n/a")} at {Stage}, reads back {(ReadBack?.ToString() ?? "n/a")} after streaming started";
 }
 
 internal sealed class BenchRequestedInfo
@@ -142,6 +159,8 @@ internal sealed class BenchRunResult
     public double SourceFps { get; set; }
     public BenchRequestedInfo? Requested { get; set; }
     public BenchAppliedInfo? Applied { get; set; }
+    /// <summary>Requested QualityVsSpeed, the stage it was set at, and the read-back after streaming started (the script makes a "quality" run INVALID unless that reads 100).</summary>
+    public BenchQvsInfo? QualityVsSpeed { get; set; }
     public long DecodedFrames { get; set; }
     public long FramesIn { get; set; }
     public long FramesOut { get; set; }
@@ -182,7 +201,7 @@ internal sealed class BenchRunResult
 internal static unsafe class EncoderBench
 {
     public const string Verb = "--encoder-bench";
-    public const string Usage = "usage: Clink.exe --encoder-bench <reference.mp4> <outFolder> [--codec h264|hevc] [--mbps 10.8,12,14.4,16,18,20,22.2] [--modes off,vbr,lowlatency-off,vbr-lowlatency-off] [--seconds N] [--keyframe-seconds S]";
+    public const string Usage = "usage: Clink.exe --encoder-bench <reference.mp4> <outFolder> [--codec h264|hevc] [--mbps 10.8,12,14.4,16,18,20,22.2] [--modes off,vbr,lowlatency-off,vbr-lowlatency-off,quality] [--seconds N] [--keyframe-seconds S]";
 
     /// <summary>The GOP length of a recording by default (EngineConfig.GopSeconds), and the default of --keyframe-seconds.</summary>
     public const double LiveGopSeconds = 1.0;
@@ -209,6 +228,34 @@ internal static unsafe class EncoderBench
     public static VideoEncoderOptions OptionsFor(EncoderMode mode)
         => mode == EncoderMode.Off ? VideoEncoderOptions.Live : VideoEncoderOptions.Live with { LiveTuning = new LiveEncoderTuning(mode) };
 
+    /// <summary>The bench-only mode that is not an <see cref="EncoderMode"/>: CBR exactly like off, plus QualityVsSpeed 100 before the media types. The live setting never accepts this name.</summary>
+    public const string QualityModeName = "quality";
+    /// <summary>The preset the quality mode asks for (100 = best quality; the MFT keeps a value only when it is set before the media types).</summary>
+    public const uint QualityModeVsSpeed = 100;
+
+    /// <summary>The options of a bench run: <see cref="OptionsFor(EncoderMode)"/>, or for the quality mode the plain live options (no tuning, so no other early call) with QualityVsSpeed set before the media types.</summary>
+    public static VideoEncoderOptions OptionsFor(EncoderMode mode, bool quality)
+        => quality ? VideoEncoderOptions.Live with { QualityVsSpeedBeforeTypes = QualityModeVsSpeed } : OptionsFor(mode);
+
+    /// <summary>The runs of one bitrate, in order: the listed encoder modes, then "quality" when it was asked for.</summary>
+    internal static IReadOnlyList<(EncoderMode Mode, bool Quality)> RunModes(BenchArgs a)
+    {
+        var list = a.Modes.Select(m => (m, false)).ToList();
+        if (a.Quality) list.Add((EncoderMode.Off, true));
+        return list;
+    }
+
+    internal static string ModeName(EncoderMode mode, bool quality) => quality ? QualityModeName : EncoderExperiments.Name(mode);
+
+    /// <summary>What the run's JSON and log say about QualityVsSpeed. <paramref name="applied"/> is null without an ICodecAPI (nothing was set).</summary>
+    internal static BenchQvsInfo DescribeQvs(VideoEncoderOptions options, AppliedTuning? applied, QvsBeforeTypesResult? before, uint? readBack)
+    {
+        if (options.QualityVsSpeedBeforeTypes is { } asked)
+            return new BenchQvsInfo { Requested = asked, Stage = "before-types", ReadBack = readBack, SetResult = before == null ? "not called" : $"0x{(uint)before.SetHr:X8}" };
+        // The recording's own call, after the media types (it reports 66 whatever the encoder keeps).
+        return new BenchQvsInfo { Requested = applied?.QualityVsSpeed, Stage = applied == null ? "none" : "after-types", ReadBack = readBack };
+    }
+
     /// <summary>A run's JSON (camelCase, indented): what tools\encoder-bench.ps1 reads.</summary>
     internal static string ToJson(BenchRunResult r) => JsonSerializer.Serialize(r, Json);
 
@@ -216,8 +263,15 @@ internal static unsafe class EncoderBench
     public static string RunName(string codec, double mbps, EncoderMode mode)
         => $"{codec}_{MbpsText(mbps)}M_{EncoderExperiments.Name(mode)}";
 
+    /// <summary>The name of the quality run at a bitrate, e.g. h264_12M_quality (never the same as an encoder mode's).</summary>
+    public static string QualityRunName(string codec, double mbps) => $"{codec}_{MbpsText(mbps)}M_{QualityModeName}";
+
+    internal static string RunName(string codec, double mbps, EncoderMode mode, bool quality) => quality ? QualityRunName(codec, mbps) : RunName(codec, mbps, mode);
+
     internal static string MbpsText(double mbps) => mbps.ToString("0.######", CultureInfo.InvariantCulture);
 
+    /// <summary>The muxer's temporary names for a run's MP4 while it is written; a reference with one of them would be overwritten.</summary>
+    private static readonly string[] MuxerTempExtensions = { ".mp4.tmp", ".mp4.part" };
     private static readonly string[] OutputExtensions = { ".mp4", ".json", ".metrics.json", ".vmaf.json", ".ffmpeg.log" };
 
     /// <summary>
@@ -235,7 +289,7 @@ internal static unsafe class EncoderBench
     internal static string? ReferenceCollision(string outFolder, string reference, IEnumerable<string> names)
     {
         foreach (string name in names)
-            foreach (string ext in OutputExtensions)
+            foreach (string ext in OutputExtensions.Concat(MuxerTempExtensions))
             {
                 string p = Path.Combine(outFolder, name + ext);
                 if (MayBeReference(p, reference)) return $"the reference clip {reference} is (or may be) the bench output {p}: choose another out folder; nothing was deleted";
@@ -309,7 +363,8 @@ internal static unsafe class EncoderBench
         IReadOnlyList<double> mbps = DefaultMbps(codec);
         if (mbpsText != null && !TryParseMbps(mbpsText, out mbps, out error)) return false;
         IReadOnlyList<EncoderMode> modes = AllModes;
-        if (modesText != null && !TryParseModes(modesText, out modes, out error)) return false;
+        bool quality = false;
+        if (modesText != null && !TryParseModes(modesText, out modes, out quality, out error)) return false;
         double? seconds = null;
         if (secondsText != null)
         {
@@ -321,7 +376,7 @@ internal static unsafe class EncoderBench
         if (keyframeText != null
             && (!double.TryParse(keyframeText.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out keyframe) || !double.IsFinite(keyframe) || keyframe < 0.25 || keyframe > 10))
         { error = $"--keyframe-seconds must be a number from 0.25 to 10 (a recording uses 1), not '{keyframeText}'"; return false; }
-        parsed = new BenchArgs(reference, outFolder, codec, mbps, modes, seconds, keyframe);
+        parsed = new BenchArgs(reference, outFolder, codec, mbps, modes, seconds, keyframe, quality);
         error = "";
         return true;
     }
@@ -347,17 +402,25 @@ internal static unsafe class EncoderBench
         return true;
     }
 
-    public static bool TryParseModes(string text, out IReadOnlyList<EncoderMode> list, out string error)
+    /// <summary>The bench's mode list: the live setting's modes (<see cref="EncoderExperiments.Parse"/>) and, bench only, "quality" (any case), which comes back as <paramref name="quality"/> and never as an <see cref="EncoderMode"/>.</summary>
+    public static bool TryParseModes(string text, out IReadOnlyList<EncoderMode> list, out bool quality, out string error)
     {
         list = Array.Empty<EncoderMode>();
+        quality = false;
         error = "";
         var items = new List<EncoderMode>();
         foreach (string part in text.Split(','))
         {
             string p = part.Trim();
+            if (p.Equals(QualityModeName, StringComparison.OrdinalIgnoreCase))
+            {
+                if (quality) { error = $"--modes: {p} is listed twice"; return false; }
+                quality = true;
+                continue;
+            }
             var (mode, warning) = EncoderExperiments.Parse(p);
             if (p.Length == 0 || warning != null)
-            { error = $"--modes: '{p}' is not a mode (off, vbr, lowlatency-off, vbr-lowlatency-off)" + (warning != null && p.Length > 0 ? ": " + warning : ""); return false; }
+            { error = $"--modes: '{p}' is not a mode (off, vbr, lowlatency-off, vbr-lowlatency-off, quality)" + (warning != null && p.Length > 0 ? ": " + warning : ""); return false; }
             if (items.Contains(mode)) { error = $"--modes: {p} is listed twice"; return false; }
             items.Add(mode);
         }
@@ -416,13 +479,14 @@ internal static unsafe class EncoderBench
             catch (Exception ex) { Log.Warn("[encoder-bench] could not lower the process priority: " + ex.Message); }
 
             Directory.CreateDirectory(a.OutFolder);
-            string? collision = ReferenceCollision(a.OutFolder, a.Reference, a.Mbps.SelectMany(m => a.Modes.Select(mode => RunName(a.Codec, m, mode))));
+            var runModes = RunModes(a);
+            string? collision = ReferenceCollision(a.OutFolder, a.Reference, a.Mbps.SelectMany(m => runModes.Select(rm => RunName(a.Codec, m, rm.Mode, rm.Quality))));
             if (collision != null)
             {
                 Log.Error("[encoder-bench] refused: " + collision);
                 return 1;
             }
-            Log.Info($"[encoder-bench] reference {a.Reference}, out {a.OutFolder}, {a.Codec}, Mbps {string.Join(",", a.Mbps.Select(MbpsText))}, modes {string.Join(",", a.Modes.Select(EncoderExperiments.Name))}, GOP {a.KeyframeSeconds:0.##} s" +
+            Log.Info($"[encoder-bench] reference {a.Reference}, out {a.OutFolder}, {a.Codec}, Mbps {string.Join(",", a.Mbps.Select(MbpsText))}, modes {string.Join(",", runModes.Select(rm => ModeName(rm.Mode, rm.Quality)))}, GOP {a.KeyframeSeconds:0.##} s" +
                      (a.Seconds is { } s ? $", first {s:0.###} s" : ", whole clip"));
             int failed = 0;
             using var d3d = D3DDevice.CreateForAdapter(null, lowPriority: false);
@@ -431,16 +495,16 @@ internal static unsafe class EncoderBench
             bool referenceLogged = false;
             foreach (double mbps in a.Mbps)
             {
-                foreach (var mode in a.Modes)
+                foreach (var (mode, quality) in runModes)
                 {
-                    var r = RunOne(d3d, a, mode, mbps, ref referenceLogged);
+                    var r = RunOne(d3d, a, mode, quality, mbps, ref referenceLogged);
                     r.AdapterName = d3d.AdapterName;
                     r.AdapterLuid = luid;
                     if (r.Error != null) failed++;
                     File.WriteAllText(Path.Combine(a.OutFolder, r.Name + ".json"), ToJson(r));
                 }
             }
-            Log.Info($"[encoder-bench] done, {failed} of {a.Mbps.Count * a.Modes.Count} run(s) failed. Next: tools\\encoder-bench.ps1 -OutFolder \"{a.OutFolder}\" -Reference \"{a.Reference}\"");
+            Log.Info($"[encoder-bench] done, {failed} of {a.Mbps.Count * runModes.Count} run(s) failed. Next: tools\\encoder-bench.ps1 -OutFolder \"{a.OutFolder}\" -Reference \"{a.Reference}\"");
             return failed == 0 ? 0 : 1;
         }
         catch (Exception ex)
@@ -488,14 +552,14 @@ internal static unsafe class EncoderBench
     internal static string DescribeReferenceLine(BenchReferenceInfo i, long expectedFrames)
         => $"[encoder-bench] reference {i.Codec} {i.Width}x{i.Height} {i.Fps:0.###} fps, {(expectedFrames > 0 ? "~" + expectedFrames : "?")} frames, {i.OverallMbps:0.0} Mbps overall, clk1 {(i.ClinkBrand ? "yes" : "no")}";
 
-    private static BenchRunResult RunOne(D3DDevice d3d, BenchArgs a, EncoderMode mode, double mbps, ref bool referenceLogged)
+    private static BenchRunResult RunOne(D3DDevice d3d, BenchArgs a, EncoderMode mode, bool quality, double mbps, ref bool referenceLogged)
     {
-        string name = RunName(a.Codec, mbps, mode);
+        string name = RunName(a.Codec, mbps, mode, quality);
         string mp4 = Path.Combine(a.OutFolder, name + ".mp4");
         var r = new BenchRunResult
         {
             ClinkVersion = ClinkVersionText(),
-            Name = name, Mode = EncoderExperiments.Name(mode), Codec = a.Codec, RequestedMbps = mbps, Reference = a.Reference, OutputFile = name + ".mp4",
+            Name = name, Mode = ModeName(mode, quality), Codec = a.Codec, RequestedMbps = mbps, Reference = a.Reference, OutputFile = name + ".mp4",
             SecondsLimit = a.Seconds, KeyframeSeconds = a.KeyframeSeconds,
         };
         var wall = Stopwatch.StartNew();
@@ -530,10 +594,13 @@ internal static unsafe class EncoderBench
 
             uint bitrate = (uint)Math.Round(mbps * 1_000_000);
             var cfg = new VideoEncoderConfig((uint)w, (uint)h, fps, bitrate, a.Codec, (float)a.KeyframeSeconds);
-            enc = new VideoEncoder(d3d, cfg, OptionsFor(mode));
+            var options = OptionsFor(mode, quality);
+            enc = new VideoEncoder(d3d, cfg, options);
             r.Encoder = enc.EncoderName;
             var applied = enc.Applied;
-            var tuning = OptionsFor(mode).LiveTuning;
+            // (The constructor returns once streaming has begun: this is the read-back "after streaming starts". Read-only.)
+            r.QualityVsSpeed = DescribeQvs(options, applied, enc.QvsBeforeTypes, enc.ReadQualityVsSpeed());
+            var tuning = options.LiveTuning;
             bool wantVbr = tuning?.WantsVbr ?? false;
             r.Requested = new BenchRequestedInfo
             {
@@ -672,7 +739,7 @@ internal static unsafe class EncoderBench
             r.VbrVerdict = verdict.Note;
             r.EncodeWallSeconds = wall.Elapsed.TotalSeconds;
             Log.Info($"[encoder-bench] {name}: {r.FramesIn} in, {r.FramesOut} out, dropped {r.Dropped}, held {r.FramesHeldAtEnd}, max in flight {r.MaxFramesInFlight}, {r.EncodeSpeedFps:0.#} fps fed (longest feeder wait {r.MaxWaitForRoomMs:0} ms: expected when feeding faster than real time), out of order {r.OutOfOrderOutputs}, {r.FileSizeBytes / 1048576.0:0.00} MB = {r.AchievedMbps:0.##} Mbps video ({r.FileMbps:0.##} Mbps file), " +
-                     $"peak 1 s {r.PeakMbps1s:0.##} Mbps (mean {r.MeanMbps1s:0.##}), applied: {applied?.Describe() ?? "no ICodecAPI"}{(applied?.Fallback != null ? "; fallback: " + applied.Fallback : "")}; {r.VbrVerdict}; {r.EncodeWallSeconds:0.0} s");
+                     $"peak 1 s {r.PeakMbps1s:0.##} Mbps (mean {r.MeanMbps1s:0.##}), applied: {applied?.Describe() ?? "no ICodecAPI"}{(applied?.Fallback != null ? "; fallback: " + applied.Fallback : "")}; {r.QualityVsSpeed?.Describe()}; {r.VbrVerdict}; {r.EncodeWallSeconds:0.0} s");
         }
         catch (Exception ex)
         {

@@ -140,6 +140,93 @@ internal static class EncoderBenchTests
             Check.True(System.Text.RegularExpressions.Regex.IsMatch(EncoderBench.RunName("hevc", 12.5, m), "^[A-Za-z0-9._-]+$"));
     }
 
+    // ------------------------------------------------------------------ the bench-only quality mode
+
+    [UnitTest]
+    public static void Quality_is_a_bench_only_mode_the_live_setting_does_not_know()
+    {
+        using var dir = new TempDir();
+        Check.True(EncoderBench.TryParseArgs(Args(dir), out var d, out string error), error);
+        Check.False(d!.Quality, "not in the default list");
+        Check.True(EncoderBench.TryParseArgs(Args(dir, "--modes", "off,Quality"), out var a, out error), error);
+        Check.Equal(new[] { EncoderMode.Off }, a!.Modes.ToArray(), "quality is not an EncoderMode");
+        Check.True(a.Quality);
+        Check.True(EncoderBench.TryParseArgs(Args(dir, "--modes", "QUALITY"), out var q, out error), error);
+        Check.Equal(0, q!.Modes.Count);
+        Check.True(q.Quality);
+        Check.Equal(new[] { (EncoderMode.Off, false), (EncoderMode.Vbr, false), (EncoderMode.Off, true) }, EncoderBench.RunModes(a with { Modes = new[] { EncoderMode.Off, EncoderMode.Vbr } }).ToArray(), "the listed modes, then quality");
+        Check.Contains(Fails(Args(dir, "--modes", "quality,off,quality")), "twice");
+        Check.Contains(Fails(Args(dir, "--modes", "quality,")), "--modes");
+        Check.Contains(Fails(Args(dir, "--modes", "qualit")), "quality");   // the list of modes in the message includes it
+        // The live parser (the hidden setting) rejects it: unknown, so off with a warning, and no tuning.
+        Check.NotNull(EncoderExperiments.Parse("quality").Warning);
+        Check.Null(EncoderExperiments.Resolve("quality", false));
+        Check.Equal(4, Enum.GetValues<EncoderMode>().Length, "no fifth encoder mode");
+    }
+
+    [UnitTest]
+    public static void The_quality_run_has_its_own_name_and_options_cbr_like_off_with_qvs_100_before_the_types()
+    {
+        Check.Equal("h264_12M_quality", EncoderBench.QualityRunName("h264", 12));
+        Check.Equal("hevc_12.6M_quality", EncoderBench.RunName("hevc", 12.6, EncoderMode.Off, quality: true));
+        Check.Equal("h264_12M_off", EncoderBench.RunName("h264", 12, EncoderMode.Off, quality: false));
+        foreach (string codec in new[] { "h264", "hevc" })
+            foreach (double m in EncoderBench.DefaultMbps(codec))
+            {
+                var names = Enum.GetValues<EncoderMode>().Select(x => EncoderBench.RunName(codec, m, x)).Append(EncoderBench.QualityRunName(codec, m)).ToList();
+                Check.Equal(names.Count, names.Distinct().Count(), "unique among the modes at one rate");
+                Check.True(System.Text.RegularExpressions.Regex.IsMatch(EncoderBench.QualityRunName(codec, m), "^[A-Za-z0-9._-]+$"));
+            }
+        Check.Equal("quality", EncoderBench.ModeName(EncoderMode.Off, true));
+        Check.Equal("off", EncoderBench.ModeName(EncoderMode.Off, false));
+
+        var o = EncoderBench.OptionsFor(EncoderMode.Off, quality: true);
+        Check.Equal(100u, o.QualityVsSpeedBeforeTypes!.Value);
+        Check.Null(o.LiveTuning, "CBR exactly like off: no tuning, so no other early call and today's calls after the types");
+        Check.False(o.Blocking);
+        Check.Equal(VideoEncoderOptions.Live with { QualityVsSpeedBeforeTypes = 100 }, o);
+        foreach (var mode in Enum.GetValues<EncoderMode>())
+        {
+            Check.Equal(EncoderBench.OptionsFor(mode), EncoderBench.OptionsFor(mode, quality: false));
+            Check.Null(EncoderBench.OptionsFor(mode).QualityVsSpeedBeforeTypes, mode + ": no other mode sets it");
+        }
+        Check.Null(VideoEncoderOptions.Live.QualityVsSpeedBeforeTypes, "and the recording's options do not");
+    }
+
+    [UnitTest]
+    public static void The_run_json_records_the_requested_qvs_its_stage_and_the_read_back()
+    {
+        var applied = new AppliedTuning(EncoderMode.Off, false, 12_000_000, 12_000_000, true, 0, 66, 60, null, null);
+        var off = EncoderBench.DescribeQvs(EncoderBench.OptionsFor(EncoderMode.Off, false), applied, null, 33);
+        Check.Equal(66u, off.Requested!.Value);
+        Check.Equal("after-types", off.Stage);
+        Check.Equal(33u, off.ReadBack!.Value);
+        var none = EncoderBench.DescribeQvs(EncoderBench.OptionsFor(EncoderMode.Off, false), null, null, null);
+        Check.Null(none.Requested);
+        Check.Equal("none", none.Stage);
+        Check.Null(none.ReadBack);
+
+        var qApplied = applied with { QualityVsSpeed = 100 };
+        var q = EncoderBench.DescribeQvs(EncoderBench.OptionsFor(EncoderMode.Off, true), qApplied, new QvsBeforeTypesResult(100, 0, 100), 100);
+        Check.Equal(100u, q.Requested!.Value);
+        Check.Equal("before-types", q.Stage);
+        Check.Equal(100u, q.ReadBack!.Value);
+        Check.Equal("0x00000000", q.SetResult);
+        Check.Contains(q.Describe(), "requested 100 at before-types, reads back 100");
+
+        var r = new BenchRunResult { Name = "h264_12M_quality", Mode = EncoderBench.QualityModeName, Codec = "h264", QualityVsSpeed = q, EncodeSpeedFps = 410.5 };
+        using var doc = JsonDocument.Parse(EncoderBench.ToJson(r));
+        var root = doc.RootElement;
+        Check.Equal("quality", root.GetProperty("mode").GetString());
+        var j = root.GetProperty("qualityVsSpeed");
+        Check.Equal(100, j.GetProperty("requested").GetInt32());
+        Check.Equal("before-types", j.GetProperty("stage").GetString());
+        Check.Equal(100, j.GetProperty("readBack").GetInt32());
+        Check.Equal(410.5, root.GetProperty("encodeSpeedFps").GetDouble());
+        using var unread = JsonDocument.Parse(EncoderBench.ToJson(new BenchRunResult { QualityVsSpeed = new BenchQvsInfo { Requested = 100, Stage = "before-types" } }));
+        Check.Equal(JsonValueKind.Null, unread.RootElement.GetProperty("qualityVsSpeed").GetProperty("readBack").ValueKind, "an unreadable value is null, not 0");
+    }
+
     // ------------------------------------------------------------------ the per-second profile
 
     private static List<(long Pts, int Bytes)> Frames(int count, Func<int, int> bytes)
@@ -372,6 +459,15 @@ internal static class EncoderBenchTests
         Check.Throws<InvalidOperationException>(() => EncoderBench.DeleteStaleOutputs(dir.Path, "h264_20M_off", refLink));
         Check.True(File.Exists(output) && File.Exists(refLink), "both names are still there");
         Check.Contains(EncoderBench.ReferenceCollision(dir.Path, refLink, new[] { "h264_20M_off" }) ?? "", "reference");
+
+        // The muxer's temp names of a run are outputs too: a reference called <run>.mp4.tmp / .part is refused, and a different name is not.
+        foreach (string ext in new[] { ".mp4.tmp", ".mp4.part" })
+        {
+            string tmp = dir.File("h264_24M_off" + ext);
+            File.WriteAllText(tmp, "the reference");
+            Check.Contains(EncoderBench.ReferenceCollision(dir.Path, tmp, new[] { "h264_24M_off" }) ?? "", "nothing was deleted");
+            Check.Null(EncoderBench.ReferenceCollision(dir.Path, tmp, new[] { "h264_26M_off" }));
+        }
     }
 
     [UnitTest]
@@ -437,6 +533,47 @@ internal static class EncoderBenchTests
                 var v = streams.Single(s => s.IsVideo);
                 Check.Equal((int)framesOut, v.Count, "the MP4 holds every frame the encoder gave");
                 Check.Equal((1280, 720), (v.Width, v.Height));
+            }
+            Check.Equal(0, code, "every run finished");
+        });
+    }
+
+    /// <summary>
+    /// Benches 3 s of a generated clip with off and the bench-only quality mode (QualityVsSpeed 100 before the media types) through the real
+    /// hardware encoder: both runs finish, the JSON says what was requested, when, and what the encoder reads back after streaming began (100
+    /// on NVIDIA, where the call before the types is kept), and the quality run's name, mode and speed are recorded.
+    /// </summary>
+    [UnitTest]
+    public static void The_bench_encodes_a_generated_clip_with_the_quality_mode_and_records_the_qvs_read_back()
+    {
+        if (!ShareTranscoderTests.GpuTestsOn) { ShareTranscoderTests.NotRun(nameof(The_bench_encodes_a_generated_clip_with_the_quality_mode_and_records_the_qvs_read_back)); return; }
+        using var dir = new TempDir();
+        ShareTranscoderTests.OnMta(() =>
+        {
+            string reference = ShareTranscoderTests.MakeClip(dir, "reference.mp4", 1280, 720, 60, 4.0);
+            var args = new BenchArgs(reference, dir.File("bench"), "h264", new[] { 8.0 }, new[] { EncoderMode.Off }, 3.0, Quality: true);
+            int code = EncoderBench.RunAll(args);
+            foreach (string name in new[] { EncoderBench.RunName("h264", 8, EncoderMode.Off), EncoderBench.QualityRunName("h264", 8) })
+            {
+                bool quality = name.EndsWith("_quality", StringComparison.Ordinal);
+                using var doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(args.OutFolder, name + ".json")));
+                var root = doc.RootElement;
+                if (root.GetProperty("error").ValueKind != JsonValueKind.Null)
+                {
+                    string why = root.GetProperty("error").GetString() ?? "";
+                    if (why.Contains("hardware", StringComparison.OrdinalIgnoreCase) || why.Contains("decoder", StringComparison.OrdinalIgnoreCase)) Check.Skip("CLINK_TESTS_GPU=1 but " + why);
+                    Check.Fail(name + " failed: " + why);
+                }
+                Check.Equal(quality ? "quality" : "off", root.GetProperty("mode").GetString());
+                var q = root.GetProperty("qualityVsSpeed");
+                Check.Equal(quality ? "before-types" : "after-types", q.GetProperty("stage").GetString());
+                Check.Equal(quality ? 100 : 66, q.GetProperty("requested").GetInt32());
+                bool nvidia = root.GetProperty("encoder").GetString()!.Contains("NVIDIA", StringComparison.OrdinalIgnoreCase);
+                if (quality && nvidia) Check.Equal(100, q.GetProperty("readBack").GetInt32(), "the value set before the types is kept");
+                Check.Equal("CBR", root.GetProperty("applied").GetProperty("rate").GetString());
+                Check.Equal(0L, root.GetProperty("dropped").GetInt64());
+                Check.True(root.GetProperty("encodeSpeedFps").GetDouble() > 0, "the speed is recorded");
+                Console.WriteLine($"[quality-smoke] {name}: {q.GetRawText().Replace("\n", " ")} {root.GetProperty("encodeSpeedFps").GetDouble():0.#} fps");
             }
             Check.Equal(0, code, "every run finished");
         });

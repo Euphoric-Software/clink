@@ -13,8 +13,8 @@
   seconds); the report shows each group on its own and warns loudly when a codec has more than one group or a group mixes Clink builds.
 
   The CBR ("off") runs of a group are a curve of VMAF (mean and 5th percentile) against ACHIEVED video Mbps (video bits / (frames out /
-  fps), container excluded), interpolated in log size. Every vbr, lowlatency-off and vbr-lowlatency-off run is judged against that curve
-  (never extrapolated: outside the curve's range the result is "outside the CBR range"; a size within 0.5% of an end point counts as
+  fps), container excluded), interpolated in log size. Every vbr, lowlatency-off, vbr-lowlatency-off and quality run is judged against that curve
+  (never extrapolated: outside the curve's range the result is "outside the CBR range", or "outside the vbr range" for vbr-lowlatency-off, which is judged against the vbr curve; a size within 0.5% of an end point counts as
   that end point and is labelled "at edge"):
 
     VBR            PASS by branch A or B.
@@ -26,13 +26,19 @@
                    (log-size interpolation), shown as run size / CBR size, e.g. "87% of CBR". It is information; branches A / B decide.
     Low latency off  PASS when the mean VMAF is >= 1 above the curve at the run's own Mbps. (vbr-lowlatency-off is compared with the
                    vbr curve for this check, so the VBR gain is not counted twice.)
+    Quality        the bench-only "quality" mode (CBR like off, QualityVsSpeed 100 set before the media types) is judged against the
+                   "off" curve of its group by the VBR rule above (branch A or B, equal-quality size, same PASS / outside the CBR range /
+                   n/a / FAIL ordering). Quality runs are never curve points. INVALID unless the encoder reads QualityVsSpeed back as 100
+                   once streaming has begun. A "Quality preset speed" table shows encode speed fps of quality and off side by side, and
+                   the ratio (a bound, not the encoder's own speed, when decoding or the feeder sets the pace).
     Peak cap       a vbr mode's busiest second must be <= 1.65 x its mean second and <= 1.65 x the requested Mbps (the replay ring is
                    sized from that peak). Not run for INVALID runs.
     Invalid        a run is INVALID (listed with the reason, left out of the curve and of every check) when: low latency off did not
                    apply (applied lowLatency true or any fallback), a vbr mode did not apply as VBR or its output did not vary
                    ("VBR did not take effect"), outputs came out of order, the encoder dropped frames, the number of frames the reference
                    decodes differs from its ffprobe packet count (whole-clip runs), or the VMAF log's frame count differs from the frames
-                   the encoder gave.
+                   the encoder gave, or (quality runs) the encoder does not read QualityVsSpeed back as 100 once streaming has begun (or it
+                   cannot be read, or no read-back was recorded).
 
   The report also states the reference (codec, size, frame rate, bitrate, colour tags) and warns when it is too low a bitrate to bench
   against, is itself a Clink recording, or is not BT.709 limited range (the bench's decoder asks for BT.709 limited; a conversion lowers
@@ -68,7 +74,8 @@ $ErrorActionPreference = 'Stop'
 
 # ------------------------------------------------------------------ pure functions (tested)
 
-$script:ModeOrder = @('off', 'vbr', 'lowlatency-off', 'vbr-lowlatency-off')
+$script:ModeOrder = @('off', 'vbr', 'lowlatency-off', 'vbr-lowlatency-off', 'quality')
+$script:QualityVsSpeedWanted = 100  # a "quality" run asked for this QualityVsSpeed (before the media types) and must read it back once streaming started
 $script:VbrSizeRatio = 0.90          # branch A: VBR uses at most 90% of the bytes of the CBR it is compared with ...
 $script:VbrP5Drop = 1.0              # ... for a mean VMAF no lower (no allowance) and a 5th percentile within 1.0
 $script:VmafGain = 1.0               # branch B / low latency: "gained at equal size"
@@ -93,11 +100,14 @@ function Get-Percentile {
 }
 
 # The mode whose runs form the curve a result is judged against: Kind 'Vbr' -> the CBR ("off") curve, Kind 'LowLatency' -> the curve of its
-# low-latency-on counterpart. Null = no check.
+# low-latency-on counterpart, Kind 'Quality' (the bench-only "quality" mode: QualityVsSpeed 100) -> the CBR ("off") curve. Null = no check.
 function Get-BaselineMode {
     param([string]$Mode, [string]$Kind)
     if ($Kind -eq 'Vbr') {
         if ($Mode -eq 'vbr' -or $Mode -eq 'vbr-lowlatency-off') { return 'off' }
+    }
+    elseif ($Kind -eq 'Quality') {
+        if ($Mode -eq 'quality') { return 'off' }
     }
     elseif ($Kind -eq 'LowLatency') {
         if ($Mode -eq 'lowlatency-off') { return 'off' }
@@ -286,6 +296,31 @@ function Test-BenchVbr {
     return (New-CheckResult 'FAIL' $detail)
 }
 
+# The bench-only "quality" mode (CBR like off, QualityVsSpeed 100 set before the media types) is judged against the "off" CBR curve of its
+# group by the same owner's rule as VBR: PASS by branch A (mean >= the curve's mean at run Mbps / 0.9 and p5 >= the curve's p5 there - 1.0)
+# or branch B (>= 1.0 VMAF above the curve at the run's own Mbps), with the equal-quality size and the same PASS / outside the CBR range /
+# n/a / FAIL / INVALID ordering. Quality rows are never points of any curve (Get-QualityCurve is asked for 'off' only).
+function Test-BenchQuality {
+    param($Row, $Curve)
+    return (Test-BenchVbr -Row $Row -Curve $Curve)
+}
+
+# Encode speed side by side: for each "quality" run the "off" run of the same codec, group and requested Mbps. Information only.
+# Returns objects { Name; RequestedMbps; OffFps; QualityFps; Ratio } (Ratio = quality / off, null when the off speed is 0 or unknown); rows
+# without a counterpart, and failed runs, are left out.
+function Get-QualitySpeedPairs {
+    param($Rows)
+    $out = New-Object System.Collections.ArrayList
+    foreach ($q in @($Rows | Where-Object { $_.Mode -eq 'quality' -and -not $_.Failed } | Sort-Object RequestedMbps)) {
+        $off = @($Rows | Where-Object { $_.Mode -eq 'off' -and -not $_.Failed -and $_.Codec -eq $q.Codec -and [string]$_.Group -eq [string]$q.Group -and $_.RequestedMbps -eq $q.RequestedMbps })[0]
+        if ($null -eq $off) { continue }
+        $ratio = $null
+        if ($off.EncodeSpeedFps -gt 0) { $ratio = [double]$q.EncodeSpeedFps / [double]$off.EncodeSpeedFps }
+        [void]$out.Add([pscustomobject]@{ Name = $q.Name; RequestedMbps = $q.RequestedMbps; OffFps = [double]$off.EncodeSpeedFps; QualityFps = [double]$q.EncodeSpeedFps; Ratio = $ratio })
+    }
+    return $out.ToArray()
+}
+
 # Output-side evidence that low latency really changed the encoder: frames it still held at the end and the most in flight, next to the
 # run with low latency on at the same requested bitrate ($Sibling, may be null). Held at end is the latency evidence; max in flight
 # saturates when the bench feeds faster than real time.
@@ -308,7 +343,7 @@ function Test-BenchLowLatency {
     $evidence = Get-OutputEvidence -Row $Row -Sibling $Sibling
     $eqText = ''
     if ($ShowEqualQuality) { $eqText = '; equal-quality size: ' + (Get-EqualQualitySize -Curve $pts -Mean $Row.VmafMean -Mbps $run -Label $CurveName).Text }
-    if (-not $at.InRange) { return (New-CheckResult 'outside the CBR range' ('{0:0.00} Mbps is outside the {1} curve ({2}); {3}{4}' -f $run, $CurveName, (Format-Range $at $CurveName), $evidence, $eqText)) }
+    if (-not $at.InRange) { return (New-CheckResult ('outside the {0} range' -f $CurveName) ('{0:0.00} Mbps is outside the {1} curve ({2}); {3}{4}' -f $run, $CurveName, (Format-Range $at $CurveName), $evidence, $eqText)) }
     $edge = ''; if ($at.AtEdge) { $edge = ' (at edge)' }
     $dMean = $Row.VmafMean - $at.Mean
     $detail = ('{0:0.00} Mbps{1}, mean {2:+0.00;-0.00;0.00} against the {3} curve at this rate; {4}{5}' -f $run, $edge, $dMean, $CurveName, $evidence, $eqText)
@@ -352,6 +387,12 @@ function Get-RunInvalidReasons {
             if ($Row.VbrVerdict) { [void]$reasons.Add([string]$Row.VbrVerdict) } else { [void]$reasons.Add('VBR did not take effect') }
         }
     }
+    if ($Row.Mode -eq 'quality') {
+        # the preset is only proven by what the encoder says once streaming has begun: the MFT accepts a QualityVsSpeed after the media types and ignores it
+        if (-not $Row.HasQvs) { [void]$reasons.Add('no QualityVsSpeed read-back was recorded, so the quality preset is unproven') }
+        elseif ($null -eq $Row.QvsReadBack) { [void]$reasons.Add('QualityVsSpeed could not be read back after streaming started, so the quality preset is unproven') }
+        elseif ([int64]$Row.QvsReadBack -ne $script:QualityVsSpeedWanted) { [void]$reasons.Add("QualityVsSpeed reads back $($Row.QvsReadBack) after streaming started, not $($script:QualityVsSpeedWanted)") }
+    }
     if ($Row.OutOfOrder -gt 0) { [void]$reasons.Add("$($Row.OutOfOrder) output frame(s) out of order") }
     if ($Row.Drops -gt 0) { [void]$reasons.Add("encoder dropped $($Row.Drops) frames") }
     if ($null -ne $ReferencePackets -and $null -eq $Row.SecondsLimit -and $Row.DecodedFrames -gt 0 -and [int64]$ReferencePackets -ne [int64]$Row.DecodedFrames) {
@@ -377,7 +418,7 @@ function Get-BenchChecks {
     param($Rows)
     $out = New-Object System.Collections.ArrayList
     foreach ($row in $Rows) {
-        foreach ($kind in @('Vbr', 'LowLatency')) {
+        foreach ($kind in @('Vbr', 'LowLatency', 'Quality')) {
             $baseMode = Get-BaselineMode -Mode $row.Mode -Kind $kind
             if ($null -eq $baseMode) { continue }
             $against = "$baseMode curve"
@@ -387,6 +428,7 @@ function Get-BenchChecks {
             }
             $curve = @(Get-QualityCurve -Rows $Rows -Codec $row.Codec -Mode $baseMode -Group ([string]$row.Group))
             if ($kind -eq 'Vbr') { $r = Test-BenchVbr -Row $row -Curve $curve }
+            elseif ($kind -eq 'Quality') { $r = Test-BenchQuality -Row $row -Curve $curve }
             else {
                 $sibling = @($Rows | Where-Object { $_.Codec -eq $row.Codec -and [string]$_.Group -eq [string]$row.Group -and $_.RequestedMbps -eq $row.RequestedMbps -and $_.Mode -eq $baseMode -and -not $_.Failed })[0]
                 $r = Test-BenchLowLatency -Row $row -Curve $curve -Sibling $sibling -CurveName (Get-CurveLabel $baseMode) -ShowEqualQuality:($row.Mode -eq 'lowlatency-off')
@@ -581,6 +623,7 @@ function ConvertTo-BenchRow {
         VbrApplicable = [bool]$Json.vbrApplicable; VbrTookEffect = [bool]$Json.vbrTookEffect; VbrVerdict = [string]$Json.vbrVerdict
         HasApplied = $false; AppliedRate = ''; AppliedLowLatency = $null; AppliedFallback = ''
         Applied = ''
+        HasQvs = $false; QvsRequested = $null; QvsStage = ''; QvsReadBack = $null; QvsText = ''
         Invalid = $false; InvalidReasons = @()
         VmafMean = $null; VmafP5 = $null; VmafFrames = $null; Ssim = $null; Psnr = $null; PsnrInfinite = $false; FfprobeMbps = $null
     }
@@ -592,6 +635,16 @@ function ConvertTo-BenchRow {
         $ll = 'LL on'; if (-not $Json.applied.lowLatency) { $ll = 'LL off' }
         $row.Applied = '{0}, {1}' -f $Json.applied.rate, $ll
         if ($Json.applied.fallback) { $row.Applied += ' (fallback: ' + $Json.applied.fallback + ')' }
+    }
+    if ($Json.qualityVsSpeed) {
+        $q = $Json.qualityVsSpeed
+        $row.HasQvs = $true
+        $row.QvsRequested = ConvertTo-NullableDouble $q.requested
+        $row.QvsStage = [string]$q.stage
+        $row.QvsReadBack = ConvertTo-NullableDouble $q.readBack
+        $asked = '-'; if ($null -ne $row.QvsRequested) { $asked = ([double]$row.QvsRequested).ToString('0', [Globalization.CultureInfo]::InvariantCulture) }
+        $back = 'n/a'; if ($null -ne $row.QvsReadBack) { $back = ([double]$row.QvsReadBack).ToString('0', [Globalization.CultureInfo]::InvariantCulture) }
+        $row.QvsText = 'qvs {0} {1}, reads back {2}' -f $asked, $row.QvsStage, $back
     }
     if ($Metrics) {
         if ($null -ne $Metrics.VmafMean) { $row.VmafMean = [double]$Metrics.VmafMean }
@@ -617,8 +670,8 @@ foreach ($p in @($FfmpegPath, $FfprobePath, $Reference)) {
     if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { Write-Host "not found: $p"; exit 2 }
 }
 if (-not (Test-Path -LiteralPath $OutFolder -PathType Container)) { Write-Host "not a folder: $OutFolder"; exit 2 }
-$OutFolder = (Resolve-Path -LiteralPath $OutFolder).Path
-$Reference = (Resolve-Path -LiteralPath $Reference).Path
+$OutFolder = (Resolve-Path -LiteralPath $OutFolder).ProviderPath
+$Reference = (Resolve-Path -LiteralPath $Reference).ProviderPath
 
 # libvmaf?
 $filters = & $FfmpegPath -hide_banner -filters
@@ -849,9 +902,24 @@ foreach ($g in $groups) {
         if ($capRow) { $cap = $capRow.Result }
         $speed = Fmt $r.EncodeSpeedFps '0.0'
         if ($r.SourceFps -gt 0 -and $r.EncodeSpeedFps -gt 0) { $speed += ' (x' + (Fmt ($r.EncodeSpeedFps / $r.SourceFps) '0.00') + ')' }
+        $appliedText = $r.Applied; if ($r.QvsText) { $appliedText += '; ' + $r.QvsText }
         [void]$md.AppendLine(('| {0} | {1} | {2} | {3} | {4} | {5} | {6} | {7} | {8} | {9} | {10} | {11} | {12} | {13} | {14} |' -f `
-                $r.Name, ($r.Applied -replace '\|', '/'), (Fmt $r.PeakMbps '0.00'), (Fmt $r.MeanMbps '0.00'), (Fmt $r.PeakOverMean '0.000'), $cap, $r.FramesIn, $r.FramesOut, $r.Held, $r.MaxInFlight,
+                $r.Name, ($appliedText -replace '\|', '/'), (Fmt $r.PeakMbps '0.00'), (Fmt $r.MeanMbps '0.00'), (Fmt $r.PeakOverMean '0.000'), $cap, $r.FramesIn, $r.FramesOut, $r.Held, $r.MaxInFlight,
                 $r.Drops, $speed, (Fmt $r.MaxWaitMs '0'), $r.OutOfOrder, $valid))
+    }
+    $speedPairs = @(Get-QualitySpeedPairs -Rows $gRows)
+    if ($speedPairs.Count -gt 0) {
+        [void]$md.AppendLine()
+        [void]$md.AppendLine('### Quality preset speed')
+        [void]$md.AppendLine()
+        [void]$md.AppendLine('Encode speed (frames submitted / feed seconds; decode, copy and encode together) of the "quality" run (QualityVsSpeed 100) next to the "off" run at the same requested rate. Ratio = quality / off. When decode or the feeder sets the pace, the ratio is a bound (the encoder may be faster than shown), not the encoder''s own speed. Information only.')
+        [void]$md.AppendLine()
+        [void]$md.AppendLine('| Req Mbps | off fps | quality fps | Ratio (quality / off) |')
+        [void]$md.AppendLine('|---|---|---|---|')
+        foreach ($sp in $speedPairs) {
+            $ratioText = '-'; if ($null -ne $sp.Ratio) { $ratioText = 'x' + (Fmt $sp.Ratio '0.00') }
+            [void]$md.AppendLine(('| {0} | {1} | {2} | {3} |' -f (Fmt $sp.RequestedMbps '0.###'), (Fmt $sp.OffFps '0.0'), (Fmt $sp.QualityFps '0.0'), $ratioText))
+        }
     }
     [void]$md.AppendLine()
     [void]$md.AppendLine('### Pass checks')
@@ -861,8 +929,9 @@ foreach ($g in $groups) {
     [void]$md.AppendLine('- VBR: PASS by branch A or B. A (same quality, at least 10% smaller): the mean VMAF is >= the CBR curve''s mean at (run Mbps / 0.9) and the p5 is >= the curve''s p5 there - 1.0. B (better at equal size): the mean is >= 1 VMAF above the curve at the run''s own Mbps. A missing mean or p5 means a branch is not evaluable (never a pass).')
     [void]$md.AppendLine('- Equal-quality size (information, not the verdict): the CBR curve inverted at the run''s mean VMAF; "87% of CBR" = the run needs 87% of the CBR bytes for the same mean VMAF. "< x%" / "> y%": the run''s VMAF is above / below the curve''s end points.')
     [void]$md.AppendLine('- Low latency off: PASS when the mean VMAF is >= 1 above the curve at the run''s own Mbps (vbr-lowlatency-off: the vbr curve). Output-side evidence (frames held at the end) is shown next to the low-latency-on run.')
+    [void]$md.AppendLine('- Quality (bench-only mode: CBR like off, QualityVsSpeed 100 set before the media types): judged against the "off" CBR curve of the group by the same rule as VBR (branch A or B above, equal-quality size shown). Quality runs are never curve points. INVALID unless the encoder reads QualityVsSpeed back as 100 once streaming has begun.')
     [void]$md.AppendLine('- PeakCap: a vbr mode''s busiest second is <= 1.65 x its mean second and <= 1.65 x the requested Mbps (not run for INVALID runs).')
-    [void]$md.AppendLine('- "outside the CBR range": the run''s Mbps (or the Mbps / 0.9 comparison point) is beyond the CBR runs, so it is not judged; add CBR rates around it.')
+    [void]$md.AppendLine('- "outside the CBR range" (or "outside the vbr range" for vbr-lowlatency-off): the run''s Mbps (or the Mbps / 0.9 comparison point) is beyond the CBR runs, so it is not judged; add CBR rates around it.')
     [void]$md.AppendLine('- INVALID: the run did not do what its mode says (see the list below) and is left out of the curve and of the checks.')
     [void]$md.AppendLine()
     [void]$md.AppendLine('| Run | Check | Against | Result | Detail |')

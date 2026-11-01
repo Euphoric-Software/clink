@@ -255,7 +255,7 @@ Assert-Test 'low latency off: +1 VMAF over the curve at its own rate passes, les
 Assert-Test 'low latency off: the range text names the vbr curve when that is the baseline' {
     $c = New-Curve
     $r = Test-BenchLowLatency (New-Row 'vbr-lowlatency-off' 25 99.0 80.0) $c $null -CurveName 'vbr'
-    Assert-Equal $r.Result 'outside the CBR range'
+    Assert-Equal $r.Result 'outside the vbr range'
     Assert-Equal ($r.Detail -like '*vbr runs span*') $true
     Assert-Equal ($r.Detail -like '*CBR runs span*') $false
 }
@@ -628,6 +628,146 @@ Assert-Test 'a bench run JSON becomes a row, with its metrics' {
     Assert-Equal $failed.Failed $true
 }
 
+# ---- the bench-only quality mode
+# A quality row: New-Row plus what ConvertTo-BenchRow reads from the qualityVsSpeed object of the run JSON.
+function New-QualityRow {
+    param([double]$Rate, $Mean, $P5, [double]$Mbps = 16, $ReadBack = 100, [bool]$HasQvs = $true, [string]$Group = '', [double]$Fps = 300)
+    $r = New-Row 'quality' $Rate $Mean $P5 'h264' $Mbps $false @() $Group
+    $r | Add-Member -NotePropertyName HasQvs -NotePropertyValue $HasQvs
+    $r | Add-Member -NotePropertyName QvsReadBack -NotePropertyValue $ReadBack
+    $r | Add-Member -NotePropertyName EncodeSpeedFps -NotePropertyValue $Fps
+    $r | Add-Member -NotePropertyName OutOfOrder -NotePropertyValue 0
+    $r | Add-Member -NotePropertyName Drops -NotePropertyValue 0
+    return $r
+}
+Assert-Test 'quality: its baseline is the off curve, only for the Quality check' {
+    Assert-Equal (Get-BaselineMode -Mode 'quality' -Kind 'Quality') 'off'
+    Assert-Equal ($null -eq (Get-BaselineMode -Mode 'quality' -Kind 'Vbr')) $true
+    Assert-Equal ($null -eq (Get-BaselineMode -Mode 'quality' -Kind 'LowLatency')) $true
+    Assert-Equal ($null -eq (Get-BaselineMode -Mode 'off' -Kind 'Quality')) $true
+    Assert-Equal ($null -eq (Get-BaselineMode -Mode 'vbr' -Kind 'Quality')) $true
+    Assert-Equal ($script:ModeOrder -contains 'quality') $true
+}
+Assert-Test 'quality: a quality run is never a point of any curve' {
+    $rows = @((New-Row 'off' 10 90.0 80.0), (New-Row 'off' 20 96.0 88.0), (New-QualityRow 15 99.0 99.0), (New-QualityRow 25 99.5 99.5))
+    $c = @(Get-QualityCurve -Rows $rows -Codec 'h264' -Mode 'off')
+    Assert-Equal $c.Count 2
+    Assert-Near $c[1].Mbps 20
+    Assert-Equal @(Get-QualityCurve -Rows $rows -Codec 'h264' -Mode 'vbr').Count 0
+    # and the checks of every other row use the same two points
+    $checks = @(Get-BenchChecks -Rows $rows)
+    Assert-Equal @($checks | Where-Object { $_.Against -ne 'off curve' }).Count 0
+}
+Assert-Test 'quality: judged against the off curve by branch A (>= the curve at Mbps / 0.9, p5 within 1.0)' {
+    $c = New-Curve
+    $at = Get-CurveAt -Curve $c -Mbps (10 / 0.9)
+    $r = Test-BenchQuality (New-QualityRow 10 $at.Mean ($at.P5 - 1.0)) $c
+    Assert-Equal $r.Result 'PASS'
+    Assert-Equal ($r.Detail -like '*branch A*') $true
+    Assert-Equal (Test-BenchQuality (New-QualityRow 10 ($at.Mean - 0.05) $at.P5) $c).Result 'FAIL'
+    Assert-Equal (Test-BenchQuality (New-QualityRow 10 ($at.Mean + 0.05) ($at.P5 - 1.05)) $c).Result 'FAIL'
+}
+Assert-Test 'quality: branch B (1.0 VMAF over the curve at its own Mbps), equal-quality size, outside, n/a' {
+    $c = New-Curve
+    $eq = Get-CurveAt -Curve $c -Mbps 15
+    $r = Test-BenchQuality (New-QualityRow 15 ($eq.Mean + 1.0) ($eq.P5 - 5)) $c
+    Assert-Equal $r.Result 'PASS'
+    Assert-Equal ($r.Detail -like '*branch B*') $true
+    Assert-Equal ($r.Detail -like '*equal-quality size: *% of CBR*') $true
+    Assert-Equal (Test-BenchQuality (New-QualityRow 15 ($eq.Mean + 0.9) ($eq.P5 - 5)) $c).Result 'FAIL'
+    Assert-Equal (Test-BenchQuality (New-QualityRow 25 99.0 99.0) $c).Result 'outside the CBR range'
+    Assert-Equal (Test-BenchQuality (New-QualityRow 15 $null $null) $c).Result 'n/a'
+    Assert-Equal (Test-BenchQuality (New-QualityRow 15 95.0 85.0) @()).Result 'n/a'
+}
+Assert-Test 'quality: Get-BenchChecks adds one Quality check against the off curve of the same group, no peak cap' {
+    $rows = @(
+        (New-Row 'off' 10 90.0 80.0 'h264' 12 $false @() 'g1'), (New-Row 'off' 20 96.0 88.0 'h264' 20 $false @() 'g1'),
+        (New-QualityRow 15 97.5 90.0 16 100 $true 'g1'),
+        (New-QualityRow 15 97.5 90.0 14 100 $true 'g2')       # g2 has no off run
+    )
+    $checks = @(Get-BenchChecks -Rows $rows)
+    $mine = @($checks | Where-Object { $_.Run -eq 'h264_16M_quality' })
+    Assert-Equal $mine.Count 1
+    Assert-Equal $mine[0].Check 'Quality'
+    Assert-Equal $mine[0].Against 'off curve'
+    Assert-Equal $mine[0].Result 'PASS'
+    Assert-Equal @($checks | Where-Object { $_.Run -eq 'h264_14M_quality' })[0].Result 'n/a'
+    Assert-Equal @($checks | Where-Object { $_.Check -eq 'PeakCap' }).Count 0
+}
+Assert-Test 'quality: an INVALID quality run is reported INVALID whatever its numbers say' {
+    $c = New-Curve
+    $bad = New-QualityRow 15 99.0 99.0
+    $bad.Invalid = $true; $bad.InvalidReasons = @('QualityVsSpeed reads back 33 after streaming started, not 100')
+    $r = Test-BenchQuality $bad $c
+    Assert-Equal $r.Result 'INVALID'
+    Assert-Equal ($r.Detail -like '*reads back 33*') $true
+}
+Assert-Test 'quality: INVALID unless the read-back after streaming started is 100' {
+    Assert-Equal @(Get-RunInvalidReasons -Row (New-QualityRow 15 90.0 80.0) -ReferencePackets $null).Count 0
+    $r33 = @(Get-RunInvalidReasons -Row (New-QualityRow 15 90.0 80.0 16 33) -ReferencePackets $null)
+    Assert-Equal $r33.Count 1
+    Assert-Equal ($r33[0] -like '*reads back 33 after streaming started, not 100*') $true
+    $none = @(Get-RunInvalidReasons -Row (New-QualityRow 15 90.0 80.0 16 $null) -ReferencePackets $null)
+    Assert-Equal ($none[0] -like '*could not be read back*') $true
+    $noInfo = @(Get-RunInvalidReasons -Row (New-QualityRow 15 90.0 80.0 16 $null $false) -ReferencePackets $null)
+    Assert-Equal ($noInfo[0] -like '*no QualityVsSpeed read-back was recorded*') $true
+    # an off run is not asked for a read-back (it has no HasQvs and is valid)
+    Assert-Equal @(Get-RunInvalidReasons -Row (New-ValidRow 'off') -ReferencePackets $null).Count 0
+    # and the rule reaches the row through Set-RunValidity
+    $row = New-QualityRow 15 90.0 80.0 16 66
+    Set-RunValidity -Row $row -ReferencePackets $null
+    Assert-Equal $row.Invalid $true
+}
+Assert-Test 'quality: the run JSON''s qualityVsSpeed becomes the row''s read-back' {
+    $q = [ordered]@{ requested = 100; stage = 'before-types'; readBack = 100; setResult = '0x00000000' }
+    $row = ConvertTo-BenchRow -Json (New-Json -Mode 'quality' -Over @{ qualityVsSpeed = $q }) -Metrics $null
+    Assert-Equal $row.Mode 'quality'
+    Assert-Equal $row.HasQvs $true
+    Assert-Near $row.QvsRequested 100
+    Assert-Equal $row.QvsStage 'before-types'
+    Assert-Near $row.QvsReadBack 100
+    Assert-Equal $row.QvsText 'qvs 100 before-types, reads back 100'
+    Assert-Equal @(Get-RunInvalidReasons -Row $row -ReferencePackets $null).Count 0
+    $q33 = [ordered]@{ requested = 100; stage = 'before-types'; readBack = 33 }
+    $row33 = ConvertTo-BenchRow -Json (New-Json -Mode 'quality' -Over @{ qualityVsSpeed = $q33 }) -Metrics $null
+    Assert-Equal @(Get-RunInvalidReasons -Row $row33 -ReferencePackets $null).Count 1
+    $unread = ConvertTo-BenchRow -Json (New-Json -Mode 'quality' -Over @{ qualityVsSpeed = ([ordered]@{ requested = 100; stage = 'before-types'; readBack = $null }) }) -Metrics $null
+    Assert-Equal ($null -eq $unread.QvsReadBack) $true
+    Assert-Equal $unread.HasQvs $true
+    # an older run JSON has none
+    Assert-Equal (ConvertTo-BenchRow -Json (New-Json -Mode 'off') -Metrics $null).HasQvs $false
+}
+Assert-Test 'quality: encode speed of quality and off side by side, with the ratio' {
+    $rows = @(
+        (New-Row 'off' 10 90.0 80.0 'h264' 12 $false @() 'g1'), (New-Row 'off' 20 96.0 88.0 'h264' 16 $false @() 'g1'),
+        (New-QualityRow 11 91.0 81.0 12 100 $true 'g1' 150), (New-QualityRow 19 95.0 87.0 16 100 $true 'g1' 300),
+        (New-QualityRow 14 95.0 87.0 14 100 $true 'g1' 200)      # no off run at 14
+    )
+    $rows[0] | Add-Member -NotePropertyName EncodeSpeedFps -NotePropertyValue 300.0
+    $rows[1] | Add-Member -NotePropertyName EncodeSpeedFps -NotePropertyValue 400.0
+    $p = @(Get-QualitySpeedPairs -Rows $rows)
+    Assert-Equal $p.Count 2
+    Assert-Near $p[0].RequestedMbps 12
+    Assert-Near $p[0].OffFps 300
+    Assert-Near $p[0].QualityFps 150
+    Assert-Near $p[0].Ratio 0.5
+    Assert-Near $p[1].Ratio 0.75
+    $rows[0].EncodeSpeedFps = 0.0
+    Assert-Equal ($null -eq @(Get-QualitySpeedPairs -Rows $rows)[0].Ratio) $true
+}
+
+Assert-Test 'the script resolves -OutFolder and -Reference with ProviderPath (a UNC path works on Windows PowerShell 5.1)' {
+    $src = Get-Content -LiteralPath (Join-Path $toolsDir 'encoder-bench.ps1') -Raw
+    Assert-Equal ($src -match '\$OutFolder = \(Resolve-Path -LiteralPath \$OutFolder\)\.ProviderPath') $true
+    Assert-Equal ($src -match '\$Reference = \(Resolve-Path -LiteralPath \$Reference\)\.ProviderPath') $true
+    Assert-Equal ($src -match 'Resolve-Path[^\r\n]*\)\.Path\b') $false
+    $dir = (Resolve-Path -LiteralPath $PSScriptRoot).ProviderPath
+    Assert-Equal ($dir -like 'Microsoft.PowerShell.Core*') $false
+}
+Assert-Test 'the speed table says the ratio is a bound when decode or the feeder sets the pace' {
+    $src = Get-Content -LiteralPath (Join-Path $toolsDir 'encoder-bench.ps1') -Raw
+    Assert-Equal ($src -match 'the ratio is a bound') $true
+}
 Write-Host "encoder-bench tests: $($script:Pass) passed, $($script:Fail) failed"
 if ($script:Fail -gt 0) { exit 1 }
 exit 0

@@ -226,6 +226,91 @@ internal static unsafe class EncoderTuningTests
         Check.True(p.Calls.Contains("set mean=5000000"));
     }
 
+    // ------------------------------------------------------------------ QualityVsSpeed before the media types (bench only)
+
+    [UnitTest]
+    public static void With_no_qvs_before_the_types_the_calls_are_todays_and_the_option_is_null_in_the_app()
+    {
+        Check.Null(VideoEncoderOptions.Live.QualityVsSpeedBeforeTypes, "the recording's options never carry it");
+        Check.Null(VideoEncoderOptions.Offline().QualityVsSpeedBeforeTypes);
+        string[] today =
+        {
+            "supported rate", $"set rate={(uint)CbrMode}", "supported mean", "set mean=20000000", "supported max", "set max=20000000",
+            "supported gop", "set gop=60", "supported bframes", "set bframes=0", "setbool lowlatency=True", "supported qvs", "set qvs=66",
+        };
+        var p = new FakePort();
+        var applied = EncoderExperiments.Apply(p, Cfg, null, null);   // the argument VideoEncoder passes from the null option
+        Check.Equal(today, p.Calls.ToArray(), "an explicit null changes nothing");
+        Check.Equal(66u, applied.QualityVsSpeed);
+        Check.Equal(Join(Run(null, out _).Calls), Join(p.Calls), "the same as the 3-argument form");
+    }
+
+    [UnitTest]
+    public static void The_early_codec_api_step_runs_only_for_a_tuning_or_a_qvs_before_the_types()
+    {
+        Check.False(VideoEncoder.NeedsCodecApiBeforeTypes(VideoEncoderOptions.Live), "Live");
+        Check.False(VideoEncoder.NeedsCodecApiBeforeTypes(VideoEncoderOptions.Offline(ThreadPriority.BelowNormal)), "the share transcoder's Offline");
+        Check.False(VideoEncoder.NeedsCodecApiBeforeTypes(VideoEncoderOptions.Offline()), "Offline()");
+        // What Engine builds with the experiment off: no tuning, so no options at all, and the encoder then uses Live.
+        LiveEncoderTuning? none = EncoderExperiments.Resolve(null, false);
+        VideoEncoderOptions? engineOff = none == null ? null : VideoEncoderOptions.Live with { LiveTuning = none };
+        Check.Null(engineOff);
+        Check.False(VideoEncoder.NeedsCodecApiBeforeTypes(engineOff ?? VideoEncoderOptions.Live), "Engine, experiment off");
+
+        Check.True(VideoEncoder.NeedsCodecApiBeforeTypes(VideoEncoderOptions.Live with { LiveTuning = new LiveEncoderTuning(EncoderMode.Vbr) }), "a tuning");
+        Check.True(VideoEncoder.NeedsCodecApiBeforeTypes(VideoEncoderOptions.Live with { QualityVsSpeedBeforeTypes = 100 }), "the QvS field");
+        Check.True(VideoEncoder.NeedsCodecApiBeforeTypes(VideoEncoderOptions.Live with { QualityVsSpeedBeforeTypes = 0 }), "the QvS field, even 0");
+        Check.False(VideoEncoder.NeedsCodecApiBeforeTypes(VideoEncoderOptions.Offline() with { LiveTuning = new LiveEncoderTuning(EncoderMode.Vbr) }), "an offline (blocking) encoder never");
+    }
+
+    [UnitTest]
+    public static void A_qvs_set_before_the_types_is_the_only_difference_and_is_not_overridden_afterwards()
+    {
+        var p = new FakePort();
+        var applied = EncoderExperiments.Apply(p, Cfg, null, 100, new QvsBeforeTypesResult(100, 0, 100));
+        Check.Equal(new[]
+        {
+            "supported rate", $"set rate={(uint)CbrMode}", "supported mean", "set mean=20000000", "supported max", "set max=20000000",
+            "supported gop", "set gop=60", "supported bframes", "set bframes=0", "setbool lowlatency=True",
+        }, p.Calls.ToArray(), "CBR exactly like off, and no QualityVsSpeed call after the types");
+        Check.Equal((uint?)100u, applied.QualityVsSpeed, "reported as what the early call read back");
+        Check.Null(EncoderExperiments.Apply(new FakePort(), Cfg, null, 100, new QvsBeforeTypesResult(100, unchecked((int)0x80004005), null)).QualityVsSpeed, "an early set that failed is not reported as applied");
+        Check.Null(EncoderExperiments.Apply(new FakePort(), Cfg, null, 100, new QvsBeforeTypesResult(100, 0, null)).QualityVsSpeed, "unreadable: unknown");
+        Check.Null(EncoderExperiments.Apply(new FakePort(), Cfg, null, 100, null).QualityVsSpeed, "no early result: unknown");
+        Check.Equal((uint?)33u, EncoderExperiments.Apply(new FakePort(), Cfg, null, 100, new QvsBeforeTypesResult(100, 0, 33)).QualityVsSpeed, "what the encoder kept");
+        Check.False(applied.Vbr);
+
+        var tuned = new FakePort();
+        EncoderExperiments.Apply(tuned, Cfg, new LiveEncoderTuning(EncoderMode.Vbr), 100);
+        Check.False(tuned.Calls.Any(c => c.Contains("qvs")), "a tuning does not bring the call back: " + Join(tuned.Calls));
+
+        var before = new FakePort();
+        var r = EncoderExperiments.ApplyQualityVsSpeedBeforeTypes(before, 100);
+        Check.Equal(new[] { "set qvs=100", "get qvs" }, before.Calls.ToArray(), "one set and one read-back, nothing else");
+        Check.Equal(100u, r.Requested);
+        Check.Equal(0, r.SetHr);
+        Check.Equal(100u, r.ReadBack!.Value);
+
+        var refused = new FakePort(); refused.SetFails["qvs"] = unchecked((int)0x80004005);
+        var rr = EncoderExperiments.ApplyQualityVsSpeedBeforeTypes(refused, 100);
+        Check.True(rr.SetHr < 0, "the failure is in the result");
+        Check.Null(rr.ReadBack, "and nothing was set to read");
+        var ignored = new FakePort(); ignored.ReadsAs["qvs"] = 33;
+        Check.Equal(33u, EncoderExperiments.ApplyQualityVsSpeedBeforeTypes(ignored, 100).ReadBack!.Value, "a swallowed value shows as the read-back");
+    }
+
+    [UnitTest]
+    public static void The_option_is_refused_by_an_offline_encoder_and_the_live_setting_never_accepts_quality()
+    {
+        var cfg = new VideoEncoderConfig(1920, 1080, 60, 16_000_000, "h264", 1f);
+        Check.Throws<ArgumentException>(() => { using var e = new VideoEncoder(null!, cfg, VideoEncoderOptions.Offline() with { QualityVsSpeedBeforeTypes = 100 }); });
+        var (mode, warning) = EncoderExperiments.Parse("quality");
+        Check.Equal(EncoderMode.Off, mode);
+        Check.NotNull(warning, "the live parser does not know it");
+        Check.Null(EncoderExperiments.Resolve("quality", false), "the recording stays on today's setup");
+        Check.False(Enum.GetNames<EncoderMode>().Any(n => n.Contains("Quality", StringComparison.OrdinalIgnoreCase)), "no EncoderMode for it");
+    }
+
     // ------------------------------------------------------------------ the modes
 
     [UnitTest]
@@ -648,6 +733,144 @@ internal static unsafe class EncoderTuningTests
                                 $" [lowlatency={(applied?.LowLatency == true ? "on" : "off")}, out={res.Outputs}/{enc.FramesIn}, dropped={enc.Dropped}, maxInFlight={res.MaxInFlight}, dtsSamples={enc.OutputsWithDts}]");
                         }
                     }
+                }
+            }
+            if (opened == 0) Check.Skip("CLINK_TESTS_GPU=1 but no hardware H.264 or HEVC encoder opened");
+        });
+    }
+
+    // ------------------------------------------------------------------ the QualityVsSpeed probe (CLINK_TESTS_GPU=1, run it on an idle PC)
+
+    private static void SayQvs(string s) { Console.WriteLine(s); Log.Info("[qvs-probe] " + s); }
+
+    /// <summary>
+    /// Does the hardware MFT keep a QualityVsSpeed other than the 66 the recording sets (a bench logged "66 reads back as 33")? Per codec:
+    /// the property's support / range / values, then for each value a SetValue (HRESULT) and the GetValue read-back. The values are set
+    /// on an opened live encoder, i.e. after the media types, as the recording does. A measurement: fails only when something throws.
+    /// Run: Clink.exe --unittest The_qualityvsspeed_probe, with CLINK_TESTS_GPU=1.
+    /// </summary>
+    [UnitTest]
+    public static void The_qualityvsspeed_probe_for_the_hardware_encoders()
+    {
+        if (!ShareTranscoderTests.GpuTestsOn) { ShareTranscoderTests.NotRun(nameof(The_qualityvsspeed_probe_for_the_hardware_encoders)); return; }
+        ShareTranscoderTests.OnMta(() =>
+        {
+            using var d3d = D3DDevice.CreateForAdapter(null, lowPriority: false);
+            SayQvs($"adapter: {d3d.AdapterName}");
+            int opened = 0;
+            foreach (string codec in new[] { "h264", "hevc" })
+            {
+                var cfg = new VideoEncoderConfig(1920, 1080, 60, 12_000_000, codec, 1f);
+                VideoEncoder enc;
+                try { enc = new VideoEncoder(d3d, cfg, VideoEncoderOptions.Live); }
+                catch (Exception ex) when (ex is InvalidOperationException or System.Runtime.InteropServices.COMException)
+                {
+                    SayQvs($"{codec}: no encoder ({ex.Message})");
+                    continue;
+                }
+                using (enc)
+                {
+                    opened++;
+                    SayQvs($"{codec}: {enc.EncoderName}; the recording's own setup applied qvs={enc.Applied?.QualityVsSpeed.ToString() ?? "n/a"}");
+                    enc.WithCodecApi(port =>
+                    {
+                        SayQvs($"{codec} QualityVsSpeed: {port.Describe(KnownGuids.CODECAPI_AVEncCommonQualityVsSpeed)}");
+                        var sequence = new uint[] { 0, 1, 25, 33, 34, 50, 66, 67, 75, 99, 100, 66, 100 };   // the last two repeat 66 and 100 in the other order
+                        foreach (uint v in sequence)
+                        {
+                            int set = port.SetU32(KnownGuids.CODECAPI_AVEncCommonQualityVsSpeed, v);
+                            int get = port.GetU32(KnownGuids.CODECAPI_AVEncCommonQualityVsSpeed, out uint back);
+                            SayQvs($"{codec} set {v}: SetValue=0x{(uint)set:X8} GetValue=0x{(uint)get:X8} readback={(get < 0 ? "n/a" : back.ToString())}");
+                        }
+                    });
+                }
+            }
+            if (opened == 0) Check.Skip("CLINK_TESTS_GPU=1 but no hardware H.264 or HEVC encoder opened");
+        });
+    }
+
+    private static string QvsRead(ICodecApiPort port)
+    {
+        int get = port.GetU32(KnownGuids.CODECAPI_AVEncCommonQualityVsSpeed, out uint back);
+        return get < 0 ? $"n/a(0x{(uint)get:X8})" : back.ToString();
+    }
+
+    /// <summary>
+    /// One encoder (1080p60, 12 Mbps CBR, low latency on) with QualityVsSpeed set to <paramref name="value"/> BEFORE the media types and
+    /// kept (VideoEncoderOptions.QualityVsSpeedBeforeTypes: the setup after the types makes no QualityVsSpeed call of its own), or, with
+    /// <paramref name="value"/> null, today's exact live path (<see cref="VideoEncoderOptions.Live"/>: QualityVsSpeed 66 after the types).
+    /// Logs the read-back at each stage, encodes 120 synthetic frames and returns the output byte count and SHA-256 of the bitstream;
+    /// null when no encoder opens.
+    /// </summary>
+    private static (long Bytes, string Hash)? QvsBeforeTypesRun(D3DDevice d3d, string codec, uint? value)
+    {
+        var cfg = new VideoEncoderConfig(1920, 1080, 60, 12_000_000, codec, 1f);
+        string tag = value == null ? $"{codec} today's path (66 after the types)" : $"{codec} before-types qvs={value}";
+        var opts = VideoEncoderOptions.Live with { QualityVsSpeedBeforeTypes = value };
+        VideoEncoder enc;
+        try { enc = new VideoEncoder(d3d, cfg, opts); }
+        catch (Exception ex) when (ex is InvalidOperationException or System.Runtime.InteropServices.COMException)
+        {
+            SayQvs($"{codec}: no encoder ({ex.Message})");
+            return null;
+        }
+        using (enc)
+        using (var sha = System.Security.Cryptography.IncrementalHash.CreateHash(System.Security.Cryptography.HashAlgorithmName.SHA256))
+        {
+            long bytes = 0;
+            if (enc.QvsBeforeTypes is { } before) SayQvs($"{tag}: stage=immediately-after-set SetValue=0x{(uint)before.SetHr:X8} readback={before.ReadBack?.ToString() ?? "n/a"}");
+            var res = new ProbeResult();
+            enc.OnOutput = (pts, key, data) => { lock (res.Gate) { sha.AppendData(data); bytes += data.Length; } };
+            enc.WithCodecApi(p => SayQvs($"{tag}: stage=after-BEGIN_STREAMING readback={QvsRead(p)} (applied.qvs field says {enc.Applied?.QualityVsSpeed.ToString() ?? "n/a"} = the recording's constant, not the encoder's)"));
+            FeedSynthetic(d3d, enc, cfg, 1, res);
+            enc.WithCodecApi(p => SayQvs($"{tag}: stage=after-first-ProcessInput readback={QvsRead(p)}"));
+            FeedSynthetic(d3d, enc, cfg, 119, res);
+            for (int i = 0; i < 60 && enc.FramesInFlight > 0; i++) Thread.Sleep(50);
+            Thread.Sleep(200);
+            enc.WithCodecApi(p => SayQvs($"{tag}: stage=after-120-frames readback={QvsRead(p)}"));
+            string hash;
+            long total;
+            lock (res.Gate) { hash = Convert.ToHexString(sha.GetCurrentHash()); total = bytes; }
+            SayQvs($"{tag}: encoded in={enc.FramesIn} dropped={enc.Dropped} bytes={total} sha256={hash}");
+            return (total, hash);
+        }
+    }
+
+    /// <summary>
+    /// Does QualityVsSpeed set BEFORE the media types stick, does it change the bitstream, and which of those does today's recording path
+    /// (66 after the types) actually produce? Per codec a fresh encoder for today's exact live path (twice: determinism) and for 0, 33, 66
+    /// and 100 before the types; the read-back at the stages, the byte count and the SHA-256 of 120 synthetic frames each. The last line
+    /// per codec names the value(s) today's bitstream equals ("TODAY MATCHES"). "No QualityVsSpeed call at all" is not tried: the option
+    /// is a value, so the seam has no "skip" (33 is the MFT's default read-back, so a match with 33 says the same).
+    /// A measurement: fails only when something throws. Run: Clink.exe --unittest The_qualityvsspeed_probe_set_before, with CLINK_TESTS_GPU=1.
+    /// </summary>
+    [UnitTest]
+    public static void The_qualityvsspeed_probe_set_before_the_media_types()
+    {
+        if (!ShareTranscoderTests.GpuTestsOn) { ShareTranscoderTests.NotRun(nameof(The_qualityvsspeed_probe_set_before_the_media_types)); return; }
+        ShareTranscoderTests.OnMta(() =>
+        {
+            using var d3d = D3DDevice.CreateForAdapter(null, lowPriority: false);
+            SayQvs($"adapter: {d3d.AdapterName}");
+            int opened = 0;
+            foreach (string codec in new[] { "h264", "hevc" })
+            {
+                var results = new List<(string Label, uint? Value, (long Bytes, string Hash) R)>();
+                foreach (uint? v in new uint?[] { null, 0, 33, 66, 100, null })
+                {
+                    var r = QvsBeforeTypesRun(d3d, codec, v);
+                    if (r == null) break;
+                    results.Add((v == null ? (results.Count == 0 ? "today's path" : "today's path (repeat)") : $"before-types qvs={v}", v, r.Value));
+                }
+                if (results.Count == 0) continue;
+                opened++;
+                foreach (var (label, _, r) in results) SayQvs($"{codec} SUMMARY {label}: bytes={r.Bytes} sha256={r.Hash}");
+                if (results.Count == 6)
+                {
+                    SayQvs($"{codec} SUMMARY today's path vs its repeat: {(results[0].R.Hash == results[5].R.Hash ? "identical (deterministic)" : "differ")}");
+                    var matches = results.Skip(1).Take(4).Where(x => x.R.Hash == results[0].R.Hash).Select(x => x.Value!.Value.ToString()).ToList();
+                    SayQvs($"{codec} TODAY MATCHES: {(matches.Count == 0 ? "none of the before-types values 0, 33, 66, 100" : "before-types qvs " + string.Join(", ", matches))}");
+                    SayQvs($"{codec} SUMMARY 0 vs 100: {(results[1].R.Hash == results[4].R.Hash ? "IDENTICAL" : "differ")}");
                 }
             }
             if (opened == 0) Check.Skip("CLINK_TESTS_GPU=1 but no hardware H.264 or HEVC encoder opened");

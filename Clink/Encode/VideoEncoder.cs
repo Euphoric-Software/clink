@@ -1,4 +1,4 @@
-﻿using System.Runtime.InteropServices;
+using System.Runtime.InteropServices;
 using Windows.Win32;
 using Windows.Win32.Foundation;
 using Windows.Win32.Graphics.Direct3D11;
@@ -28,7 +28,10 @@ internal sealed record VideoEncoderConfig(uint Width, uint Height, uint Fps, uin
 /// </summary>
 /// <param name="OfflineSettings">Blocking only: the encoder settings (null = <see cref="OfflineEncoderSettings.Default"/>). Ignored by a live encoder.</param>
 /// <param name="LiveTuning">Live only: the hidden encoder experiment (null = today's setup). A blocking encoder with one is refused.</param>
-internal sealed record VideoEncoderOptions(bool Blocking, ThreadPriority EventThreadPriority, OfflineEncoderSettings? OfflineSettings = null, LiveEncoderTuning? LiveTuning = null)
+/// <param name="QualityVsSpeedBeforeTypes">Live, bench and probe only (null in the app, so today's calls exactly): the QualityVsSpeed to set BEFORE the media types
+/// (after them the MFT accepts the call but keeps its default). When set, the setup after the types makes no QualityVsSpeed call of its own. A blocking encoder with one is refused.</param>
+internal sealed record VideoEncoderOptions(bool Blocking, ThreadPriority EventThreadPriority, OfflineEncoderSettings? OfflineSettings = null, LiveEncoderTuning? LiveTuning = null,
+    uint? QualityVsSpeedBeforeTypes = null)
 {
     public static readonly VideoEncoderOptions Live = new(false, ThreadPriority.AboveNormal);
     public static VideoEncoderOptions Offline(ThreadPriority priority = ThreadPriority.BelowNormal, OfflineEncoderSettings? settings = null)
@@ -113,6 +116,8 @@ internal sealed unsafe class VideoEncoder : IDisposable
         // (First, before anything is opened: an offline encoder is pinned to OfflineEncoderSettings, so a share copy can never be tuned.)
         if (options is { Blocking: true, LiveTuning: not null })
             throw new ArgumentException("An offline (blocking) encoder cannot take a live encoder tuning", nameof(options));
+        if (options is { Blocking: true, QualityVsSpeedBeforeTypes: not null })
+            throw new ArgumentException("An offline (blocking) encoder cannot take a QualityVsSpeed before the media types", nameof(options));
         Mf.EnsureStarted();
         _d3d = d3d;
         _cfg = cfg;
@@ -157,8 +162,8 @@ internal sealed unsafe class VideoEncoder : IDisposable
         _mft->ProcessMessage(MFT_MESSAGE_TYPE.MFT_MESSAGE_SET_D3D_MANAGER, (nuint)_d3d.DeviceManager).Check("MFT_MESSAGE_SET_D3D_MANAGER");
 
         // The encoder experiment only: ask for the rate mode and low latency before the types too (an encoder may fix its session at
-        // SetOutputType). Without a tuning there is no call at all, not even the QueryInterface.
-        if (!_options.Blocking && _options.LiveTuning is { } liveTuning) ConfigureCodecApiBeforeTypes(liveTuning);
+        // SetOutputType), and the bench / probe's QualityVsSpeed. Without either there is no call at all, not even the QueryInterface.
+        if (NeedsCodecApiBeforeTypes(_options)) ConfigureCodecApiBeforeTypes(_options.LiveTuning);
 
         // Output type
         IMFMediaType* outType = Mf.CreateMediaType();
@@ -315,17 +320,45 @@ internal sealed unsafe class VideoEncoder : IDisposable
         return r;
     }
 
+    /// <summary>Whether the early ICodecAPI step runs: only a live (non-blocking) encoder with a tuning or a QualityVsSpeedBeforeTypes. Otherwise there is no call at all.</summary>
+    internal static bool NeedsCodecApiBeforeTypes(VideoEncoderOptions o) => !o.Blocking && (o.LiveTuning != null || o.QualityVsSpeedBeforeTypes != null);
+
     /// <summary>Tuned live encoders only (see <see cref="EncoderExperiments.ApplyBeforeTypes"/>). Never throws: with no ICodecAPI yet, it logs and the setup after the types goes on.</summary>
-    private void ConfigureCodecApiBeforeTypes(LiveEncoderTuning tuning)
+    private void ConfigureCodecApiBeforeTypes(LiveEncoderTuning? tuning)
     {
         try
         {
             ICodecAPI* codec = ComUtil.TryQuery<ICodecAPI>(_mft);
             if (codec == null) { Log.Info("Encoder experiment: no ICodecAPI before the media types; setting it after them only"); return; }
-            try { EncoderExperiments.ApplyBeforeTypes(new ComCodecApiPort(codec), _cfg, tuning); }
+            try
+            {
+                var port = new ComCodecApiPort(codec);
+                if (tuning != null) EncoderExperiments.ApplyBeforeTypes(port, _cfg, tuning);
+                if (_options.QualityVsSpeedBeforeTypes is { } qvs) QvsBeforeTypes = EncoderExperiments.ApplyQualityVsSpeedBeforeTypes(port, qvs);
+            }
             finally { codec->Release(); }
         }
         catch (Exception ex) { Log.Warn("Encoder experiment: ICodecAPI before the media types: " + ex.Message); }
+    }
+
+    /// <summary>What the QualityVsSpeedBeforeTypes call returned and read back at once (null: the option is not set, or there was no ICodecAPI).</summary>
+    public QvsBeforeTypesResult? QvsBeforeTypes { get; private set; }
+
+    /// <summary>The encoder's own QualityVsSpeed now (GetValue), or null when it cannot be read. Read-only; nothing in the recording calls it (the bench reads it once streaming has begun).</summary>
+    internal uint? ReadQualityVsSpeed()
+    {
+        uint? result = null;
+        WithCodecApi(port => { if (port.GetU32(KnownGuids.CODECAPI_AVEncCommonQualityVsSpeed, out uint back) >= 0) result = back; });
+        return result;
+    }
+
+    /// <summary>Hands <paramref name="use"/> the opened encoder's ICodecAPI (tests and the QualityVsSpeed probe only; nothing in the recording calls it). No-op without an ICodecAPI.</summary>
+    internal void WithCodecApi(Action<ICodecApiPort> use)
+    {
+        ICodecAPI* codec = ComUtil.TryQuery<ICodecAPI>(_mft);
+        if (codec == null) return;
+        try { use(new ComCodecApiPort(codec)); }
+        finally { codec->Release(); }
     }
 
     private void ConfigureCodecApi()
@@ -334,9 +367,10 @@ internal sealed unsafe class VideoEncoder : IDisposable
         if (codec == null) return;
         try
         {
-            // Without a tuning this is the recording's setup as it always was (CBR, mean = max, GOP, no B-frames, low latency on, QvS 66);
+            // Without a tuning this is the recording's setup as it always was (CBR, mean = max, GOP, no B-frames, low latency on, QvS 66).
+            // On NVENC the post-types QvS is ignored (the encoder keeps its default, read back as 33; measured 2026-11-01), and the bench found the slower presets not worth it.
             // EncoderExperiments.Apply holds the calls so a test can pin them.
-            Applied = EncoderExperiments.Apply(new ComCodecApiPort(codec), _cfg, _options.LiveTuning);
+            Applied = EncoderExperiments.Apply(new ComCodecApiPort(codec), _cfg, _options.LiveTuning, _options.QualityVsSpeedBeforeTypes, QvsBeforeTypes);
         }
         finally { codec->Release(); }
     }
@@ -357,6 +391,7 @@ internal sealed unsafe class VideoEncoder : IDisposable
             SetU32(codec, KnownGuids.CODECAPI_AVEncMPVGOPSize, (uint)Math.Max(1, Math.Round(_cfg.Fps * _cfg.GopSeconds)));
             SetU32(codec, KnownGuids.CODECAPI_AVEncMPVDefaultBPictureCount, s.BFrames);
             SetBool(codec, KnownGuids.CODECAPI_AVLowLatencyMode, s.LowLatency);
+            // On NVENC this post-types value is ignored (the encoder keeps its default, read back as 33; measured 2026-11-01); the bench found the slower presets not worth it.
             SetU32(codec, KnownGuids.CODECAPI_AVEncCommonQualityVsSpeed, s.QualityVsSpeed);
         }
         finally { codec->Release(); }
