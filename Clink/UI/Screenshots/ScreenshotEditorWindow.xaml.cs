@@ -314,8 +314,8 @@ public partial class ScreenshotEditorWindow : Window, ICaptureExcludedWindow
         Hotkeys.GrantForeground();
         Activate();
         TestGuard.CheckLaunch("a message box (save edits before quit)");
-        var answer = MessageBox.Show(this, SavePromptText(HoldsUnsavedNewCapture, onQuit: true),
-            L.T("Clink screenshot editor"), MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+        var answer = Dialog.Show(this, SavePromptText(HoldsUnsavedNewCapture, onQuit: true),
+            MessageBoxButton.YesNoCancel, MessageBoxImage.Question, caption: L.T("Clink screenshot editor"));
         if (answer == MessageBoxResult.Cancel) return false;
         if (answer == MessageBoxResult.Yes && !await SaveCoreAsync(finish: false)) return false;
         return true;
@@ -352,8 +352,8 @@ public partial class ScreenshotEditorWindow : Window, ICaptureExcludedWindow
         if (_session.IsDirty)
         {
             TestGuard.CheckLaunch("a message box (save edits)");
-            var answer = MessageBox.Show(this, SavePromptText(HoldsUnsavedNewCapture, onQuit: false),
-                L.T("Clink screenshot editor"), MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+            var answer = Dialog.Show(this, SavePromptText(HoldsUnsavedNewCapture, onQuit: false),
+                MessageBoxButton.YesNoCancel, MessageBoxImage.Question, caption: L.T("Clink screenshot editor"));
             if (answer == MessageBoxResult.Cancel) return;
             if (answer == MessageBoxResult.Yes && !await SaveCoreAsync(finish: true)) return;
         }

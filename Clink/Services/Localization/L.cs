@@ -201,6 +201,8 @@ internal sealed class CatalogSet
 internal static class L
 {
     public const string PseudoCode = "qps-ploc";
+    /// <summary>The pseudo-locale in a right-to-left language (the same pseudo catalog): tests and --dev-language only. Not in <see cref="Known"/> or <see cref="Available"/>.</summary>
+    public const string PseudoRtlCode = "qps-plocm";
 
     /// <summary>The 16 target languages in the picker's order (English first, the source).</summary>
     public static readonly IReadOnlyList<LocaleInfo> Known = new[]
@@ -239,10 +241,10 @@ internal static class L
     // ------------------------------------------------------------------ state
 
     /// <summary>The active language code: one of <see cref="Known"/>, or "qps-ploc" inside a test <see cref="Scope"/>.</summary>
-    public static string Code => s_state.Code;
+    public static string Code => Current.Code;
     public static bool IsRtl => Current.Info.Rtl;
-    /// <summary>The culture for resources and system text (CurrentUICulture is set to it at start).</summary>
-    public static CultureInfo UiCulture => CultureFor(s_state.Info.Code, s_state.Info.Culture, ui: true);
+    /// <summary>The culture for resources and system text (CurrentUICulture is set to it at start). English inside <see cref="InEnglish"/>.</summary>
+    public static CultureInfo UiCulture => CultureFor(Current, ui: true);
     /// <summary>
     /// The culture numbers, dates and units are written in: ALWAYS the user's regional format (CultureInfo.CurrentCulture, calendar
     /// included), whatever the UI language is (the Windows convention). So today's English output is the same on every PC. The language's
@@ -267,6 +269,17 @@ internal static class L
         catch (Exception ex) { Log.Error("[l10n] could not choose a language, using English", ex); }
         s_state = MakeState(code);
         return code;
+    }
+
+    /// <summary>
+    /// For the hidden <c>--dev-language</c> switch of a <c>--dev</c> instance: makes <paramref name="code"/> (a Known code, "qps-ploc" or
+    /// "qps-plocm") the active language even when it is not <see cref="Available"/> (its text is then English, or pseudo for the pseudo
+    /// codes). Any other code is English. Returns the code now active. Never throws.
+    /// </summary>
+    internal static string SetForDev(string code)
+    {
+        s_state = MakeState(code);
+        return s_state.Code;
     }
 
     /// <summary>
@@ -304,13 +317,14 @@ internal static class L
     private static State MakeState(string code)
     {
         if (code.Equals(PseudoCode, StringComparison.OrdinalIgnoreCase)) return new State(PseudoCode, new LocaleInfo(PseudoCode, "Pseudo", false, "en-US"), true);
+        if (code.Equals(PseudoRtlCode, StringComparison.OrdinalIgnoreCase)) return new State(PseudoRtlCode, new LocaleInfo(PseudoRtlCode, "Pseudo RTL", true, "en-US"), true);
         foreach (var k in Known) if (k.Code.Equals(code, StringComparison.OrdinalIgnoreCase)) return new State(k.Code, k, false);
         return new State("en", Known[0], false);
     }
 
-    private static CultureInfo CultureFor(string code, string specific, bool ui)
+    private static CultureInfo CultureFor(State st, bool ui)
     {
-        try { return CultureInfo.GetCultureInfo(ui && code != PseudoCode ? code : specific); }
+        try { return CultureInfo.GetCultureInfo(ui && !st.Pseudo ? st.Info.Code : st.Info.Culture); }
         catch (CultureNotFoundException) { return CultureInfo.GetCultureInfo("en-US"); }
     }
 
@@ -477,10 +491,56 @@ internal static class L
     }, FormatCulture);
 
     /// <summary>
-    /// Keeps left-to-right text (a file name, a path, a hotkey, a URL) intact inside right-to-left text. Wraps it in LRE...PDF when
-    /// the language is right-to-left; returns it unchanged otherwise.
+    /// Keeps left-to-right text (a file name, a path, a hotkey, a URL) intact inside right-to-left text. Wraps it in U+200E (left-to-right mark) on both sides when
+    /// the language is right-to-left; returns it unchanged otherwise. WPF ignores LRE/LRO/LRI/FSI...PDF/PDI (see <see cref="Isolate"/>), so the mark is what keeps the text in order.
     /// </summary>
-    public static string Ltr(string text) => IsRtl && text.Length > 0 ? "\u202A" + text + "\u202C" : text;
+    public static string Ltr(string text) => IsRtl && text.Length > 0 ? "\u200E" + text + "\u200E" : text;
+
+    /// <summary>
+    /// Keeps a piece of text whose direction is not known in advance (a monitor name, a window title, a size such as 1920x1080 whose neutral
+    /// sign would otherwise flip the two numbers) in its own direction inside right-to-left text; returns it unchanged otherwise.
+    /// MEASURED (Tests/LocalizationBidiTests): WPF's text formatter ignores the embedding and isolate controls (LRE/RLE/LRO/RLO...PDF and
+    /// LRI/RLI/FSI...PDI have no effect on the order; the marks are only zero-width), but it does honour the left-to-right and right-to-left
+    /// marks, which make the digits of what follows strong. So the text is wrapped in U+200E (or U+200F when its first strong letter is
+    /// right-to-left) on both sides. The marks are zero-width and <see cref="Note"/> strips them from the English log text.
+    /// </summary>
+    public static string Isolate(string text)
+    {
+        if (!IsRtl || text.Length == 0) return text;
+        char mark = FirstStrongIsRtl(text) ? '\u200F' : '\u200E';
+        return mark + text + mark;
+    }
+
+    private static bool FirstStrongIsRtl(string text)
+    {
+        foreach (char c in text)
+        {
+            if (c is >= '\u0590' and <= '\u08FF' or >= '\uFB1D' and <= '\uFDFF' or >= '\uFE70' and <= '\uFEFF') return true;
+            if (char.IsLetter(c)) return false;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Joins sentences (or clauses) with the separator of the active language: skips null and empty parts and puts a space between the
+    /// others; Japanese and Chinese write no space after a sentence that ends with a full-width stop, exclamation, question mark or closing bracket.
+    /// </summary>
+    public static string JoinSentences(IEnumerable<string?> parts)
+    {
+        bool tight = Code is "ja" or "zh-CN";
+        var sb = new StringBuilder();
+        string? previous = null;
+        foreach (var part in parts)
+        {
+            if (string.IsNullOrEmpty(part)) continue;
+            if (previous != null && !(tight && "\u3002\uFF01\uFF1F\uFF09\u300D".IndexOf(previous[^1]) >= 0)) sb.Append(' ');
+            sb.Append(part);
+            previous = part;
+        }
+        return sb.ToString();
+    }
+
+    public static string JoinSentences(params string?[] parts) => JoinSentences((IEnumerable<string?>)parts);
 
     // ------------------------------------------------------------------ loading
 

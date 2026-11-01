@@ -130,9 +130,12 @@ internal static class L10nTreeHarness
     private static bool IsKey(string p) =>
         s_keys.Contains(p) || p.Length == 1 || Regex.IsMatch(p, @"^(F\d{1,2}|Num[0-9*+./\-])$", RegexOptions.IgnoreCase);
 
+    private static readonly Regex s_bidiMarks = new("[\\u200E\\u200F\\u202A-\\u202E\\u2066-\\u2069]", RegexOptions.Compiled);
+
     private static void Check_(string where, string? text, List<string> found, Func<string, bool>? allow)
     {
         if (text == null) return;
+        text = s_bidiMarks.Replace(text, "");   // direction marks (L.Ltr / L.Isolate) are not text that needs translating
         string rest = StripFrames(text);   // what is left when every catalog segment is cut out must need no translation
         if (IsAllowed(rest) || (allow != null && (allow(text) || allow(rest)))) return;
         found.Add(where + ": " + text);

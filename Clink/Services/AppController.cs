@@ -59,6 +59,12 @@ internal sealed class Note
     /// <summary>Marks <paramref name="text"/> as a left-to-right argument of a note (see <see cref="LtrArg"/>); use it instead of <see cref="L.Ltr"/> in <see cref="Of"/> / <see cref="PluralOf"/>.</summary>
     public static LtrArg Ltr(string text) => new(text);
 
+    /// <summary>An argument of unknown direction (a monitor name, a size) that keeps its own direction inside right-to-left text; the marks are added when the note is <see cref="Shown"/> (<see cref="L.Isolate"/>), never in <see cref="English"/>.</summary>
+    internal readonly record struct IsolateArg(string Text);
+
+    /// <summary>Marks <paramref name="text"/> as an argument that keeps its own direction (see <see cref="IsolateArg"/>).</summary>
+    public static IsolateArg Isolate(string text) => new(text);
+
     private static readonly System.Text.RegularExpressions.Regex s_marks = new("[\u202A-\u202E\u200E\u200F\u2066-\u2069]", System.Text.RegularExpressions.RegexOptions.Compiled);
 
     /// <summary>
@@ -72,6 +78,7 @@ internal sealed class Note
         {
             Note n => (object)(english ? n.English : n.Shown),
             LtrArg l => english ? l.Text : L.Ltr(l.Text),
+            IsolateArg i => english ? i.Text : L.Isolate(i.Text),
             SizeArg b => english ? L.BytesIn("en", b.Bytes) : L.Bytes(b.Bytes),
             _ => a.Value,
         })).ToArray();
@@ -79,7 +86,7 @@ internal sealed class Note
     /// <summary>The text in the language of the UI.</summary>
     public string Shown => Trim(_verbatim ?? (_compose != null ? _compose() : _count is long c ? L.Plural(Key, c, Resolve(false)) : L.T(Key, Resolve(false))));
 
-    private string Trim(string s) => _trimPeriod ? s.TrimEnd('.') : s;
+    private string Trim(string s) => _trimPeriod ? s.TrimEnd('.', '\u3002', '\uFF0E', '\u0964') : s;
 
     /// <summary>The text in English (logs), whatever the language of the UI is; free of direction marks.</summary>
     public string English => Trim(_verbatim ?? (_compose != null ? s_marks.Replace(L.InEnglish(_compose), "") : s_marks.Replace(L.TIn("en", Key, _count is long c ? Resolve(true).Append(("count", (object?)c)).ToArray() : Resolve(true)), "")));
@@ -135,6 +142,8 @@ internal sealed partial class AppController : IDisposable
     public static bool DevNoMarker { get; set; }
     /// <summary><c>--dev-demo-status "game"</c> (quiet dev instances only): the game the header pretends to record.</summary>
     public static string? DevDemoStatus { get; set; }
+    /// <summary>Hidden <c>--dev-language &lt;code&gt;</c> (dev instances only): the UI language to look at by hand, whatever the settings say (see <see cref="DevOptions.Language"/>).</summary>
+    public static string? DevLanguage { get; set; }
     /// <summary>The TEST frame, badge and tags are drawn: a dev instance, unless <c>--dev-no-marker</c> hides them.</summary>
     public static bool ShowsDevMarker => IsDev && !DocShots;
     /// <summary>Documentation-screenshot mode: <c>--dev</c> with <c>--dev-quiet</c> and <c>--dev-no-marker</c> (nothing else turns it on).</summary>
@@ -154,7 +163,7 @@ internal sealed partial class AppController : IDisposable
 
     /// <summary>The switches that make a restarted process this same dev instance (see <see cref="DevOptions.Switches"/>); none for a normal run.</summary>
     internal static List<string> DevSwitches() =>
-        IsDev ? DevOptions.Switches(Settings.Dir, DevHotkeys, DevRecord, DevToken, SettingsImport.PackagesRoot, DevQuiet, DevQuietRecord, DevNoMarker, DevDemoStatus) : new List<string>();
+        IsDev ? DevOptions.Switches(Settings.Dir, DevHotkeys, DevRecord, DevToken, SettingsImport.PackagesRoot, DevQuiet, DevQuietRecord, DevNoMarker, DevDemoStatus, DevLanguage) : new List<string>();
     private static readonly TimeSpan GameExitGrace = TimeSpan.FromSeconds(5);   // keep recording this long after the game's process is gone
 
     public static AppController Instance { get; private set; } = null!;
@@ -1031,9 +1040,7 @@ internal sealed partial class AppController : IDisposable
         string text = ImportQuestion(copy);
         var owner = System.Windows.Application.Current?.MainWindow is { IsVisible: true } w ? w : null;
         TestGuard.CheckLaunch("a message box (import settings)");
-        var answer = owner != null
-            ? MessageBox.Show(owner, text, "Clink", MessageBoxButton.YesNoCancel, MessageBoxImage.Question)
-            : MessageBox.Show(text, "Clink", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+        var answer = Dialog.Show(owner, text, MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
         if (answer == MessageBoxResult.Yes) ImportForeignSettings(copy);
         else if (answer == MessageBoxResult.No) SettingsImport.Decline(Settings, copy);
     }
@@ -2344,6 +2351,7 @@ internal sealed partial class AppController : IDisposable
     {
         {
             var menu = new System.Windows.Forms.ContextMenuStrip();
+            if (L.IsRtl) menu.RightToLeft = System.Windows.Forms.RightToLeft.Yes;   // a right-to-left language mirrors the menu; English leaves the default
             _statusItem = new System.Windows.Forms.ToolStripMenuItem(L.T("Starting…")) { Enabled = false };
             menu.Items.Add(_statusItem);
             menu.Items.Add(new System.Windows.Forms.ToolStripSeparator());

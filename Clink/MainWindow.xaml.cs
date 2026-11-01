@@ -609,7 +609,7 @@ public partial class MainWindow : Window
         var (w, h) = mon != null ? AppController.OutputSize(mon, _app.Settings.Resolution) : (0u, 0u);
         var fallback = Capabilities.Codec(Capabilities.EffectiveCodec(id, w, h));
         if (info.Supported && fallback != null && fallback.Id != info.Id)
-            CodecDescription.Text = L.T("{codec} cannot encode {width}×{height}; recording uses {fallback} instead. {codec} – {description}", ("codec", info.Name), ("width", w), ("height", h), ("fallback", fallback.Name), ("description", info.Description));
+            CodecDescription.Text = L.T("{codec} cannot encode {size}; recording uses {fallback} instead. {codec} – {description}", ("codec", info.Name), ("size", L.Ltr($"{w}×{h}")),("fallback", fallback.Name), ("description", info.Description));
         else if (info.Supported)
             CodecDescription.Text = info.EncoderName != null   // "NVIDIA H.264", as in the footer
                 ? L.T("{codec} – {description}  ·  {encoder}", ("codec", info.Name), ("description", info.Description), ("encoder", info.EncoderName.Replace(" Encoder MFT", "")))
@@ -954,8 +954,8 @@ public partial class MainWindow : Window
         if (m == null) return L.T("No monitor");
         string monitorName = L.Ltr(string.IsNullOrEmpty(m.FriendlyName) ? m.ShortName : m.FriendlyName);
         return m.IsPrimary
-            ? L.T("{name}  ·  {width}×{height}  ·  primary", ("name", monitorName), ("width", m.Width), ("height", m.Height))
-            : L.T("{name}  ·  {width}×{height}", ("name", monitorName), ("width", m.Width), ("height", m.Height));
+            ? L.T("{name}  ·  {size}  ·  primary", ("name", monitorName), ("size", L.Ltr($"{m.Width}×{m.Height}")))
+            : L.T("{name}  ·  {size}", ("name", monitorName), ("size", L.Ltr($"{m.Width}×{m.Height}")));
     }
 
     /// <summary>The footer while the engine runs: the game (when there is one), the encoder, the buffer and the dropped frames.</summary>

@@ -998,9 +998,7 @@ public partial class ClipsPane : UserControl
         string what = ScreenshotRow.ConfirmText(row.Entry, hadFile);
         var owner = Window.GetWindow(this);
         TestGuard.CheckLaunch("a message box: " + what);
-        var answer = owner != null
-            ? MessageBox.Show(owner, what, "Clink", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No)
-            : MessageBox.Show(what, "Clink", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No);
+        var answer = Dialog.Show(owner, what, MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No);
         if (answer != MessageBoxResult.Yes) return;
         if (row.IsDeleting || row.IsUploading || !_shots.Contains(row))   // a bulk delete / upload took the row, or it left the list, while the question was up
         {

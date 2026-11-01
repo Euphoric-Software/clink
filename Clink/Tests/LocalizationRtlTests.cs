@@ -1,34 +1,15 @@
-using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
+using System.Xml.Linq;
+using Clink.Services;
 using Clink.Services.Localization;
 using Clink.UI;
 
 namespace Clink.Tests;
 
-/// <summary>Right-to-left windows (RtlWindows) and the compiled-XAML use of {l:T}. No test overrides anything for a real app window or typeof(Window).</summary>
+/// <summary>Right-to-left windows (RtlWindows), message boxes (Dialog) and the compiled-XAML use of {l:T}. Windows are built off screen and never shown.</summary>
 internal static class LocalizationRtlTests
 {
-    // test-only windows (namespace Clink.Tests: RtlWindows leaves them out of the app's selection)
-    private sealed class ProbeWindow : Window { }
-    private sealed class ProbeParent : Window { }
-    private sealed class ProbeChild : Window { }   // overridden on its own, base is Window
-    private sealed class OwnStaticWindow : Window
-    {
-        static OwnStaticWindow() => FrameworkElement.FlowDirectionProperty.OverrideMetadata(typeof(OwnStaticWindow), new FrameworkPropertyMetadata(FlowDirection.LeftToRight));
-    }
-
-    [UnitTest]
-    public static void Window_already_overrides_FlowDirection_so_typeof_Window_cannot_be_overridden()
-    {
-        RuntimeHelpers.RunClassConstructor(typeof(Window).TypeHandle);
-        var window = FrameworkElement.FlowDirectionProperty.GetMetadata(typeof(Window));
-        var element = FrameworkElement.FlowDirectionProperty.GetMetadata(typeof(FrameworkElement));
-        Check.False(ReferenceEquals(window, element), "Window has its own FlowDirection metadata after its static constructor");
-        Check.Throws<ArgumentException>(() => FrameworkElement.FlowDirectionProperty.OverrideMetadata(typeof(Window), new FrameworkPropertyMetadata(FlowDirection.RightToLeft)));
-        Check.Equal(FlowDirection.LeftToRight, new Window().FlowDirection, "a failed attempt changed nothing");
-    }
-
     [UnitTest]
     public static void The_selection_is_every_app_window_except_the_pinned_ones()
     {
@@ -38,7 +19,7 @@ internal static class LocalizationRtlTests
         Check.True(appWindows.Count >= 13, "reflection finds the app's windows: " + appWindows.Count);
         var selected = RtlWindows.TypesToOverride(all);
         foreach (var w in appWindows)
-            Check.True(selected.Contains(w) || RtlWindows.IsPinned(w), w.Name + " is neither overridden nor pinned LTR: decide it in RtlWindows");
+            Check.True(selected.Contains(w) || RtlWindows.IsPinned(w), w.Name + " is neither mirrored nor pinned LTR: decide it in RtlWindows");
         foreach (var s in selected) Check.True(appWindows.Contains(s) && !RtlWindows.IsPinned(s), s.Name);
         Check.Equal(appWindows.Count - appWindows.Count(RtlWindows.IsPinned), selected.Count, "nothing else is selected or lost");
         foreach (var pinned in RtlWindows.PinnedLtr)
@@ -53,116 +34,246 @@ internal static class LocalizationRtlTests
         for (int i = 1; i < selected.Count; i++) Check.True(Depth(selected[i - 1]) <= Depth(selected[i]), "base classes come before derived ones");
     }
 
+    /// <summary>A controller for MainWindow (which reads it in its constructor), on the runner's scratch folder, as the main-window tests do.</summary>
+    private static AppController NewApp()
+    {
+        var settings = Settings.Load();
+        return new AppController(settings, new Updater(settings));
+    }
+
     private static int Depth(Type t) { int d = 0; for (var b = t.BaseType; b != null; b = b.BaseType) d++; return d; }
 
-    [UnitTest]
-    public static void Overriding_a_window_subclass_makes_new_instances_and_their_children_right_to_left_only_for_it()
+    /// <summary>Whether the HWND of <paramref name="w"/> (created here, never shown) has WS_EX_LAYOUTRTL.</summary>
+    private static bool HasLayoutRtl(Window w)
     {
-        Check.True(RtlWindows.Override(typeof(ProbeWindow)) || IsRtl(typeof(ProbeWindow)), "overridden (or already, in a repeated run)");
-        Check.False(RtlWindows.Override(typeof(ProbeWindow)), "a second call does nothing");
-        var w = new ProbeWindow();
-        Check.Equal(FlowDirection.RightToLeft, w.FlowDirection);
-        var child = new TextBlock();
-        w.Content = child;
-        Check.Equal(FlowDirection.RightToLeft, child.FlowDirection, "the element tree inherits it (a bare metadata default would not reach the children)");
-        Check.Equal(FlowDirection.LeftToRight, new Window().FlowDirection, "a plain Window stays left-to-right");
-        Check.Equal(FlowDirection.LeftToRight, new ProbeParent().FlowDirection, "so do windows not overridden");
+        nint hwnd = new System.Windows.Interop.WindowInteropHelper(w).EnsureHandle();
+        nint ex = Windows.Win32.PInvoke.GetWindowLongPtr(new Windows.Win32.Foundation.HWND(hwnd), Windows.Win32.UI.WindowsAndMessaging.WINDOW_LONG_PTR_INDEX.GWL_EXSTYLE);
+        return (ex & 0x00400000) != 0;
     }
 
-    private static bool IsRtl(Type t) => (FlowDirection)FrameworkElement.FlowDirectionProperty.GetMetadata(t).DefaultValue == FlowDirection.RightToLeft;
-
-    [UnitTest]
-    public static void A_window_whose_own_static_constructor_overrides_FlowDirection_is_left_alone()
+    private static Window Probe(bool windowRtl, bool transparent)
     {
-        Check.False(RtlWindows.Override(typeof(OwnStaticWindow)), "no second override");
-        Check.Equal(FlowDirection.LeftToRight, new OwnStaticWindow().FlowDirection);
+        var w = new Window { ShowInTaskbar = false, WindowStyle = WindowStyle.None, Content = new Grid { Children = { new TextBlock { Text = "x" } } } };
+        if (transparent) w.AllowsTransparency = true;
+        if (windowRtl) w.FlowDirection = FlowDirection.RightToLeft;
+        return w;
     }
 
     [UnitTest]
-    public static void A_window_that_is_overridden_on_its_own_works()
+    public static void FlowDirection_on_the_window_itself_mirrors_its_HWND_so_only_the_content_root_is_set()
     {
-        RtlWindows.Override(typeof(ProbeChild));
-        Check.Equal(FlowDirection.RightToLeft, new ProbeChild().FlowDirection);
-        Check.False(RtlWindows.Override(typeof(ProbeChild)));
-    }
-
-    // two independent base -> derived pairs, one overridden base-first and one derived-first (each pair can be overridden once per process)
-    private class BaseFirst : Window { }
-    private sealed class DerivedOfBaseFirst : BaseFirst { }
-    private class DerivedFirstBase : Window { }
-    private sealed class DerivedFirstDerived : DerivedFirstBase { }
-
-    [UnitTest]
-    public static void A_derived_window_is_right_to_left_whichever_order_base_and_derived_are_overridden_in()
-    {
-        // base first (what TypesToOverride does: base classes before derived ones)
-        bool baseDone = RtlWindows.Override(typeof(BaseFirst));
-        bool derivedDone = RtlWindows.Override(typeof(DerivedOfBaseFirst));
-        Check.True((baseDone && derivedDone) || (IsRtl(typeof(BaseFirst)) && IsRtl(typeof(DerivedOfBaseFirst))), "base then derived");
-        Check.False(RtlWindows.Override(typeof(BaseFirst)) || RtlWindows.Override(typeof(DerivedOfBaseFirst)), "nothing is overridden twice");
-        var d1 = new DerivedOfBaseFirst();
-        var c1 = new TextBlock();
-        d1.Content = c1;
-        Check.Equal(FlowDirection.RightToLeft, d1.FlowDirection, "derived instance");
-        Check.Equal(FlowDirection.RightToLeft, c1.FlowDirection, "its child");
-        var baseStyle = new BaseFirst().Style;
-        Check.NotNull(baseStyle, "the base has the RTL default style");
-        Check.True(ReferenceEquals(baseStyle, d1.Style), "the derived window reuses the base's style (it does not stack a second one)");
-
-        // derived first, then its base
-        bool derived2 = RtlWindows.Override(typeof(DerivedFirstDerived));
-        bool base2 = RtlWindows.Override(typeof(DerivedFirstBase));
-        Check.True((derived2 && base2) || (IsRtl(typeof(DerivedFirstDerived)) && IsRtl(typeof(DerivedFirstBase))), "derived then base");
-        var d2 = new DerivedFirstDerived();
-        var c2 = new TextBlock();
-        d2.Content = c2;
-        Check.Equal(FlowDirection.RightToLeft, d2.FlowDirection, "derived instance (derived overridden first)");
-        Check.Equal(FlowDirection.RightToLeft, c2.FlowDirection, "its child");
-        var b2 = new DerivedFirstBase();
-        Check.Equal(FlowDirection.RightToLeft, b2.FlowDirection, "the base too");
-        Check.NotNull(d2.Style);
-        Check.NotNull(b2.Style);
-        Check.Equal(FlowDirection.LeftToRight, new Window().FlowDirection, "a plain Window stays left-to-right");
-    }
-
-    [UnitTest]
-    public static void No_app_window_sets_its_own_Style_and_no_resource_is_keyed_by_a_Window_type()
-    {
-        // 1. no implicit style for a Window type in the application resources (it would replace RtlWindows' default style)
-        var app = Application.Current ?? throw new TestFailure("needs the running application (run it with Clink.exe --unittest)");
-        var offenders = new List<string>();
-        void Scan(ResourceDictionary d, string where)
+        // measured: WPF gives the HWND of a right-to-left Window the WS_EX_LAYOUTRTL style, whether or not it is transparent
+        foreach (bool transparent in new[] { false, true })
         {
-            foreach (object key in d.Keys)
-                if (key is Type t && typeof(Window).IsAssignableFrom(t)) offenders.Add(where + ": " + t.Name);
-            foreach (var m in d.MergedDictionaries) Scan(m, where + "/merged");
+            var w = Probe(windowRtl: true, transparent);
+            try { Check.True(HasLayoutRtl(w), "Window.FlowDirection RightToLeft sets WS_EX_LAYOUTRTL (transparent " + transparent + ")"); }
+            finally { w.Close(); }
         }
-        Scan(app.Resources, "App.Resources");
-        Check.Equal(Array.Empty<string>(), offenders.ToArray(), "implicit styles keyed by a Window type");
+        // the mechanism: the content root is right-to-left and the HWND is not
+        foreach (bool transparent in new[] { false, true })
+            using (L.Scope("ar"))
+            {
+                var w = Probe(windowRtl: false, transparent);
+                try
+                {
+                    Check.True(RtlWindows.ApplyTo(w));
+                    Check.Equal(FlowDirection.RightToLeft, ((FrameworkElement)w.Content).FlowDirection);
+                    Check.Equal(FlowDirection.LeftToRight, w.FlowDirection, "the window stays left-to-right");
+                    Check.False(HasLayoutRtl(w), "so does its HWND (transparent " + transparent + ")");
+                }
+                finally { w.Close(); }
+            }
+    }
 
-        // 2. the windows that can be built without arguments, built off screen and never shown: none may have an explicit Style (an
-        //    explicit Style replaces RtlWindows' default style, so the window would silently stay left-to-right) nor a Window-typed
-        //    implicit style in its own resources. The windows that need a controller, an entry or a request cannot be built in the
-        //    test host; for those the rule is the doc comment on RtlWindows.Override plus the review checklist.
-        var priorMain = app.MainWindow;
+    [UnitTest]
+    public static void ApplyTo_mirrors_the_content_root_of_app_windows_in_a_right_to_left_language()
+    {
+        using var app = NewApp();
         var built = new List<Window>();
         try
         {
             built.Add(new ToastWindow());
             built.Add(new ThirdPartyNoticesWindow());
             built.Add(new ClipDeleteConfirmWindow("Body", null));
-            foreach (var w in built)
-            {
-                Check.True(w.Style == null || ReferenceEquals(w.Style, FrameworkElement.StyleProperty.GetMetadata(w.GetType()).DefaultValue), w.GetType().Name + " sets its own Style");
-                Check.False(w.Resources.Keys.OfType<Type>().Any(t => typeof(Window).IsAssignableFrom(t)), w.GetType().Name + " has a Window-typed implicit style in its resources");
-            }
-            Check.True(built.Count >= 3);
+            built.Add(new MainWindow());
+            foreach (string code in new[] { "ar", L.PseudoRtlCode })
+                using (L.Scope(code))
+                    foreach (var w in built)
+                    {
+                        var root = (FrameworkElement)w.Content;
+                        root.ClearValue(FrameworkElement.FlowDirectionProperty);
+                        Check.Equal(FlowDirection.LeftToRight, root.FlowDirection, w.GetType().Name + " starts left-to-right");
+                        Check.True(RtlWindows.ApplyTo(w), code + " " + w.GetType().Name);
+                        Check.Equal(FlowDirection.RightToLeft, root.FlowDirection, code + " " + w.GetType().Name + ": the content root");
+                        Check.Equal(FlowDirection.LeftToRight, w.FlowDirection, w.GetType().Name + ": the window itself");
+                        if (System.Windows.Media.VisualTreeHelper.GetChildrenCount(root) > 0)
+                            Check.Equal(FlowDirection.RightToLeft, ((FrameworkElement)System.Windows.Media.VisualTreeHelper.GetChild(root, 0)).FlowDirection, w.GetType().Name + ": and below it");
+                    }
+            foreach (string code in new[] { "en", "qps-ploc" })
+                using (L.Scope(code))
+                    foreach (var w in built)
+                    {
+                        ((FrameworkElement)w.Content).ClearValue(FrameworkElement.FlowDirectionProperty);
+                        Check.False(RtlWindows.ApplyTo(w), code + " " + w.GetType().Name + ": a left-to-right language changes nothing");
+                        Check.Equal(FlowDirection.LeftToRight, ((FrameworkElement)w.Content).FlowDirection);
+                    }
         }
-        finally
+        finally { foreach (var w in built) { try { w.Close(); } catch { } } }
+    }
+
+    [UnitTest]
+    public static void ApplyTo_skips_pinned_windows_and_windows_without_an_element_as_content()
+    {
+        using (L.Scope("ar"))
         {
-            foreach (var w in built) { try { w.Close(); } catch { } }
-            app.MainWindow = priorMain;
+            var dot = new StatusDotWindow();
+            try
+            {
+                Check.True(RtlWindows.IsPinned(dot.GetType()));
+                Check.False(RtlWindows.ApplyTo(dot), "the status dot is pinned");
+                if (dot.Content is FrameworkElement root) Check.Equal(FlowDirection.LeftToRight, root.FlowDirection);
+            }
+            finally { dot.Close(); }
+            Check.True(RtlWindows.IsPinned(typeof(Clink.UI.Screenshots.RegionOverlayWindow)), "and so is the region overlay");
+            var bare = new Window { Content = "text" };
+            Check.False(RtlWindows.ApplyTo(bare), "a string as content is not an element");
+            Check.False(RtlWindows.ApplyTo(new Window()), "no content");
         }
+    }
+
+    [UnitTest]
+    public static void Register_hooks_Window_Loaded_only_in_a_right_to_left_language()
+    {
+        using (L.Scope("en")) Check.False(RtlWindows.Register(), "nothing to register for a left-to-right language");
+        using (L.Scope("ar"))
+        {
+            bool first = RtlWindows.Register();   // false when an earlier test of this run did it: once per process
+            Check.False(RtlWindows.Register(), "a second call adds nothing" + (first ? "" : " (it was added earlier in this run)"));
+
+            var w = new Window { Content = new Grid() };
+            RtlWindows.OnWindowLoaded(w, new RoutedEventArgs(FrameworkElement.LoadedEvent, w));   // what the class handler runs (raising Loaded would trip the test guard)
+            Check.Equal(FlowDirection.RightToLeft, ((FrameworkElement)w.Content).FlowDirection, "a window that loads is mirrored");
+            Check.Equal(FlowDirection.LeftToRight, w.FlowDirection);
+
+            var child = new Grid();
+            var w2 = new Window { Content = child };
+            RtlWindows.OnWindowLoaded(w2, new RoutedEventArgs(FrameworkElement.LoadedEvent, new Button()));   // Loaded of a child bubbling up: not the window's own
+            Check.Equal(FlowDirection.LeftToRight, child.FlowDirection, "a child's Loaded is ignored");
+
+            var dot = new StatusDotWindow();
+            try
+            {
+                RtlWindows.OnWindowLoaded(dot, new RoutedEventArgs(FrameworkElement.LoadedEvent, dot));
+                if (dot.Content is FrameworkElement root) Check.Equal(FlowDirection.LeftToRight, root.FlowDirection, "the pinned status dot stays left-to-right");
+            }
+            finally { dot.Close(); }
+        }
+        // the handler stays for the rest of the run, but does nothing once the language is left-to-right again
+        var late = new Window { Content = new Grid() };
+        RtlWindows.OnWindowLoaded(late, new RoutedEventArgs(FrameworkElement.LoadedEvent, late));
+        Check.Equal(FlowDirection.LeftToRight, ((FrameworkElement)late.Content).FlowDirection, "English: nothing happens");
+    }
+
+    [UnitTest]
+    public static void Every_app_window_has_an_element_as_its_content_root()
+    {
+        using var app = NewApp();
+        // built off screen (never shown): the windows that can be made without a controller, an entry or a request
+        var built = new List<Window>();
+        try
+        {
+            built.Add(new ToastWindow());
+            built.Add(new ThirdPartyNoticesWindow());
+            built.Add(new ClipDeleteConfirmWindow("Body", null));
+            built.Add(new MainWindow());
+            built.Add(new StatusDotWindow());
+            foreach (var w in built) Check.True(w.Content is FrameworkElement, w.GetType().Name + ": content " + (w.Content?.GetType().Name ?? "null"));
+        }
+        finally { foreach (var w in built) { try { w.Close(); } catch { } } }
+
+        // the others need arguments: read their XAML. The root has exactly one child that is not a property element, and it is an element
+        // (a Grid, Border ...), so Window.Content is a FrameworkElement.
+        string? root = L10nSourceScan.Root();
+        if (root == null) return;
+        var done = built.Select(w => w.GetType().Name).ToHashSet();
+        var checkedByXaml = new List<string>();
+        foreach (var t in RtlWindows.TypesToOverride().Concat(RtlWindows.PinnedLtr))
+        {
+            if (done.Contains(t.Name)) continue;
+            string? path = new[] { "", "UI", @"UI\Screenshots" }.Select(d => System.IO.Path.Combine(root, d, t.Name + ".xaml")).FirstOrDefault(System.IO.File.Exists);
+            Check.NotNull(path, t.Name + " has a XAML file next to its code");
+            var children = XDocument.Load(path!).Root!.Elements().Where(e => !e.Name.LocalName.Contains('.')).ToList();
+            Check.Equal(1, children.Count, t.Name + ": one content element under <Window>");
+            Check.Equal("http://schemas.microsoft.com/winfx/2006/xaml/presentation", children[0].Name.NamespaceName, t.Name + ": " + children[0].Name.LocalName + " is a WPF element");
+            checkedByXaml.Add(t.Name);
+        }
+        Check.True(checkedByXaml.Count >= 5, "the XAML check ran for: " + string.Join(", ", checkedByXaml));
+    }
+
+    [UnitTest]
+    public static void Message_boxes_read_right_to_left_only_in_a_right_to_left_language()
+    {
+        using (L.Scope("en")) Check.Equal(MessageBoxOptions.None, Dialog.Options);
+        using (L.Scope("qps-ploc")) Check.Equal(MessageBoxOptions.None, Dialog.Options);
+        foreach (string code in new[] { "ar", L.PseudoRtlCode })
+            using (L.Scope(code)) Check.Equal(MessageBoxOptions.RtlReading | MessageBoxOptions.RightAlign, Dialog.Options, code);
+        using (L.Scope("ar")) Check.Equal("None", L.InEnglish(() => Dialog.Options.ToString()), "a log-time composition sees English");
+    }
+
+    [UnitTest]
+    public static void Every_message_box_goes_through_Dialog()
+    {
+        string? root = L10nSourceScan.Root();
+        if (root == null) return;   // not run from a checkout (L10nSourceScan.Root throws on CI)
+        string needle = "MessageBox" + ".Show(";
+        var offenders = new List<string>();
+        int seen = 0;
+        foreach (string file in System.IO.Directory.EnumerateFiles(root, "*.cs", System.IO.SearchOption.AllDirectories))
+        {
+            string rel = System.IO.Path.GetRelativePath(root, file).Replace('\\', '/');
+            if (rel.StartsWith("obj/", StringComparison.Ordinal) || rel.StartsWith("bin/", StringComparison.Ordinal) || rel.StartsWith("Tests/", StringComparison.Ordinal)) continue;
+            seen++;
+            if (rel == "UI/Dialog.cs") continue;
+            foreach (string line in System.IO.File.ReadLines(file))
+                if (line.Contains(needle, StringComparison.Ordinal) && !line.TrimStart().StartsWith("//", StringComparison.Ordinal)) offenders.Add(rel + ": " + line.Trim());
+        }
+        Check.True(seen > 100, "the scan read the sources: " + seen);
+        Check.Equal(Array.Empty<string>(), offenders.ToArray(), "MessageBox calls outside UI/Dialog.cs (use Dialog.Show: it adds the right-to-left options)");
+        Check.True(System.IO.File.ReadAllText(System.IO.Path.Combine(root, "UI", "Dialog.cs")).Contains(needle, StringComparison.Ordinal), "Dialog itself calls it");
+    }
+
+    [UnitTest]
+    public static void Dev_language_is_a_dev_only_switch_that_names_a_language_and_survives_a_restart()
+    {
+        using var dir = new TempDir();
+        Check.Null(DevOptions.Parse(new[] { "--dev", dir.Path })!.Language, "off unless given");
+        foreach (var (given, canonical) in new[] { ("qps-plocm", "qps-plocm"), ("QPS-PLOC", "qps-ploc"), ("ar", "ar"), ("AR", "ar"), ("pt_br", "pt-BR"), ("zh-cn", "zh-CN") })
+            Check.Equal(canonical, DevOptions.Parse(new[] { "--dev", dir.Path, "--dev-language", given })!.Language, given);
+        Check.Equal("ar", DevOptions.Parse(new[] { "--dev-language", "ar", "--dev", dir.Path })!.Language, "the order does not matter");
+        Check.Equal("ar", DevOptions.Parse(new[] { "--dev", dir.Path, "--DEV-LANGUAGE", "\"ar\"" })!.Language, "case and quotes do not matter");
+
+        Check.Throws<ArgumentException>(() => DevOptions.Parse(new[] { "--dev-language", "ar" }), "without --dev it is an error, never a normal start");
+        Check.Throws<ArgumentException>(() => DevOptions.Parse(new[] { "--dev", dir.Path, "--dev-language" }), "a code is needed");
+        Check.Throws<ArgumentException>(() => DevOptions.Parse(new[] { "--dev", dir.Path, "--dev-language", "--dev-record" }), "a switch is not a code");
+        Check.Throws<ArgumentException>(() => DevOptions.Parse(new[] { "--dev", dir.Path, "--dev-language", "klingon" }), "an unknown language");
+        Check.Throws<ArgumentException>(() => DevOptions.Parse(new[] { "--dev", dir.Path, "--dev-languages", "ar" }), "a look-alike");
+
+        Check.Equal(new[] { "--dev", @"C:\d", "--dev-language", "qps-plocm" }, DevOptions.Switches(@"C:\d", false, false, false, null, language: "qps-plocm").ToArray(), "a restart keeps it");
+        Check.Equal(new[] { "--dev", @"C:\d" }, DevOptions.Switches(@"C:\d", false, false, false, null).ToArray());
+        Check.Equal(new[] { "--show" }, DevOptions.WithoutSwitches(new[] { "--dev", @"C:\d", "--dev-language", "ar", "--show" }).ToArray(), "and the helper drops it with its value");
+
+        string before = L.Code;
+        using (L.Scope("en"))
+        {
+            Check.Equal("qps-plocm", L.SetForDev("qps-plocm"));
+            Check.True(L.IsRtl, "right-to-left");
+            Check.True(PseudoLocale.IsPseudo(L.T("Cancel")), "pseudo text");
+            Check.Equal("ar", L.SetForDev("AR"));
+            Check.True(L.IsRtl);
+            Check.Equal("en", L.SetForDev("zz"), "anything else is English");
+            Check.False(L.IsRtl);
+        }
+        Check.Equal(before, L.Code, "the scope put the language back");
     }
 
     [UnitTest]

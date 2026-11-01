@@ -173,7 +173,7 @@ public partial class App : System.Windows.Application
             Log.Error("Startup failed", ex);
             try { _controller?.Dispose(); } catch { }
             AppController.ReleaseSingleInstance();
-            try { MessageBox.Show(L.T("Clink could not start: {error}\n\nDetails: {details}", ("error", ex.Message), ("details", L.Ltr(Log.Path ?? Settings.Dir))), "Clink", MessageBoxButton.OK, MessageBoxImage.Error); } catch { }
+            try { UI.Dialog.Show(null, L.T("Clink could not start: {error}\n\nDetails: {details}", ("error", ex.Message), ("details", L.Ltr(Log.Path ?? Settings.Dir))), MessageBoxButton.OK, MessageBoxImage.Error); } catch { }
             Shutdown(1);
         }
     }
@@ -204,6 +204,7 @@ public partial class App : System.Windows.Application
             AppController.DevQuietRecord = dev.QuietRecord;
             AppController.DevNoMarker = dev.NoMarker;
             AppController.DevDemoStatus = dev.DemoStatus;
+            AppController.DevLanguage = dev.Language;
             SettingsImport.PackagesRoot = dev.PackagesRoot;   // a --dev instance looks for other copies' settings only where this says (tests)
             SettingsImport.ForeignGuard = s => dev.Isolate(s, freshStore: false);   // and compares them as they would be once loaded here
         }
@@ -219,10 +220,17 @@ public partial class App : System.Windows.Application
         {
             // A plain start (no command to forward, not --dev) that finds an OLDER Clink running from another exe: most likely v0.4.1 or
             // earlier, which can no longer update itself (users of it upgrade by hand). It was asked to show itself; say how to get the new one.
+            // This message is shown before any settings are read, so it is in the Windows display language (L.Init(null) is "automatic" and
+            // reads no settings). Only when OlderRunningCopy can answer at all (a plain start); ApplyLanguage, if this process goes on, sets the
+            // real language afterwards (L.Init replaces the state, nothing keeps the early one).
+            if (dev == null && previous == null && AppController.CommandFromArgs(args) == null)
+            {
+                try { L.Init(null); } catch (Exception ex) { Log.Error("[l10n] could not choose the language for the older-copy message", ex); }
+            }
             if (dev == null && AppController.OlderRunningCopy(AppController.RunningClinks(), Environment.ProcessPath, AppController.OwnFileVersion(),
                     Environment.ProcessId, AppController.CurrentSessionId, AppController.CommandFromArgs(args), dev: false, restart: previous != null) is { } older)
             {
-                try { MessageBox.Show(older, "Clink", MessageBoxButton.OK, MessageBoxImage.Information); } catch { }
+                try { UI.Dialog.Show(null, older, MessageBoxButton.OK, MessageBoxImage.Information); } catch { }
             }
             Shutdown(0);
             return;
@@ -317,7 +325,7 @@ public partial class App : System.Windows.Application
     /// The UI language, before any window exists: the Settings.Language choice or the Windows display language, among the languages
     /// Clink has (L.Available). Sets the UI culture (not the format culture: numbers and dates always follow the PC's regional format,
     /// CultureInfo.CurrentCulture, whatever the UI language), the XAML language, and right-to-left for windows when the language is
-    /// (RtlWindows). Each step has its own try/catch. The --unittest/--selftest/--probe/--trim modes return before this and stay English.
+    /// (RtlWindows). Each step has its own try/catch. The --unittest/--selftest/--probe/--trim/--encoder-bench modes return before this and stay English.
     /// </summary>
     private static void ApplyLanguage(Settings settings)
     {
@@ -325,6 +333,12 @@ public partial class App : System.Windows.Application
         try
         {
             code = L.Init(settings.Language);
+            // hidden --dev-language <code> (a --dev instance only): the language to look at by hand, whatever the setting or Windows says
+            if (AppController.IsDev && AppController.DevLanguage is { } devLanguage)
+            {
+                code = L.SetForDev(devLanguage);
+                Log.Info($"language: --dev-language {devLanguage} in force (this --dev instance only)");
+            }
             bool apply = L.ShouldApplyUiCulture(settings.Language, code);
             if (apply)
             {
@@ -340,8 +354,8 @@ public partial class App : System.Windows.Application
         if (!L.IsRtl) return;
         try
         {
-            int n = RtlWindows.Apply();
-            Log.Info($"language {code} is right-to-left: {n} window classes set to RightToLeft (pinned LTR: {string.Join(", ", RtlWindows.PinnedLtr.Select(t => t.Name))})");
+            RtlWindows.Register();
+            Log.Info($"language {code} is right-to-left: window contents are set to RightToLeft when a window loads (pinned LTR: {string.Join(", ", RtlWindows.PinnedLtr.Select(t => t.Name))})");
         }
         catch (Exception ex) { Log.Error("Could not make the windows right-to-left, they stay left-to-right", ex); }
     }

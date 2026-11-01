@@ -473,7 +473,7 @@ internal static class LocalizationCatalogTests
         using (L.Scope("ar"))
         {
             Check.True(L.IsRtl);
-            Check.Equal("\u202AAlt+C\u202C", L.Ltr("Alt+C"));
+            Check.Equal("\u200EAlt+C\u200E", L.Ltr("Alt+C"));
             Check.Equal("", L.Ltr(""));
             Check.Equal("ar", L.UiCulture.TwoLetterISOLanguageName);
         }

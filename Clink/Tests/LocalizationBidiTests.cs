@@ -1,0 +1,238 @@
+using System.Globalization;
+using System.Windows;
+using System.Windows.Media;
+using Clink.Services;
+using Clink.Services.Localization;
+
+namespace Clink.Tests;
+
+/// <summary>
+/// What WPF does with bidirectional marks in right-to-left text (it decides how L.Isolate wraps), and the direction helpers of L:
+/// Isolate, JoinSentences, the sentence terminators of Note, the pseudo right-to-left locale and the English log text.
+/// </summary>
+internal static class LocalizationBidiTests
+{
+    private const string Size = "1920\u00D71080";
+    private const string ArabicBefore = "\u0627\u0628\u062C ";
+    private const string ArabicAfter = " \u062F\u0647\u0648";
+
+    /// <summary>Left edge and width of every character of <paramref name="text"/> laid out in a right-to-left flow.</summary>
+    private static (double X, double W)[] Positions(string text)
+    {
+        var ft = new FormattedText(text, CultureInfo.GetCultureInfo("en-US"), FlowDirection.RightToLeft, new Typeface("Segoe UI"), 16, Brushes.Black, 1.0);
+        var r = new (double, double)[text.Length];
+        for (int i = 0; i < text.Length; i++)
+        {
+            var g = ft.BuildHighlightGeometry(new Point(0, 0), i, 1);
+            r[i] = g == null ? (double.NaN, 0) : (g.Bounds.Left, g.Bounds.Width);
+        }
+        return r;
+    }
+
+    /// <summary>Whether "1920" is drawn to the left of "1080" (the size reads left to right) in <paramref name="text"/>, which holds <see cref="Size"/> once.</summary>
+    private static bool SizeReadsLeftToRight(string text)
+    {
+        int a = text.IndexOf(Size, StringComparison.Ordinal);
+        var p = Positions(text);
+        return p[a].X < p[a + 5].X;
+    }
+
+    private static readonly (string Name, string Open, string Close)[] Forms =
+    {
+        ("raw", "", ""),
+        ("LRE-PDF", "\u202A", "\u202C"),
+        ("FSI-PDI", "\u2068", "\u2069"),
+        ("LRI-PDI", "\u2066", "\u2069"),
+        ("LRO-PDF", "\u202D", "\u202C"),
+        ("LRM", "\u200E", "\u200E"),
+    };
+
+    [UnitTest]
+    public static void WPF_ignores_embeddings_and_isolates_but_honours_the_left_to_right_mark()
+    {
+        foreach (var (name, open, close) in Forms)
+        {
+            // the marks themselves take no room, in any form
+            string text = ArabicBefore + open + Size + close + ArabicAfter;
+            var p = Positions(text);
+            for (int i = 0; i < text.Length; i++)
+                if ("\u202A\u202C\u2066\u2068\u2069\u202D\u200E".IndexOf(text[i]) >= 0) Check.Equal(0.0, p[i].W, name + ": the mark at " + i + " is zero-width");
+
+            // in plain left-to-right text nothing moves
+            Check.True(SizeReadsLeftToRight("abc " + open + Size + close + " def"), name + ": Latin text keeps the size in order");
+
+            // in Arabic text the neutral sign flips the two numbers (1080 x 1920) ...
+            bool ltr = SizeReadsLeftToRight(text);
+            if (name == "LRM") Check.True(ltr, "LRM keeps 1920x1080 in order in Arabic text");
+            else Check.False(ltr, name + ": WPF does not apply this mark, the size is flipped in Arabic text (if this fails, WPF honours it now: L.Isolate may use it)");
+        }
+    }
+
+    [UnitTest]
+    public static void Isolate_keeps_a_size_in_order_in_right_to_left_text_and_changes_nothing_in_left_to_right()
+    {
+        using (L.Scope("en"))
+        {
+            Check.Equal(Size, L.Isolate(Size));
+            Check.Equal("", L.Isolate(""));
+            Check.Equal("abc", L.Isolate("abc"));
+        }
+        foreach (string code in new[] { "ar", L.PseudoRtlCode })
+            using (L.Scope(code))
+            {
+                Check.Equal("\u200E" + Size + "\u200E", L.Isolate(Size), code + ": numbers and Latin text: left-to-right mark");
+                Check.Equal("\u200E" + "C:\\Clips" + "\u200E", L.Isolate("C:\\Clips"));
+                Check.Equal("\u200F" + "\u0645\u0631\u062D\u0628\u0627" + "\u200F", L.Isolate("\u0645\u0631\u062D\u0628\u0627"), "starts with an Arabic letter: right-to-left mark");
+                Check.Equal("\u200F" + "12 \u0645\u0631" + "\u200F", L.Isolate("12 \u0645\u0631"), "digits are not strong: the first letter decides");
+                Check.Equal("", L.Isolate(""));
+                Check.True(SizeReadsLeftToRight(ArabicBefore + L.Isolate(Size) + ArabicAfter), code + ": the isolated size reads 1920x1080 in Arabic text");
+            }
+        Check.False(SizeReadsLeftToRight(ArabicBefore + Size + ArabicAfter), "without it the Arabic text flips it");
+    }
+
+    [UnitTest]
+    public static void A_note_isolates_an_argument_for_the_screen_and_not_for_the_log()
+    {
+        var set = CatalogSet.Build(new[] { new CatalogSource("en", "t", """{ "Monitor {size}": "Monitor {size}" }""") });
+        using var _ = L.UseCatalogs(set);
+        var note = Note.Of("Monitor {size}", ("size", Note.Isolate(Size)));
+        using (L.Scope("en")) Check.Equal("Monitor " + Size, note.Shown);
+        using (L.Scope("ar"))
+        {
+            Check.Equal("Monitor \u200E" + Size + "\u200E", note.Shown, "right-to-left: marked");
+            Check.Equal("Monitor " + Size, note.English, "the log has no marks");
+            Check.Equal("Monitor " + Size, note.ToString());
+        }
+    }
+
+    [UnitTest]
+    public static void Ltr_keeps_a_size_in_order_in_right_to_left_text_and_changes_nothing_in_left_to_right()
+    {
+        using (L.Scope("en"))
+        {
+            Check.Equal(Size, L.Ltr(Size));
+            Check.Equal("", L.Ltr(""));
+            Check.Equal("abc", L.Ltr("abc"));
+        }
+        foreach (string code in new[] { "ar", L.PseudoRtlCode })
+            using (L.Scope(code))
+            {
+                Check.Equal("\u200E" + Size + "\u200E", L.Ltr(Size), code + ": wrapped in left-to-right marks");
+                Check.Equal("", L.Ltr(""));
+                Check.True(SizeReadsLeftToRight(ArabicBefore + L.Ltr(Size) + ArabicAfter), code + ": the size reads 1920x1080 in Arabic text");
+            }
+    }
+
+    [UnitTest]
+    public static void A_note_with_a_left_to_right_argument_is_marked_for_the_screen_only_in_right_to_left()
+    {
+        var set = CatalogSet.Build(new[] { new CatalogSource("en", "t", """{ "Monitor {size}": "Monitor {size}" }""") });
+        using var _ = L.UseCatalogs(set);
+        var note = Note.Of("Monitor {size}", ("size", Note.Ltr(Size)));
+        using (L.Scope("en"))
+        {
+            Check.Equal("Monitor " + Size, note.Shown);
+            Check.Equal("Monitor " + Size, note.English);
+        }
+        using (L.Scope("ar"))
+        {
+            Check.Equal("Monitor \u200E" + Size + "\u200E", note.Shown, "right-to-left: marked");
+            Check.Equal("Monitor " + Size, note.English, "the log has no marks");
+            Check.Equal("Monitor " + Size, note.ToString());
+        }
+    }
+    [UnitTest]
+    public static void Inside_InEnglish_the_language_answers_English()
+    {
+        using (L.Scope("ar"))
+        {
+            Check.Equal("ar", L.Code);
+            Check.True(L.IsRtl);
+            Check.Equal("ar", L.UiCulture.TwoLetterISOLanguageName);
+            string inside = L.InEnglish(() => string.Join("|", L.Code, L.IsRtl, L.UiCulture.TwoLetterISOLanguageName, L.Isolate(Size), L.Ltr("x")));
+            Check.Equal("en|False|en|" + Size + "|x", inside);
+            Check.Equal("ar", L.Code, "and back");
+        }
+        using (L.Scope(L.PseudoRtlCode))
+            Check.Equal("en|False", L.InEnglish(() => L.Code + "|" + L.IsRtl));
+    }
+
+    [UnitTest]
+    public static void The_pseudo_right_to_left_locale_is_a_scope_only_language()
+    {
+        Check.False(L.Known.Any(k => k.Code == L.PseudoRtlCode), "not a Known language");
+        Check.False(L.Available.Contains(L.PseudoRtlCode), "not Available");
+        Check.Equal(null, L.CanonicalCode(L.PseudoRtlCode), "not a setting value");
+        Check.Equal("qps-plocm", L.PseudoRtlCode);
+        var set = CatalogSet.Build(new[] { new CatalogSource("en", "t", """{ "Save clip": "Save clip", "Cancel": "Cancel" }""") });
+        using var _ = L.UseCatalogs(set);
+        Check.False(set.Available.Contains(L.PseudoRtlCode));
+        using (L.Scope(L.PseudoRtlCode))
+        {
+            Check.Equal("qps-plocm", L.Code);
+            Check.True(L.IsRtl);
+            Check.Equal("en", L.UiCulture.TwoLetterISOLanguageName, "the pseudo languages use the English culture");
+            Check.True(PseudoLocale.IsPseudo(L.T("Save clip")), "pseudo-localized text: " + L.T("Save clip"));
+            Check.Equal(L.TIn(L.PseudoCode, "Save clip"), L.T("Save clip"), "the same catalog as qps-ploc");
+        }
+        using (L.Scope(L.PseudoCode))
+        {
+            Check.False(L.IsRtl, "qps-ploc stays left-to-right");
+            Check.Equal("qps-ploc", L.Code);
+        }
+        using (L.Scope("ar")) Check.False(PseudoLocale.IsPseudo(L.T("Save clip")), "ar is not pseudo");
+    }
+
+    [UnitTest]
+    public static void JoinSentences_skips_empty_parts_and_uses_the_separator_of_the_language()
+    {
+        using (L.Scope("en"))
+        {
+            Check.Equal("One. Two.", L.JoinSentences("One.", null, "", "Two."));
+            Check.Equal("", L.JoinSentences());
+            Check.Equal("", L.JoinSentences(null, ""));
+            Check.Equal("A", L.JoinSentences("A"));
+            Check.Equal("A B C", L.JoinSentences(new List<string?> { "A", "B", "C" }));
+            Check.Equal("A B", L.JoinSentences(new[] { "A", "", "B" }));
+            Check.Equal("\u3002 x", L.JoinSentences("\u3002", "x"), "English always puts a space");
+        }
+        foreach (string code in new[] { "ja", "zh-CN" })
+            using (L.Scope(code))
+            {
+                Check.Equal("\u4E00\u3002\u4E8C\uFF01\u4E09\uFF1F\u56DB\uFF09\u4E94\u300D\u516D", L.JoinSentences("\u4E00\u3002", "\u4E8C\uFF01", "", "\u4E09\uFF1F", null, "\u56DB\uFF09", "\u4E94\u300D", "\u516D"), code + ": no space after a full-width terminator");
+                Check.Equal("A. B", L.JoinSentences("A.", "B"), code + ": a space after a Latin stop");
+                Check.Equal("\u4E00 B", L.JoinSentences("\u4E00", "B"), code + ": a space when there is no terminator");
+            }
+        foreach (string code in new[] { "ko", "ar", "hi" })
+            using (L.Scope(code)) Check.Equal("\u4E00\u3002 \u4E8C", L.JoinSentences("\u4E00\u3002", "\u4E8C"), code + ": always a space");
+        using (L.Scope("ja")) Check.Equal("\u4E00\u3002 \u4E8C", L.InEnglish(() => L.JoinSentences("\u4E00\u3002", "\u4E8C")), "the log joins the English way");
+    }
+
+    [UnitTest]
+    public static void A_note_without_its_final_period_also_drops_a_full_width_or_devanagari_stop()
+    {
+        var set = CatalogSet.Build(new[]
+        {
+            new CatalogSource("en", "t", """{ "Saved.": "Saved.", "Done...": "Done..." }"""),
+            new CatalogSource("ja", "t", """{ "Saved.": "\u4FDD\u5B58\u3057\u307E\u3057\u305F\u3002" }"""),
+            new CatalogSource("zh-CN", "t", """{ "Saved.": "\u5DF2\u4FDD\u5B58\uFF0E" }"""),
+            new CatalogSource("hi", "t", """{ "Saved.": "\u0938\u0939\u0947\u091C\u093E\u0964" }"""),
+        });
+        using var _ = L.UseCatalogs(set);
+        var saved = Note.Of("Saved.");
+        using (L.Scope("en"))
+        {
+            Check.Equal("Saved.", saved.Shown);
+            Check.Equal("Saved", saved.WithoutFinalPeriod().Shown);
+            Check.Equal("Saved", saved.WithoutFinalPeriod().English);
+            Check.Equal("Done", Note.Of("Done...").WithoutFinalPeriod().Shown);
+        }
+        using (L.Scope("ja"))
+        {
+            Check.Equal("\u4FDD\u5B58\u3057\u307E\u3057\u305F", saved.WithoutFinalPeriod().Shown);
+            Check.Equal("Saved", saved.WithoutFinalPeriod().English, "the log stays English");
+        }
+        using (L.Scope("zh-CN")) Check.Equal("\u5DF2\u4FDD\u5B58", saved.WithoutFinalPeriod().Shown);
+        using (L.Scope("hi")) Check.Equal("\u0938\u0939\u0947\u091C\u093E", saved.WithoutFinalPeriod().Shown);
+    }
+}

@@ -268,6 +268,26 @@ internal static class L10nTreeAppTests
     }
 
     [UnitTest]
+    public static void The_tray_menu_is_mirrored_for_a_right_to_left_language_and_left_alone_otherwise()
+    {
+        using var env = new Env();
+        foreach (string code in new[] { "en", "qps-ploc" })
+            using (L.Scope(code))
+            {
+                using var menu = env.App.BuildTrayMenu();
+                using var plain = new System.Windows.Forms.ContextMenuStrip();
+                Check.Equal(plain.RightToLeft, menu.RightToLeft, code + ": the default (not set)");
+                Check.NotEqual(System.Windows.Forms.RightToLeft.Yes, menu.RightToLeft, code);
+            }
+        foreach (string code in new[] { "ar", L.PseudoRtlCode })
+            using (L.Scope(code))
+            {
+                using var menu = env.App.BuildTrayMenu();
+                Check.Equal(System.Windows.Forms.RightToLeft.Yes, menu.RightToLeft, code + ": mirrored");
+            }
+    }
+
+    [UnitTest]
     public static void The_tray_menu_is_localized_and_the_tooltip_is_cut_after_translating()
     {
         using var env = new Env();
@@ -455,8 +475,8 @@ internal static class L10nTreeAppTests
                 Check.False(n.ToString().Any(marks.Contains), "ToString is English: " + n);
                 Check.Equal(n.English, n.ToString());
             }
-            Check.True(note.Shown.Contains("\u202A" + @"C:\Clips\x.mp4" + "\u202C"), "Shown has the marks");
-            Check.True(nested.Shown.Contains("\u202A" + @"C:\Apps" + "\u202C"), "a nested note's Shown has them too");
+            Check.True(note.Shown.Contains("\u200E" + @"C:\Clips\x.mp4" + "\u200E"), "Shown has the marks");
+            Check.True(nested.Shown.Contains("\u200E" + @"C:\Apps" + "\u200E"), "a nested note's Shown has them too");
             // even a mark that got into a plain string argument does not reach the English
             Check.False(Note.Of("Cannot start: {error}", ("error", L.Ltr("boom"))).English.Any(marks.Contains), "the safety net strips stray marks");
         }
