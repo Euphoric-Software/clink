@@ -154,6 +154,113 @@ internal sealed unsafe class D3DDevice : IDisposable
         }
     }
 
+    /// <summary>
+    /// A device for background GPU work (the share-time transcode): on the adapter with <paramref name="luid"/> when it is there, else on
+    /// the first hardware adapter. Unlike <see cref="CreateForMonitor"/> it never touches the process-wide GPU scheduling priority class
+    /// itself. With <paramref name="lowPriority"/> its GPU thread priority is the lowest (-7), but that priority is relative to Clink's
+    /// other devices only: it ranks this device below the recording's device within the process. It does not put the copy behind a game.
+    /// Once a recording device exists, <see cref="CreateForMonitor"/> has already raised the whole process to the HIGH GPU scheduling
+    /// class, and this device is in that class too; so the copy yields to the live recording, not to the game.
+    /// Video support is asked for (hardware decoding needs it). No WinRT view (<see cref="WinRTDevice"/> stays null): nothing captures with it.
+    /// </summary>
+    public static D3DDevice CreateForAdapter(LUID? luid, bool lowPriority)
+    {
+        IDXGIFactory1* factory = null;
+        IDXGIAdapter1* chosen = null;
+        try
+        {
+            Guid iidFactory = IDXGIFactory1.IID_Guid;
+            void* pf;
+            PInvoke.CreateDXGIFactory1(&iidFactory, &pf).Check("CreateDXGIFactory1");
+            factory = (IDXGIFactory1*)pf;
+
+            string chosenName = "";
+            IDXGIAdapter1* firstHardware = null;
+            string firstName = "";
+            for (uint a = 0; ; a++)
+            {
+                IDXGIAdapter1* adapter;
+                if (factory->EnumAdapters1(a, &adapter).Failed) break;
+                DXGI_ADAPTER_DESC1 ad;
+                adapter->GetDesc1(&ad);
+                bool hardware = (ad.Flags & DXGI_ADAPTER_FLAG.DXGI_ADAPTER_FLAG_SOFTWARE) == 0;
+                if (chosen == null && hardware && luid is LUID want && ad.AdapterLuid.LowPart == want.LowPart && ad.AdapterLuid.HighPart == want.HighPart)
+                {
+                    chosen = adapter;
+                    chosenName = ad.Description.ToString();
+                }
+                else if (firstHardware == null && hardware)
+                {
+                    firstHardware = adapter;
+                    firstName = ad.Description.ToString();
+                }
+                else ComUtil.Release(ref adapter);
+            }
+            if (chosen == null)
+            {
+                if (luid is LUID missing)
+                    Log.Warn($"Background GPU device: adapter LUID {missing.HighPart:X8}:{missing.LowPart:X8} not found (removed, or a software adapter); using {(firstHardware != null ? firstName : "no adapter")}");
+                chosen = firstHardware;
+                chosenName = firstName;
+            }
+            else ComUtil.Release(ref firstHardware);
+            if (chosen == null) throw new InvalidOperationException("No hardware graphics adapter found.");
+
+            var dev = new D3DDevice { AdapterName = chosenName };
+            DXGI_ADAPTER_DESC1 desc;
+            chosen->GetDesc1(&desc);
+            dev.AdapterLuid = desc.AdapterLuid;
+
+            var levels = stackalloc D3D_FEATURE_LEVEL[] { D3D_FEATURE_LEVEL.D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL.D3D_FEATURE_LEVEL_11_0 };
+            ID3D11Device* device;
+            ID3D11DeviceContext* context;
+            D3D_FEATURE_LEVEL got;
+            var flags = D3D11_CREATE_DEVICE_FLAG.D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_FLAG.D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
+            HRESULT hr = PInvoke.D3D11CreateDevice((IDXGIAdapter*)chosen, D3D_DRIVER_TYPE.D3D_DRIVER_TYPE_UNKNOWN, HMODULE.Null, flags,
+                levels, 2, PInvoke.D3D11_SDK_VERSION, &device, &got, &context);
+            if (hr.Failed)
+            {
+                flags = D3D11_CREATE_DEVICE_FLAG.D3D11_CREATE_DEVICE_BGRA_SUPPORT;
+                PInvoke.D3D11CreateDevice((IDXGIAdapter*)chosen, D3D_DRIVER_TYPE.D3D_DRIVER_TYPE_UNKNOWN, HMODULE.Null, flags,
+                    levels, 2, PInvoke.D3D11_SDK_VERSION, &device, &got, &context).Check("D3D11CreateDevice");
+            }
+            dev.Device = device;
+            dev.Context = context;
+            try
+            {
+                // Media Foundation (the decoder, the video processor and the encoder) shares it through the DXGI device manager.
+                ID3D11Multithread* mt = ComUtil.TryQuery<ID3D11Multithread>(context);
+                if (mt != null)
+                {
+                    mt->SetMultithreadProtected(true);
+                    ComUtil.Release(ref mt);
+                }
+                dev.DxgiDevice = ComUtil.Query<IDXGIDevice>(device, "QI IDXGIDevice");
+                if (lowPriority)
+                {
+                    HRESULT pr = dev.DxgiDevice->SetGPUThreadPriority(-7);
+                    if (pr.Failed) Log.Info($"Background GPU device: low GPU thread priority not set (0x{(uint)pr.Value:X8})");
+                }
+                IMFDXGIDeviceManager* mgr;
+                PInvoke.MFCreateDXGIDeviceManager(out uint token, &mgr).Check("MFCreateDXGIDeviceManager");
+                dev.DeviceManager = mgr;
+                dev.ResetToken = token;
+                mgr->ResetDevice((IUnknown*)device, token).Check("IMFDXGIDeviceManager.ResetDevice");
+                return dev;
+            }
+            catch
+            {
+                dev.Dispose();
+                throw;
+            }
+        }
+        finally
+        {
+            ComUtil.Release(ref chosen);
+            ComUtil.Release(ref factory);
+        }
+    }
+
     public ID3D11Texture2D* CreateTexture(uint width, uint height, Windows.Win32.Graphics.Dxgi.Common.DXGI_FORMAT format, D3D11_BIND_FLAG bind, D3D11_USAGE usage = D3D11_USAGE.D3D11_USAGE_DEFAULT, D3D11_CPU_ACCESS_FLAG cpu = 0)
     {
         var desc = new D3D11_TEXTURE2D_DESC

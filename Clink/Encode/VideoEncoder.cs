@@ -20,6 +20,33 @@ internal sealed record VideoEncoderConfig(uint Width, uint Height, uint Fps, uin
 }
 
 /// <summary>
+/// How a <see cref="VideoEncoder"/> takes its frames. <see cref="Live"/> (the default) is the recording's: a frame that arrives while four
+/// are already waiting for the encoder drops the oldest, and the event thread runs AboveNormal. <see cref="Offline"/> is for a file
+/// encode (the share-time transcode): <see cref="VideoEncoder.SubmitBlocking"/> waits for room instead of dropping,
+/// <see cref="VideoEncoder.Drain"/> gets the last frames out, the event thread runs at the given priority and the encoder is set up
+/// from <see cref="OfflineSettings"/> (not from the recording's settings, so a change to those never alters a share copy).
+/// </summary>
+/// <param name="OfflineSettings">Blocking only: the encoder settings (null = <see cref="OfflineEncoderSettings.Default"/>). Ignored by a live encoder.</param>
+internal sealed record VideoEncoderOptions(bool Blocking, ThreadPriority EventThreadPriority, OfflineEncoderSettings? OfflineSettings = null)
+{
+    public static readonly VideoEncoderOptions Live = new(false, ThreadPriority.AboveNormal);
+    public static VideoEncoderOptions Offline(ThreadPriority priority = ThreadPriority.BelowNormal, OfflineEncoderSettings? settings = null)
+        => new(true, priority, settings ?? OfflineEncoderSettings.Default);
+}
+
+/// <summary>
+/// What an offline encoder (a share copy) is set to, pinned here apart from the recording's own setup. The defaults are the values the
+/// recording used when share copies were added: CBR (mean = max = the bitrate), no B-frames (the muxer writes pts as dts), low latency on
+/// (the encoder hands each frame back as soon as it is done, which is what Drain and the frame accounting were verified with) and
+/// quality-vs-speed 66.
+/// </summary>
+internal sealed record OfflineEncoderSettings(bool LowLatency = true, uint QualityVsSpeed = 66, uint BFrames = 0,
+    eAVEncCommonRateControlMode RateControl = eAVEncCommonRateControlMode.eAVEncCommonRateControlMode_CBR)
+{
+    public static readonly OfflineEncoderSettings Default = new();
+}
+
+/// <summary>
 /// Hardware H.264/HEVC (and experimental AV1) encoder through Media Foundation (NVENC / AMF / QuickSync MFT), fed with NV12
 /// textures on the capture device so frames never leave the GPU. Async MFT: inputs are gated by NeedInput credits,
 /// outputs are drained on a dedicated event thread. Output samples are Annex B access units for H.264/HEVC and
@@ -42,9 +69,16 @@ internal sealed unsafe class VideoEncoder : IDisposable
     private bool _providesSamples;
     private uint _outputSize;
     private readonly long _frameDuration;
+    private readonly VideoEncoderOptions _options;
+    private readonly ManualResetEventSlim _drained = new(false);
+    private volatile int _errorStatus;   // the last MEError's status (0 = none): what an offline wait gives up on
+    private OfflineEncoderSettings OfflineSettings => _options.OfflineSettings ?? OfflineEncoderSettings.Default;
 
     public string EncoderName { get; private set; } = "";
     public long FramesIn, FramesOut, Dropped;
+    /// <summary>Offline only (always 0 for the recording): ProcessInput / ProcessOutput calls that failed, so a file encode can judge
+    /// what it lost (ShareTranscoder.JudgeEncoderLoss).</summary>
+    public long InputFailures, OutputFailures;
     public OutputHandler? OnOutput;
     /// <summary>H.264/HEVC: Annex B parameter sets (MF_MT_MPEG_SEQUENCE_HEADER). AV1: the Sequence Header OBU (from the attribute or the first keyframe).</summary>
     public byte[]? SequenceHeader { get; private set; }
@@ -66,11 +100,13 @@ internal sealed unsafe class VideoEncoder : IDisposable
     /// <summary>Whether a hardware H.264 encoder can take this output size (0 = unknown counts as fitting).</summary>
     public static bool H264Fits(uint width, uint height) => width <= MaxH264Side && height <= MaxH264Side;
 
-    public VideoEncoder(D3DDevice d3d, VideoEncoderConfig cfg)
+    /// <param name="options">Null is <see cref="VideoEncoderOptions.Live"/> (the recording).</param>
+    public VideoEncoder(D3DDevice d3d, VideoEncoderConfig cfg, VideoEncoderOptions? options = null)
     {
         Mf.EnsureStarted();
         _d3d = d3d;
         _cfg = cfg;
+        _options = options ?? VideoEncoderOptions.Live;
         _frameDuration = 10_000_000L / cfg.Fps;
 
         // The MFT would only fail SetOutputType with "The input type is not supported for D3D device"; say what is wrong instead.
@@ -102,7 +138,8 @@ internal sealed unsafe class VideoEncoder : IDisposable
             if (Mf.GetU32(attrs, PInvoke.MF_TRANSFORM_ASYNC) == 0) throw new InvalidOperationException("Encoder is not an async MFT");
             if (Mf.GetU32(attrs, PInvoke.MF_SA_D3D11_AWARE) == 0) throw new InvalidOperationException("Encoder is not D3D11-aware");
             Mf.SetU32(attrs, PInvoke.MF_TRANSFORM_ASYNC_UNLOCK, 1);
-            try { Mf.SetU32(attrs, PInvoke.MF_LOW_LATENCY, 1); } catch { }
+            // (An offline encoder takes low latency from its own settings; a live one always sets it, as before.)
+            if (!_options.Blocking || OfflineSettings.LowLatency) { try { Mf.SetU32(attrs, PInvoke.MF_LOW_LATENCY, 1); } catch { } }
         }
         finally { attrs->Release(); }
 
@@ -165,7 +202,8 @@ internal sealed unsafe class VideoEncoder : IDisposable
             _mft->SetInputType(0, inType, 0).Check("SetInputType(NV12)");
         }
 
-        ConfigureCodecApi();
+        if (_options.Blocking) ConfigureOfflineCodecApi(OfflineSettings);
+        else ConfigureCodecApi();   // the recording
 
         MFT_OUTPUT_STREAM_INFO info;
         _mft->GetOutputStreamInfo(0, &info).Check("GetOutputStreamInfo");
@@ -193,7 +231,7 @@ internal sealed unsafe class VideoEncoder : IDisposable
         _mft->ProcessMessage(MFT_MESSAGE_TYPE.MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0).Check("NOTIFY_BEGIN_STREAMING");
         _mft->ProcessMessage(MFT_MESSAGE_TYPE.MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0).Check("NOTIFY_START_OF_STREAM");
 
-        _thread = new Thread(EventLoop) { IsBackground = true, Name = "Clink.Encoder", Priority = ThreadPriority.AboveNormal };
+        _thread = new Thread(EventLoop) { IsBackground = true, Name = "Clink.Encoder", Priority = _options.EventThreadPriority };
         _thread.SetApartmentState(ApartmentState.MTA);
         _thread.Start();
     }
@@ -293,6 +331,41 @@ internal sealed unsafe class VideoEncoder : IDisposable
         }
     }
 
+    /// <summary>
+    /// An offline encoder's rate control, GOP, B-frames, latency and speed, from its own pinned settings (<see cref="OfflineEncoderSettings"/>):
+    /// on purpose not shared with <see cref="ConfigureCodecApi"/>, so trying a setting on the recording cannot change a share copy.
+    /// </summary>
+    private void ConfigureOfflineCodecApi(OfflineEncoderSettings s)
+    {
+        ICodecAPI* codec = ComUtil.TryQuery<ICodecAPI>(_mft);
+        if (codec == null) return;
+        try
+        {
+            SetU32(codec, KnownGuids.CODECAPI_AVEncCommonRateControlMode, (uint)s.RateControl);
+            SetU32(codec, KnownGuids.CODECAPI_AVEncCommonMeanBitRate, _cfg.BitrateBps);
+            SetU32(codec, KnownGuids.CODECAPI_AVEncCommonMaxBitRate, _cfg.BitrateBps);
+            SetU32(codec, KnownGuids.CODECAPI_AVEncMPVGOPSize, (uint)Math.Max(1, Math.Round(_cfg.Fps * _cfg.GopSeconds)));
+            SetU32(codec, KnownGuids.CODECAPI_AVEncMPVDefaultBPictureCount, s.BFrames);
+            SetBool(codec, KnownGuids.CODECAPI_AVLowLatencyMode, s.LowLatency);
+            SetU32(codec, KnownGuids.CODECAPI_AVEncCommonQualityVsSpeed, s.QualityVsSpeed);
+        }
+        finally { codec->Release(); }
+
+        static void SetU32(ICodecAPI* c, Guid key, uint value)
+        {
+            if (c->IsSupported(&key).Failed) return;
+            VARIANT v = default; v.vt = VARENUM.VT_UI4; v.ulVal = value;
+            HRESULT hr = c->SetValue(&key, &v);
+            if (hr.Failed) Log.Warn($"ICodecAPI (offline) {key} = {value} not accepted (0x{(uint)hr.Value:X8})");
+        }
+        static void SetBool(ICodecAPI* c, Guid key, bool value)
+        {
+            VARIANT v = default; v.vt = VARENUM.VT_BOOL; v.boolVal = new VARIANT_BOOL((short)(value ? -1 : 0));
+            HRESULT hr = c->SetValue(&key, &v);
+            if (hr.Failed) Log.Warn($"ICodecAPI (offline) {key} = {value} not accepted (0x{(uint)hr.Value:X8})");
+        }
+    }
+
     /// <summary>Gets a free NV12 sample from the pool. Returns false (frame should be dropped) when the encoder is backed up.</summary>
     public bool TryAcquireInput(out IMFSample* sample, out ID3D11Texture2D* texture, out uint subresource)
     {
@@ -349,11 +422,123 @@ internal sealed unsafe class VideoEncoder : IDisposable
         }
     }
 
+    // ------------------------------------------------------------------ offline use (VideoEncoderOptions.Offline only)
+
+    /// <summary>How long an offline wait for the encoder may take before it counts as stalled.</summary>
+    private static readonly TimeSpan StallTimeout = TimeSpan.FromSeconds(15);
+
+    private void RequireOffline(string what)
+    {
+        if (!_options.Blocking) throw new InvalidOperationException($"VideoEncoder.{what} is for an offline encoder (VideoEncoderOptions.Offline)");
+    }
+
+    private void ThrowIfFailed()
+    {
+        int status = _errorStatus;
+        if (status != 0) throw new COMException($"The encoder reported an error 0x{(uint)status:X8}", status);
+        if (_stop) throw new ObjectDisposedException(nameof(VideoEncoder));
+    }
+
+    /// <summary>
+    /// Offline: a free input sample from the pool, waiting (instead of failing) while the encoder still holds every one of them. The
+    /// caller owns the sample and the texture reference (release the texture, hand the sample to <see cref="SubmitBlocking"/>).
+    /// </summary>
+    public IMFSample* AcquireInputBlocking(out ID3D11Texture2D* texture, out uint subresource, CancellationToken ct)
+    {
+        RequireOffline(nameof(AcquireInputBlocking));
+        var since = System.Diagnostics.Stopwatch.StartNew();
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            ThrowIfFailed();
+            if (TryAcquireInput(out IMFSample* sample, out texture, out subresource)) return sample;
+            if (since.Elapsed > StallTimeout) throw new TimeoutException($"The encoder kept every input frame for {StallTimeout.TotalSeconds:0} s");
+            Thread.Sleep(1);
+        }
+    }
+
+    /// <summary>
+    /// Offline: hands a filled sample to the encoder like <see cref="Submit"/> (always consumes the caller's reference), but when four
+    /// frames are already waiting it waits for the encoder to take one instead of dropping the oldest. Throws on cancellation, on an
+    /// encoder error and when the encoder takes nothing for <see cref="StallTimeout"/>.
+    /// </summary>
+    public void SubmitBlocking(IMFSample* sample, long pts100ns, CancellationToken ct)
+    {
+        RequireOffline(nameof(SubmitBlocking));
+        sample->SetSampleTime(pts100ns);
+        sample->SetSampleDuration(_frameDuration);
+        bool handed = false;
+        try
+        {
+            var since = System.Diagnostics.Stopwatch.StartNew();
+            lock (_lock)
+            {
+                while (true)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    ThrowIfFailed();
+                    if (_credits > 0) { handed = true; FeedLocked(sample); return; }
+                    if (_pending.Count < MaxPending) { handed = true; _pending.Enqueue((nint)sample); return; }
+                    if (since.Elapsed > StallTimeout) throw new TimeoutException($"The encoder took no frame for {StallTimeout.TotalSeconds:0} s");
+                    Monitor.Wait(_lock, 20);
+                }
+            }
+        }
+        finally
+        {
+            if (!handed) sample->Release();
+        }
+    }
+
+    /// <summary>
+    /// Offline: the end of the input. Waits until every waiting frame is in the encoder, then sends END_OF_STREAM and COMMAND_DRAIN and
+    /// waits for METransformDrainComplete, so every frame submitted has come out through <see cref="OnOutput"/> when this returns.
+    /// If no drain-complete event comes for <see cref="StallTimeout"/> but FramesOut has reached FramesIn, it logs that and returns
+    /// normally; it throws only when frames are still owed. Nothing may be submitted afterwards.
+    /// </summary>
+    public void Drain(CancellationToken ct)
+    {
+        RequireOffline(nameof(Drain));
+        var since = System.Diagnostics.Stopwatch.StartNew();
+        lock (_lock)
+        {
+            while (_pending.Count > 0)
+            {
+                ct.ThrowIfCancellationRequested();
+                ThrowIfFailed();
+                if (since.Elapsed > StallTimeout) throw new TimeoutException($"The encoder took no frame for {StallTimeout.TotalSeconds:0} s");
+                Monitor.Wait(_lock, 20);
+            }
+            _drained.Reset();
+            _mft->ProcessMessage(MFT_MESSAGE_TYPE.MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0).Check("NOTIFY_END_OF_STREAM");
+            _mft->ProcessMessage(MFT_MESSAGE_TYPE.MFT_MESSAGE_COMMAND_DRAIN, 0).Check("COMMAND_DRAIN");
+        }
+        long lastOut = Interlocked.Read(ref FramesOut);
+        since.Restart();
+        while (!_drained.Wait(50, ct))
+        {
+            ThrowIfFailed();
+            long now = Interlocked.Read(ref FramesOut);
+            if (now != lastOut) { lastOut = now; since.Restart(); }
+            if (since.Elapsed <= StallTimeout) continue;
+            // Some drivers never send METransformDrainComplete. When every frame that went in has come out, nothing is missing, so
+            // that is not a failure (the caller checks the counts again). Only a drain that still owes frames fails.
+            long framesIn = Interlocked.Read(ref FramesIn);
+            if (now >= framesIn)
+            {
+                Log.Warn($"{EncoderName}: no drain-complete event after {StallTimeout.TotalSeconds:0} s, but all {framesIn} frames came out; treating the drain as done");
+                return;
+            }
+            throw new TimeoutException($"The encoder did not finish draining in {StallTimeout.TotalSeconds:0} s ({now} of {framesIn} frames out)");
+        }
+    }
+
     private void FeedLocked(IMFSample* sample)
     {
         HRESULT hr = _mft->ProcessInput(0, sample, 0);
         if (hr.Succeeded) { _credits--; Interlocked.Increment(ref FramesIn); }
         else { Log.Warn($"ProcessInput failed 0x{(uint)hr.Value:X8}"); Interlocked.Increment(ref Dropped); }
+        if (hr.Failed && _options.Blocking) Interlocked.Increment(ref InputFailures);   // offline only: counted for the share copy's loss check
         sample->Release();
     }
 
@@ -380,15 +565,21 @@ internal sealed unsafe class VideoEncoder : IDisposable
                         {
                             _credits++;
                             if (_pending.Count > 0) FeedLocked((IMFSample*)_pending.Dequeue());
+                            if (_options.Blocking) Monitor.PulseAll(_lock);   // an offline submit or drain may be waiting for room
                         }
                         break;
                     case Mf.METransformHaveOutput:
                         DrainOutput();
                         break;
+                    case Mf.METransformDrainComplete:
+                        // Only an offline Drain asks for one; the recording never sends COMMAND_DRAIN, so it never gets here.
+                        _drained.Set();
+                        break;
                     case Mf.MEError:
                         HRESULT status;
                         evt->GetStatus(&status);
                         Log.Error($"Encoder reported error 0x{(uint)status.Value:X8}");
+                        if (_options.Blocking) _errorStatus = status.Value == 0 ? unchecked((int)0x80004005) : status.Value;
                         break;
                 }
             }
@@ -416,6 +607,7 @@ internal sealed unsafe class VideoEncoder : IDisposable
         if (ob.pEvents != null) ((IUnknown*)ob.pEvents)->Release();
         if (hr == HRESULT.MF_E_TRANSFORM_NEED_MORE_INPUT) { if (ob.pSample != null) ob.pSample->Release(); return; }
         if (hr == HRESULT.MF_E_TRANSFORM_STREAM_CHANGE) { if (ob.pSample != null) ob.pSample->Release(); RefreshSequenceHeader(); return; }
+        if (hr.Failed && _options.Blocking) Interlocked.Increment(ref OutputFailures);   // offline only: counted for the share copy's loss check
         if (hr.Failed) { if (ob.pSample != null) ob.pSample->Release(); Log.Warn($"ProcessOutput failed 0x{(uint)hr.Value:X8}"); return; }
         IMFSample* sample = ob.pSample;
         if (sample == null) return;
