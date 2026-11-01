@@ -611,7 +611,7 @@ public partial class ClipsPane : UserControl
         var row = RowOf(sender);
         if (row == null) return;
         if (!await EnsureFileAsync(row)) { SayCannot(row, "open its folder"); return; }
-        try { Process.Start("explorer.exe", $"/select,\"{row.Entry.Path}\""); }
+        try { TestGuard.Start("explorer.exe", $"/select,\"{row.Entry.Path}\""); }
         catch (Exception ex) { App.Say(L.T("Could not open folder: {error}", ("error", ex.Message))); }
     }
 
@@ -663,6 +663,7 @@ public partial class ClipsPane : UserControl
                 ? ClipDeleter.TrimsBlockedText(trimDeleter.PrecheckTrims(trimRows.Select(r => r.Entry)), trimRows.Any(r => r.IsDeleting))
                 : null;
             var dialog = new ClipDeleteConfirmWindow(body, owner, trimRows.Count, blocked);
+            TestGuard.CheckLaunch("the delete confirm window");
             bool confirmed = dialog.ShowDialog() == true && dialog.Confirmed;
             if (!confirmed) return;
             deleteTrims = dialog.Choice == ClipDeleteChoice.ClipAndTrims;
@@ -756,7 +757,7 @@ public partial class ClipsPane : UserControl
         string path = row.Entry.Path;
         void Open()
         {
-            try { Process.Start(new ProcessStartInfo(path) { UseShellExecute = true }); }
+            try { TestGuard.Start(new ProcessStartInfo(path) { UseShellExecute = true }); }
             catch (Exception ex) { Dispatcher.BeginInvoke(() => App.Say(L.T("Open failed: {error}", ("error", ex.Message)))); }
         }
         if (!row.Entry.IsArchived) { Open(); return; }
@@ -783,7 +784,7 @@ public partial class ClipsPane : UserControl
         if (url == null) return;
         // The address came from the server or from the clip list file: only an https address is handed to the shell.
         if (!Clink.Services.CopiumClient.IsHttpsUrl(url, out var page)) { Log.Warn("clips: not opened: the clip's link is not an https address"); return; }
-        try { Process.Start(new ProcessStartInfo(page.AbsoluteUri) { UseShellExecute = true }); }
+        try { TestGuard.Start(new ProcessStartInfo(page.AbsoluteUri) { UseShellExecute = true }); }
         catch (Exception ex) { App.Say(L.T("Could not open the browser: {error}", ("error", ex.Message))); }
     }
 
@@ -929,7 +930,7 @@ public partial class ClipsPane : UserControl
             App.Say(L.T("Could not open the screenshot: it is not in the screenshots folder, or it is gone"));
             return;
         }
-        try { Process.Start(new ProcessStartInfo(path) { UseShellExecute = true }); }
+        try { TestGuard.Start(new ProcessStartInfo(path) { UseShellExecute = true }); }
         catch (Exception ex) { App.Say(L.T("Could not open the screenshot: {error}", ("error", ex.Message))); }
     }
 
@@ -939,7 +940,7 @@ public partial class ClipsPane : UserControl
         if (row == null) return;
         // The same rule as Open / Edit: a path only the history file names is never probed or handed to the shell.
         if (!App.Screenshots.IsOpenableEntry(row.Entry.Path)) { App.Say(L.T("The screenshot file is gone, or it is not in the screenshots folder")); return; }
-        try { Process.Start("explorer.exe", $"/select,\"{row.Entry.Path}\""); }
+        try { TestGuard.Start("explorer.exe", $"/select,\"{row.Entry.Path}\""); }
         catch (Exception ex) { App.Say(L.T("Could not open folder: {error}", ("error", ex.Message))); }
     }
 
@@ -981,7 +982,7 @@ public partial class ClipsPane : UserControl
         string? url = row?.Entry.CopiumPageUrl ?? row?.Link;
         if (url == null) return;
         if (!CopiumClient.IsHttpsUrl(url, out var page)) { Log.Warn("library: screenshot page not opened: the link is not an https address"); return; }
-        try { Process.Start(new ProcessStartInfo(page.AbsoluteUri) { UseShellExecute = true }); }
+        try { TestGuard.Start(new ProcessStartInfo(page.AbsoluteUri) { UseShellExecute = true }); }
         catch (Exception ex) { App.Say(L.T("Could not open the browser: {error}", ("error", ex.Message))); }
     }
 
@@ -996,6 +997,7 @@ public partial class ClipsPane : UserControl
         bool hadFile = row.HasLocalFile;   // what the user was asked about: a delete (file) or a Remove from list (no file)
         string what = ScreenshotRow.ConfirmText(row.Entry, hadFile);
         var owner = Window.GetWindow(this);
+        TestGuard.CheckLaunch("a message box: " + what);
         var answer = owner != null
             ? MessageBox.Show(owner, what, "Clink", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No)
             : MessageBox.Show(what, "Clink", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No);

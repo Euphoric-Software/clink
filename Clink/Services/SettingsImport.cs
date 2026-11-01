@@ -77,6 +77,7 @@ internal static class AppDataRedirect
         try
         {
             string dir = Settings.Dir;
+            TestGuard.Check(dir);
             Directory.CreateDirectory(dir);
             string? folder = FinalFolderOf(dir);
             if (folder == null)
@@ -483,6 +484,7 @@ internal static class SettingsImport
             string path = NetworkPathsNoticePath;
             if (!File.Exists(path)) return null;
             string text = File.ReadAllText(path).Trim();
+            TestGuard.Check(path);
             File.Delete(path);
             if (text.Length == 0) return null;
             if (text.StartsWith('['))
@@ -716,6 +718,7 @@ internal static class SettingsImport
         var incoming = Settings.FromJson(theirs);   // throws when it is not JSON, or not a JSON object
 
         string dir = Settings.Dir;
+        TestGuard.Check(dir);
         Directory.CreateDirectory(dir);
         var networkKept = new List<string>();
         string text = KeepOurOwn(theirs, ReadOurSettings(), keepOurToken: IsTokenUnusable(incoming), networkKept);
@@ -725,7 +728,7 @@ internal static class SettingsImport
         if (networkKept.Count > 0)
         {
             Log.Warn("import: " + NetworkPathsNoticeFor(networkKept, "en"));   // the log stays English
-            try { File.WriteAllText(NetworkPathsNoticePath, JsonSerializer.Serialize(networkKept)); }   // the setting names, not words: the sentence is built in the user's language when it is shown
+            try { TestGuard.Check(NetworkPathsNoticePath); File.WriteAllText(NetworkPathsNoticePath, JsonSerializer.Serialize(networkKept)); }   // the setting names, not words: the sentence is built in the user's language when it is shown
             catch (Exception ex) { Log.Warn("import: could not note the network folders that were kept: " + ex.Message); }
         }
         string? clipsProblem = MergeClipIndex(copy.Folder);
@@ -836,6 +839,7 @@ internal static class SettingsImport
             if (File.Exists(path)) continue;
             try
             {
+                TestGuard.Check(path);
                 File.Copy(Settings.FilePath, path, overwrite: false);
                 return path;
             }
@@ -880,6 +884,7 @@ internal static class SettingsImport
     {
         try
         {
+            TestGuard.Check(ClipsMarkerPath);
             Directory.CreateDirectory(Settings.Dir);
             File.WriteAllText(ClipsMarkerPath, JsonSerializer.Serialize(marker));
         }
@@ -889,7 +894,7 @@ internal static class SettingsImport
     /// <summary>Drops the note about a clip merge still to do (it is done, there is nothing to merge from any more, or the import was taken back).</summary>
     internal static void ForgetPendingClipMerge()
     {
-        try { if (File.Exists(ClipsMarkerPath)) File.Delete(ClipsMarkerPath); }
+        try { if (File.Exists(ClipsMarkerPath)) { TestGuard.Check(ClipsMarkerPath); File.Delete(ClipsMarkerPath); } }
         catch (Exception ex) { Log.Warn("import: could not remove the note about a pending clip merge: " + ex.Message); }
     }
 
@@ -995,6 +1000,7 @@ internal static class SettingsImport
 
         try
         {
+            TestGuard.Check(mine);
             Directory.CreateDirectory(Path.GetDirectoryName(mine) ?? Settings.Dir);
             AtomicFile.WriteAllText(mine, merged);
         }

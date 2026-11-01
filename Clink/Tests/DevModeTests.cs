@@ -213,7 +213,7 @@ internal static class DevModeTests
         var unreadable = Settings.Load();
         Check.True(unreadable.LoadedFromFile);
         Check.True(unreadable.FileWasSkipped);
-        Check.Equal(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "Clink"), unreadable.ClipsFolder);
+        Check.Equal(Settings.DefaultClipsFolder, unreadable.ClipsFolder);
         Dev(broken).Isolate(unreadable, freshStore: !unreadable.LoadedFromFile);
         Check.Equal(Path.Combine(broken.Path, "clips"), unreadable.ClipsFolder);
 

@@ -386,14 +386,18 @@ internal static class ConsentTests
         settings.ToastRecording.Enabled = false;
         settings.ToastShared.Enabled = false;
         app.WantRecordingForTests = true;   // a manual recording was asked for (no engine runs in a unit test)
+        var toasts = new List<string>();
+        var prevShow = Toasts.ShowOverride;
+        Toasts.ShowOverride = w => toasts.Add(w.Kind + ": " + w.TitleText.Text);   // the notice is built, never put on the screen
         try
         {
             Check.True(app.SetClipsEnabled(false));
+            Check.Contains(string.Join("|", toasts), "Recording stopped", "the notice toast was asked for");
             Check.False(app.WantRecordingForTests, "the recording wish ended");
             Check.False(app.IsManualRecording);
             Check.Equal("Recording stopped", app.LastNotice);
         }
-        finally { Hotkeys.Rebind(Array.Empty<HotkeyAction>()); }
+        finally { Toasts.ShowOverride = prevShow; Hotkeys.Rebind(Array.Empty<HotkeyAction>()); }
     }
 
     [UnitTest]
@@ -512,6 +516,8 @@ internal static class ConsentTests
         app.ConsentPromptOverride = _ => { popUps++; return Task.FromResult(new ConsentAnswer(ConsentChoice.Enable)); };
         var handler = new Offline();
         CopiumClient.HttpOverride = new HttpClient(handler);
+        var prevShow = Toasts.ShowOverride;
+        Toasts.ShowOverride = _ => { };   // the problem toast is built, never put on the screen
         try
         {
             app.GameOrFullScreenProbe = () => true;
@@ -530,7 +536,7 @@ internal static class ConsentTests
             Wait(app.ShareAsync(Clip(dir), announce: true, context: ConsentContext.ShareLast));
             Check.Equal(2, popUps, "no game in front: the pop-up shows");
         }
-        finally { CopiumClient.HttpOverride = null; }
+        finally { CopiumClient.HttpOverride = null; Toasts.ShowOverride = prevShow; }
     }
 
     [UnitTest]

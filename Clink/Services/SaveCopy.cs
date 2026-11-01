@@ -41,6 +41,7 @@ internal static class SaveCopy
     public static async Task CopyAsync(string src, string dst, IProgress<double>? progress, CancellationToken ct, bool overwrite = true)
     {
         string part = dst + ".clinkpart";
+        TestGuard.Check(dst);
         try
         {
             var input = new FileStream(src, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20, FileOptions.SequentialScan | FileOptions.Asynchronous);

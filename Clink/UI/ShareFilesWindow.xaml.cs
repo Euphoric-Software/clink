@@ -237,7 +237,7 @@ public partial class ShareFilesWindow : Window, ICaptureExcludedWindow
             var state = await Task.Run(() => ShareWindow.Probe(path, archived));   // on a worker: a sleeping archive share must not freeze the window
             if (_closed) return;
             if (state != ShareWindow.FileState.Present) { _ = CheckAsync(); return; }
-            Process.Start("explorer.exe", $"/select,\"{path}\"");
+            TestGuard.Start("explorer.exe", $"/select,\"{path}\"");
         }
         catch (Exception ex)
         {
