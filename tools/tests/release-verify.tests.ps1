@@ -426,7 +426,7 @@ try {
             Assert-True ($stable.Contains('name: Clink v${{ needs.build.outputs.version }}' + "`n") -and (Get-ExpectedReleaseName -Channel stable -Version '1.2.3') -ceq 'Clink v1.2.3') 'the stable release name differs from the lib'
         }
     } finally {
-        foreach ($n in $savedEnv.Keys) { [Environment]::SetEnvironmentVariable($n, $savedEnv[$n]) }
+        foreach ($n in $savedEnv.Keys) { if ($null -eq $savedEnv[$n]) { Remove-Item -LiteralPath ("Env:" + $n) -ErrorAction SilentlyContinue } else { [Environment]::SetEnvironmentVariable($n, $savedEnv[$n]) } }
     }
 
     # =============================================================== H2: CLINK_IMMUTABLE_RELEASES
@@ -509,7 +509,7 @@ try {
                 $deletes = { @($script:ghCalls | Where-Object { $_ -ceq 'api -X DELETE repos/o/r/releases/123' }).Count }
                 foreach ($unset in $true, $false) {
                     & $setMutable
-                    [Environment]::SetEnvironmentVariable('CLINK_IMMUTABLE_RELEASES', $(if ($unset) { $null } else { 'required' }))
+                    if ($unset) { Remove-Item -LiteralPath 'Env:CLINK_IMMUTABLE_RELEASES' -ErrorAction SilentlyContinue } else { [Environment]::SetEnvironmentVariable('CLINK_IMMUTABLE_RELEASES', 'required') }
                     $r = Invoke-WorkflowStepOutput $wf 'Verify the published release' $dir
                     Assert-True ($r.Error -match 'RELEASE INTEGRITY INCIDENT \(after publishing\)' -and $r.Error -match 'not immutable') "$wf unset=$unset : a mutable release passed: $($r.Error)"
                     Assert-True ((& $deletes) -eq 1) "$wf unset=$unset : the mutable release was not deleted"
@@ -538,7 +538,7 @@ try {
                     Assert-True ($r.Error -match 'CLINK_IMMUTABLE_RELEASES must be unset') "$wf [$bad]: the post-publish check accepted garbage: $($r.Error)"
                 }
             }
-        } finally { [Environment]::SetEnvironmentVariable('CLINK_IMMUTABLE_RELEASES', $savedMode) }
+        } finally { if ($null -eq $savedMode) { Remove-Item -LiteralPath ("Env:" + 'CLINK_IMMUTABLE_RELEASES') -ErrorAction SilentlyContinue } else { [Environment]::SetEnvironmentVariable('CLINK_IMMUTABLE_RELEASES', $savedMode) } }
     }
 
     Invoke-Test 'the lib is BOM-free ASCII and every gh call goes through Invoke-GhApi' {
