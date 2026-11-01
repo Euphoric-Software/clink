@@ -1423,11 +1423,8 @@ public partial class MainWindow : Window
         s.Resolution = Selected<string>(ResolutionCombo) ?? SettingsDefaults.Resolution;
         s.Fps = Selected<int>(FpsCombo) is var f && f > 0 ? f : SettingsDefaults.Fps;
         string codec = Selected<string>(CodecCombo) ?? SettingsDefaults.Codec;
-        // A codec change takes the bitrate along only while the user has not picked one and it is still the old codec's default for this
-        // resolution / FPS; the combo just shows the new value. Only a change of the bitrate box itself counts as the user's pick.
-        if (SetupPresets.IsCodecChange(s.Codec, codec) && SetupPresets.FollowCodec(s, s.Codec, codec))
-            FillBitrate(s);   // programmatic: selecting the new bitrate is not a user choice
-        else if (BitrateCombo.IsEnabled && Selected<int>(BitrateCombo) is var b && b > 0)
+        // Switching codec never changes the bitrate. Only a change of the bitrate box itself counts as the user's pick.
+        if (BitrateCombo.IsEnabled && Selected<int>(BitrateCombo) is var b && b > 0)
             SetupPresets.PickBitrate(s, b, ReferenceEquals(sender, BitrateCombo));   // a size target never disables the box: it only lowers the encode bitrate
         s.Codec = codec;
         s.CaptureCursor = CursorCheck.IsChecked == true;
