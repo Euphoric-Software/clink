@@ -50,9 +50,12 @@ export const BOOT_SLACK_MS = 60_000;
  */
 export const KEY_MAX_AGE_MS = 300_000;
 
+/** A key file dated further ahead than this is not from a live Clink (a clock far in the past on this PC, or a planted file). */
+export const FUTURE_SLACK_MS = 60_000;
+
 export type KeyClock = { now: number; uptimeS: number };
 
-/** Checks the key file without reading it: it must exist, be a small regular file, not predate this boot and not be older than KEY_MAX_AGE_MS. Null when fine. */
+/** Checks the key file without reading it: it must exist, be a small regular file, not predate this boot, not be older than KEY_MAX_AGE_MS and not be dated more than FUTURE_SLACK_MS ahead. Null when fine. */
 export async function checkKeyFile(keyDir: string, pipeName: string, clock?: KeyClock): Promise<HandshakeFailure | null> {
   let st;
   try {
@@ -66,6 +69,7 @@ export async function checkKeyFile(keyDir: string, pipeName: string, clock?: Key
   const bootMs = now - (clock?.uptimeS ?? uptime()) * 1000;
   if (st.mtimeMs < bootMs - BOOT_SLACK_MS) return "keyStale";
   if (now - st.mtimeMs > KEY_MAX_AGE_MS) return "keyStale";
+  if (st.mtimeMs - now > FUTURE_SLACK_MS) return "keyStale";
   return null;
 }
 

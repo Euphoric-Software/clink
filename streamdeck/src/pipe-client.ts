@@ -256,12 +256,12 @@ export class ClinkClient extends EventEmitter {
   }
 
   /** Reads the key; a missing or stale file gets one silent retry (no log) in case Clink is still starting. */
-  private async loadKey(pipeName: string): Promise<{ key: Buffer } | { fail: HandshakeFailure }> {
+  private async loadKey(pipeName: string, gen: number): Promise<{ key: Buffer } | { fail: HandshakeFailure }> {
     const read = (): ReturnType<typeof readKey> => readKey(this.o.keyDir, pipeName, { now: this.o.now(), uptimeS: uptime() });
     let r = await read();
-    if ("fail" in r && (r.fail === "keyMissing" || r.fail === "keyStale") && this.running) {
+    if ("fail" in r && (r.fail === "keyMissing" || r.fail === "keyStale") && gen === this.gen) {
       await this.sleep(this.o.keyRetryMs);
-      if (this.running) r = await read();
+      if (gen === this.gen) r = await read();
     }
     return r;
   }
@@ -283,7 +283,7 @@ export class ClinkClient extends EventEmitter {
     }
     // Key first, before any connection: a pipe without a usable (present, small, fresh) key is skipped unopened,
     // and nothing is ever written to a pipe before the key is in hand.
-    const loaded = await this.loadKey(pipeName);
+    const loaded = await this.loadKey(pipeName, gen);
     if (gen !== this.gen) return { kind: "ended", welcomed: false };
     if ("fail" in loaded) {
       this.logOnce(pipeName, loaded.fail);
@@ -299,7 +299,7 @@ export class ClinkClient extends EventEmitter {
       const sock = (this.o.connect ?? ((p: string) => net.connect(p)))(path);
       this.current = sock;
       const reject = (reason: HandshakeFailure): void => {
-        this.o.log(reason);
+        this.logOnce(`${pipeName}#proof`, reason); // once per reason until the proof checks out
         finish("failed");
       };
       const splitter = new LineSplitter();
@@ -329,6 +329,7 @@ export class ClinkClient extends EventEmitter {
           if (m.t === "welcome") {
             const bad = checkProof(key, pipeName, nonce, m.proof);
             if (bad) return reject(bad);
+            this.lastLogged.delete(`${pipeName}#proof`);
             if (m.proto !== PROTO || m.app !== "Clink") return finish("failed");
             welcomed = true;
             if (helloTimer) clearTimeout(helloTimer);

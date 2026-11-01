@@ -12,6 +12,9 @@
     "build": "node build.mjs",
     "build:dev": "node build.mjs --dev",
     "typecheck": "tsc --noEmit",
+    "assets": "node devtools/make-assets.ts",
+    "preview": "node devtools/preview.ts",
+    "pack": "node build.mjs && node devtools/check-bundle.ts && streamdeck pack software.euphoric.clink.sdPlugin --output ../dist/streamdeck",
     "test": "node --test test/*.test.ts",
     "validate": "streamdeck validate software.euphoric.clink.sdPlugin"
   },

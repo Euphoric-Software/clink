@@ -3,6 +3,7 @@ import type { ClinkState } from "../protocol.ts";
 
 export class Pause extends ClinkAction {
   override readonly manifestId = "software.euphoric.clink.pause";
+  protected override readonly kind = "pause";
 
   /** Sends pause, or resume while Clink is paused. */
   protected override verb(state: ClinkState | null): string {

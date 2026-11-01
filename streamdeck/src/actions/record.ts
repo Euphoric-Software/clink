@@ -3,6 +3,7 @@ import type { ClinkState } from "../protocol.ts";
 
 export class RecordKey extends ClinkAction {
   override readonly manifestId = "software.euphoric.clink.record";
+  protected override readonly kind = "record";
 
   protected override verb(): string {
     return "record";

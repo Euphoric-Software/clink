@@ -4,7 +4,7 @@ import { statSync, utimesSync, writeFileSync } from "node:fs";
 import { uptime } from "node:os";
 import net from "node:net";
 import { test } from "node:test";
-import { KEY_MAX_AGE_MS, checkProof, decodeBase64, expectedProof, pipeNameOf, readKey } from "../src/handshake.ts";
+import { FUTURE_SLACK_MS, KEY_MAX_AGE_MS, checkProof, decodeBase64, expectedProof, pipeNameOf, readKey } from "../src/handshake.ts";
 import { ClinkClient } from "../src/pipe-client.ts";
 import { type Conn, KEYDIR, STATE, FakeSleep, fakeServer, goodServer, proofOf, scanOf, statuses, waitFor } from "./helpers.ts";
 
@@ -87,6 +87,15 @@ const rejected: Case[] = [
     setup: (s) => {
       const past = new Date(Date.now() - (KEY_MAX_AGE_MS + 5000));
       utimesSync(s.keyFile, past, past);
+    },
+    over: () => ({}),
+  },
+  {
+    name: "key file dated more than 60 s ahead",
+    reason: "keyStale",
+    setup: (s) => {
+      const ahead = new Date(Date.now() + 120_000);
+      utimesSync(s.keyFile, ahead, ahead);
     },
     over: () => ({}),
   },
@@ -440,5 +449,52 @@ test("bye proto before the welcome: updatePlugin on the normal backoff", async (
   } finally {
     c.stop();
     await srv.close();
+  }
+});
+
+test("key freshness: a key dated up to 60 s ahead is fine, further ahead is keyStale", async () => {
+  const srv = await fakeServer(() => {});
+  try {
+    const mtime = statSync(srv.keyFile).mtimeMs;
+    const at = (aheadMs: number) => readKey(KEYDIR, srv.name, { now: mtime - aheadMs, uptimeS: 3600 });
+    assert.ok("key" in (await at(FUTURE_SLACK_MS - 1000)));
+    assert.deepEqual(await at(FUTURE_SLACK_MS + 1000), { fail: "keyStale" });
+  } finally {
+    await srv.close();
+  }
+});
+
+test("a proof failure that repeats is logged once, not on every reconnect", async () => {
+  const srv = await fakeServer((c) => {
+    c.onMessage = (m) => m.t === "hello" && c.welcome(m, { proof: randomBytes(32).toString("base64") });
+  });
+  const { c, clock, logs } = setup(srv.path);
+  c.start();
+  try {
+    await waitFor(() => clock.delays.length === 1, "failure 1");
+    clock.release();
+    await waitFor(() => clock.delays.length === 2, "failure 2");
+    clock.release();
+    await waitFor(() => clock.delays.length === 3, "failure 3");
+    assert.deepEqual(logs, ["proofMismatch"]);
+  } finally {
+    c.stop();
+    await srv.close();
+  }
+});
+
+test("loadKey retries only while its own session generation is current", async () => {
+  const clock = new FakeSleep(fast.keyRetryMs);
+  const c = new ClinkClient({ scan: () => new Promise(() => {}), sleep: clock.fn, ...fast });
+  c.start();
+  try {
+    const priv = c as unknown as { gen: number; loadKey: (name: string, gen: number) => Promise<unknown> };
+    const missing = "Clink.Remote.dev.00000000.s1";
+    assert.deepEqual(await priv.loadKey(missing, priv.gen), { fail: "keyMissing" });
+    assert.equal(clock.retries.length, 1, "the current generation retries once");
+    assert.deepEqual(await priv.loadKey(missing, priv.gen - 1), { fail: "keyMissing" });
+    assert.equal(clock.retries.length, 1, "an older generation does not, even though the client is running again");
+  } finally {
+    c.stop();
   }
 });

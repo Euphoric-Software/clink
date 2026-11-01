@@ -1,5 +1,6 @@
 import { readdir } from "node:fs/promises";
 import streamDeck from "@elgato/streamdeck";
+import { realEnv } from "./actions/base.ts";
 import { Pause } from "./actions/pause.ts";
 import { RecordKey } from "./actions/record.ts";
 import { SaveClip } from "./actions/save-clip.ts";
@@ -23,11 +24,13 @@ const client = new ClinkClient({
   log: (reason) => streamDeck.logger.warn(`handshake failed: ${reason}`),
 });
 
-streamDeck.actions.registerAction(new SaveClip(client));
-streamDeck.actions.registerAction(new RecordKey(client));
-streamDeck.actions.registerAction(new Pause(client));
-streamDeck.actions.registerAction(new ShareLast(client));
-streamDeck.actions.registerAction(new Screenshot(client));
+// One update queue for all keys (at most 10 key updates per second in total).
+const env = realEnv();
+streamDeck.actions.registerAction(new SaveClip(client, env));
+streamDeck.actions.registerAction(new RecordKey(client, env));
+streamDeck.actions.registerAction(new Pause(client, env));
+streamDeck.actions.registerAction(new ShareLast(client, env));
+streamDeck.actions.registerAction(new Screenshot(client, env));
 
 await streamDeck.connect();
 const globals = await streamDeck.settings.getGlobalSettings();
