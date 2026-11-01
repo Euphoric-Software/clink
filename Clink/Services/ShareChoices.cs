@@ -41,6 +41,27 @@ internal static class ShareChoices
     /// <summary>What the main half runs: the same as the menu's "Share file…".</summary>
     public const ShareChoice SplitMainChoice = ShareChoice.ShareFile;
 
+    // The trim editor's "Save & share": split under the same gate as the rows (a token and cloud sharing on).
+
+    /// <summary>The trim editor's "Save &amp; share" is split (a token and cloud sharing on); otherwise it is the plain button (hidden when cloud sharing is off).</summary>
+    public static bool TrimSplit(bool hasToken, bool cloudOn) => IsSplit(hasToken, cloudOn, false);
+
+    /// <summary>
+    /// The trim editor's menu, or null when the button stays plain. The choices are applied to the trim once it is saved, so the saved
+    /// clip is a new, unlinked one (even with Replace original the link is cleared): "Copy link" never applies, and every label says
+    /// the trim is saved first (the window's other button is "Save trimmed", so a bare "Share file…" would not).
+    /// </summary>
+    public static IReadOnlyList<ShareChoiceItem>? ForTrim(bool hasToken, bool cloudOn)
+    {
+        if (For(hasToken, cloudOn, false) == null) return null;
+        return new[]
+        {
+            new ShareChoiceItem(ShareChoice.Upload, "Save & _upload to Copium", "Save the trim, then upload it to your Copium account and copy the link"),
+            new ShareChoiceItem(ShareChoice.ShareFile, "Save & s_hare file…", "Save the trim, then drag or copy the file into Discord, a browser or a folder"),
+            new ShareChoiceItem(ShareChoice.SaveCopy, "Save & save a _copy…", "Save the trim, then save a copy of the file to another folder"),
+        };
+    }
+
     /// <summary>The row's Share button shows at all: for a clip with a link, else while cloud sharing is on.</summary>
     public static bool Visible(bool cloudOn, bool hasLink) => hasLink || cloudOn;
 
