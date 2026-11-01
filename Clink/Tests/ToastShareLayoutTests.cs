@@ -128,6 +128,8 @@ internal static class ToastShareLayoutTests
         return Save(backdrop, folder, name);
     }
 
+    internal static string SaveShot(FrameworkElement root, string folder, string name) => Save(root, folder, name);
+
     private static string Save(FrameworkElement root, string folder, string name)
     {
         var bitmap = new RenderTargetBitmap((int)Math.Ceiling(root.ActualWidth), (int)Math.Ceiling(root.ActualHeight), 96, 96, PixelFormats.Pbgra32);
@@ -164,6 +166,7 @@ internal static class ToastShareLayoutTests
                 bar.Children.Add(Half("AccentSplitMain", "Share", new Thickness(9, 5, 9, 5), new Thickness(0, 0, 0, 2), 52));
                 bar.Children.Add(Half("AccentSplitArrow", ShareChoices.SplitArrowLabel, new Thickness(7, 5, 7, 5), new Thickness(0, 0, 6, 2)));
                 Shot(bar, folder, $"bar-split-{theme}");
+                TrimShareSplitTests.Shots(folder, theme);   // the whole trim window, split Save & share
                 // the whole toast card (the real ToastWindow content, never shown) in split mode
                 foreach (var (label, tag) in new[] { ("Share", "share"), (ToastWindow.WidestShareStatus, "uploading") })
                 {
