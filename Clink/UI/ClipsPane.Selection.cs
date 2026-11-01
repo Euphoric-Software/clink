@@ -276,16 +276,26 @@ public partial class ClipsPane
         {
             string label = labels[i];
             string? style = i == 0 ? "AccentButton" : null;   // the first share button is the main one
-            if (label == BulkActions.MenuLabel)
+            if (label == BulkActions.SplitMainLabel)
             {
-                Button? menuButton = null;
-                menuButton = BarButton(label, () =>
+                // the split button: "Share" opens the share window (Share files…), "▾" the menu with every option
+                Button? mainButton = null, arrowButton = null;
+                void OpenMenu()
                 {
                     if (BulkActions.ShareMenu(hasToken, cloudOn, count, linked, uploadOn: true) is { } items)
-                        ShareMenu.OpenBulk(menuButton!, items, RunBarAction);
-                }, style: style);
-                System.Windows.Automation.AutomationProperties.SetName(menuButton, "Share options");
-                yield return menuButton;
+                        ShareMenu.OpenBulk(arrowButton!, items, RunBarAction, below: mainButton);   // drops from the whole split button
+                }
+                mainButton = BarButton(label, () => RunBarAction(BulkActions.SplitMainAction),
+                    tooMany ? BulkActions.TooManyToShareText : BulkActions.SplitMainTip, BulkActions.SplitEnabled(count).Main, "AccentSplitMain");
+                arrowButton = BarButton(ShareChoices.SplitArrowLabel, OpenMenu, ShareChoices.SplitArrowTip, BulkActions.SplitEnabled(count).Arrow, "AccentSplitArrow");
+                mainButton.Margin = new Thickness(0, 0, 0, 2);
+                mainButton.MinWidth = 52;
+                arrowButton.Padding = new Thickness(7, 5, 7, 5);
+                System.Windows.Automation.AutomationProperties.SetName(mainButton, BulkActions.SplitMainName);
+                System.Windows.Automation.AutomationProperties.SetName(arrowButton, ShareChoices.SplitArrowName);
+                mainButton.PreviewKeyDown += (_, e) => { if (ShareMenu.IsOpenKey(e)) { e.Handled = true; OpenMenu(); } };
+                yield return mainButton;
+                yield return arrowButton;
             }
             else if (label == BulkActions.ShareFilesLabel)
                 yield return BarButton(label, () => Run(ShareFilesAsync()), tooMany ? BulkActions.TooManyToShareText : "Drag or copy the files into Discord, a browser or a folder", !tooMany, style);

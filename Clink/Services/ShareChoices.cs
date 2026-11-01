@@ -26,18 +26,39 @@ internal static class ShareChoices
         };
     }
 
-    /// <summary>The label of a menu button.</summary>
-    public const string MenuLabel = "Share ▾";
+    // The split button (where there is a menu): a main "Share" half that opens the share window, and a "▾" half that opens the menu.
 
-    /// <summary>The clip row's Share button: the menu label, else today's "Copy link" / "Share".</summary>
+    /// <summary>The label of the main half of the split button.</summary>
+    public const string SplitMainLabel = "Share";
+    /// <summary>The label of the arrow half.</summary>
+    public const string SplitArrowLabel = "▾";
+    /// <summary>The accessible name of the main half (it opens the share window).</summary>
+    public const string SplitMainName = "Share file";
+    /// <summary>The accessible name of the arrow half (it opens the menu).</summary>
+    public const string SplitArrowName = "Share options";
+    public const string SplitMainTip = "Open the share window: drag the file into Discord, a browser or a folder";
+    public const string SplitArrowTip = "More share options";
+    /// <summary>What the main half runs: the same as the menu's "Share file…".</summary>
+    public const ShareChoice SplitMainChoice = ShareChoice.ShareFile;
+
+    /// <summary>The row's Share button shows at all: for a clip with a link, else while cloud sharing is on.</summary>
+    public static bool Visible(bool cloudOn, bool hasLink) => hasLink || cloudOn;
+
+    /// <summary>The plain (unsplit) Share button shows; never together with the split one.</summary>
+    public static bool PlainVisible(bool hasToken, bool cloudOn, bool hasLink) => Visible(cloudOn, hasLink) && !IsSplit(hasToken, cloudOn, hasLink);
+
+    /// <summary>The button is split (a menu exists): a token and cloud sharing on.</summary>
+    public static bool IsSplit(bool hasToken, bool cloudOn, bool hasLink) => For(hasToken, cloudOn, hasLink) != null;
+
+    /// <summary>The clip row's Share button (the main half when split): "Share", else today's "Copy link" / "Share".</summary>
     public static string ButtonLabel(bool hasToken, bool cloudOn, bool hasLink) =>
-        For(hasToken, cloudOn, hasLink) != null ? MenuLabel : hasLink ? "Copy link" : "Share";
+        IsSplit(hasToken, cloudOn, hasLink) ? SplitMainLabel : hasLink ? "Copy link" : "Share";
 
-    /// <summary>The clip-saved toast's Share button: the menu label, else today's "Copy link" / "Share to Copium" / "Share".</summary>
+    /// <summary>The clip-saved toast's Share button (the main half when split): "Share", else today's "Copy link" / "Share to Copium" / "Share".</summary>
     public static string ToastLabel(bool hasToken, bool cloudOn, bool hasLink) =>
-        For(hasToken, cloudOn, hasLink) != null ? MenuLabel : hasLink ? "Copy link" : hasToken ? "Share to Copium" : "Share";
+        IsSplit(hasToken, cloudOn, hasLink) ? SplitMainLabel : hasLink ? "Copy link" : hasToken ? "Share to Copium" : "Share";
 
-    /// <summary>The accessible name of a menu button; null when it acts directly.</summary>
+    /// <summary>The accessible name of the main half when split; null when the button acts directly (its label names it).</summary>
     public static string? ButtonName(bool hasToken, bool cloudOn, bool hasLink) =>
-        For(hasToken, cloudOn, hasLink) != null ? "Share options" : null;
+        IsSplit(hasToken, cloudOn, hasLink) ? SplitMainName : null;
 }

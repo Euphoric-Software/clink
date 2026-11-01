@@ -26,9 +26,13 @@
             <TextBlock x:Name="Subtitle" Grid.Row="1" Style="{StaticResource MutedText}" Margin="16,2,0,0" Text="" TextTrimming="CharacterEllipsis" />
             <StackPanel x:Name="ClipButtons" Grid.Row="2" Orientation="Horizontal" Margin="16,10,0,0">
                 <!-- MinWidth: as wide as "Uploading… 100%", so Trim and Folder stay put while the percentage grows -->
-                <Button x:Name="ShareButton" Style="{StaticResource AccentButton}" Content="Share to Copium" MinWidth="132" Click="Share_Click" />
-                <Button Content="Trim" Margin="8,0,0,0" Click="Trim_Click" />
-                <Button Content="Folder" Margin="8,0,0,0" Click="Folder_Click" />
+                <!-- ShareGroup: the plain Share button, or (token + cloud sharing on) the split button: ShareButton = Share (the share window), ShareArrow = ▾ (the menu) -->
+                <StackPanel x:Name="ShareGroup" Orientation="Horizontal">
+                    <Button x:Name="ShareButton" Style="{StaticResource AccentButton}" Content="Share to Copium" MinWidth="132" Click="Share_Click" PreviewKeyDown="ShareButton_KeyDown" />
+                    <Button x:Name="ShareArrow" Style="{StaticResource AccentSplitArrow}" Visibility="Collapsed" Click="ShareArrow_Click" />
+                </StackPanel>
+                <Button x:Name="TrimButton" Content="Trim" Margin="8,0,0,0" Click="Trim_Click" />
+                <Button x:Name="FolderButton" Content="Folder" Margin="8,0,0,0" Click="Folder_Click" />
             </StackPanel>
             <StackPanel x:Name="SharedButtons" Grid.Row="2" Orientation="Horizontal" Margin="16,10,0,0" Visibility="Collapsed">
                 <Button x:Name="CopyButton" Style="{StaticResource AccentButton}" Content="Copy link" Click="Copy_Click" />

@@ -18,7 +18,18 @@ internal static class BulkActions
     public const int MaxShareFiles = 100;
 
     public const string TooManyToShareText = "Select up to 100 files to share at once";
-    public const string MenuLabel = ShareChoices.MenuLabel;
+
+    // The bar's split button: "Share" runs Share files…, "▾" opens the menu (the arrow's label, name and tip are the clip row's).
+    public const string SplitMainLabel = ShareChoices.SplitMainLabel;
+    public const string SplitMainName = "Share files";
+    public const string SplitMainTip = "Open the share window: drag the files into Discord, a browser or a folder";
+    public const BulkAction SplitMainAction = BulkAction.ShareFiles;
+
+    /// <summary>The bar's Share button is split (a menu exists): a token and cloud sharing on.</summary>
+    public static bool ShareIsSplit(bool hasToken, bool cloudOn) => hasToken && cloudOn;
+
+    /// <summary>The bar's split halves: the main half (Share files) is off above <see cref="MaxShareFiles"/>; the arrow stays on, its menu still offers Save copies.</summary>
+    public static (bool Main, bool Arrow) SplitEnabled(int count) => (count <= MaxShareFiles, true);
 
     /// <summary>
     /// The Share menu of the bar, or null when Share acts directly (no token, or cloud sharing off). <paramref name="linked"/> of
@@ -121,7 +132,7 @@ internal static class BulkActions
     public static IReadOnlyList<string> ShareButtonLabels(bool hasToken, bool cloudOn, int count, int linked)
     {
         bool allLinked = count > 0 && linked == count;
-        if (cloudOn && hasToken) return new[] { MenuLabel };
+        if (ShareIsSplit(hasToken, cloudOn)) return new[] { SplitMainLabel };   // the split button: the arrow half is added with it
         var labels = new List<string>();
         if (cloudOn) labels.Add(ShareFilesLabel);
         if (allLinked) labels.Add(CopyLinksLabel);
