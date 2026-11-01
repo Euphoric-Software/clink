@@ -5,6 +5,8 @@ export class SaveClip extends ClinkAction {
   override readonly manifestId = "software.euphoric.clink.save-clip";
   protected override readonly kind = "saveClip";
 
+  protected override readonly ackShowsOk = false; // the result comes as clipSaved / clipNotSaved
+
   protected override verb(): string {
     return "clip";
   }

@@ -33,6 +33,8 @@ streamDeck.actions.registerAction(new ShareLast(client, env));
 streamDeck.actions.registerAction(new Screenshot(client, env));
 
 await streamDeck.connect();
+// The build marker (clink-build:release / clink-build:dev) goes to the log, which also keeps it in the bundle for the pack guard.
+streamDeck.logger.info(`Clink plugin ${PLUGIN_VERSION} ${__CLINK_BUILD__}`);
 const globals = await streamDeck.settings.getGlobalSettings();
 applyGlobals(globals);
 client.start();

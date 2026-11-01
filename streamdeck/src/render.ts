@@ -143,8 +143,8 @@ function overlay(kind: ActionKind, status: ConnectionStatus): string {
 function saveClipBody(s: ClinkState): string {
   const color = stateColor(s.state);
   const word = s.state === "recording" ? "" : (STATE_WORD[s.state] ?? "");
-  const dot = `<circle cx="72" cy="44" r="22" fill="${color}"/>`;
-  const sub = word ? text(word, 72, 90, 22, COLORS.muted) : "";
+  const dot = `<circle cx="72" cy="36" r="18" fill="${color}"/>`;
+  const sub = word ? text(word, 72, 88, 22, COLORS.muted) : "";
   const len = fmtBuffer(s.bufferS);
   return dot + sub + (len ? text(len, 72, 126, 40, COLORS.fg) : "");
 }
@@ -159,8 +159,8 @@ function recordBody(s: ClinkState): string {
     const amber = r.resuming || r.queued;
     const color = amber ? COLORS.warn : COLORS.danger;
     const t = r.on ? fmtTimer(r.s) : "Queued";
-    const long = t.length > 5;
-    return `<circle cx="72" cy="44" r="22" fill="${color}"/>` + text(t, 72, 122, long ? 32 : 38, COLORS.fg);
+    const size = t.length > 7 ? 28 : t.length > 5 ? 32 : 38; // "10:00:00" needs the smallest size
+    return `<circle cx="72" cy="44" r="22" fill="${color}"/>` + text(t, 72, 122, size, COLORS.fg);
   }
   return `<circle cx="72" cy="50" r="22" fill="none" stroke="${COLORS.danger}" stroke-width="7"/>` + caption("Record");
 }
@@ -228,7 +228,9 @@ export function renderDefault(kind: ActionKind, index = 0): string {
   const d = DEFAULTS[kind];
   const label = d.labels[index] ?? d.labels[0]!;
   if (kind === "pause" && index === 1) return frame(glyph("play", COLORS.warn, 72, 52, 64) + caption(label, COLORS.warn));
-  if (kind === "record" && index === 1) return frame(`<circle cx="72" cy="50" r="22" fill="${COLORS.danger}"/>` + caption(label));
+  // Record: the same looks the plugin draws (hollow ring idle; red dot and a word under it while recording).
+  if (kind === "record" && index === 0) return frame(`<circle cx="72" cy="50" r="22" fill="none" stroke="${COLORS.danger}" stroke-width="7"/>` + caption(label));
+  if (kind === "record" && index === 1) return frame(`<circle cx="72" cy="44" r="22" fill="${COLORS.danger}"/>` + text(label, 72, 122, 38, COLORS.fg));
   return frame(glyph(kind, d.color, 72, 52, 64) + caption(label));
 }
 

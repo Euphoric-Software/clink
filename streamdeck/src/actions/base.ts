@@ -42,7 +42,10 @@ export abstract class ClinkAction extends SingletonAction {
     this.env = env;
     client.on("state", () => this.refresh());
     client.on("status", (status) => {
-      if (status !== "connected") this.onDisconnected();
+      if (status !== "connected") {
+        this.clearFlash(); // a pending confirmation must not reappear on reconnect
+        this.onDisconnected();
+      }
       this.refresh();
     });
     client.on("event", (ev) => this.onClinkEvent(ev));
@@ -64,6 +67,12 @@ export abstract class ClinkAction extends SingletonAction {
   /** The link to Clink is gone or not yet there: forget anything that only made sense on the old connection. */
   protected onDisconnected(): void {}
 
+  /**
+   * True when a successful ack already means the verb worked (record, pause, screenshot): the key shows the SDK check mark.
+   * False when the outcome arrives later as an event (Save clip: clipSaved/clipNotSaved, Share: shareDone): no early check mark.
+   */
+  protected readonly ackShowsOk: boolean = true;
+
   /** A Clink event (clipSaved, shareDone, ...). Actions override what concerns them. */
   protected onClinkEvent(_ev: ClinkEvent): void {}
 
@@ -77,6 +86,12 @@ export abstract class ClinkAction extends SingletonAction {
       this.refresh();
     }, ms);
     this.refresh();
+  }
+
+  private clearFlash(): void {
+    if (this.flashTimer !== null) this.env.clearTimer(this.flashTimer);
+    this.flashTimer = null;
+    this.flash = null;
   }
 
   /** Alert on every visible key of this action (a failure the press itself did not see). */
@@ -93,12 +108,13 @@ export abstract class ClinkAction extends SingletonAction {
     this.env.queue.submit(key, { svg: renderKey(v), state: this.stateIndex(v.state) });
   }
 
+  /** Keys inside a multi-action get no picture from us; their presses still send the verb. */
   protected refresh(): void {
-    for (const a of this.actions) if (a.isKey()) this.submit(a);
+    for (const a of this.actions) if (a.isKey() && !a.isInMultiAction()) this.submit(a);
   }
 
   override onWillAppear(ev: WillAppearEvent): void {
-    if (ev.action.isKey()) this.submit(ev.action);
+    if (ev.action.isKey() && !ev.action.isInMultiAction()) this.submit(ev.action);
   }
 
   override onWillDisappear(ev: WillDisappearEvent): void {
@@ -110,6 +126,7 @@ export abstract class ClinkAction extends SingletonAction {
     const verb = this.client.connectionStatus === "connected" ? this.verb(this.client.state) : null;
     if (verb === null) return void Promise.resolve(ev.action.showAlert()).catch(ignore);
     const result = await this.client.send(verb);
+    if (result.ok && !this.ackShowsOk) return; // the result key shows comes with the event
     await Promise.resolve(result.ok ? ev.action.showOk() : ev.action.showAlert()).catch(ignore);
   }
 }

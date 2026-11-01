@@ -11,7 +11,7 @@ const draw = (kind: ActionKind, state: ClinkState | null, o: { status?: Connecti
   renderKey({ kind, status: o.status ?? "connected", state, flash: o.flash ?? null, progress: o.progress ?? null });
 /** All text drawn in the SVG, in order. */
 const texts = (svg: string): string[] => [...svg.matchAll(/<text [^>]*>([^<]*)<\/text>/g)].map((m) => m[1]!);
-const dotFill = (svg: string): string | undefined => /<circle cx="72" cy="44" r="22" fill="(#[0-9A-F]{6})"/.exec(svg)?.[1];
+const dotFill = (svg: string): string | undefined => /<circle cx="72" cy="\d+" r="\d+" fill="(#[0-9A-F]{6})"/.exec(svg)?.[1];
 
 test("every image is a 144 x 144 SVG with a dark background, text inside, and no title call needed", () => {
   for (const t of tiles()) {
@@ -160,4 +160,27 @@ test("defaults and icons", () => {
 test("text is escaped", () => {
   // No user text reaches the renderer today; the escape is a guard.
   assert.ok(!tiles().some((t) => /<text[^>]*>[^<]*&(?!#)/.test(t.svg)));
+});
+
+test("10:00:00 gets a smaller font so it fits 144 px", () => {
+  const size = (s: number): number => Number(/font-size="(\d+)"/.exec(draw("record", st({ rec: rec({ on: true, s }) })))![1]);
+  assert.deepEqual(texts(draw("record", st({ rec: rec({ on: true, s: 36000 }) }))), ["10:00:00"]);
+  assert.ok(size(36000) < size(3723) && size(3723) < size(83), "smaller as the text gets longer");
+  assert.ok(size(36000) * 0.6 * 8 <= 144, "8 glyphs at the widest estimate fit");
+});
+
+test("record manifest defaults match the plugin-drawn idle ring and recording dot", () => {
+  const ring = /<circle cx="72" cy="50" r="22" fill="none" stroke="#F26B6B" stroke-width="7"\/>/;
+  assert.match(renderDefault("record", 0), ring);
+  assert.match(draw("record", st()), ring);
+  assert.equal(dotFill(renderDefault("record", 1)), COLORS.danger);
+  assert.equal(dotFill(draw("record", st({ rec: rec({ on: true, s: 5 }) }))), COLORS.danger);
+});
+
+test("save clip: the state word sits clear below the dot", () => {
+  const svg = draw("saveClip", st({ state: "waitingForGame" }));
+  const dot = /<circle cx="72" cy="(\d+)" r="(\d+)"/.exec(svg)!;
+  const wordY = Number(/<text x="72" y="(\d+)"[^>]*>Waiting/.exec(svg)![1]);
+  const dotBottom = Number(dot[1]) + Number(dot[2]);
+  assert.ok(wordY - 22 * 0.75 - dotBottom >= 10, "at least 10 px between the dot and the top of the word");
 });

@@ -7,6 +7,8 @@ export class ShareLast extends ClinkAction {
   /** Percent of the share going on now, from shareProgress events; null when none. */
   private sharing: number | null = null;
 
+  protected override readonly ackShowsOk = false; // the result comes as shareDone
+
   protected override verb(): string {
     return "share";
   }

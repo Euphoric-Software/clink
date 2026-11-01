@@ -133,25 +133,110 @@ test("a key that disappeared is dropped from the queue and forgotten", async () 
   assert.deepEqual(k.calls, ["img:<svg>1</svg>"]);
 });
 
-test("a failed call clears the cache so the next submit sends again; no endless retry by itself", async () => {
+test("a failed call clears the cache, is retried once after 1 s, then waits for the next submit", async () => {
   const { q, clock } = make();
   const k = new Key("a");
   k.fail = true;
   q.submit(k, { svg: "<svg>1</svg>" });
   await settle();
   assert.equal(k.calls.length, 1);
-  await clock.advance(5000);
-  assert.equal(k.calls.length, 1, "it does not hammer a failing key");
+  await clock.advance(999);
+  assert.equal(k.calls.length, 1, "not before 1 s");
+  await clock.advance(1);
+  assert.equal(k.calls.length, 2, "one retry");
+  await clock.advance(10000);
+  assert.equal(k.calls.length, 2, "it does not hammer a failing key");
   q.submit(k, { svg: "<svg>1</svg>" });
   await settle();
-  assert.equal(k.calls.length, 2, "same picture again after the failure");
+  assert.equal(k.calls.length, 3, "same picture again after the failure");
   k.fail = false;
   q.submit(k, { svg: "<svg>1</svg>" });
   await settle();
-  assert.equal(k.calls.length, 3);
+  assert.equal(k.calls.length, 4);
   q.submit(k, { svg: "<svg>1</svg>" });
   await settle();
-  assert.equal(k.calls.length, 3, "and now it is deduped");
+  assert.equal(k.calls.length, 4, "and now it is deduped");
+});
+
+test("the retry fixes a static key without any new submit, and a later failure gets its own retry", async () => {
+  const { q, clock } = make();
+  const k = new Key("a");
+  k.fail = true;
+  q.submit(k, { svg: "<svg>1</svg>" });
+  await settle();
+  k.fail = false;
+  await clock.advance(1000);
+  assert.deepEqual(k.calls, ["img:<svg>1</svg>", "img:<svg>1</svg>"]);
+  await clock.advance(5000);
+  assert.equal(k.calls.length, 2, "succeeded: nothing more");
+  k.fail = true;
+  q.submit(k, { svg: "<svg>2</svg>" });
+  await settle();
+  await clock.advance(1000);
+  assert.equal(k.calls.length, 4, "a new failure after a success is retried again");
+});
+
+test("a retry is skipped when a newer submit already put the picture on the key", async () => {
+  const { q, clock } = make();
+  const k = new Key("a");
+  k.fail = true;
+  q.submit(k, { svg: "<svg>1</svg>" });
+  await settle();
+  k.fail = false;
+  q.submit(k, { svg: "<svg>1</svg>" });
+  await settle();
+  assert.equal(k.calls.length, 2);
+  await clock.advance(2000);
+  assert.equal(k.calls.length, 2);
+});
+
+/** A key whose calls stay open until released, to fail them while later updates are queued. */
+class SlowKey {
+  readonly calls: string[] = [];
+  readonly rejects: ((e: Error) => void)[] = [];
+  readonly id: string;
+  constructor(id: string) {
+    this.id = id;
+  }
+  setImage = (img: string): Promise<void> => {
+    this.calls.push("img:" + Buffer.from(img.split(",")[1]!, "base64").toString());
+    return new Promise((_, reject) => this.rejects.push(reject));
+  };
+  setState = (): Promise<void> => Promise.resolve();
+}
+const fill = (q: KeyUpdateQueue, n: number): void => {
+  for (let i = 0; i < n; i++) q.submit(new Key("f" + i), { svg: "<svg>f</svg>" });
+};
+
+test("a failure never drops a newer queued update of the same key", async () => {
+  const { q, clock } = make();
+  const k = new SlowKey("a");
+  q.submit(k, { svg: "<svg>1</svg>" }); // call 1, in flight
+  fill(q, 9); // the window is now full
+  q.submit(k, { svg: "<svg>2</svg>" }); // waits
+  await settle();
+  assert.deepEqual(k.calls, ["img:<svg>1</svg>"]);
+  assert.equal(q.pending, 1);
+  k.rejects[0]!(new Error("boom")); // the first call fails while the newer one waits
+  await settle();
+  assert.equal(q.pending, 1, "the newer update is still queued");
+  await clock.advance(1000);
+  assert.deepEqual(k.calls, ["img:<svg>1</svg>", "img:<svg>2</svg>"], "and it is sent");
+});
+
+test("a failure of a call from before a disappear/reappear does not lose the reappeared key", async () => {
+  const { q, clock } = make();
+  const k = new SlowKey("a");
+  q.submit(k, { svg: "<svg>1</svg>" }); // in flight
+  fill(q, 9);
+  q.drop("a"); // the key disappears ...
+  q.submit(k, { svg: "<svg>1</svg>" }); // ... and comes back, waiting for the window
+  assert.equal(q.pending, 1);
+  k.rejects[0]!(new Error("boom")); // the old call fails now
+  await settle();
+  assert.equal(q.pending, 1, "the reappeared key is still queued");
+  await clock.advance(1000);
+  assert.deepEqual(k.calls, ["img:<svg>1</svg>", "img:<svg>1</svg>"]);
 });
 
 test("a failed setState is retried (with the picture) on the next submit", async () => {

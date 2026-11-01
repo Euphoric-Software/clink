@@ -25,7 +25,7 @@ await build({
   sourcemap: false,
   legalComments: "none",
   banner: { js: REQUIRE_BANNER },
-  define: { __CLINK_DEV_INSTANCES__: dev ? "true" : "false" },
+  define: { __CLINK_DEV_INSTANCES__: dev ? "true" : "false", __CLINK_BUILD__: JSON.stringify(dev ? "clink-build:dev" : "clink-build:release") },
   logLevel: "info",
 });
 

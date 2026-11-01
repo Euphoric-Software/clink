@@ -33,8 +33,12 @@ class FakeKey {
   constructor(id = "k") {
     this.id = id;
   }
+  multi = false;
   isKey(): boolean {
     return true;
+  }
+  isInMultiAction(): boolean {
+    return this.multi;
   }
   private rec(call: string): Promise<void> {
     this.calls.push(call);
@@ -94,21 +98,63 @@ function make<T extends object>(Ctor: new (c: ClinkClient, e: ActionEnv) => T, k
   return { client, action, press, appear, vanish, ev, fe };
 }
 
-test("each action sends its verb", async () => {
-  const cases: [new (c: ClinkClient, e: ActionEnv) => object, string][] = [
-    [SaveClip, "clip"],
-    [RecordKey, "record"],
-    [ShareLast, "share"],
-    [Screenshot, "screenshot"],
-    [Pause, "pause"],
+test("each action sends its verb; the check mark only where the ack is the result", async () => {
+  // Save clip and Share show their result from clipSaved / clipNotSaved / shareDone, so no early check mark on the ack.
+  const cases: [new (c: ClinkClient, e: ActionEnv) => object, string, string[]][] = [
+    [SaveClip, "clip", []],
+    [RecordKey, "record", ["ok"]],
+    [ShareLast, "share", []],
+    [Screenshot, "screenshot", ["ok"]],
+    [Pause, "pause", ["ok"]],
   ];
-  for (const [Ctor, verb] of cases) {
+  for (const [Ctor, verb, calls] of cases) {
     const { client, press } = make(Ctor);
     const key = new FakeKey();
     await press(key);
     assert.deepEqual(client.sent, [verb], Ctor.name);
-    assert.deepEqual(key.calls, ["ok"]);
+    assert.deepEqual(key.calls, calls, Ctor.name);
   }
+});
+
+test("a failed clip or share send still alerts", async () => {
+  for (const Ctor of [SaveClip, ShareLast] as (new (c: ClinkClient, e: ActionEnv) => object)[]) {
+    const { client, press } = make(Ctor);
+    client.ok = false;
+    const key = new FakeKey();
+    await press(key);
+    assert.deepEqual(key.calls, ["alert"], Ctor.name);
+  }
+});
+
+test("keys inside a multi-action get no picture, but their press still sends the verb", async () => {
+  const solo = new FakeKey("solo");
+  const inMulti = new FakeKey("multi");
+  inMulti.multi = true;
+  const a = make(Screenshot, [solo, inMulti]);
+  a.appear(solo);
+  a.appear(inMulti);
+  a.client.emit("state");
+  await settle();
+  assert.ok(solo.calls.some((c) => c.startsWith("img:")));
+  assert.deepEqual(inMulti.calls, [], "no setImage or setState in a multi-action");
+  await a.press(inMulti);
+  assert.deepEqual(a.client.sent, ["screenshot"]);
+});
+
+test("a pending flash is cleared on disconnect and does not come back on reconnect", async () => {
+  const k = new FakeKey();
+  const a = make(SaveClip, [k]);
+  a.appear(k);
+  a.ev({ t: "clipSaved", seconds: 30 });
+  await settle();
+  assert.deepEqual(texts(k.lastSvg), ["Saved"]);
+  a.client.connectionStatus = "off";
+  a.client.emit("status");
+  assert.equal(a.fe.timers, 0, "flash timer cancelled");
+  a.client.connectionStatus = "connected";
+  a.client.emit("status");
+  await settle();
+  assert.deepEqual(texts(k.lastSvg), ["30s"]);
 });
 
 test("pause sends resume while Clink is paused", async () => {
