@@ -1,10 +1,16 @@
 # Keeps the commit-pinned actions in .github/workflows current: Dependabot opens a
 # PR that moves each pin (and its version comment) to the next release.
+# The npm entry keeps the Stream Deck plugin's dependencies (streamdeck/package-lock.json) current.
 # The dotnet-sdk entry does the same for the SDK version pinned in global.json.
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: npm
+    directory: /streamdeck
     schedule:
       interval: weekly
 

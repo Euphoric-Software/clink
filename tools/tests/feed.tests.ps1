@@ -1297,7 +1297,8 @@ try {
 
     Invoke-Test 'L5: every actions/setup-dotnet is followed by the SDK Authenticode and version step, in all three workflows' {
         $total = 0
-        foreach ($wf in $allWorkflows) {
+        foreach ($wf in ($allWorkflows | Where-Object Name -ne 'streamdeck.yml')) {
+            # streamdeck.yml is Node-only (no .NET SDK), so it has no setup-dotnet to verify.
             $text = [System.IO.File]::ReadAllText($wf.FullName)
             $setups = [regex]::Matches($text, 'actions/setup-dotnet@[0-9a-f]{40}').Count
             $verified = [regex]::Matches($text, "(?s)actions/setup-dotnet@[0-9a-f]{40}[^\n]*\n\s+with:\n\s+global-json-file: global\.json\n\s*\n(?:\s*#[^\n]*\n)*\s*- name: Verify the \.NET SDK[^\n]*\n\s+shell: pwsh\n\s+run: \|\n\s+\. \./tools/lib/dotnet-sdk-lib\.ps1\n\s+Assert-DotNetSdk -GlobalJsonPath global\.json").Count
@@ -1306,7 +1307,9 @@ try {
             $total += $setups
         }
         Assert-True ($total -ge 4) "only $total setup-dotnet occurrences (build.yml has two jobs)"
-        Assert-True ((Get-ChildItem -LiteralPath $workflowDir -Filter '*.yml').Count -eq 3) 'a workflow was added: extend this test'
+        $workflowNames = @(Get-ChildItem -LiteralPath $workflowDir -Filter '*.yml' | ForEach-Object Name)
+        $expectedNames = 'build.yml', 'release.yml', 'release-dev.yml', 'streamdeck.yml'
+        Assert-True ($workflowNames.Count -eq $expectedNames.Count -and @($expectedNames | Where-Object { $workflowNames -ccontains $_ }).Count -eq $expectedNames.Count) "the workflow set changed (found: $($workflowNames -join ', ')): extend this test"
     }
 
     # ------------------------------------------------------------------ release workflow hardening (L2, L3, L4, prune, Node 24, NITs)
@@ -1545,7 +1548,7 @@ try {
     }
 
     Invoke-Test 'Node 24: every action is pinned to a release line whose action.yml says node24 (no Node 20 pin left), pinned by 40-hex SHA with a version comment' {
-        $minMajor = @{ 'actions/checkout' = 5; 'actions/setup-dotnet' = 5; 'softprops/action-gh-release' = 3; 'actions/cache' = 5; 'actions/upload-artifact' = 6; 'actions/download-artifact' = 6 }
+        $minMajor = @{ 'actions/checkout' = 5; 'actions/setup-dotnet' = 5; 'softprops/action-gh-release' = 3; 'actions/cache' = 5; 'actions/upload-artifact' = 6; 'actions/download-artifact' = 6; 'actions/setup-node' = 5 }
         $nodeTwenty = '11bd71901bbe5b1630ceea73d27597364c9af683', '67a3573c9a986a3f9c594539f4ab511d57bb3ce9', 'da05d552573ad5aba039eaac05058a918a7bf631', '5a3ec84eff668545956fd18022155c47e93e2684'
         $seen = 0
         foreach ($wf in $allWorkflows) {

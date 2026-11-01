@@ -1,0 +1,77 @@
+# Checks the Stream Deck plugin (streamdeck/) on pushes to dev and main and on pull
+# requests that touch it: typecheck, unit tests, bundle build, manifest validation, then
+# a pack of the production bundle (with the bundle guard) as a 1-day artifact.
+# Publishing to the Elgato Marketplace is manual. Actions are pinned to commit SHAs
+# (version in the comment); Dependabot (.github/dependabot.yml) proposes bumps.
+name: Stream Deck plugin
+
+on:
+  push:
+    branches:
+      - dev
+      - main
+    paths:
+      - streamdeck/**
+      - .github/workflows/streamdeck.yml
+  pull_request:
+    paths:
+      - streamdeck/**
+      - .github/workflows/streamdeck.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: streamdeck-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plugin:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: streamdeck
+    steps:
+      - name: Check out
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: streamdeck/package-lock.json
+
+      # --ignore-scripts: no dependency install script runs in CI.
+      - name: Install
+        run: npm ci --ignore-scripts
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      # Needs the bundle from the build step. The validator checks the manifest's URLs
+      # and a not-yet-published docs page only produces a warning (exit 0), so warnings do not fail CI.
+      - name: Validate the manifest
+        run: npm run validate
+
+      # Production build into a staged copy of the plugin folder, the bundle guard
+      # (devtools/check-bundle.ts), then streamdeck pack (offline, no login needed).
+      - name: Pack
+        run: npm run pack
+
+      - name: Upload the plugin
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: streamdeck-plugin
+          path: dist/streamdeck/*.streamDeckPlugin
+          if-no-files-found: error
+          retention-days: 1

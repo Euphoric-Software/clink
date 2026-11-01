@@ -926,7 +926,8 @@ try {
     }
 
     Invoke-Test 'every workflow installs the SDK from global.json and global.json pins it' {
-        foreach ($wf in $workflowFiles) {
+        foreach ($wf in ($workflowFiles | Where-Object Name -ne 'streamdeck.yml')) {
+            # streamdeck.yml is Node-only (no .NET SDK).
             $text = [System.IO.File]::ReadAllText($wf.FullName)
             Assert-True ($text.Contains('global-json-file: global.json')) "$($wf.Name) does not use global-json-file"
             Assert-True ($text -notmatch 'dotnet-version\s*:') "$($wf.Name) still has dotnet-version"

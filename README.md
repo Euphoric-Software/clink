@@ -386,7 +386,12 @@ the share is back; a clip that was deleted from the archive drops out of the lis
 
 ### Stream Deck
 
-Two ways, no plugin needed:
+Install the **Clink** plugin from the Elgato Marketplace (search "Clink"; it needs Clink 0.4.6 or later, Windows 10
+2004+ or 11, and Stream Deck 7.1+). Its keys are Save clip, Record, Pause/Resume, Share last clip and Screenshot, each
+with live state. The plugin collects nothing and makes no internet requests. Guide:
+<https://docs.euphoric.software/clink/stream-deck>.
+
+Without the plugin there are two ways:
 
 * Add a **Hotkey** action that sends one of Clink's hotkeys (Alt+C by default; a second binding with a shorter length
   makes a good second button). Clink uses a low-level keyboard hook, so it sees injected keys even when a game has focus.

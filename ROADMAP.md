@@ -36,7 +36,8 @@ Things that were asked for or came up while building, roughly in the order they'
 - [x] Works today through the Stream Deck "Hotkey" action or `Clink.exe --clip`.
 - [x] `--clip` / `--share-last` / `--trim-last` with Clink not running start it in the tray and run the command, and a
       "clip, then share" multi-action shares the clip it just made (v0.2.4).
-- [ ] Native Stream Deck plugin: Clip / Pause / Share-last-clip actions with a live state icon.
+- [x] **Native Stream Deck plugin** (v0.4.6): Save clip, Record, Pause/Resume, Share last clip and Screenshot keys with
+      a live state icon, from the Elgato Marketplace. See the [guide](https://docs.euphoric.software/clink/stream-deck).
 
 ## Audio
 
