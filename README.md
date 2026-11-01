@@ -160,7 +160,7 @@ All screenshots are of Clink itself (the dark theme with the default accent unle
 
 ## Installing & updating
 
-1. Download from [euphoric.software/clink](https://euphoric.software/clink/): `Clink.exe` is portable (put it anywhere,
+1. Download from [euphoric.software](https://euphoric.software/#clink-card-title): `Clink.exe` is portable (put it anywhere,
    Desktop, `C:\Tools`, a USB stick, and run it); `Clink-Setup.exe` is a per-user installer (no admin rights; if the .NET 10 Desktop Runtime is missing it offers to install it, and only
    that step asks for administrator approval). Settings
    live in `%APPDATA%\Clink`, downloaded updates in `%LOCALAPPDATA%\Clink`.
