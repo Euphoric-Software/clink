@@ -390,6 +390,7 @@ internal static class SettingsImport
         ("startup", new[] { nameof(Settings.StartMinimized), nameof(Settings.RunAtStartup) }),
         ("updates", new[] { nameof(Settings.AutoUpdate) }),
         ("theme", new[] { nameof(Settings.Theme), nameof(Settings.Accent) }),
+        ("language", new[] { nameof(Settings.Language) }),
     };
     private const string OtherLabel = "other settings";
     /// <summary>Said in place of "Copium token" when the other copy holds a token that this user on this machine cannot decrypt: an import keeps ours.</summary>

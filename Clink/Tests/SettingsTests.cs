@@ -1511,4 +1511,55 @@ internal static class SettingsTests
         Check.Near(50, mbps);
         Check.Equal("a 45 s clip at 50 Mbps fits 1 GB", note);
     }
+
+    // ------------------------------------------------------------------ Language (v0.4.5)
+
+    [UnitTest]
+    public static void Language_is_auto_for_a_fresh_install_and_for_a_v041_file_and_stays_auto_on_save()
+    {
+        Check.Equal("auto", SettingsDefaults.Language);
+        using var dir = new TempDir();
+        Check.Equal("auto", LoadFrom(dir, null).Language, "a fresh install");
+
+        using var dir41 = new TempDir();
+        var s = LoadFrom(dir41, V041);
+        Check.Equal("auto", s.Language, "v0.4.1 never had the key");
+        s.Save();
+        using var saved = JsonDocument.Parse(File.ReadAllText(dir41.File("settings.json")));
+        Check.Equal("auto", saved.RootElement.GetProperty("Language").GetString());
+        Check.Equal("auto", Settings.Load().Language);
+    }
+
+    [UnitTest]
+    public static void Language_round_trips_a_chosen_code()
+    {
+        using var dir = new TempDir();
+        var s = LoadFrom(dir, null);
+        s.Language = "de";
+        s.Save();
+        Check.Equal("de", Settings.Load().Language);
+        using var saved = JsonDocument.Parse(File.ReadAllText(dir.File("settings.json")));
+        Check.Equal("de", saved.RootElement.GetProperty("Language").GetString());
+    }
+
+    [UnitTest]
+    public static void Language_that_is_not_a_known_code_reads_as_auto_and_a_known_code_gets_its_canonical_case()
+    {
+        foreach (var bad in new[] { "klingon", "", "  ", "xx-YY", "en-GB", "qps-ploc", "zh-TW" })
+        {
+            using var dir = new TempDir();
+            Check.Equal("auto", LoadFrom(dir, "{ \"Language\": \"" + bad + "\" }").Language, "\"" + bad + "\"");
+        }
+        using (var dir = new TempDir()) Check.Equal("auto", LoadFrom(dir, "{ \"Language\": null }").Language, "null");
+        using (var dir = new TempDir()) Check.Equal("auto", LoadFrom(dir, "{ \"Language\": 7 }").Language, "a number");
+        using (var dir = new TempDir()) Check.Equal("pt-BR", LoadFrom(dir, """{ "Language": "pt-br" }""").Language);
+        using (var dir = new TempDir()) Check.Equal("zh-CN", LoadFrom(dir, """{ "Language": "ZH-cn" }""").Language);
+        using (var dir = new TempDir()) Check.Equal("auto", LoadFrom(dir, """{ "Language": "AUTO" }""").Language);
+    }
+
+    [UnitTest]
+    public static void Language_travels_with_a_settings_import_under_its_own_label()
+    {
+        Check.True(SettingsImport.HasLabelOrIsVolatile(nameof(Settings.Language)));
+    }
 }

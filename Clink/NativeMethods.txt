@@ -405,3 +405,7 @@ SHGetKnownFolderPath
 KNOWN_FOLDER_FLAG
 FindFirstFile
 FindClose
+
+// ---- UI language (Services/Localization) ----
+GetUserPreferredUILanguages
+MUI_LANGUAGE_NAME

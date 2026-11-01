@@ -1,8 +1,10 @@
+using System.Globalization;
 using System.IO;
 using System.Windows;
 using System.Windows.Threading;
 using Windows.Win32;
 using Clink.Services;
+using Clink.Services.Localization;
 
 namespace Clink;
 
@@ -228,6 +230,7 @@ public partial class App : System.Windows.Application
             if (isolated.Count > 0) Log.Info("dev: kept away from the real world: " + string.Join("; ", isolated));
             if (settings.ImportedFrom != null) settings.Save();   // an imported file may not need migrating, which would leave it as it came
         }
+        ApplyLanguage(settings);
         var updater = new Updater(settings);
         updater.LogSource();
 
@@ -281,6 +284,39 @@ public partial class App : System.Windows.Application
         if (!minimized) main.Show();
         Log.Info($"Clink v{updater.VersionDisplay} started" + (dev != null ? $" (--dev: data in {dev.Folder}, hotkeys {(dev.BindHotkeys ? "on" : "off")}{(AppController.IsQuiet ? ", quiet" : "")})" : ""));
         if (cmd != null) _controller.RunStartupCommand(cmd);
+    }
+
+    /// <summary>
+    /// The UI language, before any window exists: the Settings.Language choice or the Windows display language, among the languages
+    /// Clink has (L.Available). Sets the UI culture (not the format culture: numbers and dates always follow the PC's regional format,
+    /// CultureInfo.CurrentCulture, whatever the UI language), the XAML language, and right-to-left for windows when the language is
+    /// (RtlWindows). Each step has its own try/catch. The --unittest/--selftest/--probe/--trim modes return before this and stay English.
+    /// </summary>
+    private static void ApplyLanguage(Settings settings)
+    {
+        string code = "en";
+        try
+        {
+            code = L.Init(settings.Language);
+            bool apply = L.ShouldApplyUiCulture(settings.Language, code);
+            if (apply)
+            {
+                var ui = L.UiCulture;
+                CultureInfo.CurrentUICulture = ui;
+                CultureInfo.DefaultThreadCurrentUICulture = ui;
+                FrameworkElement.LanguageProperty.OverrideMetadata(typeof(FrameworkElement), new FrameworkPropertyMetadata(System.Windows.Markup.XmlLanguage.GetLanguage(ui.IetfLanguageTag)));
+            }
+            Log.Info($"language: {code} (setting \"{settings.Language}\"; " + (apply ? "UI culture and XAML language set" : "auto and English: Windows' UI culture and WPF's XAML language left as they are") + ")");
+        }
+        catch (Exception ex) { Log.Error("Could not apply the UI language, continuing as is", ex); }
+
+        if (!L.IsRtl) return;
+        try
+        {
+            int n = RtlWindows.Apply();
+            Log.Info($"language {code} is right-to-left: {n} window classes set to RightToLeft (pinned LTR: {string.Join(", ", RtlWindows.PinnedLtr.Select(t => t.Name))})");
+        }
+        catch (Exception ex) { Log.Error("Could not make the windows right-to-left, they stay left-to-right", ex); }
     }
 
     /// <summary>

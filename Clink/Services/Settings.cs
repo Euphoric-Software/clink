@@ -25,6 +25,8 @@ internal static class SettingsDefaults
     public const int BufferSeconds = 45;
     public const string Theme = "dark";
     public const string Accent = "spark";
+    /// <summary>"auto" = the Windows display language when Clink has it, else English; or a code of L.Known ("de", "pt-BR").</summary>
+    public const string Language = "auto";
 
     /// <summary>The main hotkey of a fresh install, and of a settings file that has no hotkey saving the full replay: Alt+C.</summary>
     public static HotkeyBinding MainHotkey() => new() { Alt = true, Vk = 0x43 };
@@ -214,6 +216,8 @@ internal sealed class Settings
     public string Theme { get; set; } = SettingsDefaults.Theme;
     /// <summary>spark | blue | violet | pink | orange | green ("cyan", the default before the rebrand, is read as spark)</summary>
     public string Accent { get; set; } = SettingsDefaults.Accent;
+    /// <summary>auto | a code of <see cref="Localization.L.Known"/> in its canonical case (en, de, pt-BR, zh-CN, ...). Anything else reads as auto.</summary>
+    public string Language { get; set; } = SettingsDefaults.Language;
     /// <summary>
     /// The copies of the settings that another Clink saved in a packaged app's private AppData (SettingsImport) which the user turned
     /// down: "&lt;package&gt;|&lt;ticks of the time it was saved&gt;", one per package, ';' between them. A copy saved again later is a
@@ -620,6 +624,7 @@ internal sealed class Settings
         StatusDotPosition ??= "top-right";
         SizeTarget ??= SettingsDefaults.SizeTarget;
         if (string.IsNullOrWhiteSpace(Theme)) Theme = SettingsDefaults.Theme;
+        Language = Localization.L.CanonicalCode(Language) ?? SettingsDefaults.Language;
         if (string.IsNullOrWhiteSpace(Accent)) Accent = SettingsDefaults.Accent;
         else Accent = Clink.UI.ThemeManager.UpgradeAccent(Accent) ?? SettingsDefaults.Accent;
         if (string.IsNullOrWhiteSpace(ClipsFolder)) ClipsFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "Clink");

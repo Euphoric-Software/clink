@@ -4,6 +4,7 @@ using System.Globalization;
 using System.IO;
 using System.Reflection;
 using Clink.Services;
+using Clink.Services.Localization;
 
 namespace Clink.Tests;
 
@@ -227,7 +228,7 @@ internal static class TestRunner
         Func<System.Net.Http.HttpRequestMessage, CancellationToken, Task<System.Net.Http.HttpResponseMessage>>? UpdaterHttp, FeedTrust? FeedTrust,
         TimeSpan? FeedTimeout, Packaging? Packaging, Func<string, TimeSpan, Updater.PreflightResult>? Preflight, IReadOnlyList<Version>? Runtimes, bool? Elevated,
         Func<DateTimeOffset>? UpdaterClock, TimeSpan? DownloadAnswerTimeout, TimeSpan? DownloadReadTimeout, Action<string>? SendObserver, Action<string>? Browser,
-        TimeSpan? DownloadTotalTimeout, long? DownloadMinRate, TimeSpan? DownloadRateWindow, (string? Stable, string? Dev)? FloorSeeds)
+        TimeSpan? DownloadTotalTimeout, long? DownloadMinRate, TimeSpan? DownloadRateWindow, (string? Stable, string? Dev)? FloorSeeds, object LState)
     {
         public static Shared Capture() => new(Settings.DirOverride, ClipLibrary.IndexPathOverride, Updater.UpdatesDirOverride,
             AppController.InstanceSuffix, AppController.DevHotkeys, AppController.DevAcceptImport, AppController.DevToken, AppController.DevRecord, AppController.DevQuiet, AppController.DevQuietRecord, AppController.DevNoMarker, AppController.DevDemoStatus,
@@ -235,7 +236,7 @@ internal static class TestRunner
             Updater.HttpOverride, Updater.FeedOverride, Updater.FeedTimeoutOverride,
             Updater.PackagingOverride, Updater.PreflightOverride, DotNetRuntimes.Override, Updater.IsElevatedOverride,
             Updater.ClockOverride, Updater.DownloadAnswerTimeoutOverride, Updater.DownloadReadTimeoutOverride, Updater.SendObserver, Updater.BrowserOverride,
-            Updater.DownloadTotalTimeoutOverride, Updater.DownloadMinRateOverride, Updater.DownloadRateWindowOverride, Updater.FloorSeedOverride);
+            Updater.DownloadTotalTimeoutOverride, Updater.DownloadMinRateOverride, Updater.DownloadRateWindowOverride, Updater.FloorSeedOverride, L.Capture());
     }
 
     /// <summary>The feed trust a test starts with: On, with a made-up base and two keys that never signed anything (tests that need a feed bring their own).</summary>
@@ -289,6 +290,13 @@ internal static class TestRunner
     /// <paramref name="scratch"/> (or at where they were, when null). So a test never looks at the real settings or at the packages of
     /// whoever runs it. Before and after every test.
     /// </summary>
+    internal static void ResetSharedForTest()
+    {
+        // inside a test the settings folder IS the runner's scratch folder: this is exactly the reset that runs before the next test
+        string scratch = Settings.DirOverride ?? throw new TestFailure("ResetSharedForTest must run inside a test (no scratch folder)");
+        ResetShared(Shared.Capture(), scratch);
+    }
+
     private static void ResetShared(Shared before, string? scratch)
     {
         AppController.InstanceSuffix = before.InstanceSuffix;
@@ -300,6 +308,8 @@ internal static class TestRunner
         AppController.DevQuietRecord = before.DevQuietRecord;
         AppController.DevNoMarker = before.DevNoMarker;
         AppController.DevDemoStatus = before.DevDemoStatus;
+        // The UI language: English and the embedded catalogs during a test (the English assertions hold on any PC), as it was afterwards.
+        if (scratch != null) L.PinEnglish(); else L.Restore(before.LState);
         Settings.DirOverride = scratch ?? before.SettingsDir;
         Settings.RealDirOverride = scratch != null ? Path.Combine(scratch, "RealClink") : before.RealDir;
         ClipLibrary.IndexPathOverride = scratch != null ? Path.Combine(scratch, "clips.json") : before.ClipIndex;
