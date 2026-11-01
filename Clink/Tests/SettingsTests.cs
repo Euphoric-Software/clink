@@ -1235,9 +1235,9 @@ internal static class SettingsTests
     {
         Check.Equal(new[] { "none", "discord10", "discord50", "copium200", "discord500", "copiumplus" }, Capabilities.SizeTargets.Select(t => t.Id).ToArray());
         Check.Equal(
-            new[] { "None", "Discord (10 MB)", "Discord Nitro Basic (50 MB)", "Copium (200 MB, 10 min)", "Discord Nitro (500 MB)", "Copium Plus (2 GB, 60 min)" },
+            new[] { "None", "Discord free (20 MB)", "Discord Nitro Basic (50 MB)", "Copium (200 MB, 10 min)", "Discord Nitro (1 GB)", "Copium Plus (2 GB, 60 min)" },
             Capabilities.SizeTargets.Select(t => t.Name).ToArray());
-        Check.Equal(new long[] { 0, 10_000_000, 50_000_000, 200_000_000, 500_000_000, 2_000_000_000 }, Capabilities.SizeTargets.Select(t => t.Bytes).ToArray());
+        Check.Equal(new long[] { 0, 20_000_000, 50_000_000, 200_000_000, 1_000_000_000, 2_000_000_000 }, Capabilities.SizeTargets.Select(t => t.Bytes).ToArray());
         Check.Equal(new[] { 0, 0, 0, 600, 0, 3600 }, Capabilities.SizeTargets.Select(t => t.MaxSeconds).ToArray());
 
         var plus = Capabilities.SizeTargetFor("copiumplus");
@@ -1346,13 +1346,130 @@ internal static class SettingsTests
         Check.False(Capabilities.IsWarningNote(""));
         Check.False(Capabilities.IsWarningNote("a 45 s clip at 16 Mbps fits 200 MB"));
         Check.False(Capabilities.IsWarningNote("lowered to 4.2 Mbps so a 2:00 clip fits 50 MB"));
-        Check.True(Capabilities.IsWarningNote("a 1 h clip does not fit in 10 MB even at 0.5 Mbps; shorten the replay length"));
+        Check.True(Capabilities.IsWarningNote("a 1 h clip does not fit in 20 MB even at 0.5 Mbps; shorten the replay length"));
         Check.True(Capabilities.IsWarningNote(Capabilities.CopiumLengthNote));
         Check.True(Capabilities.IsWarningNote(Capabilities.CopiumPlusLengthNote));
 
-        // and straight from ResolveBitrate: a 10 MB target for an hour cannot fit
+        // and straight from ResolveBitrate: a 20 MB target for an hour cannot fit
         var (_, note) = Capabilities.ResolveBitrate(new Settings { SizeTarget = "discord10" }, 3, 3600);
         Check.Contains(note, "does not fit");
         Check.True(Capabilities.IsWarningNote(note));
+    }
+
+    [UnitTest]
+    public static void The_Discord_free_target_is_twenty_megabytes_under_its_historical_id()
+    {
+        var t = Capabilities.SizeTargetFor("discord10");   // the id is what saved settings hold; it must keep resolving
+        Check.Equal("discord10", t.Id);
+        Check.Equal("Discord free (20 MB)", t.Name);
+        Check.Equal(20_000_000L, t.Bytes);
+        Check.Equal(0, t.MaxSeconds);
+        Check.Equal(20_000_000L, Capabilities.SizeTargetBytes("discord10"));
+        Check.Equal("Discord free (20 MB)", Capabilities.SizeTargetName("discord10"));
+        Check.Equal("discord10", Capabilities.SizeTargetFor(" DISCORD10 ").Id);
+        Check.Equal("none", Capabilities.SizeTargetFor("discord20").Id);   // an id that was never shipped is still "none"
+        Check.Equal("none", Capabilities.SizeTargetFor("discord-free").Id);
+    }
+
+    [UnitTest]
+    public static void The_Discord_free_target_lowers_the_bitrate_to_fit_twenty_megabytes()
+    {
+        // a 45 s replay + 1 s keyframe = 46 s; 0.95 * 20 MB * 8 / 46 s = 3.304 Mbps, less 0.192 Mbps per audio track
+        var s = new Settings { SizeTarget = "discord10", BitrateMbps = 50, KeyframeSeconds = 1 };
+        var (mbps, note) = Capabilities.ResolveBitrate(s, 3, 45);   // 3.304 - 0.576 = 2.728
+        Check.Near(2.7, mbps);
+        Check.Equal("lowered to 2.7 Mbps so a 45 s clip fits 20 MB", note);
+        Check.False(Capabilities.IsWarningNote(note));
+
+        (mbps, note) = Capabilities.ResolveBitrate(s, 1, 45);   // 3.304 - 0.192 = 3.112
+        Check.Near(3.1, mbps);
+        Check.Equal("lowered to 3.1 Mbps so a 45 s clip fits 20 MB", note);
+
+        (mbps, note) = Capabilities.ResolveBitrate(s, 0, 45);   // 3.304
+        Check.Near(3.3, mbps);
+
+        // a modest chosen bitrate that already fits is kept
+        (mbps, note) = Capabilities.ResolveBitrate(new Settings { SizeTarget = "discord10", BitrateMbps = 2, KeyframeSeconds = 1 }, 3, 45);
+        Check.Near(2, mbps);
+        Check.Equal("a 45 s clip at 2 Mbps fits 20 MB", note);
+    }
+
+    [UnitTest]
+    public static void Without_a_size_target_the_chosen_bitrate_is_kept()
+    {
+        foreach (string? id in new string?[] { "none", null, "bogus" })
+        {
+            var (mbps, note) = Capabilities.ResolveBitrate(new Settings { SizeTarget = id!, BitrateMbps = 37, KeyframeSeconds = 1 }, 3, 45);
+            Check.Near(37, mbps, 1e-9, $"'{id}'");
+            Check.True(note == null, $"'{id}' has no note");
+        }
+    }
+
+    [UnitTest]
+    public static void A_twenty_megabyte_budget_that_cannot_fit_is_clamped_to_the_minimum_bitrate()
+    {
+        var s = new Settings { SizeTarget = "discord10", BitrateMbps = 50, KeyframeSeconds = 1 };
+        // 1 h: 0.95 * 20 MB * 8 / 3601 s = 0.042 Mbps, below the 0.5 Mbps minimum even with no audio
+        var (mbps, note) = Capabilities.ResolveBitrate(s, 0, 3600);
+        Check.Near(0.5, mbps);
+        Check.Equal("a 1 h clip does not fit in 20 MB even at 0.5 Mbps; shorten the replay length", note);
+        Check.True(Capabilities.IsWarningNote(note));
+
+        // with 3 audio tracks the audio alone (0.576 Mbps) outgrows the budget of a 1 h clip: still the minimum, never negative
+        (mbps, note) = Capabilities.ResolveBitrate(s, 3, 3600);
+        Check.Near(0.5, mbps);
+        Check.True(Capabilities.IsWarningNote(note));
+    }
+
+    [UnitTest]
+    public static void A_Discord_free_clip_estimated_at_the_resolved_bitrate_stays_under_twenty_megabytes()
+    {
+        int checkedCases = 0;
+        foreach (int replay in new[] { 10, 30, 45, 60, 120, 300 })
+            foreach (int tracks in new[] { 0, 1, 3, 5 })
+                foreach (float key in new[] { 0.25f, 1f, 5f })
+                {
+                    var s = new Settings { SizeTarget = "discord10", BitrateMbps = 200, KeyframeSeconds = key };
+                    var (mbps, note) = Capabilities.ResolveBitrate(s, tracks, replay);
+                    string what = $"replay {replay} s, {tracks} tracks, keyframe {key} s -> {mbps} Mbps";
+                    if (Capabilities.IsWarningNote(note)) { Check.Near(0.5, mbps, 1e-9, what); continue; }   // below the minimum: nothing can fit
+                    long bytes = Capabilities.EstimateBytes(mbps, tracks, replay + key);
+                    Check.True(bytes <= Capabilities.TargetHeadroom * 20_000_000 + 1, $"{what}: {bytes} bytes");
+                    // and not much under: the target must not shrink. Rounding the bitrate down to 0.1 Mbps loses at most 0.1 Mbps of the (replay + keyframe) seconds.
+                    double floor = Capabilities.TargetHeadroom * 20_000_000 - 0.1e6 * (replay + key) / 8;
+                    Check.True(bytes >= floor - 1, $"{what}: {bytes} bytes is under {floor:0}");
+                    checkedCases++;
+                }
+        Check.True(checkedCases > 0, "at least one combination was above the minimum");
+    }
+
+    [UnitTest]
+    public static void The_target_headroom_is_five_percent()
+    {
+        Check.Equal(0.95, Capabilities.TargetHeadroom);
+    }
+
+    [UnitTest]
+    public static void The_Discord_Nitro_target_is_one_gigabyte_under_its_historical_id()
+    {
+        var t = Capabilities.SizeTargetFor("discord500");   // the id is what saved settings hold; it must keep resolving
+        Check.Equal("discord500", t.Id);
+        Check.Equal("Discord Nitro (1 GB)", t.Name);
+        Check.Equal(1_000_000_000L, t.Bytes);
+        Check.Equal(0, t.MaxSeconds);
+        Check.Equal("1 GB", Capabilities.FormatBytes(t.Bytes));
+        Check.Equal(50_000_000L, Capabilities.SizeTargetBytes("discord50"));   // Nitro Basic is unchanged
+
+        // a 45 s replay + 1 s keyframe = 46 s; 0.95 * 1 GB * 8 / 46 s = 165.217 Mbps, less 0.576 Mbps of audio = 164.64 -> 164.6
+        var s = new Settings { SizeTarget = "discord500", BitrateMbps = 200, KeyframeSeconds = 1 };
+        var (mbps, note) = Capabilities.ResolveBitrate(s, 3, 45);
+        Check.Near(164.6, mbps);
+        Check.Equal("lowered to 164.6 Mbps so a 45 s clip fits 1 GB", note);
+        Check.False(Capabilities.IsWarningNote(note));
+
+        s.BitrateMbps = 50;   // already fits: kept
+        (mbps, note) = Capabilities.ResolveBitrate(s, 3, 45);
+        Check.Near(50, mbps);
+        Check.Equal("a 45 s clip at 50 Mbps fits 1 GB", note);
     }
 }

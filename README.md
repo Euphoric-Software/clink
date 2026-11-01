@@ -56,8 +56,8 @@ replay length is yours to set, 45 seconds by default); press a key, hear a click
   fresh device. You are told once, not on every retry.
 * **Replay length slider** from 5 s to 60 min (45 s by default), in the Capturing card with one readout under it: the
   **size** per minute and per clip of that length and the **RAM** the buffer costs, live; and **size targets** (None, the
-  default; Discord 10 / 50 / 500 MB; Copium 200 MB / 10 min; Copium Plus 2 GB / 60 min) that lower the bitrate, only
-  when needed, so a clip of that length fits.
+  default; Discord 20 MB (free) / 50 MB / 1 GB; Copium 200 MB / 10 min; Copium Plus 2 GB / 60 min) that lower the
+  bitrate, only when needed, so a clip of that length fits.
 * H.264 or HEVC, and AV1 (experimental) when the GPU has an AV1 encoder; codecs the GPU lacks are listed greyed out.
   H.264 stops at 4096 px, so a wider recording (a 5120×1440 super-ultrawide at *Native*) is made in HEVC, and the
   Capture tab says so.
@@ -269,30 +269,31 @@ Copium Plus also ticks *I have Copium+*. The toast's button reads *Share* withou
 * **Capture**, top to bottom: **Capturing** - the monitor map, resolution / FPS / bitrate / codec with a one-line
   description of each codec (the ones your GPU cannot encode are greyed out; the 1440p / 1080p / 720p presets name the
   short side, so a portrait 1080×1920 monitor at 1080p records 1080×1920), the **size target** (*None*, the default;
-  *Discord 10 MB*; *Nitro Basic 50 MB*; *Copium 200 MB, 10 min*; *Nitro 500 MB*; *Copium Plus 2 GB, 60 min*: when a clip
-  of the replay length would not fit, the encode bitrate is lowered just enough, audio tracks included; it is never
-  raised above the bitrate you chose; picking Copium Plus also ticks *I have Copium+*), the **replay length** slider
-  (the 30–90 s stretch is the sweet spot) with the one size/RAM readout right under it, recomputed on every resolution,
-  FPS, bitrate, codec, size-target, audio-track or length change, and *Capture cursor*. The readout's figures are
-  bitrate × audio tracks × length (resolution and codec decide how good a clip looks at that bitrate, not how big it is):
-  *≈ 154 MB per minute · ≈ 116 MB per 45 s clip* (20 Mbps, three tracks; at 1 h the clip figure becomes the per-hour
-  figure), *≈ 132 MB of RAM for 45 s at 20 Mbps* (red above half of your RAM; the slider refuses lengths that could not
-  be allocated at all) and what the size target did, in yellow when no bitrate can make the clip fit or when the replay
-  length reaches the target's own limit (Copium's 10 minutes, Copium Plus's 60) - the target then fits a clip of that
-  length, not the whole replay, since a longer clip has to be trimmed before Share anyway; **Audio tracks** - the
-  per-track rows with their source pickers (a *Set up your audio* banner sits above them until you rest the pointer on
-  the group for a moment or change an option; it goes when the pointer leaves the group, so nothing jumps under it, and
-  does not come back) and under them what each track is capturing right now or why it is not (*● Mic (USB
-  Microphone)*, *○ Voice (waiting for app)*); **Recording** - the recording mode and the custom-apps list (type an exe
-  name or pick one of the apps running right now); **Hotkeys** - the *Main hotkey* (click the keys box, press the combo;
-  Esc cancels; *Clear* empties it) with *saves the full replay (0:45)* beside it, which follows the replay length: the main
-  hotkey always saves the full replay and can be cleared, not removed. Under *More hotkeys* every other one has its keys,
-  an action (*Clip*, *Pause / resume*, *Share last clip*) and, for a clip, a fixed length shorter than the replay length
-  (5 s up to the longest step below it; a saved length at or above the replay length reads *(capped to replay)* and counts
-  again once the replay is longer); *Add hotkey* adds a clip row on 30, 15, 10 or 5 s, whichever is the longest below the
-  replay length. *Clip now* sits in the header (it saves the full replay) and the click sound under the list. A combo
-  another row already has (the main one included), or a bare letter, digit or editing key (it would be eaten in every
-  program), is refused with a hint and the box keeps listening; F-keys, ScrollLock and Pause work alone.
+  *Discord free 20 MB*; *Nitro Basic 50 MB*; *Copium 200 MB, 10 min*; *Nitro 1 GB*; *Copium Plus 2 GB, 60 min*: when a
+  clip of the replay length would not fit, the encode bitrate is lowered just enough, audio tracks included; it is
+  never raised above the bitrate you chose; picking Copium Plus also ticks *I have Copium+*), the **replay length**
+  slider (the 30–90 s stretch is the sweet spot) with the one size/RAM readout right under it, recomputed on every
+  resolution, FPS, bitrate, codec, size-target, audio-track or length change, and *Capture cursor*. The readout's
+  figures are bitrate × audio tracks × length (resolution and codec decide how good a clip looks at that bitrate, not
+  how big it is): *≈ 154 MB per minute · ≈ 116 MB per 45 s clip* (20 Mbps, three tracks; at 1 h the clip figure
+  becomes the per-hour figure), *≈ 132 MB of RAM for 45 s at 20 Mbps* (red above half of your RAM; the slider refuses
+  lengths that could not be allocated at all) and what the size target did, in yellow when no bitrate can make the clip
+  fit or when the replay length reaches the target's own limit (Copium's 10 minutes, Copium Plus's 60) - the target
+  then fits a clip of that length, not the whole replay, since a longer clip has to be trimmed before Share anyway;
+  **Audio tracks** - the per-track rows with their source pickers (a *Set up your audio* banner sits above them until
+  you rest the pointer on the group for a moment or change an option; it goes when the pointer leaves the group, so
+  nothing jumps under it, and does not come back) and under them what each track is capturing right now or why it is
+  not (*● Mic (USB Microphone)*, *○ Voice (waiting for app)*); **Recording** - the recording mode and the custom-apps
+  list (type an exe name or pick one of the apps running right now); **Hotkeys** - the *Main hotkey* (click the keys
+  box, press the combo; Esc cancels; *Clear* empties it) with *saves the full replay (0:45)* beside it, which follows
+  the replay length: the main hotkey always saves the full replay and can be cleared, not removed. Under *More
+  hotkeys* every other one has its keys, an action (*Clip*, *Pause / resume*, *Share last clip*) and, for a clip, a
+  fixed length shorter than the replay length (5 s up to the longest step below it; a saved length at or above the
+  replay length reads *(capped to replay)* and counts again once the replay is longer); *Add hotkey* adds a clip row on
+  30, 15, 10 or 5 s, whichever is the longest below the replay length. *Clip now* sits in the header (it saves the full
+  replay) and the click sound under the list. A combo another row already has (the main one included), or a bare
+  letter, digit or editing key (it would be eaten in every program), is refused with a hint and the box keeps
+  listening; F-keys, ScrollLock and Pause work alone.
 * **Clips** (only with the Clips feature on): **Storage** - the local clips folder, the archive location (*Browse…*,
   *Test*, *Archive now…*) and *Move clips there automatically* with its rules (below).
 * **Screenshots** (only with the Screenshots feature on): the folder, clipboard and magnifier options, *After capture*, and the
@@ -439,12 +440,14 @@ monitor, or the first of Discord, TeamSpeak, Slack, Mumble, Zoom, Skype found ru
 (`game` | `always`), `CustomApps`, `Hotkeys` (a list of `{ Keys, Action, Seconds }`; **`Hotkeys[0]` is the main hotkey**:
 a `clip` with `Seconds` 0, always the full replay, whose keys may be unset (`Vk` 0); the rows after it are the additional
 hotkeys: a `clip` with `Seconds` above 0, `pause` or `share-last`; the v1 `Hotkey` field mirrors the main hotkey's keys),
-`SizeTarget` (`none` | `discord10` | `discord50` | `copium200` | `discord500` | `copiumplus`, default `none`; `copium200`
-is Copium's free limit, 200 MB / 10 min, and `copiumplus` Copium Plus's, 2 GB / 60 min), `CopiumPlus`, `AudioSetupSeen`,
-`ToastPosition`, `ToastClip` / `ToastShared` / `ToastRecording` (`{ Enabled, Seconds }`), `StatusDot` /
-`StatusDotPosition`, `ArchiveEnabled` (the automatic moves: *Move clips there automatically*) / `ArchivePath` /
-`ArchiveAfterDays` / `ArchiveWhenLocalExceedsGB` and the window position and size. The v3 keys are `SchemaVersion`,
-`Theme` (`dark` | `light`), `Accent` (`spark` | `blue` | `violet` | `pink` | `orange` | `green`; `cyan`, the default before the rebrand, is read as `spark`) and `ImportDeclined` (the
+`SizeTarget` (`none` | `discord10` | `discord50` | `copium200` | `discord500` | `copiumplus`, default `none`; `discord10`
+is Discord's free limit, 20 MB, and `discord500` Discord Nitro's, 1 GB (both ids are historical and kept so saved
+settings still work); `copium200` is Copium's free limit, 200 MB / 10 min, and `copiumplus` Copium Plus's, 2 GB /
+60 min), `CopiumPlus`, `AudioSetupSeen`, `ToastPosition`, `ToastClip` / `ToastShared` / `ToastRecording`
+(`{ Enabled, Seconds }`), `StatusDot` / `StatusDotPosition`, `ArchiveEnabled` (the automatic moves: *Move clips there
+automatically*) / `ArchivePath` / `ArchiveAfterDays` / `ArchiveWhenLocalExceedsGB` and the window position and size.
+The v3 keys are `SchemaVersion`, `Theme` (`dark` | `light`), `Accent` (`spark` | `blue` | `violet` | `pink` | `orange` |
+`green`; `cyan`, the default before the rebrand, is read as `spark`) and `ImportDeclined` (the
 copies of another Clink's settings you turned down, `<package>|<time>`, one per package). Things not in the UI:
 
 | key | default | what |
