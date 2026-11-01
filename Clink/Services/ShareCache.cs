@@ -47,8 +47,11 @@ internal sealed class ShareCache : IDisposable
     /// <summary>A name is never cut shorter than this (a root so deep that even this does not fit gets a longer path).</summary>
     private const int MinNameChars = 8;
     private static readonly TimeSpan DisposeWait = TimeSpan.FromSeconds(2);
-    /// <summary>The longest a <see cref="MarkInUse"/> waits for a delete of its own key that is in progress (the delete stops at its next file once the mark is there).</summary>
-    private static readonly TimeSpan MarkWait = TimeSpan.FromSeconds(5);
+    /// <summary>
+    /// The longest a <see cref="MarkInUse"/> waits for a delete of its own key that is in progress (the delete stops at its next file once
+    /// the mark is there). 5 s; the unit tests shorten it to reach the timed-out (not settled) case quickly.
+    /// </summary>
+    internal TimeSpan MarkWait { get; set; } = TimeSpan.FromSeconds(5);
 
     /// <summary>What <see cref="ShareCacheUnavailableException"/> says in an elevated process.</summary>
     public const string ElevatedReason = "not available while Clink runs as administrator";
@@ -262,8 +265,10 @@ internal sealed class ShareCache : IDisposable
     /// </summary>
     public string PathFor(string key, string originalFileName) => Path.Combine(FolderFor(key), CopyName(originalFileName));
 
-    /// <summary>Where the copy is written while it is made; <see cref="MarkFinished"/> turns it into <see cref="PathFor"/>.</summary>
-    public string PartPathFor(string key, string originalFileName) => PathFor(key, originalFileName) + PartSuffix;
+    /// <summary>Where the copy is written while it is made; <see cref="MarkFinished"/> turns it into <see cref="PathFor"/>. Internal, for
+    /// <see cref="BeginCopy"/> and the tests: a caller writes only to the path <see cref="BeginCopy"/> returns (which also checks that
+    /// the cache is usable and makes the folder), never to one it worked out itself.</summary>
+    internal string PartPathFor(string key, string originalFileName) => PathFor(key, originalFileName) + PartSuffix;
 
     /// <summary>
     /// The finished copy when there is one that can be reused: it exists, is not empty and is not a leftover of an unfinished one. Counts as
@@ -340,9 +345,14 @@ internal sealed class ShareCache : IDisposable
     /// An open Share window or an upload uses this key's copy: cleanup leaves it alone until every mark is disposed. Disposing a mark
     /// releases it exactly once (a second dispose does nothing). When cleanup is deleting this key's folder right now, the mark is taken
     /// first (the delete stops before its next file or folder) and then this waits for the delete to end (at most 5 s), so once it
-    /// returns the copy either is there or is gone for good. A mark for any other key never waits for a delete.
+    /// returns the copy either is there or is gone for good, unless that wait timed out (logged): <paramref name="settled"/> is then false
+    /// and the caller must not reuse what is in the folder (make the copy again). A mark for any other key never waits for a delete.
     /// </summary>
-    public IDisposable MarkInUse(string key)
+    public IDisposable MarkInUse(string key) => MarkInUse(key, out _);
+
+    /// <inheritdoc cref="MarkInUse(string)"/>
+    /// <param name="settled">False when the 5 s wait for a delete of this key's folder timed out, so the folder may still be going away.</param>
+    public IDisposable MarkInUse(string key, out bool settled)
     {
         if (!IsKey(key)) throw new ArgumentException("Not a share cache key: " + key, nameof(key));
         bool timedOut = false;
@@ -360,6 +370,7 @@ internal sealed class ShareCache : IDisposable
                 }
             }
         }
+        settled = !timedOut;
         if (timedOut) Warn("a copy was taken into use while its folder was still being cleaned up: " + key);
         return new InUseMark(this, key);
     }
@@ -434,7 +445,7 @@ internal sealed class ShareCache : IDisposable
         // Held open (no delete sharing) for the whole cleanup: the root cannot be renamed or deleted meanwhile.
         using var rootPin = Pin(_extRoot);
         if (rootPin == null) { Warn("could not open the root as a plain folder, not cleaning"); return default; }
-        if (!IsGenuineRoot(out string? final)) { Warn($"the root is really {final ?? "(unknown)"}, not cleaning"); return default; }
+        if (!IsGenuineRoot(out string? final)) { Warn("the root is really somewhere else (elsewhere), not cleaning"); return default; }
 
         int deleted = 0, otherFolders = 0;
         long freed = 0;
@@ -465,7 +476,7 @@ internal sealed class ShareCache : IDisposable
                 Remeasure(e);
                 if (!IsOld(e)) return;   // used again since it was measured
             }
-            if (!IsGenuineRoot(out string? where)) { Warn($"the root became {where ?? "(unknown)"}, stopping"); stop = true; return; }
+            if (!IsGenuineRoot(out string? where)) { Warn("the root became (elsewhere), stopping"); stop = true; return; }
             lock (_gate)
             {
                 if (_inUse.ContainsKey(e.Key)) { e.InUse = true; e.Skipped = true; return; }
@@ -616,7 +627,7 @@ internal sealed class ShareCache : IDisposable
     /// </summary>
     private bool DeleteEntry(Entry e)
     {
-        if (!IsInside(e.Dir)) { Warn("refusing to delete outside the root: " + e.Dir); return false; }
+        if (!IsInside(e.Dir)) { Warn("refusing to delete outside the root: " + Rel(e.Dir)); return false; }
         var dir = new DirectoryInfo(e.Dir);
         try
         {

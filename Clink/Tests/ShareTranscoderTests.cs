@@ -23,13 +23,13 @@ namespace Clink.Tests;
 internal static class ShareTranscoderTests
 {
     private const string GpuVariable = "CLINK_TESTS_GPU";
-    private static bool GpuTestsOn => Environment.GetEnvironmentVariable(GpuVariable) is "1" or "true";
+    internal static bool GpuTestsOn => Environment.GetEnvironmentVariable(GpuVariable) is "1" or "true";
 
     /// <summary>A GPU test that was not run: on the console (where PASS is read), so a pass is not taken for a check.</summary>
-    private static void NotRun(string test) => Console.WriteLine($"      {test}: NOT RUN, set {GpuVariable}=1 to run it (uses the GPU)");
+    internal static void NotRun(string test) => Console.WriteLine($"      {test}: NOT RUN, set {GpuVariable}=1 to run it (uses the GPU)");
 
     /// <summary>Runs <paramref name="body"/> on an MTA thread (Media Foundation); a missing Media Foundation encoder is a skip, a hardware one too.</summary>
-    private static void OnMta(Action body)
+    internal static void OnMta(Action body)
     {
         Exception? failure = null;
         var t = new Thread(() =>
@@ -68,7 +68,7 @@ internal static class ShareTranscoderTests
     /// track per name (the first starts 10 ms before the video, as a recording's Mix does, the others later; none = a clip without audio),
     /// a keyframe every 2 s.
     /// </summary>
-    private static string MakeClip(TempDir dir, string name, int width, int height, uint fps, double seconds, params string[] tracks)
+    internal static string MakeClip(TempDir dir, string name, int width, int height, uint fps, double seconds, params string[] tracks)
     {
         string path = dir.File(name);
         int frames = (int)Math.Round(seconds * fps);
@@ -212,7 +212,10 @@ internal static class ShareTranscoderTests
         Check.Equal(0u, ShareTranscoder.MuxGridFps(30_000.0 / 1001, 30), "29.97 -> 30 too");
         Check.Equal(0u, ShareTranscoder.MuxGridFps(30, 60), "a slower source too");
         Check.Equal(0u, ShareTranscoder.MuxGridFps(60.005, 60), "a rate a hair above the output's counts as the same");
-        Check.Equal(60u, ShareTranscoder.MuxGridFps(60.02, 60), "a rate clearly above the output's drops frames, so it is snapped");
+        Check.Equal(0u, ShareTranscoder.MuxGridFps(60.02, 60), "a rate within 2% above the output's counts as the same");
+        Check.Equal(0u, ShareTranscoder.MuxGridFps(61.2, 60), "exactly 2% above still keeps every frame");
+        Check.Equal(60u, ShareTranscoder.MuxGridFps(61.3, 60), "a rate more than 2% above the output's drops frames, so it is snapped");
+        Check.Equal(60u, ShareTranscoder.MuxGridFps(72, 60), "72 -> 60 drops frames");
         Check.Equal(0u, ShareTranscoder.MuxGridFps(0, 30), "an unknown rate keeps the times");
     }
 
@@ -262,6 +265,8 @@ internal static class ShareTranscoderTests
         double ntsc60 = 60_000.0 / 1001, ntsc30 = 30_000.0 / 1001;
         var rng = new Random(20261101);   // fixed seed: the same jitter on every run
         var rng2 = new Random(1337);
+        var rng3 = new Random(60_02);
+        var rng4 = new Random(60_3);
         var cases = new (string what, long[] stamps, double headerFps, int outFps)[]
         {
             ("59.94 -> 60 on a 1 ms timescale", Enumerable.Range(0, N).Select(k => (long)Math.Round(k * 1000.0 / ntsc60) * 10_000).ToArray(), ntsc60, 60),
@@ -269,6 +274,8 @@ internal static class ShareTranscoderTests
             ("59.94 -> 60 with +-2 ms alternating jitter", Enumerable.Range(0, N).Select(k => (long)Math.Round(k * 10_000_000.0 / ntsc60) + (k % 2 == 0 ? 20_000 : -20_000)).ToArray(), ntsc60, 60),
             ("59.94 -> 60 with random +-2 ms jitter", Enumerable.Range(0, N).Select(k => (long)Math.Round(k * 10_000_000.0 / ntsc60) + rng2.Next(-20_000, 20_001)).ToArray(), ntsc60, 60),
             ("a 60 fps header on a 59.9 fps clip with random +-2 ms jitter", Enumerable.Range(0, N).Select(k => (long)Math.Round(k * 10_000_000.0 / 59.9) + rng.Next(-20_000, 20_001)).ToArray(), 60, 60),
+            ("a 60.02 header on a 59.9 fps clip with random +-2 ms jitter", Enumerable.Range(0, N).Select(k => (long)Math.Round(k * 10_000_000.0 / 59.9) + rng3.Next(-20_000, 20_001)).ToArray(), 60.02, 60),
+            ("a 60.3 fps clip with random +-2 ms jitter", Enumerable.Range(0, N).Select(k => (long)Math.Round(k * 10_000_000.0 / 60.3) + rng4.Next(-20_000, 20_001)).ToArray(), 60.3, 60),
             ("60 -> 60 on a 1 ms timescale", Enumerable.Range(0, N).Select(k => (long)Math.Round(k * 1000.0 / 60) * 10_000).ToArray(), 60, 60),
             ("30 -> 60 (a slower source)", Enumerable.Range(0, N).Select(k => (long)Math.Round(k * 10_000_000.0 / 30)).ToArray(), 30, 60),
         };
@@ -331,14 +338,18 @@ internal static class ShareTranscoderTests
         Check.True(w!.Contains("3 ProcessOutput"), w);
         Check.Equal(0L, d);
 
-        // A few frames that never went in: a gap in time, not damage. 1% of 1000 source frames = 10 allowed.
-        Check.Null(Judge(1000, 500, 490, 490, 10, 0, out d, out w), "10 of 1000 never went in");
+        // A few frames that never went in: a gap in time, not damage. The allowance is 1% of the SUBMITTED frames (here 1000 submitted of
+        // 5000 decoded: 10), not of the decoded ones.
+        Check.Null(Judge(5000, 1000, 990, 990, 10, 0, out d, out w), "10 of 1000 submitted never went in");
         Check.Equal(10L, d, "the dropped-input count");
         Check.NotNull(w);
-        var many = Judge(1000, 500, 489, 489, 11, 0, out d, out _);
-        Check.NotNull(many, "11 of 1000 is more than 1%");
+        var many = Judge(5000, 1000, 989, 989, 11, 0, out d, out _);
+        Check.NotNull(many, "11 of 1000 submitted is more than 1%");
         Check.Equal("the hardware encoder lost frames", many!.Message);
         Check.Equal(11L, d);
+        // 1000 decoded but only 500 submitted (a 60 -> 30 copy): 5 allowed, not 10.
+        Check.Null(Judge(1000, 500, 495, 495, 5, 0, out _, out _), "5 of 500 submitted");
+        Check.NotNull(Judge(1000, 500, 494, 494, 6, 0, out _, out _), "6 of 500 submitted is more than 1% of what was submitted");
 
         // A short clip still allows 2.
         Check.Null(Judge(60, 60, 58, 58, 2, 0, out d, out _), "2 of 60");
@@ -349,6 +360,37 @@ internal static class ShareTranscoderTests
         Check.Equal(3L, d);
         // Both kinds at once: the out-side loss decides.
         Check.NotNull(Judge(1000, 500, 499, 498, 1, 0, out _, out _), "one never went in, and one went in and did not come out");
+    }
+
+    [UnitTest]
+    public static void The_UV_plane_of_a_padded_2D_buffer_is_found_from_its_contiguous_length()
+    {
+        // Unpadded: pitch 1920 (or a wider pitch), 1080 rows -> length = pitch * 1080 * 3 / 2.
+        Check.Equal(1080, ShareTranscoder.Nv12LumaRows(1920L * 1080 * 3 / 2, 1920, 1920, 1080), "no padding");
+        Check.Equal(1080, ShareTranscoder.Nv12LumaRows(2048L * 1080 * 3 / 2, 2048, 1920, 1080), "a wider pitch, no padded rows");
+        // Padded to 1088 rows.
+        Check.Equal(1088, ShareTranscoder.Nv12LumaRows(1920L * 1088 * 3 / 2, 1920, 1920, 1080), "1080 padded to 1088");
+        Check.Equal(1088, ShareTranscoder.Nv12LumaRows(2048L * 1088 * 3 / 2, 2048, 1920, 1080), "padded rows at a wider pitch");
+        // The length of a packed copy (the width, not the pitch) still works.
+        Check.Equal(1080, ShareTranscoder.Nv12LumaRows(1920L * 1080 * 3 / 2, 2048, 1920, 1080), "packed length at a wider pitch");
+        Check.Equal(1088, ShareTranscoder.Nv12LumaRows(1920L * 1088 * 3 / 2, 2048, 1920, 1080), "packed and padded");
+        Check.Equal(720, ShareTranscoder.Nv12LumaRows(1280L * 720 * 3 / 2, 1280, 1280, 720));
+        // The numbers do not add up: use the contiguous copy.
+        Check.Equal(0, ShareTranscoder.Nv12LumaRows(0, 1920, 1920, 1080), "no length");
+        Check.Equal(0, ShareTranscoder.Nv12LumaRows(1920L * 1080 * 3 / 2 - 2, 1920, 1920, 1080), "not a whole number of rows");
+        Check.Equal(0, ShareTranscoder.Nv12LumaRows(1920L * 1000 * 3 / 2, 1920, 1920, 1080), "fewer rows than the frame has");
+        Check.Equal(0, ShareTranscoder.Nv12LumaRows(1920L * 1300 * 3 / 2, 1920, 1920, 1080), "implausibly many rows");
+        Check.Equal(0, ShareTranscoder.Nv12LumaRows(1920L * 1080 * 3 / 2, 1000, 1920, 1080), "a pitch below the width");
+    }
+
+    [UnitTest]
+    public static void The_kept_rate_is_measured_from_the_submitted_frames()
+    {
+        Check.True(Math.Abs(ShareTranscoder.MeasuredRate(601, 0, 100_000_000) - 60) < 1e-9, "601 frames over 10 s = 60 fps");
+        Check.True(Math.Abs(ShareTranscoder.MeasuredRate(301, 5, 100_000_005) - 30) < 1e-9);
+        Check.Equal(0.0, ShareTranscoder.MeasuredRate(1, 0, 0), "one frame has no rate");
+        Check.Equal(0.0, ShareTranscoder.MeasuredRate(0, 0, 0));
+        Check.Equal(0.0, ShareTranscoder.MeasuredRate(10, 5, 5), "no time");
     }
 
     [UnitTest]

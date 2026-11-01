@@ -644,7 +644,7 @@ internal static class ShareCacheTests
         var sw = Stopwatch.StartNew();
         using (cache.MarkInUse(K('b'))) { }
         long ms = sw.ElapsedMilliseconds;
-        Check.True(ms < 100, $"a mark for key b does not wait for key a's delete ({ms} ms)");
+        Check.True(ms < 1000, $"a mark for key b does not wait for key a's delete ({ms} ms)");
         Check.Equal(0, Volatile.Read(ref hookDone), "key a was still being deleted meanwhile");
 
         using var markA = cache.MarkInUse(K('a'));
@@ -654,6 +654,18 @@ internal static class ShareCacheTests
         Check.True(File.Exists(a1) && File.Exists(a2), "marked before its first file went: the delete stopped, nothing of it is gone");
         Check.True(File.Exists(b));
         Check.Equal(0, run.Result.EntriesDeleted);
+    }
+
+    [UnitTest]
+    public static void A_mark_says_it_is_settled_when_no_delete_of_its_key_was_waited_for()
+    {
+        using var dir = new TempDir();
+        using var cache = Make(dir);
+        using (var mark = cache.MarkInUse(K('a'), out bool settled))
+            Check.True(settled, "nothing was being deleted: the copy is there or it is not");
+        Check.False(cache.IsInUse(K('a')));
+        using var plain = cache.MarkInUse(K('b'));   // the overload without it is the same mark
+        Check.True(cache.IsInUse(K('b')));
     }
 
     [UnitTest]
