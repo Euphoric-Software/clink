@@ -473,7 +473,7 @@ public partial class TrimWindow : Window
         string path = _entry.Path;
         void Open()
         {
-            try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true }); }
+            try { TestGuard.Start(new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true }); }
             catch (Exception ex) { Dispatcher.BeginInvoke(() => StatusText.Text = "Open failed: " + ex.Message); }
         }
         if (!_entry.IsArchived) { Open(); return; }
@@ -792,6 +792,7 @@ public partial class TrimWindow : Window
                 int n = 2;
                 while (File.Exists(dst)) dst = Path.Combine(dir, stem + $" (trim {n++}).mp4");
                 if (end - start < 0.1) throw new InvalidOperationException("Selection is too short");
+                TestGuard.Check(dst);
                 Directory.CreateDirectory(dir);
                 // The rows' names (file order, as the mix); without rows the trimmer reads them from the file itself.
                 string[]? names = _rows.Count > 0 ? _rows.Select(r => r.Name).ToArray() : null;
@@ -833,7 +834,7 @@ public partial class TrimWindow : Window
             else if (share)
             {
                 StatusText.Text = "Uploading…";
-                var progress = new Progress<double>(p => StatusText.Text = $"Uploading… {p:P0}");
+                var progress = new Progress<double>(p => StatusText.Text = app.ShareProgressText(result, p));
                 bool ok = await app.ShareAsync(result, progress, context: ConsentContext.TrimShare);
                 if (!ok && app.LastShareOutcome == ShareOutcome.Declined)
                 {

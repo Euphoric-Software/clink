@@ -23,8 +23,9 @@ internal sealed partial class AppController
         try
         {
             string folder = ScreenshotService.FolderFor(Settings);
+            TestGuard.CheckLaunch("opening the screenshots folder");   // before the folder is created
             System.IO.Directory.CreateDirectory(folder);
-            System.Diagnostics.Process.Start("explorer.exe", $"\"{folder}\"");
+            TestGuard.Start("explorer.exe", $"\"{folder}\"");
         }
         catch (Exception ex) { Say("Could not open the screenshots folder: " + ex.Message); }
     }

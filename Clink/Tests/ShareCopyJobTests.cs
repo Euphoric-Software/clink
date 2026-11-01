@@ -16,7 +16,7 @@ internal static class ShareCopyJobTests
 {
     // ------------------------------------------------------------------ the fake and the rig
 
-    private sealed class Fake : IShareTranscoder
+    internal sealed class Fake : IShareTranscoder
     {
         public Func<string, ShareProbeResult> ProbeFor = _ => new ShareProbeResult(5, "h264", 1920, 1080, 60, 1, 1.0);
         public Func<int, long> TranscodeSize = _ => 1_800_000;
@@ -25,6 +25,10 @@ internal static class ShareCopyJobTests
         public Func<string, CancellationToken, Task>? Hold;
         public Action<string>? OnProbe;
         public int CleanupDelayMs;
+        /// <summary>The length the fake's copy says it has.</summary>
+        public double OutSeconds = 5;
+        /// <summary>The progress callback of the transcode that is (or was last) under way: a test can report more through it.</summary>
+        public volatile IProgress<double>? LastProgress;
         public int Transcodes, Remuxes, Probes, Concurrent, MaxConcurrent;
         public volatile bool SawCancel, CleanedUp;
         public readonly List<ShareTranscodeRequest> Requests = new();
@@ -58,11 +62,12 @@ internal static class ShareCopyJobTests
             try
             {
                 using (var fs = File.Create(dst)) fs.SetLength(size);   // the real transcoder writes its output here (and is not expected to leave it on a cancel; the fake does, to see the job clean up)
+                LastProgress = progress;
                 progress?.Report(0.5);
                 if (Hold != null) await Hold(src, ct);
                 ct.ThrowIfCancellationRequested();
                 progress?.Report(1.0);
-                return new ShareTranscodeResult(dst, size, TimeSpan.FromSeconds(5), 300, w, h, fps, new[] { "Mix" }, "Fake") { MeasuredFps = fps };
+                return new ShareTranscodeResult(dst, size, TimeSpan.FromSeconds(OutSeconds), 300, w, h, fps, new[] { "Mix" }, "Fake") { MeasuredFps = fps };
             }
             catch (OperationCanceledException)
             {
@@ -75,7 +80,7 @@ internal static class ShareCopyJobTests
         }
     }
 
-    private sealed class Sink : IProgress<ShareCopyProgress>
+    internal sealed class Sink : IProgress<ShareCopyProgress>
     {
         private readonly List<ShareCopyProgress> _seen = new();
         private int _calls;
@@ -89,7 +94,7 @@ internal static class ShareCopyJobTests
         public ShareCopyProgress[] Seen { get { lock (_seen) return _seen.ToArray(); } }
     }
 
-    private sealed class Rig : IDisposable
+    internal sealed class Rig : IDisposable
     {
         public readonly TempDir Dir = new();
         public readonly Fake Fake = new();
@@ -138,13 +143,13 @@ internal static class ShareCopyJobTests
         }
     }
 
-    private static T Wait<T>(Task<T> task, string what = "the copy")
+    internal static T Wait<T>(Task<T> task, string what = "the copy")
     {
         if (!task.Wait(20000)) Check.Fail("timed out waiting for " + what);
         return task.Result;
     }
 
-    private static void Spin(Func<bool> done, string what, int limitMs = 10000)
+    internal static void Spin(Func<bool> done, string what, int limitMs = 10000)
     {
         var sw = Stopwatch.StartNew();
         while (!done())
@@ -790,7 +795,8 @@ internal static class ShareCopyJobTests
         string key = rig.Key(clip);
         var maker = new Sink();
         var make = rig.App.MakeShareCopyAsync(clip, rig.Target, maker, default);
-        Spin(() => rig.Fake.Transcodes == 1 && maker.Seen.Length > 0, "the transcode to be under way");
+        // The fake reports 0.5 only after it has written its output (Transcodes == 1 alone comes before that report).
+        Spin(() => maker.Seen.Any(p => p.Fraction >= 0.5), "the transcode to be under way, at 0.5");
         var finder = new Sink();
         var find = rig.App.FindShareCopyAsync(clip, rig.Target, finder);
         Spin(() => finder.Seen.Length > 0, "the window that opened to be told where the job is");
@@ -989,7 +995,7 @@ internal static class ShareCopyJobTests
         Check.Equal(ShareCopyOutcome.Cancelled, r1.Outcome);
         Thread.Sleep(100);
         Check.Equal((1, 1), (rig.Fake.Probes, rig.Fake.Transcodes), "the second asker started no job of its own");
-        Check.Equal(0, sink.Seen.Length, "nor reported anything");
+        Check.Equal(new[] { ShareCopyStage.Waiting }, sink.Seen.Select(p => p.Stage).ToArray(), "it only said Waiting (F4), nothing about a copy");
         Check.False(File.Exists(rig.Part(clip)) || File.Exists(rig.Final(clip)), "nothing is left");
         Check.False(rig.Cache.IsInUse(rig.Key(clip)), "and no mark");
     }
@@ -1036,6 +1042,73 @@ internal static class ShareCopyJobTests
         using var rf = Wait(find)!;
         Check.Equal(ShareCopyOutcome.UseCopy, rb.Outcome, rb.Error);
         Check.Equal(ShareCopyOutcome.UseCopy, rf!.Outcome, rf.Error);
+    }
+
+    [UnitTest]
+    public static void An_asker_that_leaves_between_storing_and_attaching_its_listening_is_never_called()
+    {
+        using var rig = new Rig();
+        var clip = rig.Clip("gap.mp4", 6_000_000);
+        var gate = new TaskCompletionSource();
+        rig.Fake.Hold = (_, ct) => gate.Task.WaitAsync(ct);
+        var maker = new Sink();
+        var make = rig.Ask(clip, maker);
+        Spin(() => maker.Seen.Any(p => p.Fraction >= 0.5), "the job to be at 0.5 (a catch-up exists for a joiner)");
+
+        // FindShareCopyAsync starts on a thread of its own, and hands the task back through a completion source. Every attempt has its
+        // own state (sink, thread, handed task, outcome), found by its sink, and the loop waits for each attempt's outcome before the next.
+        // If the first await finds the pool's work finished, the gap is reached on the finder thread itself, before the task exists: that
+        // attempt is not the scenario (nobody can leave yet), so its outcome is false and the next attempt is made.
+        var attempts = new System.Collections.Concurrent.ConcurrentDictionary<IProgress<ShareCopyProgress>, GapAttempt>();
+        var finds = new List<Task<ShareCopyResult?>>();
+        AppController.ListenGapHook = sink =>
+        {
+            if (!attempts.TryGetValue(sink, out var a)) return;   // another test's asker
+            if (ReferenceEquals(Thread.CurrentThread, a.Thread)) { a.Outcome.TrySetResult(false); return; }
+            try
+            {
+                // The finder thread is not this one: it is not blocked by this wait.
+                if (!a.Handed.Task.Wait(10000)) throw new TimeoutException("the test never got the task");
+                ShareCopyResult.Abandon(a.Handed.Task.Result);   // Abandon in the gap: the listening is stored, not attached yet
+                a.Outcome.TrySetResult(true);
+            }
+            catch (Exception ex) { a.Outcome.TrySetException(ex); throw; }
+        };
+        try
+        {
+            GapAttempt? won = null;
+            for (int attempt = 0; attempt < 50 && won == null; attempt++)
+            {
+                var a = new GapAttempt();
+                attempts[a.Sink] = a;
+                a.Thread = new Thread(() =>
+                {
+                    try { a.Handed.SetResult(rig.App.FindShareCopyAsync(clip, rig.Target, a.Sink)); }
+                    catch (Exception ex) { a.Handed.TrySetException(ex); }
+                }) { IsBackground = true, Name = "gap-finder" };
+                a.Thread.Start();
+                Check.True(a.Thread.Join(10000), "the finder thread to return");
+                finds.Add((Task<ShareCopyResult?>)a.Handed.Task.Result);
+                Check.True(a.Outcome.Task.Wait(10000), "the attempt's gap to be reached");
+                if (a.Outcome.Task.Result) won = a;
+            }
+            Check.True(won != null, "the asker to leave in the gap (50 attempts: the pool's work was never slower than the await)");
+            rig.Fake.LastProgress!.Report(0.75);   // the job reports after the asker left
+            gate.SetResult();
+            using var made = Wait(make);
+            foreach (var f in finds) using (Wait(f)) { }   // every task still ends (with the job's result, disposed here)
+            Check.Equal(0, won!.Sink.Seen.Length, "neither the catch-up nor any later report reached the sink that had left");
+            Check.True(maker.Seen.Any(p => p.Fraction >= 0.75), "the other asker still hears the job");
+        }
+        finally { AppController.ListenGapHook = null; gate.TrySetResult(); }
+    }
+
+    private sealed class GapAttempt
+    {
+        public readonly Sink Sink = new();
+        public Thread? Thread;
+        public readonly TaskCompletionSource<Task> Handed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public readonly TaskCompletionSource<bool> Outcome = new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 
     [UnitTest]
