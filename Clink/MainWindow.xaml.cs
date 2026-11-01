@@ -39,7 +39,6 @@ public partial class MainWindow : Window
     private readonly AppController _app = AppController.Instance;
     private readonly ObservableCollection<string> _customApps = new();
     private readonly DispatcherTimer _restartTimer, _saveTimer, _bannerTimer;
-    private readonly Choice[] _bitratePresets = new[] { 4, 6, 8, 12, 16, 20, 25, 30, 40, 50, 60, 80, 100 }.Select(b => new Choice($"{b} Mbps", b)).ToArray();
     private bool _loading = true;
     private bool _filling;                              // a combo is being (re)populated: its SelectionChanged is not a user choice
     private bool _pickingRunningApp;                    // the "Add running app…" list was opened: a selection now is a pick, not a key on the closed box
@@ -464,7 +463,7 @@ public partial class MainWindow : Window
 
         Fill(ResolutionCombo, new[] { new Choice("Native", "native"), new Choice("1440p", "1440p"), new Choice("1080p", "1080p"), new Choice("720p", "720p") }, s.Resolution);
         Fill(FpsCombo, new[] { new Choice("30", 30), new Choice("60", 60), new Choice("120", 120) }, s.Fps);
-        Fill(BitrateCombo, _bitratePresets, s.BitrateMbps);
+        FillBitrate(s);
         FillCodecs();
         Fill(SizeTargetCombo, Capabilities.SizeTargets.Select(t => new Choice(t.Name, t.Id)).ToArray(), s.SizeTarget);
         Fill(ModeCombo, new[] { new Choice("Only while a game or custom app is running", "game"), new Choice("Always (whenever Clink runs)", "always") }, s.RecordingMode);
@@ -558,6 +557,18 @@ public partial class MainWindow : Window
         combo.SelectedItem = choices.FirstOrDefault(c => !c.Header && Same(c.Value, current)) ?? choices.FirstOrDefault(c => !c.Header && !c.Disabled) ?? choices[0];
     }
 
+    // The bitrate box: the usual choices plus the stored value when it is not one of them (a hand edit), so no quality event replaces it with the first entry.
+    private void FillBitrate(Settings s)
+    {
+        bool was = _filling;
+        _filling = true;
+        try
+        {
+            Fill(BitrateCombo, SetupPresets.BitrateItems(s.BitrateMbps).Select(b => new Choice($"{b} Mbps", b)).ToArray(), s.BitrateMbps);
+        }
+        finally { _filling = was; }
+    }
+
     // string values (device ids, process names) compare case-insensitively so a hand-edited settings.json still matches
     private static bool Same(object a, object b) => a is string sa && b is string sb ? string.Equals(sa, sb, StringComparison.OrdinalIgnoreCase) : Equals(a, b);
 
@@ -578,7 +589,7 @@ public partial class MainWindow : Window
         var items = Capabilities.Codecs
             .Select(c => new Choice(c.Supported ? c.Name + (c.Experimental ? " (experimental)" : "") : $"{c.Name} — {c.Reason}", c.Id, Disabled: !c.Supported))
             .ToList();
-        Refill(CodecCombo, items, _app.Settings.Codec);
+        Refill(CodecCombo, items, Clink.Engine.EngineConfig.NormalizeCodec(_app.Settings.Codec));
         UpdateCodecDescription();
     }
 
@@ -624,7 +635,6 @@ public partial class MainWindow : Window
         try
         {
             // The chosen bitrate stays editable; a size target only lowers the encode bitrate when a clip would not fit.
-            if (!ReferenceEquals(BitrateCombo.ItemsSource, _bitratePresets)) Fill(BitrateCombo, _bitratePresets, s.BitrateMbps);
             BitrateCombo.IsEnabled = true;
             BitrateCombo.ToolTip = targeted && mbps < s.BitrateMbps
                 ? $"Encoding at {mbps:0.#} Mbps so a {Capabilities.FormatDuration(Capabilities.FitSeconds(s.SizeTarget, seconds))} clip fits the size target; set the target to None to use the full {s.BitrateMbps} Mbps"
@@ -1376,8 +1386,14 @@ public partial class MainWindow : Window
         var s = _app.Settings;
         s.Resolution = Selected<string>(ResolutionCombo) ?? SettingsDefaults.Resolution;
         s.Fps = Selected<int>(FpsCombo) is var f && f > 0 ? f : SettingsDefaults.Fps;
-        if (BitrateCombo.IsEnabled && Selected<int>(BitrateCombo) is var b && b > 0) s.BitrateMbps = b;   // read-only while a size target picks it
-        s.Codec = Selected<string>(CodecCombo) ?? SettingsDefaults.Codec;
+        string codec = Selected<string>(CodecCombo) ?? SettingsDefaults.Codec;
+        // A codec change takes the bitrate along only while the user has not picked one and it is still the old codec's default for this
+        // resolution / FPS; the combo just shows the new value. Only a change of the bitrate box itself counts as the user's pick.
+        if (SetupPresets.IsCodecChange(s.Codec, codec) && SetupPresets.FollowCodec(s, s.Codec, codec))
+            FillBitrate(s);   // programmatic: selecting the new bitrate is not a user choice
+        else if (BitrateCombo.IsEnabled && Selected<int>(BitrateCombo) is var b && b > 0)
+            SetupPresets.PickBitrate(s, b, ReferenceEquals(sender, BitrateCombo));   // a size target never disables the box: it only lowers the encode bitrate
+        s.Codec = codec;
         s.CaptureCursor = CursorCheck.IsChecked == true;
         s.Save();
         UpdateCodecDescription();

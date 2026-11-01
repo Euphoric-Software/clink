@@ -96,6 +96,8 @@ internal sealed class Settings
     public string? MonitorDevice { get; set; }                 // "\\.\DISPLAY1"; null = primary
     public int Fps { get; set; } = SettingsDefaults.Fps;
     public int BitrateMbps { get; set; } = SettingsDefaults.BitrateMbps;
+    /// <summary>The user picked <see cref="BitrateMbps"/> in the bitrate box (not a preset or default): a codec change then never moves it. Missing = false. Travels with the bitrate on an import.</summary>
+    public bool BitrateChosen { get; set; }
     public string Codec { get; set; } = SettingsDefaults.Codec;                // h264 | hevc
     public string Resolution { get; set; } = SettingsDefaults.Resolution;      // native | 1440p | 1080p | 720p
     public int BufferSeconds { get; set; } = SettingsDefaults.BufferSeconds;
