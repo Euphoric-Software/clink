@@ -187,6 +187,8 @@
   "Save this screenshot before Clink quits?": "Save this screenshot before Clink quits?",
   "Save this screenshot?": "Save this screenshot?",
   "Save the changes to this screenshot before Clink quits?": "Save the changes to this screenshot before Clink quits?",
+  "Save this screenshot before Clink restarts?": "Save this screenshot before Clink restarts?",
+  "Save the changes to this screenshot before Clink restarts?": "Save the changes to this screenshot before Clink restarts?",
   "Save the changes to this screenshot?": "Save the changes to this screenshot?",
   "Preview failed — retrying": "Preview failed — retrying",
   "Preview failed — it is tried again with the next change (the reason is in the log)": "Preview failed — it is tried again with the next change (the reason is in the log)",

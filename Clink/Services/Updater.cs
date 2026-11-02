@@ -581,7 +581,7 @@ internal sealed class Updater : IDisposable
         if (manual || _failedBackgroundPasses < FailingNoticeMinPasses || now - since <= FailingNoticeAfter) return;
         int days = (int)(now - since).TotalDays;
         _failNotice = new UpdateNotice($"checkfailed:{channelName}", Note.Of("Clink could not check for updates"),
-            Note.PluralOf("Clink has not been able to check for updates from {host} for {count} days. Details under Alerts → Updates.", days, ("host", Note.Ltr(host))));   // (days >= 3: English "other")
+            Note.PluralOf("Clink has not been able to check for updates from {host} for {count} days. Details under App → Updates.", days, ("host", Note.Ltr(host))));   // (days >= 3: English "other")
     }
 
     /// <summary>
@@ -1012,7 +1012,7 @@ internal sealed class Updater : IDisposable
     // ------------------------------------------------------------------ pending / apply
 
     // Texts that end in the same two sentences are whole catalog entries each (the hint and "install it by hand" are not pieces glued on).
-    // A manual check is what clears a .failed marker (see CheckAndMaybeDownloadAsync): "To retry, click Check now under Alerts → Updates."
+    // A manual check is what clears a .failed marker (see CheckAndMaybeDownloadAsync): "To retry, click Check now under App → Updates."
 
     /// <summary>Why this process cannot install an update over <paramref name="targetExe"/> (it is elevated, or the folder is read-only), or null; in the language of the UI.</summary>
     public static string? InstallProblemFor(string targetExe) => InstallProblemReason(targetExe)?.Shown;
@@ -1101,7 +1101,7 @@ internal sealed class Updater : IDisposable
                 if (shown.Length > 150) shown = shown[..150] + "…";
                 InstallProblemNote = blocked != null
                     ? Note.Of("Update to v{version} could not be installed: {reason}; {blocked}, so install it by hand from {folder}.", ("version", Note.Ltr(bestVer.ToString())), ("reason", shown), ("blocked", blocked), ("folder", Note.Ltr(UpdatesDir)))
-                    : Note.Of("Update to v{version} could not be installed: {reason}. To retry, click Check now under Alerts → Updates.", ("version", Note.Ltr(bestVer.ToString())), ("reason", shown));
+                    : Note.Of("Update to v{version} could not be installed: {reason}. To retry, click Check now under App → Updates.", ("version", Note.Ltr(bestVer.ToString())), ("reason", shown));
                 Log.Warn($"updater: skipping v{bestVer}, installing it failed earlier: {reason}");
                 return false;
             }
@@ -1142,7 +1142,7 @@ internal sealed class Updater : IDisposable
         string why = appControl
             ? "Smart App Control blocked it (Clink is not code-signed yet). Turn it off in Windows Security › App & browser control, or build Clink from source"
             : Describe(ex);
-        InstallProblemNote = Note.Of("Update to v{version} could not start: {reason}. To retry, click Check now under Alerts → Updates.", ("version", Note.Ltr(version.ToString())), ("reason", Shorten(why)));
+        InstallProblemNote = Note.Of("Update to v{version} could not start: {reason}. To retry, click Check now under App → Updates.", ("version", Note.Ltr(version.ToString())), ("reason", Shorten(why)));
         Log.Warn("updater: " + InstallProblemNote.English);
         // Same marker the apply process writes: this file is not offered again at every start (a manual check retries it).
         try { File.WriteAllText(FailedMarker(pendingExe), $"{why}\n{DateTime.Now:yyyy-MM-dd HH:mm:ss} launch failed"); } catch { }
@@ -1160,7 +1160,7 @@ internal sealed class Updater : IDisposable
         object reason = (object?)refused.ReasonNote ?? Shorten(refused.Reason);
         return refused.Deferred
             ? Note.Of("Update to v{version} was not installed this time: {reason}. It will be tried again.", ("version", Note.Ltr(version.ToString())), ("reason", reason))
-            : Note.Of("Update to v{version} not installed: {reason}. To retry, click Check now under Alerts → Updates.", ("version", Note.Ltr(version.ToString())), ("reason", reason));
+            : Note.Of("Update to v{version} not installed: {reason}. To retry, click Check now under App → Updates.", ("version", Note.Ltr(version.ToString())), ("reason", reason));
     }
 
     /// <summary>What the user is told about an exception from starting the update: the text of an <see cref="UpdateStartException"/> / elevated refusal in their language, else the exception's message.</summary>
@@ -1613,7 +1613,7 @@ internal sealed class Updater : IDisposable
     {
         var why = _lastDownloadError ?? Note.Of("update|unknown error");   // (fixed texts of DownloadErrorNote: short enough for the balloon)
         return new UpdateNotice($"download:{version}", Note.Of("Clink update not downloaded"),
-            Note.PluralOf("Downloading v{version} failed {count} times ({reason}). To retry, click Check now under Alerts → Updates.", tries, ("version", Note.Ltr(version.ToString())), ("reason", why)));   // (tries >= 3: English "other")
+            Note.PluralOf("Downloading v{version} failed {count} times ({reason}). To retry, click Check now under App → Updates.", tries, ("version", Note.Ltr(version.ToString())), ("reason", why)));   // (tries >= 3: English "other")
     }
 
     private async Task<UpdateInfo?> CheckAndMaybeDownloadAsync(CancellationToken ct, bool manual)
@@ -1647,7 +1647,7 @@ internal sealed class Updater : IDisposable
                 string? failed = FailedReason(existing);
                 if (failed != null && !manual && bad == null)
                 {
-                    SetError(Note.Of("installing v{version} failed earlier ({reason}). To retry, click Check now under Alerts → Updates.", ("version", Note.Ltr(info.Version.ToString())), ("reason", failed.TrimEnd('.'))));
+                    SetError(Note.Of("installing v{version} failed earlier ({reason}). To retry, click Check now under App → Updates.", ("version", Note.Ltr(info.Version.ToString())), ("reason", failed.TrimEnd('.'))));
                     Log.Warn($"updater: v{info.Version} is downloaded but installing it failed earlier ({failed}); click the version in the footer to retry");
                     return info;
                 }
@@ -1674,7 +1674,7 @@ internal sealed class Updater : IDisposable
             int tries = _attempts.GetValueOrDefault(info.Version);
             if (tries >= MaxDownloadAttempts && !manual)
             {
-                SetError(Note.PluralOf("downloading v{version} failed {count} times ({reason}). To retry, click Check now under Alerts → Updates.", tries, ("version", Note.Ltr(info.Version.ToString())), ("reason", _lastDownloadError ?? Note.Of("update|unknown error"))));   // (tries >= 3: English "other")
+                SetError(Note.PluralOf("downloading v{version} failed {count} times ({reason}). To retry, click Check now under App → Updates.", tries, ("version", Note.Ltr(info.Version.ToString())), ("reason", _lastDownloadError ?? Note.Of("update|unknown error"))));   // (tries >= 3: English "other")
                 notice = DownloadCapNotice(info.Version, tries);
                 return info;
             }

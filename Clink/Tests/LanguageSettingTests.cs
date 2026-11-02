@@ -510,6 +510,231 @@ internal static class LanguageSettingTests
         Check.Equal(0, rig2.Started.Count);
     }
 
+    private static object? Priv(AppController app, string field) =>
+        (typeof(AppController).GetField(field, BindingFlags.Instance | BindingFlags.NonPublic) ?? throw new TestFailure("AppController." + field + " is gone")).GetValue(app);
+
+    private static void CallQuitAsync(AppController app, bool userInitiated) =>
+        (typeof(AppController).GetMethod("QuitAsync", BindingFlags.Instance | BindingFlags.NonPublic) ?? throw new TestFailure("AppController.QuitAsync is gone")).Invoke(app, new object[] { userInitiated });
+
+    [UnitTest]
+    public static void While_the_editor_question_is_up_a_tray_quit_cannot_open_a_second_save_box()
+    {
+        NeedsApp();
+        using var rig = new Rig();
+        var answer = new TaskCompletionSource<bool>();
+        rig.App.LanguageEditorAsk = _ => answer.Task;
+        Check.True(rig.App.RestartForLanguage(null));
+        Check.True((bool)Priv(rig.App, "_quitAsking")!, "the language path holds the quit question");
+        CallQuitAsync(rig.App, true);   // the tray's Quit: with the question held it returns at once (no second box, nothing shut down)
+        Check.False((bool)Priv(rig.App, "_forcedQuitPending")!, "a user's quit is not remembered as forced");
+        Check.Equal(0, rig.Started.Count);
+        answer.SetResult(false);
+        ScreenshotUploadTests.Pump(() => !rig.App.ImportInProgress, "cancel frees the restart", 5_000);
+        Check.False((bool)Priv(rig.App, "_quitAsking")!, "and the quit question is free again");
+        Check.Equal(0, rig.Started.Count);
+    }
+
+    [UnitTest]
+    public static void A_forced_quit_during_the_editor_question_wins_over_the_language_restart()
+    {
+        NeedsApp();
+        foreach (bool answerGo in new[] { true, false })
+        {
+            using var rig = new Rig();
+            var quits = new List<bool>();
+            rig.App.QuitOverride = userInitiated => quits.Add(userInitiated);
+            var answer = new TaskCompletionSource<bool>();
+            rig.App.LanguageEditorAsk = _ => answer.Task;
+            Check.True(rig.App.RestartForLanguage(null));
+            CallQuitAsync(rig.App, false);   // an update restart asks to quit: it cannot be refused
+            Check.True((bool)Priv(rig.App, "_forcedQuitPending")!, "remembered");
+            answer.SetResult(answerGo);
+            ScreenshotUploadTests.Pump(() => quits.Count == 1, $"the quit goes on (answer {answerGo})", 5_000);
+            Check.Equal(new[] { false }, quits.ToArray(), "as a forced quit");
+            Check.Equal(0, rig.Started.Count, "no language restart");
+            Check.Equal(0, rig.Exits);
+            Check.False((bool)Priv(rig.App, "_quitAsking")!, "the question is released");
+            Check.False((bool)Priv(rig.App, "_forcedQuitPending")!);
+        }
+    }
+
+    private static bool ResolveEditorForExit(AppController app, bool userInitiated) =>
+        ((Task<bool>)(typeof(AppController).GetMethod("ResolveEditorForQuitAsync", BindingFlags.Instance | BindingFlags.NonPublic) ?? throw new TestFailure("AppController.ResolveEditorForQuitAsync is gone")).Invoke(app, new object[] { userInitiated })!).GetAwaiter().GetResult();
+
+    [UnitTest]
+    public static void An_answered_editor_question_is_not_asked_again_on_the_way_out_but_a_cancel_then_forced_quit_saves_a_copy()
+    {
+        NeedsApp();
+        // yes (saved) or no (discarded) for the restart: the exit does not call the editor again (a no must not be saved by the exit)
+        foreach (bool forcedToo in new[] { false, true })
+        {
+            using var rig = new Rig();
+            var asked = new List<bool>();
+            var quits = new List<bool>();
+            rig.App.QuitOverride = u => quits.Add(u);
+            var answer = new TaskCompletionSource<bool>();
+            rig.App.LanguageEditorAsk = u => { asked.Add(u); return answer.Task; };
+            Check.True(rig.App.RestartForLanguage(null));
+            if (forcedToo) CallQuitAsync(rig.App, false);
+            answer.SetResult(true);
+            ScreenshotUploadTests.Pump(() => forcedToo ? quits.Count == 1 : rig.Started.Count == 1, $"the exit goes on (forced quit too: {forcedToo})", 5_000);
+            Check.True((bool)Priv(rig.App, "_editorResolvedForExit")!, "the editor is marked as answered");
+            Check.True(ResolveEditorForExit(rig.App, false), "the exit path goes on");
+            Check.Equal(new[] { true }, asked.ToArray(), "and the editor was not asked a second time");
+        }
+
+        // cancel, then a forced quit that came in meanwhile: the editor is asked again on the way out (it saves a copy)
+        using (var rig = new Rig())
+        {
+            var asked = new List<bool>();
+            var quits = new List<bool>();
+            rig.App.QuitOverride = u => quits.Add(u);
+            var answer = new TaskCompletionSource<bool>();
+            rig.App.LanguageEditorAsk = u => { asked.Add(u); return asked.Count == 1 ? answer.Task : Task.FromResult(true); };
+            Check.True(rig.App.RestartForLanguage(null));
+            CallQuitAsync(rig.App, false);
+            answer.SetResult(false);
+            ScreenshotUploadTests.Pump(() => quits.Count == 1, "the forced quit goes on", 5_000);
+            Check.False((bool)Priv(rig.App, "_editorResolvedForExit")!, "a cancel resolves nothing");
+            Check.True(ResolveEditorForExit(rig.App, false), "the exit path saves the copy and goes on");
+            Check.Equal(new[] { true, false }, asked.ToArray(), "asked again as a forced quit");
+        }
+
+        // a restart that cannot start goes on running: a later quit asks again
+        using (var rig = new Rig())
+        {
+            rig.FailStart = true;
+            rig.App.LanguageEditorAsk = _ => Task.FromResult(true);
+            Check.False(rig.App.RestartForLanguage(null), "the new Clink could not be started");
+            Check.False((bool)Priv(rig.App, "_editorResolvedForExit")!, "the mark is cleared");
+        }
+    }
+
+    [UnitTest]
+    public static void A_failing_recording_question_after_the_editor_answer_frees_the_quit_and_the_restart()
+    {
+        NeedsApp();
+        using var rig = new Rig();
+        var answer = new TaskCompletionSource<bool>();
+        rig.App.LanguageEditorAsk = _ => answer.Task;
+        rig.App.LanguageRestartAsk = (_, _) => throw new InvalidOperationException("the box failed");
+        Check.True(rig.App.RestartForLanguage(null));
+        rig.StartRecording();   // asked about after the editor's answer
+        answer.SetResult(true);
+        ScreenshotUploadTests.Pump(() => !rig.App.ImportInProgress, "the restart is free again", 5_000);
+        Check.False((bool)Priv(rig.App, "_quitAsking")!, "a later quit is not swallowed");
+        Check.False((bool)Priv(rig.App, "_forcedQuitPending")!);
+        Check.Equal(0, rig.Started.Count, "not going ahead");
+    }
+
+    [UnitTest]
+    public static void A_tray_quit_during_the_editor_question_quits_after_the_answer_instead_of_restarting()
+    {
+        NeedsApp();
+        foreach (bool answerGo in new[] { true, false })
+        {
+            using var rig = new Rig();
+            var quits = new List<bool>();
+            rig.App.QuitOverride = u => quits.Add(u);
+            var answer = new TaskCompletionSource<bool>();
+            rig.App.LanguageEditorAsk = _ => answer.Task;
+            Check.True(rig.App.RestartForLanguage(null));
+            CallQuitAsync(rig.App, true);
+            Check.True((bool)Priv(rig.App, "_userQuitPending")!, "remembered");
+            Check.False((bool)Priv(rig.App, "_forcedQuitPending")!);
+            answer.SetResult(answerGo);
+            ScreenshotUploadTests.Pump(() => !(bool)Priv(rig.App, "_quitAsking")!, $"the question is released (answer {answerGo})", 5_000);
+            Check.Equal(0, rig.Started.Count, "no language restart");
+            Check.False((bool)Priv(rig.App, "_userQuitPending")!);
+            if (answerGo)
+            {
+                Check.Equal(new[] { true }, quits.ToArray(), "the user's quit goes on after the editor's answer");
+                Check.True((bool)Priv(rig.App, "_editorResolvedForExit")!, "and does not ask the editor again");
+            }
+            else
+            {
+                Check.Equal(0, quits.Count, "a cancelled editor question keeps Clink running");
+                Check.False(rig.App.ImportInProgress);
+            }
+        }
+    }
+
+    [UnitTest]
+    public static void A_cancelled_quit_question_forgets_a_second_tray_quit_so_a_later_language_restart_restarts()
+    {
+        NeedsApp();
+        using var rig = new Rig();
+        var quits = new List<bool>();
+        rig.App.QuitOverride = u => quits.Add(u);
+        var answer = new TaskCompletionSource<bool>();
+        rig.App.LanguageEditorAsk = _ => answer.Task;
+        CallQuitAsync(rig.App, true);   // the tray's Quit: its own editor question is up
+        Check.True((bool)Priv(rig.App, "_quitAsking")!, "the quit holds the question");
+        CallQuitAsync(rig.App, true);   // Quit again: remembered while the question is up
+        Check.True((bool)Priv(rig.App, "_userQuitPending")!, "remembered");
+        answer.SetResult(false);   // Cancel
+        ScreenshotUploadTests.Pump(() => !(bool)Priv(rig.App, "_quitAsking")!, "the question is released", 5_000);
+        Check.False((bool)Priv(rig.App, "_userQuitPending")!, "the cancelled quit leaves nothing remembered");
+        rig.App.LanguageEditorAsk = _ => Task.FromResult(true);
+        Check.True(rig.App.RestartForLanguage(null));
+        ScreenshotUploadTests.Pump(() => rig.Started.Count == 1, "the language restart goes on", 5_000);
+        Check.Equal(0, quits.Count, "and does not quit instead");
+    }
+
+    [UnitTest]
+    public static void A_recording_that_starts_during_the_editor_question_is_asked_about_after_it()
+    {
+        NeedsApp();
+        // the order kept: the recording question first when a recording is running at the start (a no there costs nothing), the editor's next;
+        // a recording that began during the editor's question is asked about after it (it was not asked before)
+        using (var rig = new Rig())
+        {
+            var answer = new TaskCompletionSource<bool>();
+            rig.App.LanguageEditorAsk = _ => answer.Task;
+            Check.True(rig.App.RestartForLanguage(null));
+            Check.Equal(0, rig.Asked.Count, "no recording yet: no recording question");
+            rig.StartRecording();
+            answer.SetResult(true);
+            ScreenshotUploadTests.Pump(() => rig.Started.Count == 1, "the restart after the recording question", 5_000);
+            Check.Equal(1, rig.Asked.Count, "asked once, after the editor's answer");
+            Check.Contains(rig.Asked[0], "A recording is running", "the recording question");
+        }
+        using (var rig = new Rig())
+        {
+            rig.Answer = MessageBoxResult.No;
+            var answer = new TaskCompletionSource<bool>();
+            rig.App.LanguageEditorAsk = _ => answer.Task;
+            Check.True(rig.App.RestartForLanguage(null));
+            rig.StartRecording();
+            answer.SetResult(true);
+            ScreenshotUploadTests.Pump(() => !rig.App.ImportInProgress, "a no to the recording question keeps Clink running", 5_000);
+            Check.Equal(1, rig.Asked.Count);
+            Check.Equal(0, rig.Started.Count);
+            Check.False((bool)Priv(rig.App, "_quitAsking")!);
+        }
+        using (var rig = new Rig())   // already asked before the editor: not asked twice
+        {
+            rig.StartRecording();
+            var answer = new TaskCompletionSource<bool>();
+            rig.App.LanguageEditorAsk = _ => answer.Task;
+            Check.True(rig.App.RestartForLanguage(null));
+            Check.Equal(1, rig.Asked.Count, "asked first");
+            answer.SetResult(true);
+            ScreenshotUploadTests.Pump(() => rig.Started.Count == 1, "the restart", 5_000);
+            Check.Equal(1, rig.Asked.Count, "and not again after the editor");
+        }
+        using (var rig = new Rig())   // the editor's question was cancelled: the recording question is not asked
+        {
+            var answer = new TaskCompletionSource<bool>();
+            rig.App.LanguageEditorAsk = _ => answer.Task;
+            Check.True(rig.App.RestartForLanguage(null));
+            rig.StartRecording();
+            answer.SetResult(false);
+            ScreenshotUploadTests.Pump(() => !rig.App.ImportInProgress, "cancel", 5_000);
+            Check.Equal(0, rig.Asked.Count);
+            Check.Equal(0, rig.Started.Count);
+        }
+    }
     // ------------------------------------------------------------------ the panel
 
     [UnitTest]
@@ -572,6 +797,8 @@ internal static class LanguageSettingTests
         Check.Equal(54.0, w.ArchiveGbBox.Width);
         Check.Equal("0 = off", (string)w.ArchiveDaysBox.ToolTip);
         Check.Equal("0 = off", (string)w.ArchiveGbBox.ToolTip);
+        Check.Equal("Days before a clip moves to the archive", AutomationProperties.GetName(w.ArchiveDaysBox), "the days box has its own accessible name");
+        Check.Equal("Local folder limit in GB", AutomationProperties.GetName(w.ArchiveGbBox), "so has the size box");
         Check.Equal(MainWindow.ArchiveRuleEnglish, "Move clips older than {days} days, or when the local folder exceeds {size} GB \u00B7 whichever comes first", "the one key");
         Check.True(L.Embedded.English.Entries.ContainsKey(MainWindow.ArchiveRuleEnglish), "it is in the English catalog");
         foreach (string gone in new[] { "Move clips older than", "days, or when the local folder exceeds", "GB \u00B7 whichever comes first" })

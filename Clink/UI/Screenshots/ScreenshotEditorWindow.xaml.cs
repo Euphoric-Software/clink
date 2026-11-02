@@ -308,10 +308,10 @@ public partial class ScreenshotEditorWindow : Window, ICaptureExcludedWindow
     }
 
     /// <summary>The app is quitting (see <see cref="EditorWindowHost.ConfirmQuitAsync"/>). True = the quit may go on.</summary>
-    internal async Task<bool> ResolveForQuitAsync(bool userInitiated)
+    internal async Task<bool> ResolveForQuitAsync(bool userInitiated, bool forRestart = false)
     {
         _resolvingQuit = true;   // a close that was deferred while a save ran must not ask a second question of its own
-        try { return await ResolveForQuitCoreAsync(userInitiated); }
+        try { return await ResolveForQuitCoreAsync(userInitiated, forRestart); }
         finally { _resolvingQuit = false; }
     }
 
@@ -319,7 +319,7 @@ public partial class ScreenshotEditorWindow : Window, ICaptureExcludedWindow
     /// <summary>The quit's own question is being resolved: <see cref="RequestCloseAsync"/> stands aside (test seam).</summary>
     internal bool ResolvingQuit => _resolvingQuit;
 
-    private async Task<bool> ResolveForQuitCoreAsync(bool userInitiated)
+    private async Task<bool> ResolveForQuitCoreAsync(bool userInitiated, bool forRestart)
     {
         for (int i = 0; _busy && i < 100; i++) await Task.Delay(50);   // a save under way finishes first
         if (_session == null) return true;
@@ -335,7 +335,7 @@ public partial class ScreenshotEditorWindow : Window, ICaptureExcludedWindow
         Hotkeys.GrantForeground();
         Activate();
         TestGuard.CheckLaunch("a message box (save edits before quit)");
-        var answer = Dialog.Show(this, SavePromptText(HoldsUnsavedNewCapture, onQuit: true),
+        var answer = Dialog.Show(this, SavePromptText(HoldsUnsavedNewCapture, onQuit: true, onRestart: forRestart),
             MessageBoxButton.YesNoCancel, MessageBoxImage.Question, caption: L.T("Clink screenshot editor"));
         if (answer == MessageBoxResult.Cancel) return false;
         if (answer == MessageBoxResult.Yes && !await SaveCoreAsync(finish: false)) return false;
@@ -348,14 +348,16 @@ public partial class ScreenshotEditorWindow : Window, ICaptureExcludedWindow
     /// <summary>
     /// The question of the save prompt (Yes / No / Cancel). A new capture that was never saved: "Save this screenshot?" (No discards the whole
     /// capture); a screenshot that is saved already, or came from a file: "Save the changes to this screenshot?". <paramref name="onQuit"/>:
-    /// the prompt Clink asks before it quits.
+    /// the prompt Clink asks before it quits; <paramref name="onRestart"/> (with onQuit): before it restarts (the language picker).
     /// </summary>
-    internal static string SavePromptText(bool unsavedNewCapture, bool onQuit) => (unsavedNewCapture, onQuit) switch
+    internal static string SavePromptText(bool unsavedNewCapture, bool onQuit, bool onRestart = false) => (unsavedNewCapture, onQuit, onRestart) switch
     {
-        (true, true) => L.T("Save this screenshot before Clink quits?"),
-        (true, false) => L.T("Save this screenshot?"),
-        (false, true) => L.T("Save the changes to this screenshot before Clink quits?"),
-        (false, false) => L.T("Save the changes to this screenshot?"),
+        (true, true, true) => L.T("Save this screenshot before Clink restarts?"),
+        (true, true, false) => L.T("Save this screenshot before Clink quits?"),
+        (true, false, _) => L.T("Save this screenshot?"),
+        (false, true, true) => L.T("Save the changes to this screenshot before Clink restarts?"),
+        (false, true, false) => L.T("Save the changes to this screenshot before Clink quits?"),
+        (false, false, _) => L.T("Save the changes to this screenshot?"),
     };
 
     internal void CloseApproved()
@@ -517,9 +519,9 @@ internal sealed class EditorWindowHost : IScreenshotEditor
     /// The app is quitting: with unsaved edits the editor comes forward and asks (a user's quit can be cancelled: false); an update
     /// restart or a session end cannot be refused: a copy of the edits is saved and the quit goes on. True = go on quitting.
     /// </summary>
-    public async Task<bool> ConfirmQuitAsync(bool userInitiated)
+    public async Task<bool> ConfirmQuitAsync(bool userInitiated, bool forRestart = false)
     {
         var w = _window;
-        return w == null || await w.ResolveForQuitAsync(userInitiated);
+        return w == null || await w.ResolveForQuitAsync(userInitiated, forRestart);
     }
 }

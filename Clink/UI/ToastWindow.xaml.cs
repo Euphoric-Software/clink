@@ -717,7 +717,10 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
     {
         if (_dismissed || !_busy) return;
         // At 100% the bytes are sent and the link is awaited: the plain "Uploading…" (the widest line, "Uploading… 100%", would wrap this row for the moment before the link).
-        Subtitle.Text = fraction >= 1 ? L.T("Uploading…") : UploadingText(Math.Clamp(fraction, 0, 1));
+        // That is whenever the text would equal the 100% text: "P0" rounds 0.995 up to 100%, so a fraction below 1 can read 100% too.
+        double clamped = Math.Clamp(fraction, 0, 1);
+        string text = UploadingText(clamped);
+        Subtitle.Text = fraction >= 1 || text == WidestShareStatus ? L.T("Uploading…") : text;
     }
 
     /// <summary>The upload is over (linked, failed, cancelled): the button is an ordinary one again and the second line is back.</summary>

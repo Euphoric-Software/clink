@@ -401,6 +401,12 @@ internal static class LocalizationLayoutTests
             Check.Equal("Uploading… " + 0.4.ToString("P0", L.FormatCulture), done.Subtitle.Text, "under way: with the percent");
             done.SetUploadProgress(1.0);
             Check.Equal("Uploading…", done.Subtitle.Text, "at 100% the second line is the plain Uploading…");
+            done.SetUploadProgress(0.994);
+            Check.Equal("Uploading… " + 0.994.ToString("P0", L.FormatCulture), done.Subtitle.Text, "0.994 still reads 99%: with the percent");
+            done.SetUploadProgress(0.997);
+            Check.Equal("Uploading…", done.Subtitle.Text, "0.997 would round to 100%: the plain Uploading… (the widest line never shows)");
+            done.SetUploadProgress(0.9951);
+            Check.Equal("Uploading…", done.Subtitle.Text, "0.9951 rounds up to 100%");
             states.Add(("screenshot, uploading at 100%", done));
             foreach (var (name, toast) in states)
             {

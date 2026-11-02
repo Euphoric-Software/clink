@@ -868,7 +868,7 @@ internal sealed partial class AppController : IDisposable
         if (_updateItem != null) { _updateItem.Text = L.T("Update to v{version}", ("version", L.Ltr(version.ToString()))); _updateItem.Visible = true; }
         var problem = Updater.InstallProblemReason(Environment.ProcessPath ?? "");
         var msg = problem == null
-            ? Note.Of("v{version} downloaded - installs on next start, or click 'Update to v{version}'", ("version", Note.Ltr(version.ToString())))
+            ? Note.Of("v{version} downloaded - installs on next start, or click '{button}'", ("version", Note.Ltr(version.ToString())), ("button", Note.Of("Update to v{version}", ("version", Note.Ltr(version.ToString())))))
             : Note.Of("v{version} downloaded, but {problem}. Install it by hand from {folder}", ("version", Note.Ltr(version.ToString())), ("problem", problem), ("folder", Note.Ltr(Updater.UpdatesDir)));
         Say(msg);
         if (!MainWindowVisible) ShowBalloon(L.T("Clink update ready"), msg.Shown);
@@ -1157,6 +1157,7 @@ internal sealed partial class AppController : IDisposable
         Settings.ThawSaves();
         Library.ThawSaves();
         _restarting = false;
+        _editorResolvedForExit = false;   // this Clink goes on: a later quit asks the editor again
         try { Archive.Start(); } catch (Exception ex) { Log.Warn("restart: could not start the archive again: " + ex.Message); }
         if (restartRecorder) StartEngine();
         _importInProgress = false;
@@ -2524,30 +2525,18 @@ internal sealed partial class AppController : IDisposable
 
     private bool _quitAsking;
     private bool _forcedQuitPending;   // an update restart asked to quit while the user's question was up: it cannot be refused
+    private bool _userQuitPending;   // the user's own Quit came in while the language restart's editor question was up: acted on after the answer
+    private bool _editorResolvedForExit;   // the editor's question was answered yes or no for a language restart: the exit path does not ask (or save) again
 
     private async void QuitAsync(bool userInitiated)
     {
         if (_quitAsking)   // the editor's question is up already
         {
             if (!userInitiated) _forcedQuitPending = true;   // remembered: Cancel then no longer keeps Clink running
+            else _userQuitPending = true;   // remembered: the language restart quits instead once the editor's question is answered
             return;
         }
-        bool go = true;
-        if (_screenshotEditor is { IsOpen: true } editor)
-        {
-            _quitAsking = true;
-            try
-            {
-                go = await editor.ConfirmQuitAsync(userInitiated);
-                if (!go && _forcedQuitPending)
-                {
-                    Log.Info("quit: a forced quit came in during the question: saving a copy and quitting");
-                    go = await editor.ConfirmQuitAsync(userInitiated: false);
-                }
-            }
-            catch (Exception ex) { Log.Error("quit: screenshot editor", ex); }
-            finally { _quitAsking = false; _forcedQuitPending = false; }
-        }
+        bool go = await ResolveEditorForQuitAsync(userInitiated);
         if (!go)
         {
             Log.Info("Quit cancelled from the screenshot editor");
@@ -2556,6 +2545,33 @@ internal sealed partial class AppController : IDisposable
         // A throw while cleaning up must not leave a process with no tray icon running on.
         try { StopRecordingForExit(); Dispose(); }
         finally { System.Windows.Application.Current.Shutdown(); }
+    }
+
+    /// <summary>
+    /// The screenshot editor's part of a quit: its quit question (the language restart's seam <see cref="LanguageEditorAsk"/> when set), or a forced
+    /// copy-save. Nothing is asked when the editor was answered already for a language restart (<see cref="_editorResolvedForExit"/>: a no must
+    /// stay a discard). False = the quit was cancelled.
+    /// </summary>
+    private async Task<bool> ResolveEditorForQuitAsync(bool userInitiated)
+    {
+        if (_editorResolvedForExit) return true;
+        Func<bool, Task<bool>>? ask = LanguageEditorAsk;
+        if (ask == null && _screenshotEditor is { IsOpen: true } editor) ask = ui => editor.ConfirmQuitAsync(ui);
+        if (ask == null) return true;
+        bool go = true;
+        _quitAsking = true;
+        try
+        {
+            go = await ask(userInitiated);
+            if (!go && _forcedQuitPending)
+            {
+                Log.Info("quit: a forced quit came in during the question: saving a copy and quitting");
+                go = await ask(false);
+            }
+        }
+        catch (Exception ex) { Log.Error("quit: screenshot editor", ex); }
+        finally { _quitAsking = false; _forcedQuitPending = false; _userQuitPending = false; }
+        return go;
     }
 
     /// <summary>Windows is ending the session (cannot be refused): unsaved screenshot edits are saved as a copy, waiting at most ~3 s with the UI still pumping.</summary>

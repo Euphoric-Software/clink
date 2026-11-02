@@ -173,8 +173,8 @@
                                             </Grid.ColumnDefinitions>
                                             <TextBlock Style="{StaticResource MutedText}" Text="{l:T 'Size target'}" VerticalAlignment="Center" Margin="2,0,0,0" />
                                             <ComboBox x:Name="SizeTargetCombo" Grid.Column="1" Margin="10,0,0,0" SelectionChanged="SizeTargetChanged"
-                                                      DropDownOpened="SizeTargetCombo_DropDownOpened" DropDownClosed="SizeTargetCombo_DropDownClosed" IsKeyboardFocusWithinChanged="SizeTargetCombo_FocusWithinChanged"
-                                                      ToolTip="{l:T 'Lowers the bitrate when needed so a clip of the replay length fits the limit (audio tracks counted); never raises it. None = always the bitrate above. Copium and Copium Plus also limit how long a clip may be, and picking Copium Plus ticks &quot;I have Copium+&quot;'}" />
+                                                      DropDownOpened="SizeTargetCombo_DropDownOpened" DropDownClosed="SizeTargetCombo_DropDownClosed" IsKeyboardFocusWithinChanged="SizeTargetCombo_FocusWithinChanged" />
+                                            <!-- its ToolTip is set in the constructor (it names the "I have Copium+" box by its own text) -->
                                         </Grid>
                                         <TextBlock Style="{StaticResource FieldLabel}" Text="{l:T 'Replay length'}" Margin="2,12,0,3" />
                                         <ui:ReplayLengthSlider x:Name="ReplaySlider" Margin="0,2,0,0" />
@@ -363,8 +363,8 @@
                                                   ToolTip="{l:T 'Clips move to the archive location in the background, slowly, by the rules below; the library keeps working from there. Archive now… moves clips by hand, whatever these rules say'}" />
                                         <!-- The rule is one sentence in the catalog ("Move clips older than {days} days, ... {size} GB ..."): MainWindow.BuildArchiveRulesRow lays its text out around these two boxes, in the order the language puts them. Each box stays on one line with its unit: the rule wraps between the parts only. -->
                                         <WrapPanel x:Name="ArchiveRulesPanel" Margin="2,8,0,0">
-                                            <TextBox x:Name="ArchiveDaysBox" Width="46" Padding="6,4" TextAlignment="Center" Margin="0,0,6,4" LostFocus="ArchiveRulesChanged" KeyDown="PathBox_KeyDown" ToolTip="{l:T '0 = off'}" />
-                                            <TextBox x:Name="ArchiveGbBox" Width="54" Padding="6,4" TextAlignment="Center" Margin="0,0,6,4" LostFocus="ArchiveRulesChanged" KeyDown="PathBox_KeyDown" ToolTip="{l:T '0 = off'}" />
+                                            <TextBox x:Name="ArchiveDaysBox" AutomationProperties.Name="{l:T 'Days before a clip moves to the archive'}" Width="46" Padding="6,4" TextAlignment="Center" Margin="0,0,6,4" LostFocus="ArchiveRulesChanged" KeyDown="PathBox_KeyDown" ToolTip="{l:T '0 = off'}" />
+                                            <TextBox x:Name="ArchiveGbBox" AutomationProperties.Name="{l:T 'Local folder limit in GB'}" Width="54" Padding="6,4" TextAlignment="Center" Margin="0,0,6,4" LostFocus="ArchiveRulesChanged" KeyDown="PathBox_KeyDown" ToolTip="{l:T '0 = off'}" />
                                         </WrapPanel>
                                     </StackPanel>
                                 </Border>

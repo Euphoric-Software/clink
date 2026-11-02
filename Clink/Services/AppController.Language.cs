@@ -12,9 +12,12 @@ internal sealed partial class AppController
 
     /// <summary>
     /// What a restart for a language asks of an open screenshot editor (the answer of its quit question; false = cancel). Null: the real editor
-    /// host's <see cref="EditorWindowHost.ConfirmQuitAsync"/>. The unit tests replace it (a test shows no window).
+    /// host's <see cref="EditorWindowHost.ConfirmQuitAsync"/>. The unit tests replace it (a test shows no window); the quit path asks it too.
     /// </summary>
     internal Func<bool, Task<bool>>? LanguageEditorAsk { get; set; }
+
+    /// <summary>What a quit that came in during the editor's question calls (the userInitiated flag: false = forced, true = the user's own Quit). Null: <see cref="Quit"/>. The unit tests replace it (a test must not shut the app down).</summary>
+    internal Action<bool>? QuitOverride { get; set; }
 
     /// <summary>
     /// Restarts Clink to use the language saved in Settings.Language. The recorder stops and the replay buffer is cleared (it lives in
@@ -31,60 +34,109 @@ internal sealed partial class AppController
     {
         if (!_ui.CheckAccess()) { _ui.BeginInvoke(() => RestartForLanguage(owner)); return true; }
         if (LanguageRestartRefused()) return false;
+        bool askedRecording = false;
         if (IsManualRecording)
         {
-            string question = L.T("A recording is running. Restarting Clink ends it and saves what was recorded, and the replay buffer is cleared.\n\nRestart Clink to change the language?");
-            MessageBoxResult answer;
-            if (LanguageRestartAsk != null) answer = LanguageRestartAsk(owner, question);
-            else
-            {
-                TestGuard.CheckLaunch("a message box (restart for the language)");
-                answer = Dialog.Show(owner, question, MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No);
-            }
-            if (answer != MessageBoxResult.Yes) return false;
+            if (!AskRecordingQuestion(owner)) return false;
+            askedRecording = true;
             if (LanguageRestartRefused()) return false;   // the box is modal but the app is not: a tray import can have restarted meanwhile
         }
 
         Func<bool, Task<bool>>? askEditor = LanguageEditorAsk;
-        if (askEditor == null && _screenshotEditor is { IsOpen: true } editor) askEditor = editor.ConfirmQuitAsync;
+        if (askEditor == null && _screenshotEditor is { IsOpen: true } editor) askEditor = userInitiated => editor.ConfirmQuitAsync(userInitiated, forRestart: true);
         if (askEditor == null) return RestartNowForLanguage();
 
         _importInProgress = true;   // held while the editor's question is up: a second restart or an import stays out
         if (_importItem != null) _importItem.Enabled = false;
+        _quitAsking = true;   // and a tray Quit or an update restart must not open a second save box over this one (QuitAsync notes a forced quit in _forcedQuitPending)
         Task<bool> asked;
         try { asked = askEditor(true); }
         catch (Exception ex) { Log.Warn("language: the screenshot editor's question failed: " + ex.Message); asked = Task.FromResult(false); }
-        if (asked.IsCompletedSuccessfully) return AfterEditorQuestion(asked.Result);
-        AfterEditorQuestionAsync(asked);
+        if (asked.IsCompletedSuccessfully) return AfterEditorQuestion(asked.Result, owner, askedRecording);
+        AfterEditorQuestionAsync(asked, owner, askedRecording);
         return true;
     }
 
-    private async void AfterEditorQuestionAsync(Task<bool> asked)
+    /// <summary>The recording question of a language restart (a recording is running). True = restart anyway.</summary>
+    private bool AskRecordingQuestion(Window? owner)
+    {
+        string question = L.T("A recording is running. Restarting Clink ends it and saves what was recorded, and the replay buffer is cleared.\n\nRestart Clink to change the language?");
+        MessageBoxResult answer;
+        if (LanguageRestartAsk != null) answer = LanguageRestartAsk(owner, question);
+        else
+        {
+            TestGuard.CheckLaunch("a message box (restart for the language)");
+            answer = Dialog.Show(owner, question, MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No);
+        }
+        return answer == MessageBoxResult.Yes;
+    }
+
+    private async void AfterEditorQuestionAsync(Task<bool> asked, Window? owner, bool askedRecording)
     {
         bool go;
         try { go = await asked; }
         catch (Exception ex) { Log.Warn("language: the screenshot editor's question failed: " + ex.Message); go = false; }
-        AfterEditorQuestion(go);
+        AfterEditorQuestion(go, owner, askedRecording);
     }
 
-    /// <summary>The editor's answer: cancel keeps Clink running as it is (the tray item is back); otherwise the restart goes on.</summary>
-    private bool AfterEditorQuestion(bool go)
+    /// <summary>
+    /// The editor's answer: cancel keeps Clink running as it is (the tray item is back); otherwise the restart goes on. A recording that
+    /// started while the editor's question was up (the recording question was not asked, or there was none to ask) is asked about now,
+    /// after the editor (the editor's save or discard is not undone by a no here). A forced quit that came in meanwhile (an update
+    /// restart) wins over the language restart: the quit goes on and saves a copy of what is unsaved (unless the editor was answered yes or
+    /// no: then the exit does not ask or save again, <see cref="_editorResolvedForExit"/>). The user's own Quit that came in meanwhile is
+    /// acted on the same way once the editor's answer is not a cancel: Clink quits instead of restarting.
+    /// </summary>
+    private bool AfterEditorQuestion(bool go, Window? owner, bool askedRecording)
     {
+        if (_disposed || _exiting) { _quitAsking = false; _forcedQuitPending = false; _userQuitPending = false; return false; }
+        bool editorGo = go;   // the editor's own answer (yes saved, no discarded): the exit path must not ask it again
+        bool forced = false, userQuit = false;
+        try
+        {
+            if (go && !_forcedQuitPending && !_userQuitPending && !askedRecording && IsManualRecording)
+            {
+                go = AskRecordingQuestion(owner);
+                if (!go) Log.Info("language: the restart was cancelled at the recording question (asked after the screenshot editor's)");
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("language: the recording question failed: " + ex.Message);
+            go = false;   // not going ahead (the branch below frees the restart)
+        }
+        finally
+        {
+            forced = _forcedQuitPending;   // (read now: the box is modal but the app is not)
+            userQuit = _userQuitPending;
+            _quitAsking = false;
+            _forcedQuitPending = false;
+            _userQuitPending = false;
+        }
         if (_disposed || _exiting) return false;
+        if (forced || (userQuit && editorGo))
+        {
+            Log.Info(forced ? "language: a forced quit came in during the question: quitting instead of restarting" : "language: Quit came in during the question: quitting instead of restarting");
+            _editorResolvedForExit = editorGo;   // a cancelled editor question (forced quit only) is asked again by the exit path: it saves a copy
+            bool user = !forced;
+            if (QuitOverride != null) QuitOverride(user); else Quit(userInitiated: user);   // _importInProgress stays set: nothing else starts on the way out
+            return false;
+        }
         if (!go)
         {
-            Log.Info("language: the restart was cancelled at the screenshot editor's question");
+            Log.Info("language: the restart was cancelled at a question");
             _importInProgress = false;
             if (_importItem != null) _importItem.Enabled = true;
             return false;
         }
+        _editorResolvedForExit = editorGo;   // (true here: a cancel returned above) the restart's exit must not save the discarded edits
         return RestartNowForLanguage();
     }
 
     /// <summary>A restart that cannot start now (an import or a restart is under way, or Clink is going away) is refused, and the user is told.</summary>
     private bool LanguageRestartRefused()
     {
-        if (!_importInProgress && !IsShuttingDown) return false;
+        if (!_importInProgress && !_quitAsking && !IsShuttingDown) return false;   // (_quitAsking: a quit's own save question is up)
         Log.Info("language: a restart is under way or Clink is shutting down: this request is refused");
         if (!_disposed) SayT("Clink is restarting");
         return true;

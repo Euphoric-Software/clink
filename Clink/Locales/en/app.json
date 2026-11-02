@@ -20,7 +20,7 @@
   "Recording not started": "Recording not started",
   "The recorder did not get ready": "The recorder did not get ready",
   "The GPU was reset, restarting capture": "The GPU was reset, restarting capture",
-  "v{version} downloaded - installs on next start, or click 'Update to v{version}'": "v{version} downloaded - installs on next start, or click 'Update to v{version}'",
+  "v{version} downloaded - installs on next start, or click '{button}'": "v{version} downloaded - installs on next start, or click '{button}'",
   "v{version} downloaded, but {problem}. Install it by hand from {folder}": "v{version} downloaded, but {problem}. Install it by hand from {folder}",
   "Clink update ready": "Clink update ready",
   "Update failed: {error}": "Update failed: {error}",
@@ -193,9 +193,9 @@
   "Not enough free disk space to record ({free} MB free, {needed} MB needed)": "Not enough free disk space to record ({free} MB free, {needed} MB needed)",
   "Couldn't check for updates ({host})": "Couldn't check for updates ({host})",
   "Clink could not check for updates": "Clink could not check for updates",
-  "Clink has not been able to check for updates from {host} for {count} days. Details under Alerts → Updates.": {
-    "one": "Clink has not been able to check for updates from {host} for {count} day. Details under Alerts → Updates.",
-    "other": "Clink has not been able to check for updates from {host} for {count} days. Details under Alerts → Updates."
+  "Clink has not been able to check for updates from {host} for {count} days. Details under App → Updates.": {
+    "one": "Clink has not been able to check for updates from {host} for {count} day. Details under App → Updates.",
+    "other": "Clink has not been able to check for updates from {host} for {count} days. Details under App → Updates."
   },
   "The update server ({host}) offered an older version than before, so it was not used": "The update server ({host}) offered an older version than before, so it was not used",
   "Couldn't reach the update server ({host}): {detail}": "Couldn't reach the update server ({host}): {detail}",
@@ -204,24 +204,24 @@
   "Clink.exe's folder ({folder}) is not writable": "Clink.exe's folder ({folder}) is not writable",
   "Clink is running as administrator and does not install updates from an elevated process": "Clink is running as administrator and does not install updates from an elevated process",
   "Update to v{version} could not be installed: {reason}; {blocked}, so install it by hand from {folder}.": "Update to v{version} could not be installed: {reason}; {blocked}, so install it by hand from {folder}.",
-  "Update to v{version} could not be installed: {reason}. To retry, click Check now under Alerts → Updates.": "Update to v{version} could not be installed: {reason}. To retry, click Check now under Alerts → Updates.",
+  "Update to v{version} could not be installed: {reason}. To retry, click Check now under App → Updates.": "Update to v{version} could not be installed: {reason}. To retry, click Check now under App → Updates.",
   "Update to v{version} is downloaded but {blocked}; install it by hand from {folder}.": "Update to v{version} is downloaded but {blocked}; install it by hand from {folder}.",
-  "Update to v{version} could not start: {reason}. To retry, click Check now under Alerts → Updates.": "Update to v{version} could not start: {reason}. To retry, click Check now under Alerts → Updates.",
+  "Update to v{version} could not start: {reason}. To retry, click Check now under App → Updates.": "Update to v{version} could not start: {reason}. To retry, click Check now under App → Updates.",
   "Update to v{version} was not installed this time: {reason}. It will be tried again.": "Update to v{version} was not installed this time: {reason}. It will be tried again.",
-  "Update to v{version} not installed: {reason}. To retry, click Check now under Alerts → Updates.": "Update to v{version} not installed: {reason}. To retry, click Check now under Alerts → Updates.",
+  "Update to v{version} not installed: {reason}. To retry, click Check now under App → Updates.": "Update to v{version} not installed: {reason}. To retry, click Check now under App → Updates.",
   "could not start the updater process": "could not start the updater process",
   "the update process exited right away (exit code {code})": "the update process exited right away (exit code {code})",
   "the update check failed (details in the log)": "the update check failed (details in the log)",
   "Clink update not downloaded": "Clink update not downloaded",
-  "Downloading v{version} failed {count} times ({reason}). To retry, click Check now under Alerts → Updates.": {
-    "one": "Downloading v{version} failed {count} time ({reason}). To retry, click Check now under Alerts → Updates.",
-    "other": "Downloading v{version} failed {count} times ({reason}). To retry, click Check now under Alerts → Updates."
+  "Downloading v{version} failed {count} times ({reason}). To retry, click Check now under App → Updates.": {
+    "one": "Downloading v{version} failed {count} time ({reason}). To retry, click Check now under App → Updates.",
+    "other": "Downloading v{version} failed {count} times ({reason}). To retry, click Check now under App → Updates."
   },
-  "installing v{version} failed earlier ({reason}). To retry, click Check now under Alerts → Updates.": "installing v{version} failed earlier ({reason}). To retry, click Check now under Alerts → Updates.",
+  "installing v{version} failed earlier ({reason}). To retry, click Check now under App → Updates.": "installing v{version} failed earlier ({reason}). To retry, click Check now under App → Updates.",
   "v{version} was already installed once from {path}, yet this exe still reports v{current}": "v{version} was already installed once from {path}, yet this exe still reports v{current}",
-  "downloading v{version} failed {count} times ({reason}). To retry, click Check now under Alerts → Updates.": {
-    "one": "downloading v{version} failed {count} time ({reason}). To retry, click Check now under Alerts → Updates.",
-    "other": "downloading v{version} failed {count} times ({reason}). To retry, click Check now under Alerts → Updates."
+  "downloading v{version} failed {count} times ({reason}). To retry, click Check now under App → Updates.": {
+    "one": "downloading v{version} failed {count} time ({reason}). To retry, click Check now under App → Updates.",
+    "other": "downloading v{version} failed {count} times ({reason}). To retry, click Check now under App → Updates."
   },
   "downloading v{version} failed: {reason}": "downloading v{version} failed: {reason}",
   "Clink could not start: {error}\n\nDetails: {details}": "Clink could not start: {error}\n\nDetails: {details}",

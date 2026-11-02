@@ -58,6 +58,7 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         BuildArchiveRulesRow();   // the archive rule's sentence around its two boxes
+        SizeTargetCombo.ToolTip = L.T("Lowers the bitrate when needed so a clip of the replay length fits the limit (audio tracks counted); never raises it. None = always the bitrate above. Copium and Copium Plus also limit how long a clip may be, and picking Copium Plus ticks \"{label}\"", ("label", L.T("I have Copium+")));
         AppIcons.Attach(this);   // the taskbar button's own icon size, not WPF's default 32 px frame shrunk to it
         ApplyDevMarker();
         StatusHost.SizeChanged += (_, _) => UpdateHeaderFit();
@@ -736,7 +737,7 @@ public partial class MainWindow : Window
         _filling = true;
         try { CopiumPlusCheck.IsChecked = true; }
         finally { _filling = was; }
-        _app.SayT("Copium Plus size target: ticked I have Copium+");
+        _app.SayT("Copium Plus size target: ticked {label}", ("label", L.T("I have Copium+")));
     }
 
     // ------------------------------------------------------------------ capture: recording mode & custom apps (§5)
@@ -1412,7 +1413,7 @@ public partial class MainWindow : Window
                 if (up.LastErrorNote is { } lastError) _app.SayT("Update check failed: {error}", ("error", lastError));
                 else _app.SayT("You're up to date (v{version})", ("version", Note.Ltr(up.VersionDisplay)));
             }
-            else if (_app.PendingVersion is ReleaseVersion pending && pending >= info.Version) _app.SayT("Update v{version} is ready - click 'Update to v{pending}' to restart", ("version", Note.Ltr(info.Version.ToString())), ("pending", Note.Ltr(pending.ToString())));
+            else if (_app.PendingVersion is ReleaseVersion pending && pending >= info.Version) _app.SayT("Update v{version} is ready - click '{button}' to restart", ("version", Note.Ltr(info.Version.ToString())), ("button", Note.Of("Update to v{version}", ("version", Note.Ltr(pending.ToString())))));   // (the button's own key)
             else if (!_app.Settings.AutoUpdate)
             {
                 // Nothing is downloaded with auto-update off, so make the answer actionable: show the release.

@@ -336,12 +336,25 @@ internal static class L10nI2bTests
             Check.Equal("Save this screenshot before Clink quits?", ScreenshotEditorWindow.SavePromptText(unsavedNewCapture: true, onQuit: true));
             Check.Equal("Save the changes to this screenshot?", ScreenshotEditorWindow.SavePromptText(unsavedNewCapture: false, onQuit: false));
             Check.Equal("Save the changes to this screenshot before Clink quits?", ScreenshotEditorWindow.SavePromptText(unsavedNewCapture: false, onQuit: true));
+            // the language restart asks the same question in its own words (a restart, not a quit)
+            Check.Equal("Save this screenshot before Clink restarts?", ScreenshotEditorWindow.SavePromptText(unsavedNewCapture: true, onQuit: true, onRestart: true));
+            Check.Equal("Save the changes to this screenshot before Clink restarts?", ScreenshotEditorWindow.SavePromptText(unsavedNewCapture: false, onQuit: true, onRestart: true));
+            Check.Equal("Save this screenshot?", ScreenshotEditorWindow.SavePromptText(unsavedNewCapture: true, onQuit: false, onRestart: true), "a close is never a restart");
         }
         using (L.Scope("qps-ploc"))
+        {
+            var seen = new HashSet<string>();
             foreach (bool isNew in new[] { true, false })
                 foreach (bool onQuit in new[] { true, false })
-                    Check.True(PseudoLocale.IsPseudo(ScreenshotEditorWindow.SavePromptText(isNew, onQuit)), $"from the catalog (new {isNew}, quit {onQuit})");
-        Check.Equal(Array.Empty<string>(), L.Missing.ToArray(), "all four are in Locales/en/editor.json");
+                    foreach (bool onRestart in new[] { true, false })
+                    {
+                        string text = ScreenshotEditorWindow.SavePromptText(isNew, onQuit, onRestart);
+                        Check.True(PseudoLocale.IsPseudo(text), $"from the catalog (new {isNew}, quit {onQuit}, restart {onRestart})");
+                        if (onQuit) seen.Add(text);
+                    }
+            Check.Equal(4, seen.Count, "new capture / saved screenshot, quit / restart: four different questions");
+        }
+        Check.Equal(Array.Empty<string>(), L.Missing.ToArray(), "all six are in Locales/en/editor.json");
     }
 
     [UnitTest]
@@ -392,7 +405,7 @@ internal static class L10nI2bTests
         // both questions go through the one decision
         string root = L10nSourceScan.Root() ?? throw new TestFailure("Clink.csproj was not found above " + AppContext.BaseDirectory);
         string source = File.ReadAllText(Path.Combine(root, @"UI\Screenshots\ScreenshotEditorWindow.xaml.cs"));
-        Check.Contains(source, "SavePromptText(HoldsUnsavedNewCapture, onQuit: true)", "the quit prompt");
+        Check.Contains(source, "SavePromptText(HoldsUnsavedNewCapture, onQuit: true, onRestart: forRestart)", "the quit and restart prompt");
         Check.Contains(source, "SavePromptText(HoldsUnsavedNewCapture, onQuit: false)", "the close prompt");
     }
 }

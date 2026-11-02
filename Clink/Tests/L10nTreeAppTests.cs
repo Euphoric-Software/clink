@@ -189,7 +189,7 @@ internal static class L10nTreeAppTests
         }
         // the update notices the updater raises (title and text), as the tray balloon and the problem toast show them
         var cap = new UpdateNotice("download:1.2.3", Note.Of("Clink update not downloaded"),
-            Note.PluralOf("Downloading v{version} failed {count} times ({reason}). To retry, click Check now under Alerts → Updates.", 3, ("version", "1.2.3"), ("reason", "HTTP 503")));
+            Note.PluralOf("Downloading v{version} failed {count} times ({reason}). To retry, click Check now under App → Updates.", 3, ("version", "1.2.3"), ("reason", "HTTP 503")));
         Marked(cap.Title, "update title");
         Marked(cap.Text, "update text");
         NoneUnlocalized(Toast("problem", cap.Title, cap.Text), "update notice toast");
@@ -461,6 +461,20 @@ internal static class L10nTreeAppTests
     }
 
     [UnitTest]
+    public static void The_update_button_a_sentence_names_comes_in_through_a_placeholder_and_the_English_is_unchanged()
+    {
+        var ready = Note.Of("v{version} downloaded - installs on next start, or click '{button}'", ("version", Note.Ltr("1.2.3")), ("button", Note.Of("Update to v{version}", ("version", Note.Ltr("1.2.3")))));
+        Check.Equal("v1.2.3 downloaded - installs on next start, or click 'Update to v1.2.3'", ready.English, "tray balloon / status line");
+        var pending = Note.Of("Update v{version} is ready - click '{button}' to restart", ("version", Note.Ltr("1.2.4")), ("button", Note.Of("Update to v{version}", ("version", Note.Ltr("1.2.3")))));
+        Check.Equal("Update v1.2.4 is ready - click 'Update to v1.2.3' to restart", pending.English, "the Check now answer");
+        using (L.Scope("en"))
+        {
+            Check.Equal(ready.English, ready.Shown);
+            Check.Equal(pending.English, pending.Shown);
+        }
+    }
+
+    [UnitTest]
     public static void A_note_is_English_for_the_log_even_in_a_right_to_left_language_and_shows_the_marks_only_to_the_user()
     {
         const string marks = "\u202A\u202B\u202C\u200E\u200F\u2066\u2067\u2068\u2069";
@@ -600,7 +614,7 @@ internal static class L10nTreeAppTests
         {
             English_and_pseudo("Clink is running as administrator and does not install updates from an elevated process", () => Updater.InstallProblemFor(@"C:\x\Clink.exe"), "elevated reason");
             var refused = new Updater.ApplyRefusedException("m", "its start-up check failed (exit code 5)");
-            English_and_pseudo("Update to v1.2.3 not installed: its start-up check failed (exit code 5). To retry, click Check now under Alerts → Updates.", () => Updater.RefusalText(refused, version), "refusal");
+            English_and_pseudo("Update to v1.2.3 not installed: its start-up check failed (exit code 5). To retry, click Check now under App → Updates.", () => Updater.RefusalText(refused, version), "refusal");
             var deferred = new Updater.ApplyRefusedException("m", "a check or download is running; try again in a moment", deferred: true);
             English_and_pseudo("Update to v1.2.3 was not installed this time: a check or download is running; try again in a moment. It will be tried again.", () => Updater.RefusalText(deferred, version), "deferred refusal");
             // the elevated refusal carries its reason as a note: the user reads it in their language, the exception stays English
