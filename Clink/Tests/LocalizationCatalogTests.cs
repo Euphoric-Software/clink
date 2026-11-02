@@ -15,7 +15,7 @@ internal static class LocalizationCatalogTests
     /// Switched on by the slice that ships the last language: every Known language must then be Available (embedded and complete).
     /// Until then a language may be missing or partial: it simply is not offered.
     /// </summary>
-    internal static readonly bool RequireAllKnownAvailable = false;
+    internal static readonly bool RequireAllKnownAvailable = true;
 
     // ------------------------------------------------------------------ the rules
 

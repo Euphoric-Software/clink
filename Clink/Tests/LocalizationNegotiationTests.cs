@@ -108,6 +108,20 @@ internal static class LocalizationNegotiationTests
     }
 
     [UnitTest]
+    public static void With_the_real_catalogs_all_sixteen_languages_are_available_and_regional_tags_resolve()
+    {
+        Check.Equal(16, L.Available.Count, "every Known language is Available");
+        foreach (var k in L.Known) Check.True(L.Available.Contains(k.Code), k.Code);
+        var real = L.Available;
+        Check.Equal("de", Auto(real, "de-AT"));
+        Check.Equal("pt-BR", Auto(real, "pt-PT"));
+        Check.Equal("ar", Auto(real, "ar-SA"));
+        Check.Equal("en", Auto(real, "zh-TW"), "Traditional Chinese alone");
+        Check.Equal("ja", Auto(real, "zh-TW", "ja-JP"), "zh-TW falls to the next language");
+        Check.Equal("zh-CN", Auto(real, "zh-SG"));
+    }
+
+    [UnitTest]
     public static void Init_with_the_real_catalogs_chooses_among_the_available_languages_only()
     {
         // Only languages whose catalogs are complete can be chosen, whatever the setting and the PC say.

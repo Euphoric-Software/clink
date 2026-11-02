@@ -147,6 +147,7 @@ internal static class LanguageSettingTests
         var expected = new[] { Auto }.Concat(L.Known.Where(k => L.Available.Contains(k.Code)).Select(k => k.NativeName)).ToArray();
         Check.Equal(expected, Labels(w), "Automatic, then every available language");
         Check.True(Labels(w).Length >= 2, "at least Automatic and English");
+        Check.Equal(17, Labels(w).Length, "Automatic plus all 16 languages");
         Check.Equal("English", Labels(w)[1], "English is the first language");
         Check.Equal(new[] { "auto" }.Concat(L.Known.Where(k => L.Available.Contains(k.Code)).Select(k => k.Code)).ToArray(), w.LanguageCombo.Items.OfType<ComboBoxItem>().Select(i => (string)i.Tag).ToArray(), "the values saved");
         Check.False(Labels(w).Any(l => l.Contains("Pseudo", StringComparison.OrdinalIgnoreCase) || l.Contains("qps", StringComparison.OrdinalIgnoreCase)), "no pseudo-locale");

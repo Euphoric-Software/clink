@@ -682,9 +682,9 @@ internal sealed class RegionOverlayPicker : IRegionPicker
                     w.InsertEnded = ForceClose;   // a cancel that came while the insert-image dialogs were modal
                     _windows.Add(w);
                 }
-                foreach (var w in _windows.Where(w => !w.WantsKeyboard)) w.Show();
+                foreach (var w in _windows.Where(w => !w.WantsKeyboard)) { using (QuietMode.CreatingOverlay()) w.Show(); }
                 var main = _windows[focus];
-                main.Show();
+                using (QuietMode.CreatingOverlay()) main.Show();
                 main.TakeKeyboard();
                 if (TryGetCursor(out int cx, out int cy)) selection.MoveCursor(cx, cy);
                 _watchdog.Start();

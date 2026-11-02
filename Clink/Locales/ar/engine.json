@@ -1,0 +1,23 @@
+{
+  "engine-status|Starting…": "جارٍ البدء…",
+  "engine-status|Stopped": "متوقف",
+  "engine-status|Recording": "جارٍ التسجيل",
+  "engine-status|Error": "خطأ",
+  "engine-error|The GPU was reset (graphics driver crash or TDR)": "تمت إعادة تعيين وحدة معالجة الرسومات (تعطل برنامج تشغيل الرسومات أو TDR)",
+  "audio-line|{name} ({detail})": "{name} ({detail})",
+  "audio-problem|not connected": "غير متصل",
+  "audio-problem|disabled": "معطّل",
+  "audio-detail|game + mic + voice, always track 1": "اللعبة + الميكروفون + الدردشة الصوتية، دائمًا في المسار 1",
+  "audio-detail|waiting for app": "بانتظار التطبيق",
+  "audio-detail|everything": "كل شيء",
+  "audio-detail|everything except {app}": "كل شيء عدا {app}",
+  "audio-detail|mix only": "المزيج فقط",
+  "audio-detail|{detail}, mix only": "{detail}، المزيج فقط",
+  "audio-detail|not connected or disabled": "غير متصل أو معطّل",
+  "audio-detail|in use by another app (exclusive mode)": "قيد الاستخدام من تطبيق آخر (الوضع الحصري)",
+  "audio-detail|access denied": "تم رفض الوصول",
+  "audio-detail|blocked: allow microphone access for desktop apps in Windows privacy settings": "محظور: اسمح لتطبيقات سطح المكتب بالوصول إلى الميكروفون في إعدادات الخصوصية في Windows",
+  "audio-detail|not an output device": "ليس جهاز إخراج",
+  "audio-detail|not an input device": "ليس جهاز إدخال",
+  "audio-detail|Windows Audio service not running": "خدمة Windows Audio غير قيد التشغيل"
+}

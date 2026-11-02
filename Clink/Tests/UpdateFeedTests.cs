@@ -6,6 +6,7 @@ using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text;
 using Clink.Services;
+using Clink.Services.Localization;
 
 namespace Clink.Tests;
 
@@ -2426,6 +2427,36 @@ internal static class UpdateFeedTests
         }
         Check.Equal("download:0.4.3", notices[^1]!.Key);
         Check.Equal(2, shown, "once per version");
+    }
+
+    [UnitTest]
+    public static void A_manual_check_whose_download_fails_composes_the_found_but_sentence_whole()
+    {
+        using var dir = new TempDir();
+        Updater.UpdatesDirOverride = dir.File("updates");
+        var (pub, key) = NewKey();
+        using var k = key;
+        Updater.FeedOverride = Trust(stable: new[] { pub });
+        byte[] exe = FakeExe();
+        var net = new FakeNet();
+        byte[] fm = Bytes(Manifest("0.4.2", size: exe.Length, sha: Hex(exe)));
+        net.Feed("stable", fm, Sign(key, fm));
+        net.Status("https://cdn.example/clink/releases/v0.4.2/Clink.exe", 503);
+        Updater.HttpOverride = net.Send;
+        using var up = new Updater(new Settings { AutoUpdate = true }, V("0.4.1"));
+        var info = OffUi(() => up.CheckNowAsync());
+        Check.Equal(V("0.4.2"), info?.Version, "found, not downloaded");
+        var why = up.LastErrorNote;
+        Check.NotNull(why, "the manual check's own failure");
+        // the same composition as MainWindow's Check now handler
+        Note Compose() => Note.Of("Update v{version} found, but {reason} - opening the release page", ("version", Note.Ltr(info!.Version.ToString())), ("reason", why!.WithoutFinalPeriod()));
+        Check.Equal("Update v0.4.2 found, but downloading v0.4.2 failed: HTTP 503 - opening the release page", Compose().English);
+        using (L.Scope("qps-ploc"))
+        {
+            string shown = Compose().Shown;
+            Check.True(PseudoLocale.IsPseudo(shown), "pseudo-translated whole: " + shown);
+            Check.False(shown.Contains("downloading v0.4.2 failed"), "the inner reason is not left English: " + shown);
+        }
     }
 
     private static HttpResponseMessage Redirect(string to)

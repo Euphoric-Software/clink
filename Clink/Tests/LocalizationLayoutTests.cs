@@ -177,6 +177,62 @@ internal static class LocalizationLayoutTests
         Check.Equal(Array.Empty<string>(), found.ToArray(), "clipped under " + L.PseudoCode + " and not in English (" + found.Count + ")");
     }
 
+    /// <summary>The 15 translated languages, laid out for real (permanent guard: a translation that clips is shortened, never the English or the geometry).</summary>
+    private static readonly string[] s_translated = L.Known.Select(k => k.Code).Where(c => c != "en").ToArray();
+
+    /// <summary>
+    /// The one-line toast titles (no wrapping: they end in an ellipsis when they do not fit, which is a cut-off text for the user) under
+    /// <paramref name="language"/>: every title a toast carries, with the two screenshot ones, at the toast's 330 px.
+    /// </summary>
+    private static List<string> ToastTitleFindings(string language)
+    {
+        var found = new List<string>();
+        using var rig = new TrimShareSplitTests.Rig(true, true);
+        using (L.Scope(language))
+        {
+            if (language != "en") Check.True(L.T("Clip saved") != "Clip saved" && L.T("Screenshot saved · uploaded") != "Screenshot saved · uploaded", language + " is really translated");
+            var titles = new (string Kind, string Title)[]
+            {
+                ("clip", L.T("Clip saved")), ("clip", L.T("Clip not saved")), ("shared", L.T("Shared · link copied")),
+                ("screenshot", L.T("Screenshot saved")), ("screenshot", L.T("Screenshot saved · link copied")), ("screenshot", L.T("Screenshot saved · uploaded")),
+                ("record", L.T("Recording started")),
+            };
+            foreach (var (kind, title) in titles)
+            {
+                var toast = Toast(kind, title, "x", kind == "screenshot" ? null : SampleClip(), null, kind == "screenshot" ? SampleShot() : null, kind == "screenshot");
+                Mirror(toast);
+                var root = (FrameworkElement)toast.Content;
+                root.Measure(new Size(330, double.PositiveInfinity));
+                root.Arrange(new Rect(0, 0, 330, root.DesiredSize.Height));
+                root.UpdateLayout();
+                var tb = Descendants(root).OfType<TextBlock>().First(t => t.Name == "TitleText");
+                double given = tb.ActualWidth;
+                tb.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+                double natural = tb.DesiredSize.Width;
+                if (natural > given + 1) found.Add($"Toast title | needs {natural:0} of {given:0} \"{title}\" ({language})");
+            }
+        }
+        return found;
+    }
+
+    [UnitTest]
+    public static void Under_every_translated_language_no_window_and_no_toast_title_clips_its_text()
+    {
+        if (Application.Current == null) throw new TestFailure("needs the running application (run it with Clink.exe --unittest)");
+        var englishKeys = Everything("en").Select(Key).ToHashSet();
+        var englishApp = AppTabWithRestartPanel("en").Select(Key).ToHashSet();
+        var englishTitles = ToastTitleFindings("en").Select(Key).ToHashSet();
+        Check.Equal(0, englishTitles.Count, "English toast titles all fit");
+        var all = new List<string>();
+        foreach (string language in s_translated)
+        {
+            all.AddRange(Everything(language).Where(f => !englishKeys.Contains(Key(f))).Select(f => language + ": " + f));
+            all.AddRange(AppTabWithRestartPanel(language).Where(f => !englishApp.Contains(Key(f))).Select(f => language + ": " + f));
+            all.AddRange(ToastTitleFindings(language).Where(f => !englishTitles.Contains(Key(f))).Select(f => language + ": " + f));
+        }
+        Check.Equal(Array.Empty<string>(), all.ToArray(), "clipped under a translated language and not in English (" + all.Count + ")");
+    }
+
     [UnitTest]
     public static void Under_the_pseudo_right_to_left_language_no_window_clips_its_text()
     {
