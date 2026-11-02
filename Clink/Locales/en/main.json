@@ -54,10 +54,8 @@
   "Set an archive location first": "Set an archive location first",
   "Move clips there automatically": "Move clips there automatically",
   "Clips move to the archive location in the background, slowly, by the rules below; the library keeps working from there. Archive now… moves clips by hand, whatever these rules say": "Clips move to the archive location in the background, slowly, by the rules below; the library keeps working from there. Archive now… moves clips by hand, whatever these rules say",
-  "Move clips older than": "Move clips older than",
+  "Move clips older than {days} days, or when the local folder exceeds {size} GB · whichever comes first": "Move clips older than {days} days, or when the local folder exceeds {size} GB · whichever comes first",
   "0 = off": "0 = off",
-  "days, or when the local folder exceeds": "days, or when the local folder exceeds",
-  "GB · whichever comes first": "GB · whichever comes first",
   "SCREENSHOTS": "SCREENSHOTS",
   "Screenshots folder": "Screenshots folder",
   "Where screenshots are saved (PNG). Empty = a Screenshots folder inside the clips folder": "Where screenshots are saved (PNG). Empty = a Screenshots folder inside the clips folder",
@@ -132,6 +130,7 @@
   "Library": "Library",
   "Main hotkey": "Main hotkey",
   "The keys that save the full replay. Click, then press the key combo you want (Esc cancels)": "The keys that save the full replay. Click, then press the key combo you want (Esc cancels)",
+  "Clear the main hotkey": "Clear the main hotkey",
   "Clear the main hotkey: nothing saves the full replay until you set keys again": "Clear the main hotkey: nothing saves the full replay until you set keys again",
   "More hotkeys": "More hotkeys",
   "Add hotkey": "Add hotkey",
@@ -361,5 +360,10 @@
   "The upload limit of your Discord account. For a clip over it, the Share window can make a smaller copy that fits; the clip itself is never changed": "The upload limit of your Discord account. For a clip over it, the Share window can make a smaller copy that fits; the clip itself is never changed",
   "Making a copy uses your GPU for a little while, at low priority. Off: while a game is in front no copy is made; open Clink and make it after the game": "Making a copy uses your GPU for a little while, at low priority. Off: while a game is in front no copy is made; open Clink and make it after the game",
   "setting|Discord plan": "Discord plan",
-  "setting|sharing": "sharing"
+  "setting|sharing": "sharing",
+  "LANGUAGE": "LANGUAGE",
+  "Automatic (Windows display language)": "Automatic (Windows display language)",
+  "Restart Clink to use the new language.": "Restart Clink to use the new language.",
+  "Restart now": "Restart now",
+  "Restarting Clink clears the replay buffer: the moments recorded just before the restart are not kept.": "Restarting Clink clears the replay buffer: the moments recorded just before the restart are not kept."
 }

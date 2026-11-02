@@ -546,7 +546,7 @@ internal static class L10nTreeAppTests
     {
         string root = L10nSourceScan.Root() ?? throw new TestFailure("Clink.csproj was not found above " + AppContext.BaseDirectory);
         var files = new[] { "App.xaml.cs", "Services/AppController.cs", "Services/AppController.Connect.cs", "Services/AppController.Consent.cs", "Services/AppController.Recording.cs",
-            "Services/AppController.SaveCopy.cs", "Services/AppController.Screenshots.cs", "Services/AppController.ShareMany.cs", "Services/Updater.cs", "UI/ToastWindow.xaml.cs" };
+            "Services/AppController.SaveCopy.cs", "Services/AppController.Screenshots.cs", "Services/AppController.ShareMany.cs", "Services/AppController.Language.cs", "Services/Updater.cs", "UI/ToastWindow.xaml.cs" };
         var bad = new List<string>();
         foreach (var f in files)
         {
@@ -628,7 +628,7 @@ internal static class L10nTreeAppTests
         var hits = L10nSourceScan.CSharp(root, new[]
         {
             @"Services\AppController.cs", @"Services\AppController.Connect.cs", @"Services\AppController.Consent.cs", @"Services\AppController.Recording.cs",
-            @"Services\AppController.SaveCopy.cs", @"Services\AppController.Screenshots.cs", @"Services\AppController.ShareMany.cs",
+            @"Services\AppController.SaveCopy.cs", @"Services\AppController.Screenshots.cs", @"Services\AppController.ShareMany.cs", @"Services\AppController.Language.cs",
             @"UI\ToastWindow.xaml.cs", @"UI\StatusDotWindow.xaml.cs", @"Services\Updater.cs", "App.xaml.cs",
             @"Engine\Engine.cs",   // (the save's "The encoder restarted, try again" note, shown by the controller through UserText)
         }, new[] { L10nSourceScan.T, L10nSourceScan.Plural, "SayT(", "Note.Of(", "Note.PluralOf(" });

@@ -57,6 +57,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        BuildArchiveRulesRow();   // the archive rule's sentence around its two boxes
         AppIcons.Attach(this);   // the taskbar button's own icon size, not WPF's default 32 px frame shrunk to it
         ApplyDevMarker();
         StatusHost.SizeChanged += (_, _) => UpdateHeaderFit();
@@ -468,6 +469,7 @@ public partial class MainWindow : Window
         FillCodecs();
         Fill(SizeTargetCombo, Capabilities.SizeTargets.Select(t => new Choice(t.Name, t.Id)).ToArray(), s.SizeTarget);
         FillSharingCard(s);
+        FillLanguageCard(s);
         Fill(ModeCombo, new[] { new Choice(L.T("Only while a game or custom app is running"), "game"), new Choice(L.T("Always (whenever Clink runs)"), "always") }, s.RecordingMode);
         _customApps.Clear();
         foreach (var a in (s.CustomApps ?? new()).Select(GameProcessTracker.NormalizeName).Where(a => a.Length > 0 && !IsAuto(a)).Distinct(StringComparer.OrdinalIgnoreCase)) _customApps.Add(a);

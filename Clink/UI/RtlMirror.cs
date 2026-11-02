@@ -32,7 +32,9 @@ internal static class RtlMirror
         else
         {
             fe.Loaded -= OnLoaded;
+            if (!L.IsRtl) return;   // nothing was applied (and nothing of the element's own is touched)
             fe.ClearValue(UIElement.RenderTransformProperty);
+            fe.ClearValue(UIElement.RenderTransformOriginProperty);   // the origin Glyph=True set
         }
     }
 

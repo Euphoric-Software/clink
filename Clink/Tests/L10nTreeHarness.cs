@@ -113,6 +113,7 @@ internal static class L10nTreeHarness
     {
         string t = text.Trim();
         if (t.Length == 0 || !t.Any(char.IsLetter)) return true;
+        if (L.Known.Any(k => k.NativeName == t)) return true;   // the language picker lists every language by its own name, never translated
         if (t.Contains('+') && IsCombo(t)) return true;
         var tokens = Regex.Split(t, @"[\s/,\-]+").Where(s => s.Length > 0).ToList();
         var dates = DateTokens();

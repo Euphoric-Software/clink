@@ -593,8 +593,7 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         Subtitle.Text = text;
         Subtitle.ToolTip = text;
         if (wrap) Subtitle.TextWrapping = TextWrapping.Wrap;
-        UpdateLayout();
-        _owner?.Relayout();          // it may have grown a line: keep the stack inside the work area
+        UpdateLayout();              // a line that wraps grows the toast: SizeChanged (NoteSizeChanged) then asks the owner to re-stack, once
     }
 
     /// <summary>Uploads the clip to Copium (or copies its link; with no token opens the share window): what the Share button always did.</summary>
@@ -717,7 +716,8 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
     internal void SetUploadProgress(double fraction)
     {
         if (_dismissed || !_busy) return;
-        Subtitle.Text = UploadingText(Math.Clamp(fraction, 0, 1));
+        // At 100% the bytes are sent and the link is awaited: the plain "Uploading…" (the widest line, "Uploading… 100%", would wrap this row for the moment before the link).
+        Subtitle.Text = fraction >= 1 ? L.T("Uploading…") : UploadingText(Math.Clamp(fraction, 0, 1));
     }
 
     /// <summary>The upload is over (linked, failed, cancelled): the button is an ordinary one again and the second line is back.</summary>

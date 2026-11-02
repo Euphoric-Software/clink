@@ -53,7 +53,8 @@
             <!-- header / drag area -->
             <Grid DockPanel.Dock="Top" Height="44" MouseLeftButtonDown="Header_MouseLeftButtonDown" Background="Transparent">
                 <TextBlock Style="{StaticResource Display}" Text="{l:T 'Archive clips'}" Margin="16,0,0,0" VerticalAlignment="Center" />
-                <Button Style="{StaticResource IconButton}" Content="✕" HorizontalAlignment="Right" Margin="0,0,8,0" Click="Close_Click" ToolTip="{l:T 'Close (a move in progress is cancelled)'}" />
+                <Button Style="{StaticResource IconButton}" Content="✕" HorizontalAlignment="Right" Margin="0,0,8,0" Click="Close_Click" ToolTip="{l:T 'Close (a move in progress is cancelled)'}"
+                        AutomationProperties.Name="{l:T 'Close (a move in progress is cancelled)'}" />
             </Grid>
 
             <!-- buttons -->

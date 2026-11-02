@@ -77,8 +77,8 @@
   "Over Copium's free limit ({size} / {minutes} min)": "Over Copium's free limit ({size} / {minutes} min)",
   "Copium Plus accepts up to {limit} / {minutes} min; this clip is {size} / {length} - trim it first": "Copium Plus accepts up to {limit} / {minutes} min; this clip is {size} / {length} - trim it first",
   "Copium Plus accepts up to {limit} / {minutes} min; this clip is {size} - trim it first": "Copium Plus accepts up to {limit} / {minutes} min; this clip is {size} - trim it first",
-  "Copium free accepts up to {limit} / {minutes} min; this clip is {size} / {length} - trim it, or tick 'I have Copium+' if you do": "Copium free accepts up to {limit} / {minutes} min; this clip is {size} / {length} - trim it, or tick 'I have Copium+' if you do",
-  "Copium free accepts up to {limit} / {minutes} min; this clip is {size} - trim it, or tick 'I have Copium+' if you do": "Copium free accepts up to {limit} / {minutes} min; this clip is {size} - trim it, or tick 'I have Copium+' if you do",
+  "Copium free accepts up to {limit} / {minutes} min; this clip is {size} / {length} - trim it, or tick '{label}' if you do": "Copium free accepts up to {limit} / {minutes} min; this clip is {size} / {length} - trim it, or tick '{label}' if you do",
+  "Copium free accepts up to {limit} / {minutes} min; this clip is {size} - trim it, or tick '{label}' if you do": "Copium free accepts up to {limit} / {minutes} min; this clip is {size} - trim it, or tick '{label}' if you do",
   "Link copied": "Link copied",
   "Sharing needs your OK once — open Clink and press Share": "Sharing needs your OK once — open Clink and press Share",
   "Not shared: sharing with Copium is not enabled": "Not shared: sharing with Copium is not enabled",
@@ -233,5 +233,8 @@
   "Clink status": "Clink status",
   "Making a smaller copy for Copium…": "Making a smaller copy for Copium…",
   "Not shared: the Copium sign-in changed while the copy was made": "Not shared: the Copium sign-in changed while the copy was made",
-  "Not shared: your Copium plan changed while the copy was made. Share it again": "Not shared: your Copium plan changed while the copy was made. Share it again"
+  "Not shared: your Copium plan changed while the copy was made. Share it again": "Not shared: your Copium plan changed while the copy was made. Share it again",
+  "A recording is running. Restarting Clink ends it and saves what was recorded, and the replay buffer is cleared.\n\nRestart Clink to change the language?": "A recording is running. Restarting Clink ends it and saves what was recorded, and the replay buffer is cleared.\n\nRestart Clink to change the language?",
+  "Nothing recorded yet, wait a moment and try again.": "Nothing recorded yet, wait a moment and try again.",
+  "Clink could not restart itself ({error}), so the new language applies the next time Clink starts": "Clink could not restart itself ({error}), so the new language applies the next time Clink starts"
 }

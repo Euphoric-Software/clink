@@ -128,8 +128,9 @@
                                    ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
                     </Grid>
                     <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,8,0">
-                        <Button Style="{StaticResource IconButton}" Content="–" Click="Minimize_Click" ToolTip="{l:T 'Minimize'}" />
-                        <Button Style="{StaticResource IconButton}" Content="✕" Click="Close_Click" ToolTip="{l:T 'Hide to tray (keeps recording)'}" />
+                        <Button Style="{StaticResource IconButton}" Content="–" Click="Minimize_Click" ToolTip="{l:T 'Minimize'}" AutomationProperties.Name="{l:T 'Minimize'}" />
+                        <Button Style="{StaticResource IconButton}" Content="✕" Click="Close_Click" ToolTip="{l:T 'Hide to tray (keeps recording)'}"
+                                AutomationProperties.Name="{l:T 'Hide to tray (keeps recording)'}" />
                     </StackPanel>
                 </Grid>
 
@@ -281,7 +282,7 @@
                                                     <Border Style="{StaticResource Chip}">
                                                         <StackPanel Orientation="Horizontal">
                                                             <TextBlock Text="{Binding}" VerticalAlignment="Center" FontSize="12" />
-                                                            <Button Style="{StaticResource IconButton}" Content="✕" FontSize="11" Padding="6,0" Click="RemoveApp_Click" ToolTip="{l:T 'Remove'}" />
+                                                            <Button Style="{StaticResource IconButton}" Content="✕" FontSize="11" Padding="6,0" Click="RemoveApp_Click" ToolTip="{l:T 'Remove'}" AutomationProperties.Name="{l:T 'Remove'}" />
                                                         </StackPanel>
                                                     </Border>
                                                 </DataTemplate>
@@ -334,7 +335,7 @@
                                             </Grid.ColumnDefinitions>
                                             <TextBox x:Name="ClipsFolderBox" FlowDirection="LeftToRight" LostFocus="ClipsFolderBox_LostFocus" KeyDown="PathBox_KeyDown" ToolTip="{l:T 'Where new clips are saved'}" />
                                             <Button Grid.Column="1" Content="{l:T 'Browse…'}" Margin="6,0,0,0" Click="BrowseClips_Click" />
-                                            <Button Grid.Column="2" Style="{StaticResource GlyphButton}" Content="&#xE8B7;" Margin="6,0,0,0" Click="Folder_Click" ToolTip="{l:T 'Open the folder'}" />
+                                            <Button Grid.Column="2" Style="{StaticResource GlyphButton}" Content="&#xE8B7;" Margin="6,0,0,0" Click="Folder_Click" ToolTip="{l:T 'Open the folder'}" AutomationProperties.Name="{l:T 'Open the folder'}" />
                                         </Grid>
                                         <!-- Where clips can be archived to: always available, whether or not the automatic moves are on. -->
                                         <TextBlock Style="{StaticResource FieldLabel}" Margin="2,12,0,3" Text="{l:T 'Archive location (NAS share, drive or folder)'}" />
@@ -360,17 +361,10 @@
                                         <!-- The automatic part: the rules below apply only while this is ticked. -->
                                         <CheckBox x:Name="ArchiveCheck" Content="{l:T 'Move clips there automatically'}" Margin="2,12,0,0" Checked="ArchiveChanged" Unchecked="ArchiveChanged"
                                                   ToolTip="{l:T 'Clips move to the archive location in the background, slowly, by the rules below; the library keeps working from there. Archive now… moves clips by hand, whatever these rules say'}" />
-                                        <!-- Each box stays on one line with its unit: the rule wraps between the two parts only. -->
+                                        <!-- The rule is one sentence in the catalog ("Move clips older than {days} days, ... {size} GB ..."): MainWindow.BuildArchiveRulesRow lays its text out around these two boxes, in the order the language puts them. Each box stays on one line with its unit: the rule wraps between the parts only. -->
                                         <WrapPanel x:Name="ArchiveRulesPanel" Margin="2,8,0,0">
-                                            <TextBlock Style="{StaticResource MutedText}" Text="{l:T 'Move clips older than'}" VerticalAlignment="Center" Margin="0,0,6,4" />
-                                            <StackPanel Orientation="Horizontal">
-                                                <TextBox x:Name="ArchiveDaysBox" Width="46" Padding="6,4" TextAlignment="Center" Margin="0,0,6,4" LostFocus="ArchiveRulesChanged" KeyDown="PathBox_KeyDown" ToolTip="{l:T '0 = off'}" />
-                                                <TextBlock Style="{StaticResource MutedText}" Text="{l:T 'days, or when the local folder exceeds'}" VerticalAlignment="Center" Margin="0,0,6,4" />
-                                            </StackPanel>
-                                            <StackPanel Orientation="Horizontal">
-                                                <TextBox x:Name="ArchiveGbBox" Width="54" Padding="6,4" TextAlignment="Center" Margin="0,0,6,4" LostFocus="ArchiveRulesChanged" KeyDown="PathBox_KeyDown" ToolTip="{l:T '0 = off'}" />
-                                                <TextBlock Style="{StaticResource MutedText}" Text="{l:T 'GB · whichever comes first'}" VerticalAlignment="Center" Margin="0,0,0,4" />
-                                            </StackPanel>
+                                            <TextBox x:Name="ArchiveDaysBox" Width="46" Padding="6,4" TextAlignment="Center" Margin="0,0,6,4" LostFocus="ArchiveRulesChanged" KeyDown="PathBox_KeyDown" ToolTip="{l:T '0 = off'}" />
+                                            <TextBox x:Name="ArchiveGbBox" Width="54" Padding="6,4" TextAlignment="Center" Margin="0,0,6,4" LostFocus="ArchiveRulesChanged" KeyDown="PathBox_KeyDown" ToolTip="{l:T '0 = off'}" />
                                         </WrapPanel>
                                     </StackPanel>
                                 </Border>
@@ -416,7 +410,7 @@
                                                 <TextBox x:Name="ScreenshotFolderBox" FlowDirection="LeftToRight" LostFocus="ScreenshotFolderBox_LostFocus" KeyDown="PathBox_KeyDown"
                                                          ToolTip="{l:T 'Where screenshots are saved (PNG). Empty = a Screenshots folder inside the clips folder'}" />
                                                 <Button Grid.Column="1" Content="{l:T 'Browse…'}" Margin="6,0,0,0" Click="BrowseScreenshots_Click" />
-                                                <Button Grid.Column="2" Style="{StaticResource GlyphButton}" Content="&#xE8B7;" Margin="6,0,0,0" Click="OpenScreenshots_Click" ToolTip="{l:T 'Open the folder'}" />
+                                                <Button Grid.Column="2" Style="{StaticResource GlyphButton}" Content="&#xE8B7;" Margin="6,0,0,0" Click="OpenScreenshots_Click" ToolTip="{l:T 'Open the folder'}" AutomationProperties.Name="{l:T 'Open the folder'}" />
                                             </Grid>
                                             <CheckBox x:Name="ScreenshotCopyCheck" Content="{l:T 'Copy the image to the clipboard'}" Margin="2,12,0,0" Checked="ScreenshotOptionChanged" Unchecked="ScreenshotOptionChanged"
                                                       ToolTip="{l:T 'Paste it straight into Paint, Discord, Word or a browser'}" />
@@ -529,7 +523,23 @@
                     <TabItem x:Name="AppTab" Header="{l:T 'App'}">
                         <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,0,4,0">
                             <StackPanel Margin="0,0,0,4">
-                                <TextBlock Style="{StaticResource H}" Text="{l:T 'FEATURES'}" Margin="0,10,0,6" />
+                                <!-- Language: saved at once, applied by a restart (MainWindow.Language.cs); the restart hint is written in the language just chosen -->
+                                <TextBlock Style="{StaticResource H}" Text="{l:T 'LANGUAGE'}" Margin="0,10,0,6" />
+                                <Border Style="{StaticResource Card}">
+                                    <StackPanel>
+                                        <!-- the label above the list, not beside it: "Automatic (Windows display language)" is long in other languages and the list takes the card's whole width -->
+                                        <TextBlock Style="{StaticResource FieldLabel}" Text="{l:T 'Language'}" />
+                                        <ComboBox x:Name="LanguageCombo" SelectionChanged="LanguageChanged" AutomationProperties.Name="{l:T 'Language'}" />
+                                        <StackPanel x:Name="LanguageRestartPanel" Visibility="Collapsed" Margin="0,10,0,0">
+                                            <TextBlock x:Name="LanguageRestartHint" Style="{StaticResource Hint}" Margin="2,0,0,0" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" Text="" />
+                                            <TextBlock x:Name="LanguageRestartNote" Style="{StaticResource Hint}" Margin="2,6,0,0" TextWrapping="Wrap" Text="{l:T 'Restarting Clink clears the replay buffer: the moments recorded just before the restart are not kept.'}" />
+                                            <Button x:Name="LanguageRestartButton" Style="{StaticResource AccentButton}" Content="{l:T 'Restart now'}" HorizontalAlignment="Left" Padding="10,3" Margin="0,8,0,0"
+                                                    Click="LanguageRestart_Click" ToolTip="{l:T 'Restarting Clink clears the replay buffer: the moments recorded just before the restart are not kept.'}" />
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Border>
+
+                                <TextBlock Style="{StaticResource H}" Text="{l:T 'FEATURES'}" Margin="0,14,0,6" />
                                 <Border Style="{StaticResource Card}">
                                     <StackPanel>
                                         <CheckBox x:Name="FeatureClipsCheck" Content="{l:T 'Clips'}" Margin="2,0,0,0" Checked="FeatureChanged" Unchecked="FeatureChanged"

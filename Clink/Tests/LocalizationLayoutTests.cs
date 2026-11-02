@@ -185,6 +185,37 @@ internal static class LocalizationLayoutTests
         Check.Equal(Array.Empty<string>(), found.ToArray(), "clipped under " + L.PseudoRtlCode + " and not in English (" + found.Count + ")");
     }
 
+    /// <summary>The App tab at the main window's 470 px with the language card's restart hint, replay-buffer note and button showing (what a pick of another language shows).</summary>
+    private static List<string> AppTabWithRestartPanel(string language)
+    {
+        using var rig = new TrimShareSplitTests.Rig(true, true);
+        using (L.Scope(language))
+        {
+            var main = new MainWindow();
+            typeof(MainWindow).GetMethod("Populate", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.Invoke(main, null);
+            Mirror(main);
+            main.Tabs.SelectedItem = main.AppTab;
+            main.LanguageRestartPanel.Visibility = Visibility.Visible;
+            main.LanguageRestartHint.Text = L.T("Restart Clink to use the new language.");
+            double width = double.IsNaN(main.Width) ? 470 : main.Width;
+            Check.Equal(470.0, width, "the main window is 470 px wide");
+            Check.True(main.LanguageRestartNote.Text.Length > 0, "the replay-buffer sentence is in the panel");
+            return Clipped("MainWindow [App tab, restart panel]", (FrameworkElement)main.Content, width, 780);
+        }
+    }
+
+    [UnitTest]
+    public static void Under_the_pseudo_languages_the_App_tab_with_the_restart_panel_showing_clips_nothing_at_470_px()
+    {
+        if (Application.Current == null) throw new TestFailure("needs the running application (run it with Clink.exe --unittest)");
+        var english = AppTabWithRestartPanel("en").Select(Key).ToHashSet();
+        foreach (string language in new[] { L.PseudoCode, L.PseudoRtlCode })
+        {
+            var found = AppTabWithRestartPanel(language).Where(f => !english.Contains(Key(f))).ToList();
+            Check.Equal(Array.Empty<string>(), found.ToArray(), "clipped under " + language + " and not in English (" + found.Count + ")");
+        }
+    }
+
     [UnitTest]
     public static void The_replay_length_slider_keeps_its_English_geometry_and_makes_room_for_a_longer_language()
     {
@@ -309,6 +340,90 @@ internal static class LocalizationLayoutTests
                 }
             }
         }
+    }
+
+    [UnitTest]
+    public static void The_archive_destination_path_is_pinned_left_to_right_and_sits_on_the_start_side()
+    {
+        if (Application.Current == null) throw new TestFailure("needs the running application (run it with Clink.exe --unittest)");
+        using var rig = new TrimShareSplitTests.Rig(false, true);
+        using var archive = new TempDir();
+        rig.App.Settings.ArchivePath = archive.Path;
+        var withPath = new ArchiveWindow(rig.App);
+        Check.Equal(FlowDirection.LeftToRight, withPath.DestinationText.FlowDirection, "a path reads left to right in any language");
+        Check.Equal(HorizontalAlignment.Left, withPath.DestinationText.HorizontalAlignment, "and sits on the start side of the window, so it lines up under right-to-left");
+        rig.App.Settings.ArchivePath = null;
+        var without = new ArchiveWindow(rig.App);
+        Check.Equal(HorizontalAlignment.Stretch, without.DestinationText.HorizontalAlignment, "the sentence about no location is laid out as the window is");
+        Check.False(without.DestinationText.FlowDirection == FlowDirection.LeftToRight && System.Windows.DependencyPropertyHelper.GetValueSource(without.DestinationText, FrameworkElement.FlowDirectionProperty).BaseValueSource == BaseValueSource.Local, "the sentence follows the window's direction");
+    }
+
+    [UnitTest]
+    public static void The_editor_window_minimum_width_grows_to_the_toolbar_in_long_languages_and_stays_860_in_English()
+    {
+        if (Application.Current == null) throw new TestFailure("needs the running application (run it with Clink.exe --unittest)");
+        var padding = new Thickness(14, 4, 14, 10);   // ToolbarHost's, as in ScreenshotEditorWindow.xaml
+        double english, pseudo;
+        using (L.Scope("en")) english = Clink.UI.Screenshots.ScreenshotEditorWindow.ToolbarNeededWidth(new Clink.UI.Screenshots.EditorToolbar(), padding);
+        using (L.Scope(L.PseudoCode)) pseudo = Clink.UI.Screenshots.ScreenshotEditorWindow.ToolbarNeededWidth(new Clink.UI.Screenshots.EditorToolbar(), padding);
+        Check.True(english > 0 && english <= 860, "English fits the XAML minimum, so the minimum stays 860: " + english);
+        Check.True(pseudo > 860, "a long language needs more than the XAML minimum: " + pseudo);
+        // the same rule the window applies: the larger of the two, within 90% of the work area
+        var (w, _) = Clink.UI.Screenshots.ScreenshotEditorWindow.MinSizeFor(Math.Max(860, pseudo), 520, 1.0, 1920, 1080);
+        Check.Equal(pseudo, w, "raised to the toolbar's width");
+        Check.Equal(860.0, Clink.UI.Screenshots.ScreenshotEditorWindow.MinSizeFor(Math.Max(860, english), 520, 1.0, 1920, 1080).W, "English unchanged");
+        Check.Equal(0.9 * 1000, Clink.UI.Screenshots.ScreenshotEditorWindow.MinSizeFor(Math.Max(860, pseudo), 520, 1.0, 1000, 1080).W, "and never more than 90% of a small work area");
+    }
+
+    [UnitTest]
+    public static void In_English_the_border_notice_row_and_the_screenshot_upload_states_stay_in_one_row()
+    {
+        if (Application.Current == null) throw new TestFailure("needs the running application (run it with Clink.exe --unittest)");
+        using var rig = new TrimShareSplitTests.Rig(true, true);
+        using (L.Scope("en"))
+        {
+            var states = new List<(string Name, ToastWindow Toast)>
+            {
+                ("border notice", Toast("border", L.T("Clink is not recording"), "Windows shows a yellow border around the screen while Clink captures it.")),
+            };
+            foreach (string label in new[] { L.T("Upload"), L.T("Cancelling…"), L.T("Copied ✓"), L.T("Retry") })   // (the toast no longer shows "Uploading… 100%": at 100% it shows the plain "Uploading…", the state added below)
+            {
+                var toast = Toast("screenshot", L.T("Screenshot saved"), "2560×1440", null, null, SampleShot(), true);
+                toast.ShotUploadButton.Content = label;
+                toast.ShotUploadButton.Visibility = Visibility.Visible;
+                states.Add(("screenshot, " + label, toast));
+            }
+            // the upload reached 100% and the link has not come yet: "Uploading…" without the percent (the old "Uploading… 100%" was the widest line)
+            var done = Toast("screenshot", L.T("Screenshot saved"), "2560×1440", null, null, SampleShot(), true);
+            done.CancelHandler = () => { };
+            done.BeginUpload();
+            done.SetUploadProgress(0.4);
+            Check.Equal("Uploading… " + 0.4.ToString("P0", L.FormatCulture), done.Subtitle.Text, "under way: with the percent");
+            done.SetUploadProgress(1.0);
+            Check.Equal("Uploading…", done.Subtitle.Text, "at 100% the second line is the plain Uploading…");
+            states.Add(("screenshot, uploading at 100%", done));
+            foreach (var (name, toast) in states)
+            {
+                var buttons = RowButtons(toast);
+                Check.True(buttons.Count >= 2, name + ": the row has its buttons: " + Rows(buttons));
+                Check.Equal(1, buttons.Select(b => b.Top).Distinct().Count(), name + ": one row in English: " + Rows(buttons));
+                Check.Equal(1, buttons.Select(b => b.Height).Distinct().Count(), name + ": the buttons are equally high: " + Rows(buttons));
+                var root = (FrameworkElement)toast.Content;
+                Check.True(Descendants(root).OfType<WrapPanel>().Where(p => p.Visibility == Visibility.Visible).All(p => p.ActualWidth <= 330 + 0.5), name + ": the row fits the toast");
+            }
+        }
+    }
+
+    [UnitTest]
+    public static void A_toast_asks_its_owner_to_restack_from_its_SizeChanged_and_from_nowhere_else()
+    {
+        string root = L10nSourceScan.Root() ?? throw new TestFailure("Clink.csproj was not found above " + AppContext.BaseDirectory);
+        string source = System.IO.File.ReadAllText(System.IO.Path.Combine(root, "UI", "ToastWindow.xaml.cs"));
+        Check.Contains(source, "SizeChanged += (_, e) => NoteSizeChanged(e.HeightChanged);", "the toast's SizeChanged is wired to the re-stack");
+        int from = source.IndexOf("private void ShowSubtitle(", StringComparison.Ordinal);
+        Check.True(from > 0, "ShowSubtitle is still there");
+        int to = source.IndexOf("/// <summary>", from, StringComparison.Ordinal);
+        Check.False(source[from..to].Contains("Relayout", StringComparison.Ordinal), "ShowSubtitle lays out and lets SizeChanged re-stack: a second request would queue the stack twice");
     }
 
     [UnitTest]

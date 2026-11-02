@@ -22,7 +22,7 @@
                     ToolTip="{l:T 'The keys that save the full replay. Click, then press the key combo you want (Esc cancels)'}" />
             <TextBlock x:Name="MainHint" Grid.Column="1" Style="{StaticResource MutedText}" Margin="10,0,0,0" VerticalAlignment="Center"
                        TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
-            <Button x:Name="MainClear" Grid.Column="2" Style="{StaticResource GlyphButton}" Content="&#xE711;" Margin="8,0,0,0" Click="MainClear_Click"
+            <Button x:Name="MainClear" Grid.Column="2" Style="{StaticResource GlyphButton}" Content="&#xE711;" Margin="8,0,0,0" Click="MainClear_Click" AutomationProperties.Name="{l:T 'Clear the main hotkey'}"
                     ToolTip="{l:T 'Clear the main hotkey: nothing saves the full replay until you set keys again'}" />
         </Grid>
         <!-- why the keys just pressed were not taken, for the main row (another row has them, or a bare typing key); shown while its capture stays armed -->

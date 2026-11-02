@@ -69,6 +69,7 @@ public partial class TrimWindow : Window
         if (L.IsRtl) HintText.FlowDirection = FlowDirection.RightToLeft;   // the transport row is pinned left to right; the hint is a sentence
         // The texts with key names in them (the {l:T} extension takes no arguments), and the toggle's glyph + word.
         PlayButton.ToolTip = L.T("Play / pause ({keys})", ("keys", L.Ltr("Space")));
+        System.Windows.Automation.AutomationProperties.SetName(PlayButton, L.T("Play / pause ({keys})", ("keys", L.Ltr("Space"))));   // the glyph (▶ / ❚❚) is not a name
         SetInButton.ToolTip = L.T("Set the start to the playhead ({keys})", ("keys", L.Ltr("I")));
         SetOutButton.ToolTip = L.T("Set the end to the playhead ({keys})", ("keys", L.Ltr("O")));
         TrimToggle.Content = "✂ " + L.T("Trim");
@@ -914,7 +915,10 @@ public partial class TrimWindow : Window
                 {
                     // "Not now" in the Share with Copium? pop-up, or cloud sharing off: the trim is saved, nothing failed.
                     bool cloudOff = !app.Settings.CloudSharingEnabled;
-                    StatusText.Text = L.T(cloudOff ? "Saved {name}, not shared: cloud sharing is off" : "Saved {name}, not shared. Choose again to share it.", ("name", L.Ltr(Path.GetFileName(result.Path))));
+                    string sharedName = L.Ltr(Path.GetFileName(result.Path));
+                    StatusText.Text = cloudOff
+                        ? L.T("Saved {name}, not shared: cloud sharing is off", ("name", sharedName))
+                        : L.T("Saved {name}, not shared. Choose again to share it.", ("name", sharedName));
                     await KeepOpenAsync();
                     return;
                 }

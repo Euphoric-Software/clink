@@ -43,7 +43,7 @@ internal static class ClipWriter
             writer.AddVideo(v.Pts, v.Keyframe, v.Data);
             v.Data = Array.Empty<byte>();   // the snapshot's copy is done with
         }
-        if (!writer.HasVideo) throw new InvalidOperationException("Nothing recorded yet, wait a moment and try again.");
+        if (!writer.HasVideo) throw Engine.NothingRecordedError();
         for (int t = 0; t < audio.Count; t++)
         {
             var frames = audio[t].frames;

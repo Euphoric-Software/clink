@@ -93,6 +93,27 @@ public partial class ScreenshotEditorWindow : Window, ICaptureExcludedWindow
     internal static (double W, double H) MinSizeFor(double xamlMinW, double xamlMinH, double dpi, int workW, int workH) =>
         (Math.Min(xamlMinW, 0.9 * workW / dpi), Math.Min(xamlMinH, 0.9 * workH / dpi));
 
+    /// <summary>
+    /// The window width (DIPs) at which the toolbar's longest row fits without being clipped: its natural width plus the host's padding and
+    /// the window border. In English this is below the XAML minimum (860), so nothing changes; in a language with longer button texts the
+    /// window's minimum grows to it (<see cref="MinSizeFor"/> still keeps it within 90% of the work area).
+    /// </summary>
+    internal double ToolbarNeededWidth() => ToolbarNeededWidth(Toolbar, ToolbarHost.Padding);
+
+    internal static double ToolbarNeededWidth(FrameworkElement toolbar, Thickness hostPadding)
+    {
+        try
+        {
+            toolbar.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+            return Math.Ceiling(toolbar.DesiredSize.Width + hostPadding.Left + hostPadding.Right + 2);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("screenshot editor: toolbar width: " + ex.Message);
+            return 0;
+        }
+    }
+
     [System.Runtime.InteropServices.DllImport("shcore.dll")]
     private static extern int GetDpiForMonitor(nint hmonitor, int dpiType, out uint dpiX, out uint dpiY);
 
@@ -117,7 +138,7 @@ public partial class ScreenshotEditorWindow : Window, ICaptureExcludedWindow
             var hwnd = new HWND(new WindowInteropHelper(this).Handle);
             var wa = ScreenPlacement.WorkAreaOf(request.Monitor);
             double dpi = ScaleOfTarget(request, wa);
-            var (minW, minH) = MinSizeFor(MinWidth, MinHeight, dpi, wa.right - wa.left, wa.bottom - wa.top);
+            var (minW, minH) = MinSizeFor(Math.Max(MinWidth, ToolbarNeededWidth()), MinHeight, dpi, wa.right - wa.left, wa.bottom - wa.top);
             MinWidth = minW;
             MinHeight = minH;
             var img = request.Document.Base;

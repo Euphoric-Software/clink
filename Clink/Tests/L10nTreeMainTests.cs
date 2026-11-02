@@ -31,7 +31,15 @@ internal static class L10nTreeMainTests
 
     /// <summary>Text that needs no translation although it has letters: a resolution name ("1080p"), a codec name ("AV1").</summary>
     private static bool Untranslatable(string text) =>
-        Regex.IsMatch(text.Trim(), @"^(\d{3,4}p|AV1|PrintScreen)$");   // codec / resolution names, and the key cap of a hotkey (hotkey names stay English in v0.4.5)
+        Regex.IsMatch(text.Trim(), @"^(\d{3,4}p|AV1|PrintScreen)$")   // codec / resolution names, and the key cap of a hotkey (hotkey names stay English in v0.4.5)
+        || ArchiveRulePiece(text);
+
+    /// <summary>The archive rule is one catalog sentence laid out around its two boxes: its text pieces are cut from the pseudo-framed sentence, so no piece has the whole frame (LanguageSettingTests checks the pieces add up to the sentence).</summary>
+    private static bool ArchiveRulePiece(string text)
+    {
+        var parts = MainWindow.SplitArchiveRule(L.T(MainWindow.ArchiveRuleEnglish, ("days", "{days}"), ("size", "{size}")));
+        return parts is { } p && (text.Trim() == p.Before || text.Trim() == p.Between || text.Trim() == p.After) && text.Trim().Length > 0;
+    }
 
     private static List<string> Unlocalized(DependencyObject root) =>
         L10nTreeHarness.Unlocalized(root, Untranslatable).ToList();
@@ -592,8 +600,8 @@ internal static class L10nTreeMainTests
 
         // the helpers of these files that take a key (L.Plural( is not used by them)
         var hits = L10nSourceScan.CSharp(root,
-            new[] { "MainWindow.xaml.cs", @"UI\HotkeyListEditor.xaml.cs", @"UI\ReplayLengthSlider.cs", @"Services\Capabilities.cs", @"Services\SettingsImport.cs", @"Services\CopiumCardModel.cs" },
-            new[] { L10nSourceScan.T, L10nSourceScan.TInEn, L10nSourceScan.TrLocale, L10nSourceScan.Skipped, L10nSourceScan.SkippedBy, L10nSourceScan.NoteOf, L10nSourceScan.SayT });
+            new[] { "MainWindow.xaml.cs", "MainWindow.Language.cs", @"UI\HotkeyListEditor.xaml.cs", @"UI\ReplayLengthSlider.cs", @"Services\Capabilities.cs", @"Services\SettingsImport.cs", @"Services\CopiumCardModel.cs" },
+            new[] { L10nSourceScan.T, L10nSourceScan.TInEn, L10nSourceScan.TInLocale, L10nSourceScan.TrLocale, L10nSourceScan.Skipped, L10nSourceScan.SkippedBy, L10nSourceScan.NoteOf, L10nSourceScan.SayT });
         hits.AddRange(L10nSourceScan.Xaml(root, new[] { "MainWindow.xaml", @"UI\HotkeyListEditor.xaml" }));
         foreach (var h in hits)
             if (h.Key != "setting|" && !area.Contains(h.Key) && !core.Contains(h.Key)) problems.Add(h.File + ": " + h.Key);   // "setting|" is the prefix SettingsImport.LabelText puts before a label (the labels are checked by their own test)

@@ -161,6 +161,30 @@ internal static class LocalizationBidiTests
     }
 
     [UnitTest]
+    public static void Isolate_first_strong_treats_strong_right_to_left_punctuation_as_right_to_left_and_skips_the_neutral_and_weak_signs()
+    {
+        using var _ = L.Scope("ar");
+        const string Rtl = "\u200F", Ltr = "\u200E";
+        // strong right-to-left punctuation (bidi class AL or R) decides before the Latin text that follows
+        foreach (int cp in new[] { 0x061B, 0x061F, 0x06D4, 0x060D, 0x0608, 0x060B, 0x05BE, 0x05C0, 0x05C3, 0x05C6, 0x05F3, 0x05F4 })
+        {
+            string s = char.ConvertFromUtf32(cp) + " abc";
+            Check.Equal(Rtl + s + Rtl, L.Isolate(s), "U+" + cp.ToString("X4") + " is strong right-to-left");
+        }
+        // marks and format characters, digits and number signs, and the neutral or weak punctuation do not decide: the next strong character does
+        foreach (int cp in new[] { 0x064E, 0x0610, 0x0600, 0x06DD, 0x0660, 0x0669, 0x06F0, 0x06F9, 0x066B, 0x066C, 0x060C, 0x0609, 0x060A, 0x066A, 0x0606, 0x0607, 0x060E, 0x060F, 0x06DE, 0x06E9, 0xFD3E, 0xFD3F, 0xFEFF })
+        {
+            string s = char.ConvertFromUtf32(cp) + " abc";
+            Check.Equal(Ltr + s + Ltr, L.Isolate(s), "U+" + cp.ToString("X4") + " does not decide (left-to-right text follows)");
+            string r = char.ConvertFromUtf32(cp) + " \u0627";
+            Check.Equal(Rtl + r + Rtl, L.Isolate(r), "U+" + cp.ToString("X4") + " does not decide (an Arabic letter follows)");
+        }
+        // plain ASCII punctuation and spaces before the first letter were never strong
+        Check.Equal(Ltr + "(1) abc" + Ltr, L.Isolate("(1) abc"));
+        Check.Equal(Rtl + "(1) \u0627" + Rtl, L.Isolate("(1) \u0627"));
+    }
+
+    [UnitTest]
     public static void Inside_InEnglish_the_language_answers_English()
     {
         using (L.Scope("ar"))

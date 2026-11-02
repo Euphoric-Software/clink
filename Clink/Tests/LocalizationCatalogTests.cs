@@ -146,6 +146,46 @@ internal static class LocalizationCatalogTests
         }
     }
 
+    /// <summary>The keys whose translation has not the blank lines ("\n\n" paragraphs) or line breaks ("\n") of the English text: the layout (a message box, a hint) is built around them.</summary>
+    private static List<string> LineBreakProblems(Catalog english, Catalog translated, string code)
+    {
+        static int Count(string text, string what) => (text.Length - text.Replace(what, "").Length) / what.Length;
+        static IEnumerable<string> Texts(Entry e) => e.Text != null ? new[] { e.Text } : e.Forms!.Values;
+        var problems = new List<string>();
+        foreach (var (key, entry) in translated.Entries)
+        {
+            if (!english.Entries.TryGetValue(key, out var en)) continue;
+            string reference = en.Primary;
+            foreach (string text in Texts(entry))
+            {
+                int blank = Count(text, "\n\n"), lines = Count(text, "\n");
+                if (blank != Count(reference, "\n\n") || lines != Count(reference, "\n"))
+                    problems.Add($"{code}: \"{key}\" has {blank} blank line(s) and {lines} line break(s), English has {Count(reference, "\n\n")} and {Count(reference, "\n")}");
+            }
+        }
+        return problems;
+    }
+
+    [UnitTest]
+    public static void Every_translation_keeps_the_blank_lines_and_line_breaks_of_its_English_text()
+    {
+        var set = L.Embedded;
+        foreach (var (code, cat) in set.Locales)
+        {
+            if (code == "en") continue;
+            Check.Equal(Array.Empty<string>(), LineBreakProblems(set.English, cat, code).ToArray(), code);
+        }
+        // the check itself: a paragraph that was joined, and one that was added, are found; the same breaks pass
+        var made = CatalogSet.Build(new[]
+        {
+            new CatalogSource("en", "t", """{ "a": "x\n\ny", "b": "p\nq", "c": "plain" }"""),
+            new CatalogSource("de", "t", """{ "a": "x y", "b": "p\nq", "c": "one\n\ntwo" }"""),
+        });
+        var problems = LineBreakProblems(made.English, made.Locales["de"], "de");
+        Check.Equal(2, problems.Count, string.Join(" | ", problems));
+        Check.True(problems.Any(p => p.Contains("\"a\"")) && problems.Any(p => p.Contains("\"c\"")), string.Join(" | ", problems));
+    }
+
     [UnitTest]
     public static void The_glossary_covers_known_languages_and_is_consistent_with_English()
     {

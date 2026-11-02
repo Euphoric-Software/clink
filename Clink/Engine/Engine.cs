@@ -657,7 +657,7 @@ internal sealed unsafe class Engine : IDisposable
     {
         int gen = Volatile.Read(ref _encoderGen);   // before enc: see ThrowIfEncoderRestarted
         var ring = _ring; var enc = _encoder;
-        if (!IsRunning || ring == null || enc == null) throw new InvalidOperationException("Not recording");
+        if (!IsRunning || ring == null || enc == null) throw NotRecordingError();
         long end = ComUtil.QpcNow100ns();
         // Never more than the buffer holds: the audio timelines keep BufferSeconds (+6 s), and the video ring may hold a little
         // more than that at low motion, so a longer hotkey length would open with silent video.
@@ -677,7 +677,7 @@ internal sealed unsafe class Engine : IDisposable
 
         var video = ring.Snapshot(from, end);
         ThrowIfEncoderRestarted(gen, Volatile.Read(ref _encoderGen));   // the ring was cleared and refilled by another encoder: enc's header would not match
-        if (video.Count < 2) throw new InvalidOperationException("Nothing recorded yet, wait a moment and try again.");
+        if (video.Count < 2) throw NothingRecordedError();
         long origin = video[0].Pts;
 
         List<(AudioTrackDesc desc, List<AacFrame> frames)> audio;
@@ -719,6 +719,14 @@ internal sealed unsafe class Engine : IDisposable
     {
         if (genBefore != genNow) throw Clink.Services.Localization.UserText.Attach(new InvalidOperationException("The encoder restarted, try again"), Clink.Services.Note.Of("The encoder restarted, try again"));
     }
+
+    /// <summary>"Not recording": the exception a save or a stop throws when no recording engine runs. The message is English for the log; the user reads the note in their language (<see cref="Clink.Services.Localization.UserText"/>).</summary>
+    internal static InvalidOperationException NotRecordingError() =>
+        Clink.Services.Localization.UserText.Attach(new InvalidOperationException("Not recording"), Clink.Services.Note.Of("Not recording"));
+
+    /// <summary>"Nothing recorded yet, wait a moment and try again.": the exception a save throws when the replay buffer has no video yet (same pairing of English message and note).</summary>
+    internal static InvalidOperationException NothingRecordedError() =>
+        Clink.Services.Localization.UserText.Attach(new InvalidOperationException("Nothing recorded yet, wait a moment and try again."), Clink.Services.Note.Of("Nothing recorded yet, wait a moment and try again."));
 
     private static string SanitizeName(string s)
     {
@@ -858,7 +866,7 @@ internal sealed unsafe class Engine : IDisposable
             sink.Stop(RecordingEndReason.UserStopped);
             return sink.Completion;
         }
-        return _lastRecording ?? Task.FromException<RecordingResult>(new InvalidOperationException("Not recording"));
+        return _lastRecording ?? Task.FromException<RecordingResult>(NotRecordingError());
     }
 
     private void OnRecordingDone(RecordingSink sink, RecordingResult result)

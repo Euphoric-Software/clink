@@ -1131,12 +1131,13 @@ internal sealed partial class AppController : IDisposable
     /// archive (it moves clips and updates the index). A clip that is being saved at this moment keeps its file, which the next start
     /// finds in the clips folder, but its index entry is not written. Nothing here throws.
     /// </summary>
-    private void StopForRestart()
+    /// <param name="freezeLibrary">False for a restart that merges nothing into the clip index (the language restart): a recording that ends, a clip or a link that finishes during the restart is still written to clips.json, as an update restart does.</param>
+    private void StopForRestart(bool freezeLibrary = true)
     {
         _restarting = true;
         EndRecordingWish(EngineStopCause.Shutdown);
         Settings.FreezeSaves();
-        Library.FreezeSaves();
+        if (freezeLibrary) Library.FreezeSaves();
         Interlocked.Increment(ref _startGen);   // a recorder start that has not begun is cancelled
         _starting = false;
         // A sign-in stops too: its token could not be saved any more (saves are frozen), so a late approval is revoked, not stored.
@@ -1796,13 +1797,14 @@ internal sealed partial class AppController : IDisposable
             ("length", $"{secs / 60}:{secs % 60:00}"),
         };
         // (folder-scanned clips have no duration: no length in the sentence)
-        return plus
-            ? duration > 0
+        if (plus)
+            return duration > 0
                 ? Note.Of("Copium Plus accepts up to {limit} / {minutes} min; this clip is {size} / {length} - trim it first", args)
-                : Note.Of("Copium Plus accepts up to {limit} / {minutes} min; this clip is {size} - trim it first", args)
-            : duration > 0
-                ? Note.Of("Copium free accepts up to {limit} / {minutes} min; this clip is {size} / {length} - trim it, or tick 'I have Copium+' if you do", args)
-                : Note.Of("Copium free accepts up to {limit} / {minutes} min; this clip is {size} - trim it, or tick 'I have Copium+' if you do", args);
+                : Note.Of("Copium Plus accepts up to {limit} / {minutes} min; this clip is {size} - trim it first", args);
+        var freeArgs = args.Append(("label", (object?)L.T("I have Copium+"))).ToArray();   // the checkbox's own text, so the sentence names what the user sees
+        return duration > 0
+            ? Note.Of("Copium free accepts up to {limit} / {minutes} min; this clip is {size} / {length} - trim it, or tick '{label}' if you do", freeArgs)
+            : Note.Of("Copium free accepts up to {limit} / {minutes} min; this clip is {size} - trim it, or tick '{label}' if you do", freeArgs);
     }
 
     /// <summary>
@@ -2084,7 +2086,7 @@ internal sealed partial class AppController : IDisposable
     internal static string UploadingPercentText(double p) => L.T("Uploading… {percent}", ("percent", p.ToString("P0", L.FormatCulture)));
 
     /// <summary>What <see cref="FitForCopiumAsync"/> found: the file to upload (and the copy to dispose afterwards), or why nothing is uploaded.</summary>
-    private sealed record FitOutcome(string Path, Note? Refusal, Note? Notice, ShareCopyResult? Copy, ShareRefusalKind Kind = ShareRefusalKind.SmallerCopy);
+    private sealed record FitOutcome(string Path, Note? Refusal, Note? Notice, ShareCopyResult? Copy, ShareRefusalKind Kind = ShareRefusalKind.None);   // (every refusal says its kind; an outcome with something to upload has none)
 
     /// <summary>
     /// The copy's reports (any thread) for one upload: the share phase, the caller's progress, and <paramref name="first"/> once, at the
@@ -2443,21 +2445,33 @@ internal sealed partial class AppController : IDisposable
     /// <summary>The tray icon's tooltip: the name, a dot and the status, cut to 120 characters (NotifyIcon.Text throws above 127) whatever the language.</summary>
     internal static string TrayText(string name, string status)
     {
-        string text = name + " · " + status;
-        if (text.Length <= 120) return text;
-        int cut = 119;
-        if (char.IsHighSurrogate(text[cut - 1])) cut--;   // never split a surrogate pair
-        string head = text[..cut];
-        // never leave a left-to-right embedding (L.Ltr's LRE ... PDF) open: close what the cut left open (an LRE costs one PDF, at most a few)
-        int open = 0;
-        foreach (char c in head)
-        {
-            if (c is '\u202A' or '\u202B' or '\u202D' or '\u202E') open++;
-            else if (c == '\u202C' && open > 0) open--;
-        }
-        return head + "…" + new string('\u202C', Math.Min(open, 6));
+        return CutForShell(name + " · " + status, 120);
     }
 
+    /// <summary>
+    /// <paramref name="text"/> cut to at most <paramref name="limit"/> characters for a surface the shell draws (the tray tooltip, a balloon):
+    /// text that fits is returned as it is; otherwise it ends with "…" and is never cut inside a surrogate pair, and a left-to-right
+    /// embedding (L.Ltr's LRE ... PDF) the cut leaves open is closed (the PDFs count in the limit). One helper for every shell text.
+    /// </summary>
+    internal static string CutForShell(string text, int limit)
+    {
+        if (text.Length <= limit) return text;
+        for (int cut = limit - 1; cut > 0; cut--)
+        {
+            if (char.IsHighSurrogate(text[cut - 1])) continue;   // never split a surrogate pair
+            string head = text[..cut];
+            // never leave an embedding open: close what the cut left open (an LRE costs one PDF, at most a few)
+            int open = 0;
+            foreach (char c in head)
+            {
+                if (c is '\u202A' or '\u202B' or '\u202D' or '\u202E') open++;
+                else if (c == '\u202C' && open > 0) open--;
+            }
+            open = Math.Min(open, 6);
+            if (head.Length + 1 + open <= limit) return head + "…" + new string('\u202C', open);
+        }
+        return "…";
+    }
     public void UpdateTrayHotkey()
     {
         if (_clipItem != null) _clipItem.Text = ClipTrayText;
@@ -2495,7 +2509,7 @@ internal sealed partial class AppController : IDisposable
     public void ShowBalloon(string title, string text)
     {
         if (IsQuiet) return;   // --dev-quiet: no tray balloon
-        if (text.Length > 250) text = text[..249] + "…";   // Shell_NotifyIcon cuts balloon text at 256 characters
+        text = CutForShell(text, 250);   // Shell_NotifyIcon cuts balloon text at 256 characters
         title = RtlFirst(title);
         text = RtlFirst(text);
         if (TestGuard.Active && _tray != null) TestGuard.CheckLaunch("a tray balloon: " + title);   // test mode only: nothing is shown

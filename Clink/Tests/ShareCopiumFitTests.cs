@@ -263,6 +263,35 @@ internal static class ShareCopiumFitTests
     }
 
     [UnitTest]
+    public static void A_copy_that_comes_out_longer_than_the_length_limit_is_refused_as_over_the_limit()
+    {
+        using var rig = new Rig();
+        rig.Transcoder.CopyDuration = 700;   // the clip says 5 s, so nothing is refused up front; the finished copy is 11:40, over Copium free's 10 minutes
+        var clip = rig.Clip(OverSize);
+        Check.False(Wait(rig.App.ShareAsync(clip)));
+        Check.Equal(1, rig.Transcoder.Transcodes);
+        Check.Equal(0, rig.Http.Requests);
+        Check.Equal(ShareOutcome.Refused, rig.App.LastShareOutcome);
+        Check.Equal(ShareRefusalKind.OverLimit, rig.App.RefusalKind, "the account's limit, so the advice is to tighten the selection");
+        Check.Equal("Over Copium's free limit (200 MB / 10 min)", rig.App.ShareRefusal);
+        Check.Equal(0, rig.Parts().Length, "the unusable copy is not kept as a part file");
+    }
+
+    [UnitTest]
+    public static void A_clip_that_cannot_fit_even_as_a_copy_is_refused_as_a_smaller_copy_problem()
+    {
+        using var rig = new Rig();
+        rig.Transcoder.Duration = 3000;   // the clip says 5 s, the file says 50 minutes: no copy of it fits in 200 MB, the planner answers CantFit before any re-encode
+        var clip = rig.Clip(OverSize);
+        Check.False(Wait(rig.App.ShareAsync(clip)));
+        Check.Equal(0, rig.Transcoder.Transcodes, "nothing was encoded");
+        Check.Equal(0, rig.Http.Requests);
+        Check.Equal(ShareOutcome.Refused, rig.App.LastShareOutcome);
+        Check.Equal(ShareRefusalKind.SmallerCopy, rig.App.RefusalKind);
+        Check.Contains(rig.App.ShareRefusal, "can't fit in 200 MB");
+    }
+
+    [UnitTest]
     public static void The_refusal_helpers_split_the_size_and_the_length_limit()
     {
         Check.True(AppController.ShareSizeOver(200_000_001, plus: false));

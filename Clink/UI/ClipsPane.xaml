@@ -217,7 +217,7 @@
                             <Button Content="{x:Static svc:ShareChoices.SplitArrowLabel}" Click="ShareArrow_Click" Style="{StaticResource AccentSplitArrow}"
                                     AutomationProperties.Name="{x:Static svc:ShareChoices.SplitArrowName}" ToolTip="{x:Static svc:ShareChoices.SplitArrowTip}" />
                         </StackPanel>
-                        <Button Style="{StaticResource GlyphButton}" Content="&#xE8B7;" Click="Folder_Click" Padding="7,5" Margin="0,0,4,0" ToolTip="{l:T 'Show in folder'}" />
+                        <Button Style="{StaticResource GlyphButton}" Content="&#xE8B7;" Click="Folder_Click" Padding="7,5" Margin="0,0,4,0" ToolTip="{l:T 'Show in folder'}" AutomationProperties.Name="{l:T 'Show in folder'}" />
                         <!-- grey like Trim and the folder button, red under the pointer; off only while the clip is being deleted -->
                         <Button Style="{StaticResource DangerGlyphButton}" Content="&#xE74D;" Click="ClipDelete_Click" Padding="7,5" ToolTip="{l:T 'Delete'}" AutomationProperties.Name="{l:T 'Delete clip'}"
                                 IsEnabled="{Binding CanDelete}" />
@@ -273,7 +273,7 @@
                     </StackPanel>
                     <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
                         <Button Content="{l:T 'Open page'}" Click="OpenPage_Click" Padding="10,5" Margin="0,0,6,0" ToolTip="{l:T 'Open the clip on copium.pics'}" />
-                        <Button Style="{StaticResource GlyphButton}" Content="&#xE8B7;" Click="Folder_Click" Padding="8,5" ToolTip="{l:T 'Show the local file in its folder'}"
+                        <Button Style="{StaticResource GlyphButton}" Content="&#xE8B7;" Click="Folder_Click" Padding="8,5" ToolTip="{l:T 'Show the local file in its folder'}" AutomationProperties.Name="{l:T 'Show the local file in its folder'}"
                                 Visibility="{Binding HasLocalFile, Converter={StaticResource Vis}}" />
                     </StackPanel>
                 </Grid>

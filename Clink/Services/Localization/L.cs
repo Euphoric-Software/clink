@@ -512,21 +512,28 @@ internal static class L
         return mark + text + mark;
     }
 
-    /// <summary>The first strong letter decides. Arabic-Indic and extended Arabic-Indic digits and the byte order mark are in the right-to-left blocks but are not letters; surrogate pairs are decoded (Old South Arabian, Hatran, Adlam and the like are right-to-left).</summary>
+    /// <summary>
+    /// The first strong character decides. In the right-to-left blocks a character is strong right-to-left (bidi class R or AL), the
+    /// punctuation of the scripts included (the Arabic semicolon, question mark, full stop, date separator, poem sign and afghani sign
+    /// U+061B U+061F U+06D4 U+060D U+0608 U+060B; the Hebrew maqaf, paseq, sof pasuq, nun hafukha, geresh and gershayim U+05BE U+05C0 U+05C3 U+05C6 U+05F3 U+05F4),
+    /// except: marks and format characters (Mn, Me, Cf: the harakat, U+0600-0605, U+06DD, the byte order mark), the digits and number signs
+    /// (Arabic-Indic and extended Arabic-Indic digits, U+066B U+066C) and the neutral and weak punctuation
+    /// (the Arabic comma U+060C, per mille and per ten thousand U+0609 U+060A, percent U+066A, U+0606 U+0607 U+060E U+060F U+06DE U+06E9, ornate parentheses
+    /// U+FD3E U+FD3F, U+FDCF U+FDFD U+FDFE U+FDFF, U+FB29, and the Rumi numeral symbols U+10E60-U+10E7E (AN)), which go on to the next character. Surrogate pairs are decoded (Old South Arabian, Hatran, Adlam and the like are right-to-left).
+    /// </summary>
     private static bool FirstStrongIsRtl(string text)
     {
         for (int i = 0; i < text.Length; i++)
         {
             int at = i, cp = text[i];
             if (char.IsHighSurrogate(text[i]) && i + 1 < text.Length && char.IsLowSurrogate(text[i + 1])) { cp = char.ConvertToUtf32(text[i], text[i + 1]); i++; }
-            if (cp is >= 0x0660 and <= 0x0669 or >= 0x06F0 and <= 0x06F9 or 0xFEFF) continue;
             if (cp is >= 0x0590 and <= 0x08FF or >= 0xFB1D and <= 0xFDFF or >= 0xFE70 and <= 0xFEFF or >= 0x10800 and <= 0x10FFF or >= 0x1E800 and <= 0x1EFFF)
             {
-                // in the right-to-left blocks but not letters: marks (the harakat U+064B-065F), format characters (U+0600-0605, U+06DD), punctuation and symbols (U+060C, U+061B, U+061F)
-                if (CharUnicodeInfo.GetUnicodeCategory(text, at) is UnicodeCategory.NonSpacingMark or UnicodeCategory.EnclosingMark or UnicodeCategory.Format
-                    or UnicodeCategory.ConnectorPunctuation or UnicodeCategory.DashPunctuation or UnicodeCategory.OpenPunctuation or UnicodeCategory.ClosePunctuation
-                    or UnicodeCategory.InitialQuotePunctuation or UnicodeCategory.FinalQuotePunctuation or UnicodeCategory.OtherPunctuation
-                    or UnicodeCategory.MathSymbol or UnicodeCategory.CurrencySymbol or UnicodeCategory.ModifierSymbol or UnicodeCategory.OtherSymbol) continue;
+                if (CharUnicodeInfo.GetUnicodeCategory(text, at) is UnicodeCategory.NonSpacingMark or UnicodeCategory.EnclosingMark or UnicodeCategory.Format) continue;
+                if (cp is >= 0x0660 and <= 0x0669 or >= 0x06F0 and <= 0x06F9 or 0x066B or 0x066C) continue;                       // digits and the Arabic number signs (AN, EN)
+                if (cp is 0x060C or 0x0609 or 0x060A or 0x066A or 0x0606 or 0x0607 or 0x060E or 0x060F or 0x06DE or 0x06E9) continue;   // comma, per mille, percent and the neutral signs (CS, ET, ON)
+                if (cp is 0xFD3E or 0xFD3F or 0xFDCF or 0xFDFD or 0xFDFE or 0xFDFF or 0xFB29 or 0xFEFF) continue;                // ornate parentheses and the like (ON, ES), the byte order mark
+                if (cp is >= 0x10E60 and <= 0x10E7E) continue;                                                                    // Rumi numeral symbols (AN)
                 return true;
             }
             if (char.IsLetter(text, at)) return false;

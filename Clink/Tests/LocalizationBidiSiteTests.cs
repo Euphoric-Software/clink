@@ -220,6 +220,7 @@ internal static class LocalizationBidiSiteTests
             Check.Equal(new Point(0.5, 0.5), glyph.RenderTransformOrigin, "around its middle");
             RtlMirror.SetGlyph(glyph, false);
             Check.True(glyph.RenderTransform.Value.IsIdentity, "off again");
+            Check.Equal(new Point(0, 0), glyph.RenderTransformOrigin, "and the origin it set is put back");
 
             // the editor's Undo and Redo: built before they are in any tree, flipped when they load under a right-to-left window root
             var toolbar = new EditorToolbar();
@@ -238,6 +239,12 @@ internal static class LocalizationBidiSiteTests
         textBlock.RaiseEvent(new RoutedEventArgs(FrameworkElement.LoadedEvent));
         Check.True(textBlock.RenderTransform.Value.IsIdentity, "English: identity");
         Check.Equal(new Point(0, 0), textBlock.RenderTransformOrigin, "English: origin untouched");
+        // switching it off in English does nothing either: an origin or a transform the element has of its own stays
+        textBlock.RenderTransformOrigin = new Point(1, 1);
+        textBlock.RenderTransform = new ScaleTransform(2, 2);
+        RtlMirror.SetGlyph(textBlock, false);
+        Check.Equal(new Point(1, 1), textBlock.RenderTransformOrigin, "English: SetGlyph(false) leaves the element's own origin");
+        Check.Equal(2.0, textBlock.RenderTransform.Value.M11, "English: SetGlyph(false) leaves the element's own transform");
         var english = new EditorToolbar();
         var enHost = new Border { Child = english };
         Check.True(english.UndoButton.RenderTransform.Value.IsIdentity && english.RedoButton.RenderTransform.Value.IsIdentity, "English: identity");
@@ -357,14 +364,24 @@ internal static class LocalizationBidiSiteTests
     {
         using (L.Scope("qps-plocm"))
         {
-            // Arabic comma, semicolon, question mark, the harakat, the number signs (Cf) and the end of ayah (Cf): in the Arabic block, not letters
-            foreach (string neutral in new[] { "\u060C", "\u061B", "\u061F", "\u064B", "\u0650", "\u065F", "\u0600", "\u0605", "\u06DD", "\u0615" })
+            // the Arabic comma (CS), per mille and percent signs (ET), the neutral signs (ON), the harakat and other marks (Mn), the number signs and the end of ayah (Cf): in the Arabic block, not letters
+            foreach (string neutral in new[] { "\u060C", "\u0609", "\u066A", "\u0606", "\u060E", "\u06DE", "\u06E9", "\u064B", "\u0650", "\u065F", "\u0600", "\u0605", "\u06DD", "\u0615" })
             {
                 Check.Equal('\u200E', L.Isolate(neutral + "abc")[0], "U+" + ((int)neutral[0]).ToString("X4") + " does not decide: the Latin letter after it does");
                 Check.Equal('\u200F', L.Isolate(neutral + "\u05D0bc")[0], "U+" + ((int)neutral[0]).ToString("X4") + " does not decide: the Hebrew letter after it does");
             }
+            // the strong right-to-left punctuation (AL, R) does decide, before a Latin letter: the Arabic semicolon, question mark, full stop, afghani sign; the Hebrew maqaf, geresh
+            foreach (string strong in new[] { "\u061B", "\u061F", "\u06D4", "\u060B", "\u05BE", "\u05F3" })
+                Check.Equal('\u200F', L.Isolate(strong + "abc")[0], "U+" + ((int)strong[0]).ToString("X4") + " is strong right to left");
             Check.Equal('\u200F', L.Isolate("\u0627bc")[0], "an Arabic letter decides");
             Check.Equal('\u200E', L.Isolate("\u0661\u0662 abc")[0], "digits do not decide");
+            // U+FDCF, U+FDFE and U+FDFF (ON) and the Rumi numeral symbols U+10E60-U+10E7E (AN, astral) do not decide either
+            foreach (string neutral in new[] { "\uFDCF", "\uFDFE", "\uFDFF", "\U00010E60", "\U00010E7E", "\U00010E6A" })
+            {
+                string shown = "U+" + char.ConvertToUtf32(neutral, 0).ToString("X4");
+                Check.Equal('\u200E', L.Isolate(neutral + "abc")[0], shown + " does not decide: the Latin letter after it does");
+                Check.Equal('\u200F', L.Isolate(neutral + "\u05D0bc")[0], shown + " does not decide: the Hebrew letter after it does");
+            }
         }
     }
 }

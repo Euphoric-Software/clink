@@ -284,15 +284,8 @@ internal static class L10nI2bTests
     [UnitTest]
     public static void A_refusal_to_upload_is_worded_by_its_kind_with_no_text_cut_from_the_refusal()
     {
-        var settings = Settings.FromJson("{}");
-        using var scope = L.Scope("en");
-        var app = new AppController(settings, new Updater(settings));
-        try
-        {
-            Check.Equal(ShareRefusalKind.None, app.RefusalKind);
-            Check.Null(app.ShareRefusal);
-        }
-        finally { app.Dispose(); }
+        // (the kinds themselves are checked on real refusals in ShareCopiumFitTests: the account's limit, a copy that stayed too big,
+        // a copy over the length limit, a clip that cannot fit, and a game in front)
         string root = L10nSourceScan.Root() ?? throw new TestFailure("Clink.csproj was not found above " + AppContext.BaseDirectory);
         string trim = File.ReadAllText(Path.Combine(root, @"UI\TrimWindow.xaml.cs"));
         Check.False(trim.Contains("ToLowerInvariant(refusal[0])", StringComparison.Ordinal), "no re-casing of a refusal");
