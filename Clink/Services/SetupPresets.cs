@@ -32,7 +32,9 @@ internal static class SetupPresets
     /// HEVC 65, AV1 50 (the same picture quality in fewer bits). Rounded to <see cref="BitrateChoices"/>: the nearest entry, a tie
     /// going to the higher one (so quality, not size, wins a doubt). Light 8 -> 6 / 4, Balanced 20 -> 14 / 10 (13 is 12 or 14: 14),
     /// High 40 -> 25 / 20. Null when the resolution and frame rate are none of the presets (Native, 1080p30, ...): there is no
-    /// default to follow, so a codec change leaves the bitrate alone. Unknown codecs count as H.264, like the engine does.
+    /// default. Unknown codecs count as H.264, like the engine does.
+    /// Note: the app does not call this (nor Apply, PresetOf(Settings) or ApplyDefaults) and it still holds codec-aware defaults. The owner
+    /// ruled (2026-11-01) that a codec change never changes the bitrate; anyone wiring these into a setup flow must keep that rule.
     /// </summary>
     public static int? DefaultBitrateMbps(string? resolution, int fps, string? codec)
     {
@@ -56,23 +58,9 @@ internal static class SetupPresets
     }
 
     /// <summary>
-    /// A codec change on the Capture page: when the bitrate is still the default of the old codec at this resolution and frame rate it
-    /// becomes the new codec's default, so the combo follows the codec; any other bitrate (a custom one, or a non-preset
-    /// resolution / frame rate) is kept. Returns whether it changed the bitrate. Switching back returns to the original value.
-    /// </summary>
-    public static bool FollowCodec(Settings s, string? oldCodec, string? newCodec)
-    {
-        if (s.BitrateChosen) return false;   // the user picked this bitrate: never overridden
-        if (DefaultBitrateMbps(s.Resolution, s.Fps, oldCodec) is not { } was || was != s.BitrateMbps) return false;
-        if (DefaultBitrateMbps(s.Resolution, s.Fps, newCodec) is not { } now || now == s.BitrateMbps) return false;
-        s.BitrateMbps = now;
-        return true;
-    }
-
-    /// <summary>
     /// The bitrate combo reported <paramref name="picked"/> (0 or less = nothing). Stores it; when it differs from the stored value
     /// and <paramref name="byUser"/> (the user changed the bitrate box, not some other box or a programmatic fill) it also marks the
-    /// bitrate as chosen, which <see cref="FollowCodec"/> then never overrides. Returns whether the value changed.
+    /// bitrate as chosen. A codec change never touches the bitrate either way. Returns whether the value changed.
     /// </summary>
     public static bool PickBitrate(Settings s, int picked, bool byUser)
     {
@@ -81,10 +69,6 @@ internal static class SetupPresets
         if (byUser) s.BitrateChosen = true;
         return true;
     }
-
-    /// <summary>Whether two codec names are different codecs once normalized ("H.265" and "hevc" are the same; unknown counts as h264).</summary>
-    public static bool IsCodecChange(string? oldCodec, string? newCodec) =>
-        Clink.Engine.EngineConfig.NormalizeCodec(oldCodec) != Clink.Engine.EngineConfig.NormalizeCodec(newCodec);
 
     /// <summary>The bitrates the box lists for a stored value: <see cref="BitrateChoices"/>, plus the stored value (a hand edit, e.g. 13) in its place when it is not one of them.</summary>
     public static IReadOnlyList<int> BitrateItems(int stored)
@@ -104,7 +88,7 @@ internal static class SetupPresets
         return QualityPreset.Custom;
     }
 
-    /// <summary>The preset the settings are: its H.264 values, or its default bitrate for the settings' codec.</summary>
+    /// <summary>The preset the settings are: its H.264 values, or its default bitrate for the settings' codec. Not called by the app; codec-aware (see <see cref="DefaultBitrateMbps"/>).</summary>
     public static QualityPreset PresetOf(Settings s)
     {
         var p = PresetOf(s.Resolution, s.Fps, s.BitrateMbps);
@@ -118,7 +102,7 @@ internal static class SetupPresets
         return QualityPreset.Custom;
     }
 
-    /// <summary>Writes a preset's resolution, frame rate and bitrate (the default for the settings' current codec) into the settings. Custom changes nothing.</summary>
+    /// <summary>Writes a preset's resolution, frame rate and bitrate (the default for the settings' current codec) into the settings. Custom changes nothing. Not called by the app; codec-aware (see <see cref="DefaultBitrateMbps"/>): a codec change must never change the bitrate.</summary>
     public static void Apply(Settings s, QualityPreset preset)
     {
         if (ValuesOf(preset) is not { } v) return;
@@ -140,7 +124,7 @@ internal static class SetupPresets
     /// <summary>"30 s", "45 s", "1 min", "2 min", "5 min".</summary>
     public static string ReplayLabel(int seconds) => seconds % 60 == 0 && seconds >= 60 ? $"{seconds / 60} min" : $"{seconds} s";
 
-    /// <summary>What Skip leaves: the default quality preset and replay length, written explicitly (a fresh Settings already holds the same values, so on one it changes nothing).</summary>
+    /// <summary>What Skip leaves: the default quality preset and replay length, written explicitly (a fresh Settings already holds the same values, so on one it changes nothing). Not called by the app; goes through the codec-aware Apply (see <see cref="DefaultBitrateMbps"/>).</summary>
     public static void ApplyDefaults(Settings s)
     {
         Apply(s, DefaultQuality);

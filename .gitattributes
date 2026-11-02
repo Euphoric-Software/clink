@@ -3,3 +3,7 @@ THIRD-PARTY-NOTICES.txt text eol=crlf
 # Vendored Inno Setup translations: byte-identical to upstream, never EOL-converted (installer/Languages/README.md lists their SHA-256).
 installer/Languages/*.isl -text
 installer/Languages/*.islu -text
+
+# The script tests and the workflow tests assert LF line ends. Windows checkouts (the CI runner has core.autocrlf=true) would otherwise turn these into CRLF.
+*.ps1 text eol=lf
+*.yml text eol=lf

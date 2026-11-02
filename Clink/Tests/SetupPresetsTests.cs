@@ -1,3 +1,5 @@
+using System.IO;
+using System.Reflection;
 using Clink.Services;
 
 namespace Clink.Tests;
@@ -89,52 +91,99 @@ internal static class SetupPresetsTests
         Check.Equal(new[] { 4, 6, 8, 10, 12, 14, 16, 20, 25, 30, 40, 50, 60, 80, 100 }, list);
     }
 
-    [UnitTest]
-    public static void A_codec_change_moves_a_default_bitrate_and_only_that()
-    {
-        var s = new Settings();   // 1080p / 60 / 20 / h264
-        Check.True(SetupPresets.FollowCodec(s, "h264", "hevc"));
-        s.Codec = "hevc";
-        Check.Equal(14, s.BitrateMbps);
-        Check.True(SetupPresets.FollowCodec(s, "hevc", "av1"));
-        s.Codec = "av1";
-        Check.Equal(10, s.BitrateMbps);
-        Check.True(SetupPresets.FollowCodec(s, "av1", "h264"));
-        s.Codec = "h264";
-        Check.Equal(20, s.BitrateMbps, "H.264 -> HEVC -> AV1 -> H.264 is back at 20");
+    // ---- a codec switch never changes the bitrate: driven through the real MainWindow handler (QualityChanged) ----
 
-        var custom = new Settings { BitrateMbps = 25 };
-        Check.False(SetupPresets.FollowCodec(custom, "h264", "hevc"));
-        Check.Equal(25, custom.BitrateMbps, "a custom bitrate is never replaced");
-        var other = new Settings { BitrateMbps = 14 };   // the HEVC default, but the codec being left is H.264
-        Check.False(SetupPresets.FollowCodec(other, "h264", "av1"));
-        Check.Equal(14, other.BitrateMbps);
+    private static MainWindow NewQualityWindow(TempDir dir, Settings s, out AppController app)
+    {
+        Settings.DirOverride = dir.Path;
+        s.ClipsFolder = dir.File("clips");
+        Directory.CreateDirectory(s.ClipsFolder);
+        app = new AppController(s, new Updater(s));
+        var w = new MainWindow();
+        static Choice[] Of<T>(params (string Label, T Value)[] xs) => xs.Select(x => new Choice(x.Label, x.Value!)).ToArray();
+        w.ResolutionCombo.ItemsSource = Of(("720p", "720p"), ("1080p", "1080p"), ("1440p", "1440p"), ("Native", "native"));
+        w.FpsCombo.ItemsSource = Of(("30", 30), ("60", 60), ("120", 120));
+        w.BitrateCombo.ItemsSource = SetupPresets.BitrateItems(s.BitrateMbps).Select(b => new Choice($"{b} Mbps", b)).ToArray();
+        w.CodecCombo.ItemsSource = Of(("H.264", "h264"), ("HEVC", "hevc"), ("AV1", "av1"));
+        w.ResolutionCombo.SelectedIndex = Array.FindIndex(((Choice[])w.ResolutionCombo.ItemsSource), c => Equals(c.Value, s.Resolution));
+        w.FpsCombo.SelectedIndex = Array.FindIndex(((Choice[])w.FpsCombo.ItemsSource), c => Equals(c.Value, s.Fps));
+        w.BitrateCombo.SelectedIndex = Array.FindIndex(((Choice[])w.BitrateCombo.ItemsSource), c => Equals(c.Value, s.BitrateMbps));
+        w.CodecCombo.SelectedIndex = Array.FindIndex(((Choice[])w.CodecCombo.ItemsSource), c => Equals(c.Value, s.Codec));
+        typeof(MainWindow).GetField("_loading", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(w, false);
+        return w;
     }
 
-    // what QualityChanged does on a codec change, without WPF: the follow rule, then the new codec is stored
-    private static void SwitchCodec(Settings s, string codec)
-    {
-        if (SetupPresets.IsCodecChange(s.Codec, codec)) SetupPresets.FollowCodec(s, s.Codec, codec);
-        s.Codec = codec;
-    }
+    private static void PickCodec(MainWindow w, string codec) =>
+        w.CodecCombo.SelectedIndex = Array.FindIndex(((Choice[])w.CodecCombo.ItemsSource), c => Equals(c.Value, codec));
 
     [UnitTest]
-    public static void A_bitrate_the_user_picked_survives_codec_round_trips()
+    public static void A_codec_switch_never_changes_the_bitrate_and_saves_the_codec()
     {
-        foreach (var (res, picked, via) in new[] { ("1080p", 14, "hevc"), ("1080p", 10, "av1"), ("1440p", 25, "hevc") })
+        using var dir = new TempDir();
+        var s = Settings.FromJson("""{ "Resolution": "1080p", "Fps": 60, "BitrateMbps": 20, "Codec": "h264" }""");
+        Check.False(s.BitrateChosen);
+        using var app = NewQualityWindowApp(dir, s, out var w);
+        foreach (string codec in new[] { "hevc", "av1", "h264" })
         {
-            var s = new Settings { Resolution = res, Fps = 60 };
-            s.BitrateMbps = SetupPresets.DefaultBitrateMbps(res, 60, "h264")!.Value;   // 20 or 40
-            Check.True(SetupPresets.PickBitrate(s, picked, byUser: true), $"{res} {picked}");
-            SwitchCodec(s, via);
-            Check.Equal(picked, s.BitrateMbps, $"{res} {picked} via {via}");
-            SwitchCodec(s, "h264");
-            Check.Equal(picked, s.BitrateMbps, $"{res} {picked} back on H.264 (it is {via}'s default, but the user picked it)");
+            PickCodec(w, codec);
+            Check.Equal(codec, s.Codec, $"{codec} is set");
+            Check.Equal(20, s.BitrateMbps, $"still 20 on {codec}");
+            Check.False(s.BitrateChosen, $"a codec switch is no bitrate pick ({codec})");
+            var saved = Settings.Load();
+            Check.Equal(codec, saved.Codec, $"{codec} is saved");
+            Check.Equal(20, saved.BitrateMbps, $"20 is saved on {codec}");
         }
-        var chosen = new Settings { BitrateMbps = 20, BitrateChosen = true };
-        Check.False(SetupPresets.FollowCodec(chosen, "h264", "hevc"), "even a value equal to the default of the old codec");
-        Check.Equal(20, chosen.BitrateMbps);
     }
+
+    [UnitTest]
+    public static void A_chosen_bitrate_stays_through_codec_switches()
+    {
+        using var dir = new TempDir();
+        var s = Settings.FromJson("""{ "Resolution": "1080p", "Fps": 60, "BitrateMbps": 25, "BitrateChosen": true, "Codec": "h264" }""");
+        using var app = NewQualityWindowApp(dir, s, out var w);
+        foreach (string codec in new[] { "hevc", "av1", "h264" })
+        {
+            PickCodec(w, codec);
+            Check.Equal(25, s.BitrateMbps, $"25 on {codec}");
+            Check.True(s.BitrateChosen);
+            Check.Equal(codec, Settings.Load().Codec, $"{codec} is saved");
+            Check.Equal(25, Settings.Load().BitrateMbps);
+        }
+    }
+
+    [UnitTest]
+    public static void A_codec_switch_keeps_the_bitrate_off_the_presets_too_and_the_bitrate_box_still_marks_a_pick()
+    {
+        using var dir = new TempDir();
+        var s = Settings.FromJson("""{ "Resolution": "native", "Fps": 60, "BitrateMbps": 20, "Codec": "h264" }""");
+        using var app = NewQualityWindowApp(dir, s, out var w);
+        PickCodec(w, "hevc");
+        Check.Equal(20, s.BitrateMbps);
+        w.BitrateCombo.SelectedIndex = Array.FindIndex(((Choice[])w.BitrateCombo.ItemsSource), c => Equals(c.Value, 14));
+        Check.Equal(14, s.BitrateMbps);
+        Check.True(s.BitrateChosen, "the bitrate box itself is a pick");
+        PickCodec(w, "av1");
+        Check.Equal(14, s.BitrateMbps);
+    }
+
+    // owns the app and the window together; every QualityChanged starts the window's 700 ms _restartTimer, so Dispose stops it
+    // (else it could fire RequestEngineRestart on the disposed app during a later test), closes the window, then disposes the app
+    private sealed class QualityHarness(MainWindow window, AppController app) : IDisposable
+    {
+        public void Dispose()
+        {
+            ((System.Windows.Threading.DispatcherTimer)typeof(MainWindow).GetField("_restartTimer", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(window)!).Stop();
+            try { window.Close(); } catch (InvalidOperationException) { }
+            app.Dispose();
+        }
+    }
+
+    private static IDisposable NewQualityWindowApp(TempDir dir, Settings s, out MainWindow w)
+    {
+        w = NewQualityWindow(dir, s, out var app);
+        return new QualityHarness(w, app);
+    }
+
 
     [UnitTest]
     public static void Only_a_user_change_of_the_bitrate_box_marks_the_bitrate_chosen()
@@ -157,23 +206,8 @@ internal static class SetupPresetsTests
         Check.True(SetupPresets.PickBitrate(s, 25, byUser: false));
         Check.Equal(25, s.BitrateMbps);
         Check.False(s.BitrateChosen, "stored, not chosen");
-        var followed = new Settings();
-        SetupPresets.FollowCodec(followed, "h264", "hevc");
-        Check.False(followed.BitrateChosen);
         Check.True(SetupPresets.PickBitrate(s, 30, byUser: true));
         Check.True(s.BitrateChosen);
-    }
-
-    [UnitTest]
-    public static void A_legacy_file_without_the_flag_follows_the_value_match_rule()
-    {
-        var s = Settings.FromJson("""{ "Resolution": "1080p", "Fps": 60, "BitrateMbps": 20, "Codec": "h264" }""");
-        Check.False(s.BitrateChosen);
-        SwitchCodec(s, "hevc");
-        Check.Equal(14, s.BitrateMbps, "20 is H.264's default: it follows");
-        var custom = Settings.FromJson("""{ "Resolution": "1080p", "Fps": 60, "BitrateMbps": 25, "Codec": "h264" }""");
-        SwitchCodec(custom, "hevc");
-        Check.Equal(25, custom.BitrateMbps, "25 is no default of 1080p / 60: kept");
     }
 
     [UnitTest]
@@ -186,20 +220,6 @@ internal static class SetupPresetsTests
         s.BitrateChosen = true;
         SetupPresets.Apply(s, QualityPreset.Custom);
         Check.True(s.BitrateChosen, "Custom changes nothing");
-    }
-
-    [UnitTest]
-    public static void A_codec_alias_is_not_a_codec_change()
-    {
-        Check.False(SetupPresets.IsCodecChange("H.265", "hevc"));
-        Check.False(SetupPresets.IsCodecChange("HEVC", "hevc"));
-        Check.False(SetupPresets.IsCodecChange("nonsense", "h264"));
-        Check.True(SetupPresets.IsCodecChange("h264", "hevc"));
-        Check.True(SetupPresets.IsCodecChange("H.265", "av1"));
-        var s = new Settings { Codec = "H.265", BitrateMbps = 14 };   // 14 is HEVC's default
-        SwitchCodec(s, "hevc");
-        Check.Equal(14, s.BitrateMbps);
-        Check.Equal("hevc", s.Codec);
     }
 
     [UnitTest]
@@ -218,16 +238,10 @@ internal static class SetupPresetsTests
     }
 
     [UnitTest]
-    public static void Off_preset_resolution_or_fps_keeps_the_bitrate_on_a_codec_change()
+    public static void Off_preset_resolution_or_fps_has_no_default_bitrate()
     {
-        // No preset there, so no default to follow (Native / 1080p30 at 20 stays 20).
         foreach (var (res, fps) in new[] { ("native", 60), ("1080p", 30), ("1440p", 120) })
-        {
-            var s = new Settings { Resolution = res, Fps = fps, BitrateMbps = 20 };
-            Check.Null(SetupPresets.DefaultBitrateMbps(res, fps, "h264"));
-            Check.False(SetupPresets.FollowCodec(s, "h264", "hevc"), $"{res} {fps}");
-            Check.Equal(20, s.BitrateMbps);
-        }
+            Check.Null(SetupPresets.DefaultBitrateMbps(res, fps, "h264"), $"{res} {fps}");
     }
 
     [UnitTest]

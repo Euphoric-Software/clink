@@ -62,7 +62,7 @@ function Invoke-ScriptChild {
     try {
         $run = Start-Process -FilePath $hostExe -ArgumentList $quoted -Wait -PassThru -NoNewWindow -RedirectStandardOutput $outFile -RedirectStandardError $errFile
         $code = $run.ExitCode
-    } finally { foreach ($key in $saved.Keys) { [Environment]::SetEnvironmentVariable($key, $saved[$key]) } }
+    } finally { foreach ($key in $saved.Keys) { if ($null -eq $saved[$key]) { Remove-Item -LiteralPath ("Env:" + $key) -ErrorAction SilentlyContinue } else { [Environment]::SetEnvironmentVariable($key, $saved[$key]) } } }
     [pscustomobject]@{ Code = $code; Out = [System.IO.File]::ReadAllText($outFile); Err = [System.IO.File]::ReadAllText($errFile) }
 }
 
