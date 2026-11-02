@@ -16,7 +16,7 @@
     <RootNamespace>Clink</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\clink.ico</ApplicationIcon>
-    <Version>0.4.6</Version>
+    <Version>0.4.7</Version>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <NoWarn>$(NoWarn);CA1416;CS8981</NoWarn>
