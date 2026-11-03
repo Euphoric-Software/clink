@@ -21,18 +21,24 @@ How it fits together (decided 2026-10-28):
 ### Windows publisher signing (prepared, disabled until activation)
 
 Windows Authenticode signing is separate from the signed update feed. The stable and dev workflows support Azure
-Artifact Signing behind the repository Actions variable `ARTIFACT_SIGNING_ENABLED`. Keep it unset or `false` while the
-company's identity is under review. A value other than lowercase `true`, `false`, or unset fails validation. Once
+Artifact Signing behind the repository Actions variable `ARTIFACT_SIGNING_ENABLED`. Keep it unset or `false` until the
+activation checks below are ready. A value other than lowercase `true`, `false`, or unset fails validation. Once
 enabled, authentication/signing failures, an invalid signature, a missing timestamp, or an unexpected publisher stop the
 build and prevent publishing. Previously published immutable objects are never re-signed or replaced.
 
-Use the planned Azure account `EuphoricSoftwareLLC` in East US (`https://eus.codesigning.azure.net`), its approved
-**Public** company identity, and a **Public Trust** certificate profile named `clink-public`. The expected publisher is
-`Euphoric Software LLC`; check the approved subject before activation.
+Use the Azure account `EuphoricSoftwareLLC` in East US (`https://eus.codesigning.azure.net`), its approved
+**Public** company identity, and the **Public Trust** certificate profile named `kithnote-public`. Clink and Kithnote
+share this company profile: the Basic tier permits only one profile of each type. The profile name does not limit
+which application can be signed. The approved publisher is `Euphoric Software LLC`.
 
-Create a single-tenant Entra application/service principal named `clink-github-signing`, without a redirect URI or
-client secret. After the profile exists, grant only **Artifact Signing Certificate Profile Signer** at that profile's
-scope. Use a separate Entra application from Kithnote so each repository can sign only through its own profile.
+Setup verified on 2026-11-03: company identity **Completed**, shared profile **Active**, and both GitHub applications
+assigned **Artifact Signing Certificate Profile Signer** at the shared profile's scope. Signing remains disabled;
+the next steps are to review/merge the prepared workflow changes and verify the first signed dev release. See Microsoft's
+[pricing-tier limits](https://learn.microsoft.com/en-us/azure/artifact-signing/how-to-change-sku).
+
+Use the existing single-tenant Entra application/service principal named `clink-github-signing`, without a redirect URI
+or client secret. Its **Artifact Signing Certificate Profile Signer** assignment is scoped to `kithnote-public`.
+Keep its GitHub federation separate from `kithnote-github-signing`; both identities can sign through the same profile.
 
 Federation uses GitHub issuer `https://token.actions.githubusercontent.com`, audience `api://AzureADTokenExchange`,
 repository `Euphoric-Software/clink`. This repository uses GitHub's immutable subject format (verified through
@@ -56,8 +62,8 @@ Set these **repository Actions variables**, not feed-signing secrets:
 | `ARTIFACT_SIGNING_ENABLED` | `false` until the activation checks pass |
 | `ARTIFACT_SIGNING_ACCOUNT` | `EuphoricSoftwareLLC` |
 | `ARTIFACT_SIGNING_ENDPOINT` | `https://eus.codesigning.azure.net` |
-| `ARTIFACT_SIGNING_PROFILE` | `clink-public` |
-| `ARTIFACT_SIGNING_PUBLISHER` | Exact approved publisher, expected `Euphoric Software LLC` |
+| `ARTIFACT_SIGNING_PROFILE` | `kithnote-public` (shared company profile) |
+| `ARTIFACT_SIGNING_PUBLISHER` | `Euphoric Software LLC` |
 | `AZURE_CLIENT_ID` | Clink Entra application's Application/client ID |
 | `AZURE_TENANT_ID` | Its Directory/tenant ID |
 | `AZURE_SUBSCRIPTION_ID` | Subscription containing the signing account |
@@ -78,8 +84,8 @@ is explicitly supplied. Keep existing unsigned-release notices until a signed pu
 not promise instant SmartScreen reputation.
 
 Offline checks: `pwsh -NoProfile -File tools/tests/windows-signing.tests.ps1`, `tools/tests/packaging.tests.ps1` and
-`tools/tests/private-ci.tests.ps1`. No test needs Azure credentials. A real signing smoke test remains pending until the
-approved certificate profile exists.
+`tools/tests/private-ci.tests.ps1`. No test needs Azure credentials. A real signing smoke test remains pending; profile
+creation and role assignments alone do not prove the release workflow can sign.
 
 ### One-time setup
 
