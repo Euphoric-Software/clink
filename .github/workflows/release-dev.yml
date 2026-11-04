@@ -293,27 +293,6 @@ jobs:
           ./tools/check-runtime-freshness.ps1 -AssetsFile Clink/obj_sc/project.assets.json -LatestVersion $env:LATEST_RUNTIME
           if ($LASTEXITCODE -ne 0) { throw 'The self-contained Clink.exe bundles an outdated .NET runtime (see the output above).' }
 
-      # Both published exes: size guards, --packaging-check, --preflight, the embedded-feed self-test (what the BUILT exes embed from
-      # Clink/Assets/feed.json must match what CI reads from the same file: off for an empty file, on for a complete one; a partly
-      # filled file already fails in Get-FeedConfig) and ProductVersion == the version (the updater refuses a download whose embedded
-      # version differs from its tag). The framework exe needs the WindowsDesktop 10 runtime of the runner image.
-      - name: Check the published exes
-        shell: pwsh
-        timeout-minutes: 20
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          . ./tools/feed-lib.ps1
-          $cfg = Get-FeedConfig -Path Clink/Assets/feed.json -Channel dev
-          $stableCfg = Get-FeedConfig -Path Clink/Assets/feed.json -Channel stable
-          Write-Output "Expecting the built exes to embed the feed as: $($cfg.Mode)"
-          # The two bases (normalised) are what the exe's self-test compares with the bases it resolved; with the feed off both are empty and are not passed.
-          if ($cfg.Mode -eq 'on') {
-            ./tools/check-published.ps1 -ScExe dist/sc/Clink.exe -FxExe dist/fx/Clink.exe -Version $env:VERSION -ExpectFeed $cfg.Mode -ExpectFeedUrl $stableCfg.FeedUrl -ExpectDevFeedUrl $cfg.FeedUrl -TimeoutSeconds 90
-          } else {
-            ./tools/check-published.ps1 -ScExe dist/sc/Clink.exe -FxExe dist/fx/Clink.exe -Version $env:VERSION -ExpectFeed $cfg.Mode -TimeoutSeconds 90
-          }
-
       # Pinned Inno Setup 6.7.3 (>= 6.3 is needed for x64compatible). Official release asset of github.com/jrsoftware/issrc;
       # the SHA-256 below was computed from a scratch download and matches the digest GitHub shows for the asset.
       # Installed into the runner temp folder; nothing from it is trusted before the hash matches.
@@ -362,6 +341,27 @@ jobs:
           exclude-environment-credential: true
           exclude-workload-identity-credential: true
           exclude-managed-identity-credential: true
+
+      # Both published exes: size guards, --packaging-check, --preflight, the embedded-feed self-test (what the BUILT exes embed from
+      # Clink/Assets/feed.json must match what CI reads from the same file: off for an empty file, on for a complete one; a partly
+      # filled file already fails in Get-FeedConfig) and ProductVersion == the version (the updater refuses a download whose embedded
+      # version differs from its tag). The framework exe needs the WindowsDesktop 10 runtime of the runner image.
+      - name: Check the published exes
+        shell: pwsh
+        timeout-minutes: 20
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          . ./tools/feed-lib.ps1
+          $cfg = Get-FeedConfig -Path Clink/Assets/feed.json -Channel dev
+          $stableCfg = Get-FeedConfig -Path Clink/Assets/feed.json -Channel stable
+          Write-Output "Expecting the built exes to embed the feed as: $($cfg.Mode)"
+          # The two bases (normalised) are what the exe's self-test compares with the bases it resolved; with the feed off both are empty and are not passed.
+          if ($cfg.Mode -eq 'on') {
+            ./tools/check-published.ps1 -ScExe dist/sc/Clink.exe -FxExe dist/fx/Clink.exe -Version $env:VERSION -ExpectFeed $cfg.Mode -ExpectFeedUrl $stableCfg.FeedUrl -ExpectDevFeedUrl $cfg.FeedUrl -TimeoutSeconds 90
+          } else {
+            ./tools/check-published.ps1 -ScExe dist/sc/Clink.exe -FxExe dist/fx/Clink.exe -Version $env:VERSION -ExpectFeed $cfg.Mode -TimeoutSeconds 90
+          }
 
       - name: Package (Clink.exe, Clink-framework.exe, sha256 files, installer)
         id: package
