@@ -1179,7 +1179,14 @@ try {
                 $blocks++
                 Assert-True (-not $block.Contains('${{')) "$($wf.Name): a run: script has a template expression"
             }
-            Assert-True ($text -notmatch '(?m)^\s*(id-token|packages|pull-requests|checks|issues|deployments|statuses|security-events|attestations|discussions|pages):\s*write') "$($wf.Name): a write permission beyond contents was added"
+            Assert-True ($text -notmatch '(?m)^\s*(packages|pull-requests|checks|issues|deployments|statuses|security-events|attestations|discussions|pages):\s*write') "$($wf.Name): an unrelated write permission was added"
+            $oidcCount = [regex]::Matches($text, '(?m)^\s*id-token:\s*write\s*$').Count
+            $expectedOidcCount = if ($wf.Name -in 'release.yml', 'release-dev.yml') { 1 } else { 0 }
+            Assert-True ($oidcCount -eq $expectedOidcCount) "$($wf.Name): unexpected OIDC permission count"
+            if ($expectedOidcCount -eq 1) {
+                $oidcJobs = Split-Jobs $text
+                Assert-True ([regex]::Matches($oidcJobs.Build, '(?m)^      id-token:\s*write\s*$').Count -eq 1 -and ($oidcJobs.Head + $oidcJobs.Publish + $oidcJobs.Cleanup) -notmatch '(?m)^\s*id-token:') "$($wf.Name): signing OIDC is not confined to the release build job"
+            }
             # M3 / MF-2: actions: write exists once per release workflow, on the separate cleanup job only (to delete the run's own build
             # artifact), nowhere else: not on the publish job, not workflow-wide.
             $actionsWrite = [regex]::Matches($text, '(?m)^\s*actions:\s*write\s*$').Count
@@ -1547,7 +1554,7 @@ try {
     }
 
     Invoke-Test 'Node 24: every action is pinned to a release line whose action.yml says node24 (no Node 20 pin left), pinned by 40-hex SHA with a version comment' {
-        $minMajor = @{ 'actions/checkout' = 5; 'actions/setup-dotnet' = 5; 'softprops/action-gh-release' = 3; 'actions/cache' = 5; 'actions/upload-artifact' = 6; 'actions/download-artifact' = 6 }
+        $minMajor = @{ 'actions/checkout' = 5; 'actions/setup-dotnet' = 5; 'softprops/action-gh-release' = 3; 'actions/cache' = 5; 'actions/upload-artifact' = 6; 'actions/download-artifact' = 6; 'azure/login' = 3 }
         $nodeTwenty = '11bd71901bbe5b1630ceea73d27597364c9af683', '67a3573c9a986a3f9c594539f4ab511d57bb3ce9', 'da05d552573ad5aba039eaac05058a918a7bf631', '5a3ec84eff668545956fd18022155c47e93e2684'
         $seen = 0
         foreach ($wf in $allWorkflows) {
@@ -1555,6 +1562,11 @@ try {
                 if ($line -match '^\s*(?:- )?uses:\s*(\S+)@([0-9a-f]{40})\s+#\s*v(\d+)\.(\d+)\.(\d+)\s*$') {
                     $seen++
                     $repoName = $Matches[1]
+                    # Artifact Signing v2.0.0 is a reviewed PowerShell composite action, not a Node action.
+                    if ($repoName -ceq 'azure/artifact-signing-action') {
+                        Assert-True ($Matches[2] -ceq 'c7ab2a863ab5f9a846ddb8265964877ef296ee82' -and $Matches[3] -eq '2' -and $Matches[4] -eq '0' -and $Matches[5] -eq '0') "$($wf.Name): unreviewed Artifact Signing composite action"
+                        continue
+                    }
                     Assert-True ($minMajor.ContainsKey($repoName)) "$($wf.Name): unknown action $repoName (add it to this test with its first node24 major)"
                     Assert-True ([int]$Matches[3] -ge $minMajor[$repoName]) "$($wf.Name): $repoName v$($Matches[3]) predates its node24 line"
                     Assert-True ($nodeTwenty -cnotcontains $Matches[2]) "$($wf.Name): $repoName is pinned to a Node 20 commit"
