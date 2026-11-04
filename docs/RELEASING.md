@@ -27,22 +27,22 @@ enabled, authentication/signing failures, an invalid signature, a missing timest
 build and prevent publishing. Previously published immutable objects are never re-signed or replaced.
 
 Use the Azure account `EuphoricSoftwareLLC` in East US (`https://eus.codesigning.azure.net`), its approved
-**Public** company identity, and the **Public Trust** certificate profile named `euphoric-public`. Clink and Kithnote
+**Public** company identity, and the **Public Trust** certificate profile named `kithnote-public`. Clink and Kithnote
 share this company profile: the Basic tier permits only one profile of each type. The profile name does not limit
 which application can be signed. The approved publisher is `Euphoric Software LLC`.
 
-Recreation status on 2026-11-03: company identity **Completed**. The previous profile `kithnote-public` was deleted
-successfully, but creation of `euphoric-public` is blocked by Azure's maximum-profile quota error despite an empty profile
-list. Both repositories target the intended replacement; signing remains disabled. After Azure permits creation, verify
-the profile is **Active**, restore both GitHub applications' **Artifact Signing Certificate Profile Signer** assignments
-at its scope, then review/merge the prepared workflow changes and verify the first signed dev release. Matching reports
-are tracked in [Microsoft Q&A](https://learn.microsoft.com/en-us/answers/questions/6028053/artifact-signing-basic-public-trust-profile-quota).
-See Microsoft's
+Setup verified on 2026-11-03: company identity **Completed**, restored shared profile **Active**, and both GitHub
+applications have **Artifact Signing Certificate Profile Signer** at this profile's scope. Recreating the original
+resource name `kithnote-public` worked around the Basic-tier quota error blocking the company-neutral name
+`euphoric-public`. Treat `kithnote-public` as the shared company profile for both apps; its internal name does not change
+the publisher. Keep this working profile while the naming issue is investigated. Matching reports are tracked in
+[Microsoft Q&A](https://learn.microsoft.com/en-us/answers/questions/6028053/artifact-signing-basic-public-trust-profile-quota).
+Signing remains disabled; the next steps are to review/merge the prepared workflow changes and verify the first signed
+dev release. See Microsoft's
 [pricing-tier limits](https://learn.microsoft.com/en-us/azure/artifact-signing/how-to-change-sku).
 
 Use the existing single-tenant Entra application/service principal named `clink-github-signing`, without a redirect URI
-or client secret. Once the replacement is created, assign **Artifact Signing Certificate Profile Signer** only at the
-`euphoric-public` profile's scope.
+or client secret. Its **Artifact Signing Certificate Profile Signer** assignment is scoped only to `kithnote-public`.
 Keep its GitHub federation separate from `kithnote-github-signing`; both identities can sign through the same profile.
 
 Federation uses GitHub issuer `https://token.actions.githubusercontent.com`, audience `api://AzureADTokenExchange`,
@@ -67,7 +67,7 @@ Set these **repository Actions variables**, not feed-signing secrets:
 | `ARTIFACT_SIGNING_ENABLED` | `false` until the activation checks pass |
 | `ARTIFACT_SIGNING_ACCOUNT` | `EuphoricSoftwareLLC` |
 | `ARTIFACT_SIGNING_ENDPOINT` | `https://eus.codesigning.azure.net` |
-| `ARTIFACT_SIGNING_PROFILE` | `euphoric-public` (shared company profile) |
+| `ARTIFACT_SIGNING_PROFILE` | `kithnote-public` (temporary shared company profile) |
 | `ARTIFACT_SIGNING_PUBLISHER` | `Euphoric Software LLC` |
 | `AZURE_CLIENT_ID` | Clink Entra application's Application/client ID |
 | `AZURE_TENANT_ID` | Its Directory/tenant ID |
