@@ -18,7 +18,7 @@ How it fits together (decided 2026-10-28):
 
 ## Owner guide
 
-### Windows publisher signing (prepared, disabled until activation)
+### Windows publisher signing
 
 Windows Authenticode signing is separate from the signed update feed. The stable and dev workflows support Azure
 Artifact Signing behind the repository Actions variable `ARTIFACT_SIGNING_ENABLED`. Keep it unset or `false` until the
@@ -37,8 +37,8 @@ resource name `kithnote-public` worked around the Basic-tier quota error blockin
 `euphoric-public`. Treat `kithnote-public` as the shared company profile for both apps; its internal name does not change
 the publisher. Keep this working profile while the naming issue is investigated. Matching reports are tracked in
 [Microsoft Q&A](https://learn.microsoft.com/en-us/answers/questions/6028053/artifact-signing-basic-public-trust-profile-quota).
-Signing remains disabled; the next steps are to review/merge the prepared workflow changes and verify the first signed
-dev release. See Microsoft's
+The repository Actions variable and latest successful dev release run are the source of truth for activation status.
+Profile creation and role assignments alone do not prove the release workflow can sign. See Microsoft's
 [pricing-tier limits](https://learn.microsoft.com/en-us/azure/artifact-signing/how-to-change-sku).
 
 Use the existing single-tenant Entra application/service principal named `clink-github-signing`, without a redirect URI
@@ -90,8 +90,7 @@ is explicitly supplied. Keep existing unsigned-release notices until a signed pu
 not promise instant SmartScreen reputation.
 
 Offline checks: `pwsh -NoProfile -File tools/tests/windows-signing.tests.ps1`, `tools/tests/packaging.tests.ps1` and
-`tools/tests/private-ci.tests.ps1`. No test needs Azure credentials. A real signing smoke test remains pending; profile
-creation and role assignments alone do not prove the release workflow can sign.
+`tools/tests/private-ci.tests.ps1`. No test needs Azure credentials. Real signing must also be verified from the dev workflow and its published artifacts.
 
 ### One-time setup
 
