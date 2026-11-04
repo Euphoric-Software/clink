@@ -8,6 +8,7 @@ using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using Clink.Native;
 using Clink.Services;
+using Clink.Services.Localization;
 
 namespace Clink.UI;
 
@@ -38,11 +39,15 @@ public partial class ShareFilesWindow : Window, ICaptureExcludedWindow
         _items = items;
         _screenshots = screenshots;
         InitializeComponent();
+        // key names and the limit are placeholders, not part of the sentences ({l:T} takes no arguments, so these are set here)
+        CloseIconButton.ToolTip = L.T("Close ({keys})", ("keys", L.Ltr("Esc")));
+        CopyButton.ToolTip = L.T("Copy the files, then paste them into Discord or a folder with {paste} ({copy} in this window does the same)", ("paste", L.Ltr("Ctrl+V")), ("copy", L.Ltr("Ctrl+C")));
+        DiscordText.Text = L.Plural("Discord takes up to {count} files per message", DiscordLimit);
         AppIcons.Attach(this);
         Title = TitleText.Text = TitleFor(items.Count, screenshots);
         bool nothingToSetUp = AppController.Instance?.Settings.CloudSharingEnabled == false || AppController.Instance is { HasCopiumToken: true };
         if (nothingToSetUp) SetUpCopiumButton.Visibility = Visibility.Collapsed;
-        IntroText.Text = nothingToSetUp ? "Drag the files where you want them, or copy them:" : "No Copium token yet, so there is no link to copy. Share the files themselves:";
+        IntroText.Text = nothingToSetUp ? L.T("Drag the files where you want them, or copy them:") : L.T("No Copium token yet, so there is no link to copy. Share the files themselves:");
         // A local file is taken to be there until the worker says otherwise; an archived one waits for its share to answer.
         _present = items.Where(i => !i.IsArchived).Select(i => i.Path).ToList();
         _looking = items.Any(i => i.IsArchived);
@@ -101,12 +106,12 @@ public partial class ShareFilesWindow : Window, ICaptureExcludedWindow
         Card.IsEnabled = CopyButton.IsEnabled = any;
         long size = _items.Where(i => _present.Contains(i.Path)).Sum(i => i.Size);
         int shown = any ? _present.Count : 0;
-        NameText.Text = _looking && !any ? ClipRow.LookingText : $"{shown} {(shown == 1 ? "file" : "files")}" + (size > 0 ? " · " + Capabilities.FormatBytes(size) : "");
+        NameText.Text = _looking && !any ? ClipRow.LookingText : L.Plural("{count} files", shown) + (size > 0 ? " · " + L.Bytes(size) : "");
         MoreBadge.Visibility = shown > 1 ? Visibility.Visible : Visibility.Collapsed;
         MoreText.Text = "+" + (shown - 1);
         if (shown == 0) { ThumbImage.Source = null; _thumbFor = null; }
         DiscordText.Visibility = shown > DiscordLimit ? Visibility.Visible : Visibility.Collapsed;
-        HintText.Text = any ? "Drag into Discord, a browser upload box or a folder" : _looking ? ClipRow.LookingText : "None of the files could be reached";
+        HintText.Text = any ? L.T("Drag into Discord, a browser upload box or a folder") : _looking ? ClipRow.LookingText : L.T("None of the files could be reached");
         if (any) HintText.ClearValue(TextBlock.ForegroundProperty); else if (!_looking) HintText.SetResourceReference(TextBlock.ForegroundProperty, "Warn");
         string? summary = _looking && !any ? null : BulkActions.ShareFilesSummary(_present.Count, _items.Count);
         if (summary != null) SetStatus(summary, "Warn"); else if (_statusIsSummary) SetStatus(null);
@@ -115,7 +120,7 @@ public partial class ShareFilesWindow : Window, ICaptureExcludedWindow
         var folders = _present.Select(p => Path.GetDirectoryName(p) ?? "").Distinct(StringComparer.OrdinalIgnoreCase).Count();
         bool oneFolder = any && folders == 1;
         FolderButton.IsEnabled = oneFolder;
-        FolderButton.ToolTip = !any || oneFolder ? "Show the first file in its folder" : "The files are in different folders";
+        FolderButton.ToolTip = !any || oneFolder ? L.T("Show the first file in its folder") : L.T("The files are in different folders");
         System.Windows.Automation.AutomationProperties.SetHelpText(FolderButton, (string)FolderButton.ToolTip);
     }
 
@@ -222,7 +227,7 @@ public partial class ShareFilesWindow : Window, ICaptureExcludedWindow
             SetStatus(null);
             _statusIsSummary = false;
             var effect = DragDrop.DoDragDrop(Card, ShareWindow.FileData(paths), ShareWindow.DragEffects);
-            if (effect == ShareWindow.DragEffects) SetStatus("Dropped. The originals stay in your library.");
+            if (effect == ShareWindow.DragEffects) SetStatus(L.T("Dropped. The originals stay in your library."));
             if ((effect & DragDropEffects.Move) != 0)
                 Log.Warn($"share files window: a drop target answered {effect} to the copy-only drag of {paths.Count} files");
             _ = CheckAsync();   // a file a target took away disables its part of the card
@@ -230,13 +235,18 @@ public partial class ShareFilesWindow : Window, ICaptureExcludedWindow
         catch (Exception ex)
         {
             Log.Warn("share files window: drag failed: " + ex.Message);
-            SetStatus("Could not start the drag: " + ex.Message, "Warn");
+            SetStatus(L.T("Could not start the drag: {error}", ("error", ex.Message)), "Warn");
         }
     }
 
     // ------------------------------------------------------------------ buttons
 
     private void CopyFiles_Click(object sender, RoutedEventArgs e) => CopyFiles();
+
+    /// <summary>What the status line says after the copy: one file or several (two whole sentences: a yes/no, not a count).</summary>
+    internal static string CopiedText(int count) => count == 1
+        ? L.T("File copied. Paste with {keys} into Discord or a folder.", ("keys", L.Ltr("Ctrl+V")))
+        : L.T("Files copied. Paste with {keys} into Discord or a folder.", ("keys", L.Ltr("Ctrl+V")));
 
     private void CopyFiles()
     {
@@ -246,12 +256,12 @@ public partial class ShareFilesWindow : Window, ICaptureExcludedWindow
         {
             Clipboard.SetDataObject(ShareWindow.FileData(paths), true);
             _statusIsSummary = false;
-            SetStatus($"{(paths.Count == 1 ? "File" : "Files")} copied. Paste with Ctrl+V into Discord or a folder.");
+            SetStatus(CopiedText(paths.Count));
         }
         catch (Exception ex)
         {
             Log.Warn("share files window: clipboard: " + ex.Message);
-            SetStatus("Could not copy the files: " + ex.Message, "Warn");
+            SetStatus(L.T("Could not copy the files: {error}", ("error", ex.Message)), "Warn");
         }
     }
 
@@ -271,7 +281,7 @@ public partial class ShareFilesWindow : Window, ICaptureExcludedWindow
         catch (Exception ex)
         {
             Log.Warn("share files window: open folder: " + ex.Message);
-            SetStatus("Could not open the folder: " + ex.Message, "Warn");
+            SetStatus(L.T("Could not open the folder: {error}", ("error", ex.Message)), "Warn");
         }
         finally { _openingFolder = false; }
     }

@@ -589,8 +589,35 @@ internal static unsafe class EncoderTuningTests
         Engine.Engine.ThrowIfEncoderRestarted(3, 3);   // same generation: fine
         bool threw = false;
         try { Engine.Engine.ThrowIfEncoderRestarted(3, 4); }
-        catch (InvalidOperationException ex) { threw = true; Check.Contains(ex.Message, "encoder restarted"); Check.Contains(ex.Message, "try again"); }
+        catch (InvalidOperationException ex)
+        {
+            threw = true;
+            Check.Contains(ex.Message, "encoder restarted");
+            Check.Contains(ex.Message, "try again");
+            AssertShownInTheUsersLanguage(ex, "The encoder restarted, try again");
+        }
         Check.True(threw, "a changed generation throws the kind of exception the save's callers already show");
+    }
+
+    /// <summary>The exception's Message is English for the log; the sentence the user reads rides on it as a note and follows the UI language (checked under qps-ploc, where English text would not carry the marker).</summary>
+    private static void AssertShownInTheUsersLanguage(Exception ex, string english)
+    {
+        Check.True(ex.Data[Clink.Services.Localization.UserText.Key] is Clink.Services.Note, "the user text is a note, not a finished English string");
+        Check.Equal(english, ex.Message, "the log gets the English message");
+        using (Clink.Services.Localization.L.Scope("en")) Check.Equal(english, Clink.Services.Localization.UserText.Of(ex));
+        using (Clink.Services.Localization.L.Scope("qps-ploc"))
+        {
+            string shown = Clink.Services.Localization.UserText.Of(ex);
+            Check.True(Clink.Services.Localization.PseudoLocale.IsPseudo(shown), "the user's text comes from the catalog: " + shown);
+            Check.Equal(english, ex.Message, "and the message is still English");
+        }
+    }
+
+    [UnitTest]
+    public static void The_not_recording_and_nothing_recorded_errors_carry_a_note_for_the_user_and_an_English_message_for_the_log()
+    {
+        AssertShownInTheUsersLanguage(Engine.Engine.NotRecordingError(), "Not recording");
+        AssertShownInTheUsersLanguage(Engine.Engine.NothingRecordedError(), "Nothing recorded yet, wait a moment and try again.");
     }
 
     // ------------------------------------------------------------------ the ring

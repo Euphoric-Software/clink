@@ -6,7 +6,9 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using Clink.Screenshots;
 using Clink.Screenshots.Editing;
+using Clink.Screenshots.Geometry;
 using Clink.Services;
+using Clink.Services.Localization;
 
 namespace Clink.UI.Screenshots;
 
@@ -31,6 +33,10 @@ public partial class InsertImagePicker : Window
     internal InsertImagePicker(InsertPickerModel model, bool canPaste)
     {
         InitializeComponent();
+        // the tooltips that name a key: the key is a {keys} placeholder (key names are not translated)
+        CloseButton.ToolTip = L.T("Close ({keys})", ("keys", L.Ltr("Esc")));
+        PasteButton.ToolTip = L.T("Insert the picture that is on the clipboard ({keys} does it directly in the editor)", ("keys", L.Ltr("Ctrl+V")));
+        CancelButton.ToolTip = L.T("Close without inserting ({keys})", ("keys", L.Ltr("Esc")));
         _model = model;
         PasteButton.IsEnabled = canPaste;
         Closed += (_, _) => _closed = true;
@@ -51,12 +57,12 @@ public partial class InsertImagePicker : Window
         var tiles = new List<(Image Image, string Path)>();
         foreach (var e in items)
         {
-            var image = new Image { Width = ThumbnailWidth, Height = 100, Stretch = Stretch.Uniform, SnapsToDevicePixels = true };
+            var image = new Image { Width = ThumbnailWidth, Height = 100, Stretch = Stretch.Uniform, SnapsToDevicePixels = true, FlowDirection = FlowDirection.LeftToRight };
             RenderOptions.SetBitmapScalingMode(image, BitmapScalingMode.HighQuality);
             var caption = new TextBlock
             {
                 Style = (Style)FindResource("MutedText"),
-                Text = $"{e.Created:MMM d, HH:mm}  ·  {e.Width} x {e.Height}",
+                Text = L.T("{when}  ·  {size}", ("when", L.Isolate(e.Created.ToString("MMM d, HH:mm", L.FormatCulture))), ("size", L.Ltr(SelectionMath.SizeLabel(e.Width, e.Height)))),
                 FontSize = 11,
                 TextTrimming = TextTrimming.CharacterEllipsis,
                 TextWrapping = TextWrapping.NoWrap,
@@ -67,7 +73,7 @@ public partial class InsertImagePicker : Window
             panel.Children.Add(new Border { Background = (Brush)FindResource("Panel2"), CornerRadius = new CornerRadius(4), Child = image });
             panel.Children.Add(caption);
             var button = new Button { Content = panel, Margin = new Thickness(0, 0, 10, 10), Padding = new Thickness(6), Tag = e.Path, ToolTip = Path.GetFileName(e.Path) };
-            System.Windows.Automation.AutomationProperties.SetName(button, "Insert " + Path.GetFileName(e.Path));
+            System.Windows.Automation.AutomationProperties.SetName(button, L.T("Insert {name}", ("name", L.Ltr(Path.GetFileName(e.Path)))));
             string path = e.Path;
             button.Click += (_, _) => { PickedPath = path; DialogResult = true; };
             Tiles.Children.Add(button);
@@ -95,8 +101,8 @@ public partial class InsertImagePicker : Window
     {
         var dialog = new Microsoft.Win32.OpenFileDialog
         {
-            Title = "Insert image",
-            Filter = "Pictures (PNG, JPG, BMP)|*.png;*.jpg;*.jpeg;*.bmp|All files|*.*",
+            Title = L.T("Insert image"),
+            Filter = L.T("Pictures (PNG, JPG, BMP)") + "|*.png;*.jpg;*.jpeg;*.bmp|" + L.T("All files") + "|*.*",
             CheckFileExists = true,
         };
         TestGuard.CheckLaunch("the insert-image file dialog");

@@ -60,6 +60,7 @@ internal sealed class TimelineControl : FrameworkElement
     public TimelineControl()
     {
         Height = 64;
+        FlowDirection = FlowDirection.LeftToRight;   // time runs left to right in every language (a local value: the window root is right-to-left)
         Focusable = false;
         ClipToBounds = true;
         SizeChanged += (_, _) => InvalidateVisual();

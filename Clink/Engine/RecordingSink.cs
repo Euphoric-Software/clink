@@ -533,7 +533,7 @@ internal sealed class VideoFanOut
     {
         lock (_gate)
         {
-            if (_sink != null) throw new InvalidOperationException("Already recording");
+            if (_sink != null) throw new AlreadyRecordingException();
             var snap = ring.Snapshot(long.MaxValue, long.MaxValue);   // everything in the ring is at or before now: the last keyframe on
             foreach (var s in snap) sink.OnVideoOwned(s.Pts, s.Keyframe, s.Data);
             _sink = sink;

@@ -1,6 +1,7 @@
 using System.IO;
 using System.Text.RegularExpressions;
 using Clink.Services;
+using Clink.Services.Localization;
 
 namespace Clink.UI;
 
@@ -40,10 +41,17 @@ internal static class ClipGrouping
         new((paths ?? Array.Empty<string>()).Select(Key), StringComparer.OrdinalIgnoreCase);
 
     /// <summary>"1 trim", "3 trims".</summary>
-    public static string TrimsLabel(int count) => count == 1 ? "1 trim" : $"{count} trims";
+    public static string TrimsLabel(int count) => L.Plural("{count} trims", count);
 
     /// <summary>The screen reader name of the chevron: "Show 3 trims of Game" / "Hide 1 trim of Game".</summary>
-    public static string ToggleName(bool expanded, int count, string title) => $"{(expanded ? "Hide" : "Show")} {TrimsLabel(count)} of {title}";
+    /// <param name="game">The game name, or null when the clip has none (the generic word is then part of a whole key).</param>
+    public static string ToggleName(bool expanded, int count, string? game, bool isTrim = false) => game != null
+        ? (expanded
+            ? L.Plural("Hide {count} trims of {title}", count, ("title", game))
+            : L.Plural("Show {count} trims of {title}", count, ("title", game)))
+        : isTrim
+            ? (expanded ? L.Plural("Hide {count} trims of Trimmed clip", count) : L.Plural("Show {count} trims of Trimmed clip", count))
+            : (expanded ? L.Plural("Hide {count} trims of Clip", count) : L.Plural("Show {count} trims of Clip", count));
 
     /// <summary>
     /// A chevron's state changed: show or hide the trims only when the toggle now differs from the model (the model setting the

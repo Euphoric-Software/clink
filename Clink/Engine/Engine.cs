@@ -45,8 +45,72 @@ internal sealed class EngineConfig
     }
 }
 
-/// <param name="Detail">Running: what the track captures beyond its name (device, process, fallback), or null. Not running: why.</param>
-internal sealed record AudioTrackStatus(string Name, bool Running, string? Detail);
+/// <summary>The disk has less free space than a recording needs (<see cref="Engine.StartRecording"/>): the type, not the English words, tells the controller which sentence to show.</summary>
+internal sealed class NotEnoughFreeSpaceException(string message, long freeBytes, long neededBytes) : IOException(message)
+{
+    /// <summary>What the disk has free, in bytes, when the start was refused.</summary>
+    public long FreeBytes { get; } = freeBytes;
+    /// <summary>The least free space a recording needs, in bytes.</summary>
+    public long NeededBytes { get; } = neededBytes;
+}
+
+/// <summary>A recording is going already (<see cref="Engine.StartRecording"/>): a type, so the controller tells it from the other <see cref="InvalidOperationException"/>s without reading the words of its message.</summary>
+internal sealed class AlreadyRecordingException() : InvalidOperationException("Already recording");
+
+/// <summary>The engine is not running (<see cref="Engine.StartRecording"/>): a type, like <see cref="AlreadyRecordingException"/>, so the controller words it from the catalog.</summary>
+internal sealed class EngineNotRunningException() : InvalidOperationException("Not recording: the engine is not running");
+
+/// <summary>The engine's status line: what it is doing (<see cref="Engine.StatusKind"/>).</summary>
+internal enum EngineStatusKind { Stopped, Starting, Recording, Error }
+
+/// <summary>Why the engine failed.</summary>
+internal enum EngineErrorKind
+{
+    /// <summary>"The GPU was reset (graphics driver crash or TDR)".</summary>
+    GpuReset,
+    /// <summary>The message of the exception that stopped the engine (Arg): Windows / .NET text, shown as it is.</summary>
+    Other,
+}
+
+/// <summary>An engine failure: kind and argument, made only here, so the English text (<see cref="English"/>) and what the UI translates cannot drift.</summary>
+internal sealed record EngineError(EngineErrorKind Kind, string? Arg = null)
+{
+    public string English => EngineText.Error(Kind, Arg);
+}
+
+/// <summary>The English texts of the engine status (logs, --selftest and the controller use these; the UI translates through EngineStatusText).</summary>
+internal static class EngineText
+{
+    public static string Status(EngineStatusKind kind) => kind switch
+    {
+        EngineStatusKind.Starting => "Starting…",
+        EngineStatusKind.Recording => "Recording",
+        EngineStatusKind.Error => "Error",
+        _ => "Stopped",
+    };
+
+    public static string Error(EngineErrorKind kind, string? arg) => kind switch
+    {
+        EngineErrorKind.GpuReset => "The GPU was reset (graphics driver crash or TDR)",
+        _ => arg ?? "",
+    };
+}
+
+/// <summary>
+/// One audio track of the status line. Made from kind + running + detail only: <see cref="Name"/> and <see cref="Detail"/> (the English
+/// strings) are derived, so they cannot drift from what the UI translates.
+/// </summary>
+/// <param name="Info">Running: what the track captures beyond its name (device, process, fallback), or null. Not running: why.</param>
+/// <param name="MixOnly">The track is not written as its own track (only part of the mix): ", mix only" is added to the detail.</param>
+internal sealed record AudioTrackStatus(TrackKind Kind, bool Running, AudioDetail? Info = null, bool MixOnly = false)
+{
+    public string Name => AudioText.TrackName(Kind);
+    public string? Detail => AudioText.Detail(Info, MixOnly);
+    /// <summary>The kind of <see cref="Info"/> (null: none).</summary>
+    public AudioDetailKind? DetailKind => Info?.Kind;
+    /// <summary>The user data of <see cref="Info"/> (an app or device name, or an error text), or null.</summary>
+    public string? DetailArg => Info?.Arg;
+}
 
 /// <param name="RingBytes">Bytes the ring actually holds (after the RAM clamp / allocation retry).</param>
 /// <param name="RingSeconds">Replay length the ring can really keep at the configured bitrate (equals BufferSeconds unless it was clamped).</param>
@@ -86,8 +150,14 @@ internal sealed unsafe class Engine : IDisposable
     private volatile GameHint? _gameHint;   // the app's own game detection (AppController), see SetDetectedGame; read by the audio thread
     private uint _gameHintSeen;             // the hint pid the audio thread last looked at (a new one is adopted once)
 
-    public string Status { get; private set; } = "Stopped";
-    public string? Error { get; private set; }
+    // Status and Error are derived from one value each (read once by anything that shows them): the English text for logs and the
+    // controller, the kind (+ argument) for the UI to translate.
+    private volatile EngineStatusKind _statusKind = EngineStatusKind.Stopped;
+    private volatile EngineError? _error;
+    public string Status => EngineText.Status(_statusKind);
+    public EngineStatusKind StatusKind => _statusKind;
+    public string? Error => _error?.English;
+    public EngineError? ErrorInfo => _error;
     public bool IsRunning { get; private set; }
     /// <summary>
     /// The engine stopped because the GPU was lost (driver crash / TDR, driver update), and has not recorded since: set by the
@@ -108,14 +178,14 @@ internal sealed unsafe class Engine : IDisposable
         _cfg = cfg;
         _ringSeconds = cfg.BufferSeconds;
         _stop = false;
-        Error = null;
+        _error = null;
         // Per-run state: the game/voice picks may have changed (a device now, another app), and the stats count this run only.
         _gamePid = 0; _gameName = null; _voicePid = 0; _voiceName = null; _gameHintSeen = 0;
         Interlocked.Exchange(ref _pacerDropped, 0);
         _ticks = 0;
         _firstTick = true;
         _ready.Reset();
-        SetStatus("Starting…");
+        SetStatus(EngineStatusKind.Starting);
         _videoThread = new Thread(VideoLoop) { IsBackground = true, Name = "Clink.Video", Priority = ThreadPriority.AboveNormal };
         _videoThread.SetApartmentState(ApartmentState.MTA);
         _videoThread.Start();
@@ -132,7 +202,7 @@ internal sealed unsafe class Engine : IDisposable
         _videoThread = null;
         _audioThread = null;
         IsRunning = false;
-        SetStatus("Stopped");
+        SetStatus(EngineStatusKind.Stopped);
     }
 
     /// <summary>
@@ -143,7 +213,7 @@ internal sealed unsafe class Engine : IDisposable
     /// </summary>
     public void SetDetectedGame(uint pid, string? name) => _gameHint = pid != 0 && !string.IsNullOrEmpty(name) ? new GameHint(pid, name) : null;
 
-    private void SetStatus(string s) { Status = s; StateChanged?.Invoke(); }
+    private void SetStatus(EngineStatusKind kind) { _statusKind = kind; StateChanged?.Invoke(); }
 
     private void VideoLoop()
     {
@@ -198,7 +268,7 @@ internal sealed unsafe class Engine : IDisposable
 
             IsRunning = true;
             DeviceLost = false;
-            SetStatus("Recording");
+            SetStatus(EngineStatusKind.Recording);
             _ready.Set();
 
             timer = PInvoke.CreateWaitableTimerEx(null, null, PInvoke.CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, 0x1F0003);
@@ -247,9 +317,9 @@ internal sealed unsafe class Engine : IDisposable
             // HRESULT, and flag it so the controller starts the engine again on a fresh device.
             HRESULT removed = _d3d?.RemovedReason ?? default;
             if (removed.Failed) DeviceLost = true;
-            Error = removed.Failed ? "The GPU was reset (graphics driver crash or TDR)" : ex.Message;
+            _error = removed.Failed ? new EngineError(EngineErrorKind.GpuReset) : new EngineError(EngineErrorKind.Other, ex.Message);
             Log.Error(removed.Failed ? $"Engine stopped: GPU device removed (0x{(uint)removed.Value:X8})" : "Engine failed", ex);
-            SetStatus("Error");
+            SetStatus(EngineStatusKind.Error);
             _ready.Set();
         }
         finally
@@ -370,22 +440,22 @@ internal sealed unsafe class Engine : IDisposable
             // Game, mic and voice are always captured: track 1 is their mix. The flags only decide whether each is also
             // written as its own track. A game/voice "process" setting may instead name an audio device (in:/out: prefix).
             // Each track joins _tracks as soon as it exists, so TearDown disposes a partly built set when a later one fails.
-            _gameTrack = new AudioTrack("Game") { Enabled = _cfg.TrackGame };
-            _tracks.Add(_gameTrack);
-            var mic = new AudioTrack("Mic") { Source = new EndpointSource(false, _cfg.MicDeviceId, "Microphone"), Enabled = _cfg.TrackMic };
+            _gameTrack = new AudioTrack(AudioText.TrackName(TrackKind.Game)) { Enabled = _cfg.TrackGame };
+            _tracks.Add(_gameTrack);   // (track names are AudioText.TrackName(TrackKind): GetStats maps a track back to its kind by name)
+            var mic = new AudioTrack(AudioText.TrackName(TrackKind.Mic)) { Source = new EndpointSource(false, _cfg.MicDeviceId, "Microphone"), Enabled = _cfg.TrackMic };
             _tracks.Add(mic);
-            _voiceTrack = new AudioTrack("Voice") { Enabled = _cfg.TrackVoice };
+            _voiceTrack = new AudioTrack(AudioText.TrackName(TrackKind.Voice)) { Enabled = _cfg.TrackVoice };
             _tracks.Add(_voiceTrack);
             if (TryDeviceSource(_cfg.GameProcess, "Game device", out var gameDevice)) { _gameTrack.Source = gameDevice; _gameIsDevice = true; }
             if (TryDeviceSource(_cfg.VoiceApp, "Voice device", out var voiceDevice)) { _voiceTrack.Source = voiceDevice; _voiceIsDevice = true; }
-            var mix = new AudioTrack("Mix", new[] { _gameTrack, mic, _voiceTrack }) { Enabled = true };
+            var mix = new AudioTrack(AudioText.TrackName(TrackKind.Mix), new[] { _gameTrack, mic, _voiceTrack }) { Enabled = true };
             _tracks.Insert(0, mix);   // always track 1
             if (_cfg.TrackDesktop)
             {
                 // "in:<id>" = a capture device (a Wave Link mix, a virtual cable), "out:<id>" = that output's loopback; a bare id from
                 // an older settings file is an output loopback, null the default output.
                 if (!TryDeviceSource(_cfg.AllDeviceId, "Desktop device", out var desktopDevice)) desktopDevice = new EndpointSource(true, _cfg.AllDeviceId, "System loopback");
-                _tracks.Add(new AudioTrack("Desktop") { Source = desktopDevice });
+                _tracks.Add(new AudioTrack(AudioText.TrackName(TrackKind.Desktop)) { Source = desktopDevice });
             }
         }
         if (_tracks.Count == 0) return;
@@ -523,9 +593,9 @@ internal sealed unsafe class Engine : IDisposable
                     cur?.Dispose();
                     // The detail is what the status line appends to the track name, so the "everything except" fallback is visibly
                     // not the same thing as capturing the chosen game.
-                    string except = _voicePid != 0 ? $"everything except {_voiceName}" : "everything";
+                    var except = _voicePid != 0 ? AudioDetail.EverythingExcept(_voiceName) : AudioDetail.Everything;
                     _gameTrack.Source = want.include
-                        ? new ProcessSource(want.pid, true, $"Game ({_gameName})", _gameName)
+                        ? new ProcessSource(want.pid, true, $"Game ({_gameName})", AudioDetail.Named(_gameName))
                         : new ProcessSource(want.pid, false, _voicePid != 0 ? $"Everything except {_voiceName}" : "Everything", except);
                 }
             }
@@ -533,7 +603,7 @@ internal sealed unsafe class Engine : IDisposable
             {
                 var cur = _voiceTrack.Source as ProcessSource;
                 if (_voicePid == 0) { if (cur != null) { cur.Dispose(); _voiceTrack.Source = null; } }
-                else if (cur == null || cur.ProcessId != _voicePid) { cur?.Dispose(); _voiceTrack.Source = new ProcessSource(_voicePid, true, $"Voice ({_voiceName})", _voiceName); }
+                else if (cur == null || cur.ProcessId != _voicePid) { cur?.Dispose(); _voiceTrack.Source = new ProcessSource(_voicePid, true, $"Voice ({_voiceName})", AudioDetail.Named(_voiceName)); }
             }
         }
     }
@@ -553,17 +623,24 @@ internal sealed unsafe class Engine : IDisposable
         }
     }
 
+    private bool _warnedTrackName;
+
     public EngineStats GetStats()
     {
         List<AudioTrackStatus> audio;
         lock (_audioGate)
             audio = _tracks.Select(t =>
             {
-                if (t.IsMix) return new AudioTrackStatus(t.Name, true, "game + mic + voice, always track 1");
-                string? detail = t.Source == null ? "waiting for app" : t.Source.IsRunning ? t.Source.Detail : t.Source.LastError;
-                if (!t.Enabled) detail = detail == null ? "mix only" : detail + ", mix only";
-                return new AudioTrackStatus(t.Name, t.Source?.IsRunning == true, detail);
-            }).ToList();
+                if (!AudioText.TryKindOf(t.Name, out var kind))
+                {
+                    if (!_warnedTrackName) { _warnedTrackName = true; Log.Warn("Audio track with an unknown name left out of the status: " + t.Name); }
+                    Debug.Fail("unknown audio track name: " + t.Name);
+                    return null;
+                }
+                if (t.IsMix) return new AudioTrackStatus(kind, true, AudioDetail.MixParts);
+                var detail = t.Source == null ? AudioDetail.WaitingForApp : t.Source.IsRunning ? t.Source.DetailInfo : t.Source.LastErrorInfo;
+                return new AudioTrackStatus(kind, t.Source?.IsRunning == true, detail, MixOnly: !t.Enabled);
+            }).OfType<AudioTrackStatus>().ToList();
         return new EngineStats(_encoder?.EncoderName ?? "", _encoder?.FramesIn ?? 0, _encoder?.FramesOut ?? 0,
             (_encoder?.Dropped ?? 0) + Interlocked.Read(ref _pacerDropped), _capture?.FramesReceived ?? 0,
             BufferedSeconds, _ring?.Capacity ?? 0, audio, _gameName, _capture?.IsHdr ?? false,
@@ -580,7 +657,7 @@ internal sealed unsafe class Engine : IDisposable
     {
         int gen = Volatile.Read(ref _encoderGen);   // before enc: see ThrowIfEncoderRestarted
         var ring = _ring; var enc = _encoder;
-        if (!IsRunning || ring == null || enc == null) throw new InvalidOperationException("Not recording");
+        if (!IsRunning || ring == null || enc == null) throw NotRecordingError();
         long end = ComUtil.QpcNow100ns();
         // Never more than the buffer holds: the audio timelines keep BufferSeconds (+6 s), and the video ring may hold a little
         // more than that at low motion, so a longer hotkey length would open with silent video.
@@ -600,7 +677,7 @@ internal sealed unsafe class Engine : IDisposable
 
         var video = ring.Snapshot(from, end);
         ThrowIfEncoderRestarted(gen, Volatile.Read(ref _encoderGen));   // the ring was cleared and refilled by another encoder: enc's header would not match
-        if (video.Count < 2) throw new InvalidOperationException("Nothing recorded yet, wait a moment and try again.");
+        if (video.Count < 2) throw NothingRecordedError();
         long origin = video[0].Pts;
 
         List<(AudioTrackDesc desc, List<AacFrame> frames)> audio;
@@ -640,8 +717,16 @@ internal sealed unsafe class Engine : IDisposable
     /// </summary>
     internal static void ThrowIfEncoderRestarted(int genBefore, int genNow)
     {
-        if (genBefore != genNow) throw new InvalidOperationException("The encoder restarted, try again");
+        if (genBefore != genNow) throw Clink.Services.Localization.UserText.Attach(new InvalidOperationException("The encoder restarted, try again"), Clink.Services.Note.Of("The encoder restarted, try again"));
     }
+
+    /// <summary>"Not recording": the exception a save or a stop throws when no recording engine runs. The message is English for the log; the user reads the note in their language (<see cref="Clink.Services.Localization.UserText"/>).</summary>
+    internal static InvalidOperationException NotRecordingError() =>
+        Clink.Services.Localization.UserText.Attach(new InvalidOperationException("Not recording"), Clink.Services.Note.Of("Not recording"));
+
+    /// <summary>"Nothing recorded yet, wait a moment and try again.": the exception a save throws when the replay buffer has no video yet (same pairing of English message and note).</summary>
+    internal static InvalidOperationException NothingRecordedError() =>
+        Clink.Services.Localization.UserText.Attach(new InvalidOperationException("Nothing recorded yet, wait a moment and try again."), Clink.Services.Note.Of("Nothing recorded yet, wait a moment and try again."));
 
     private static string SanitizeName(string s)
     {
@@ -692,14 +777,14 @@ internal sealed unsafe class Engine : IDisposable
     /// </summary>
     public string StartRecording(RecordingOptions options, string? gameHint = null)
     {
-        if (_stop || !IsRunning || _ring == null || _encoder == null) throw new InvalidOperationException("Not recording: the engine is not running");
-        if (IsRecording) throw new InvalidOperationException("Already recording");
+        if (_stop || !IsRunning || _ring == null || _encoder == null) throw new EngineNotRunningException();
+        if (IsRecording) throw new AlreadyRecordingException();
         // The file-system work first, outside the lock: a slow folder (a network share) must not hold up DetachRecorder.
         string folder = Path.GetFullPath(options.Folder);
         Services.TestGuard.Check(folder);
         Directory.CreateDirectory(folder);
         long free = FreeBytes(folder);
-        if (free >= 0 && free < MinFreeBytes) throw new IOException($"Not enough free disk space to record ({free / 1_048_576} MB free, 1024 MB needed)");
+        if (free >= 0 && free < MinFreeBytes) throw new NotEnoughFreeSpaceException($"Not enough free disk space to record ({free / 1_048_576} MB free, 1024 MB needed)", free, MinFreeBytes);
 
         string game = _gameName ?? (string.IsNullOrEmpty(gameHint) ? "" : gameHint);
         string baseName = string.IsNullOrEmpty(game) ? "Recording" : SanitizeName(game);
@@ -711,8 +796,8 @@ internal sealed unsafe class Engine : IDisposable
         lock (_recLock)
         {
             var ring = _ring; var enc = _encoder;
-            if (_stop || !IsRunning || ring == null || enc == null) throw new InvalidOperationException("Not recording: the engine is not running");
-            if (IsRecording) throw new InvalidOperationException("Already recording");
+            if (_stop || !IsRunning || ring == null || enc == null) throw new EngineNotRunningException();
+            if (IsRecording) throw new AlreadyRecordingException();
 
             List<AudioTrack> tracks;
             List<AudioTrackDesc> descs;
@@ -781,7 +866,7 @@ internal sealed unsafe class Engine : IDisposable
             sink.Stop(RecordingEndReason.UserStopped);
             return sink.Completion;
         }
-        return _lastRecording ?? Task.FromException<RecordingResult>(new InvalidOperationException("Not recording"));
+        return _lastRecording ?? Task.FromException<RecordingResult>(NotRecordingError());
     }
 
     private void OnRecordingDone(RecordingSink sink, RecordingResult result)

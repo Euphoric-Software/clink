@@ -55,8 +55,8 @@ internal sealed class ShareCache : IDisposable
 
     /// <summary>What <see cref="ShareCacheUnavailableException"/> says in an elevated process.</summary>
     public const string ElevatedReason = "not available while Clink runs as administrator";
-    private const string RedirectedReason = "not available because the share cache folder is redirected somewhere else (a junction or link)";
-    private const string LinkedReason = "not available because the share cache folder for this copy is a junction or link";
+    internal const string RedirectedReason = "not available because the share cache folder is redirected somewhere else (a junction or link)";
+    internal const string LinkedReason = "not available because the share cache folder for this copy is a junction or link";
 
     /// <summary>What a <see cref="Cleanup"/> did. <see cref="EntriesSkipped"/>: entries that were due but in use or (partly) locked, and folders that are not entries (links, other names).</summary>
     public readonly record struct CleanupResult(int EntriesDeleted, long BytesFreed, int EntriesSkipped);
@@ -301,14 +301,14 @@ internal sealed class ShareCache : IDisposable
     public string BeginCopy(string key, string originalFileName)
     {
         string part = PartPathFor(key, originalFileName);
-        if (_isElevated()) throw new ShareCacheUnavailableException(ElevatedReason);
-        if (!IsGenuineRoot(out _)) throw new ShareCacheUnavailableException(RedirectedReason);
+        if (_isElevated()) throw new ShareCacheUnavailableException(ElevatedReason, ShareUnavailableKind.Elevated);
+        if (!IsGenuineRoot(out _)) throw new ShareCacheUnavailableException(RedirectedReason, ShareUnavailableKind.Redirected);
         string folder = FolderFor(key);
         Directory.CreateDirectory(folder);
         using (var pin = Pin(folder))   // the folder itself, not what a reparse point names: it must be a plain folder
         {
-            if (pin == null) throw new ShareCacheUnavailableException(LinkedReason);
-            if (!IsGenuineRoot(out _)) throw new ShareCacheUnavailableException(RedirectedReason);
+            if (pin == null) throw new ShareCacheUnavailableException(LinkedReason, ShareUnavailableKind.Linked);
+            if (!IsGenuineRoot(out _)) throw new ShareCacheUnavailableException(RedirectedReason, ShareUnavailableKind.Redirected);
         }
         return part;
     }
@@ -322,12 +322,12 @@ internal sealed class ShareCache : IDisposable
     {
         string part = PartPathFor(key, originalFileName);
         string final = PathFor(key, originalFileName);
-        if (_isElevated()) throw new ShareCacheUnavailableException(ElevatedReason);
+        if (_isElevated()) throw new ShareCacheUnavailableException(ElevatedReason, ShareUnavailableKind.Elevated);
         string folder = FolderFor(key);
         if (!Path.Exists(folder)) return false;   // no folder, so no part file
         using var pin = Pin(folder);   // held while the part file is renamed: the folder cannot be renamed or deleted meanwhile
-        if (pin == null) throw new ShareCacheUnavailableException(LinkedReason);
-        if (!IsGenuineRoot(out _)) throw new ShareCacheUnavailableException(RedirectedReason);
+        if (pin == null) throw new ShareCacheUnavailableException(LinkedReason, ShareUnavailableKind.Linked);
+        if (!IsGenuineRoot(out _)) throw new ShareCacheUnavailableException(RedirectedReason, ShareUnavailableKind.Redirected);
         try
         {
             var info = new FileInfo(part);
@@ -964,4 +964,21 @@ internal sealed class ShareCache : IDisposable
 /// says why, in words for the user; the caller shares the original instead. An <see cref="IOException"/>, so a handler of file errors
 /// around the copy sees it too.
 /// </summary>
-internal sealed class ShareCacheUnavailableException(string reason) : IOException(reason);
+internal sealed class ShareCacheUnavailableException(string reason, ShareUnavailableKind why = ShareUnavailableKind.Unknown) : IOException(reason)
+{
+    /// <summary>Why, as data: the user's sentence is chosen from this at display time (<see cref="ShareFitModel.UnavailableNote"/>), never from the English text.</summary>
+    public ShareUnavailableKind Why { get; } = why;
+}
+
+/// <summary>Why smaller copies are not available (<see cref="ShareCacheUnavailableException.Why"/>, <see cref="ShareCopyResult.Unavailable"/>): each has a whole-sentence catalog entry.</summary>
+internal enum ShareUnavailableKind
+{
+    /// <summary>Not said (a result built from a reason alone).</summary>
+    Unknown,
+    /// <summary>Clink runs as administrator.</summary>
+    Elevated,
+    /// <summary>The share cache folder is redirected somewhere else (a junction or link).</summary>
+    Redirected,
+    /// <summary>The cache folder of this one copy is a junction or link.</summary>
+    Linked,
+}

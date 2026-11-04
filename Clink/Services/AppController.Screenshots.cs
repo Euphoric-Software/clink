@@ -1,4 +1,5 @@
 using Clink.Screenshots;
+using Clink.Services.Localization;
 using Clink.UI.Screenshots;
 
 namespace Clink.Services;
@@ -27,7 +28,7 @@ internal sealed partial class AppController
             System.IO.Directory.CreateDirectory(folder);
             TestGuard.Start("explorer.exe", $"\"{folder}\"");
         }
-        catch (Exception ex) { Say("Could not open the screenshots folder: " + ex.Message); }
+        catch (Exception ex) { SayT("Could not open the screenshots folder: {error}", ("error", ex.Message)); }
     }
 
     /// <summary>The keys of the first screenshot row that is set, for labels ("Take screenshot (PrintScreen)"); null when there is none.</summary>
@@ -35,14 +36,14 @@ internal sealed partial class AppController
         hotkeys.FirstOrDefault(h => h.Keys != null && h.Keys.Vk > 0 && CommandFor(h.Action) == HotkeyCommand.Screenshot)?.Keys.ToString();
 
     /// <summary>"Take screenshot (PrintScreen)" for the tray menu, or just "Take screenshot" without a binding.</summary>
-    private string ScreenshotTrayText => ScreenshotHotkeyLabelFor(Settings.Hotkeys) is string l ? $"Take screenshot ({l})" : "Take screenshot";
+    private string ScreenshotTrayText => ScreenshotHotkeyLabelFor(Settings.Hotkeys) is string l ? L.T("Take screenshot ({keys})", ("keys", L.Ltr(l))) : L.T("Take screenshot");
 
     /// <summary>The keys of the first "screenshot-edit-last" row that is set; null when there is none.</summary>
     internal static string? ScreenshotEditHotkeyLabelFor(IReadOnlyList<HotkeyAction> hotkeys) =>
         hotkeys.FirstOrDefault(h => h.Keys != null && h.Keys.Vk > 0 && CommandFor(h.Action) == HotkeyCommand.ScreenshotEditLast)?.Keys.ToString();
 
     /// <summary>"Edit last screenshot (Shift+PrintScreen)" for the tray menu, or just "Edit last screenshot" without a binding.</summary>
-    private string ScreenshotEditTrayText => ScreenshotEditHotkeyLabelFor(Settings.Hotkeys) is string l ? $"Edit last screenshot ({l})" : "Edit last screenshot";
+    private string ScreenshotEditTrayText => ScreenshotEditHotkeyLabelFor(Settings.Hotkeys) is string l ? L.T("Edit last screenshot ({keys})", ("keys", L.Ltr(l))) : L.T("Edit last screenshot");
 
     /// <summary>The command a pipe / command-line request <c>screenshot-edit &lt;path&gt;</c> carries: its path, or null when it is not that command.</summary>
     internal static string? EditPathOf(string cmd)

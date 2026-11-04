@@ -143,11 +143,11 @@ internal static unsafe class Trimmer
                 }
                 // On a Windows whose media reader failed the timeline self-check (ClipSource) no track can be put against another:
                 // nothing is rebuilt or corrected from sources, whatever the plan says (a single track at another volume is still fine).
-                if (m.Sum != null && align.Untrusted) throw new InvalidOperationException(ClipAlignment.UntrustedNote);
+                if (m.Sum != null && align.Untrusted) throw new TrimAlignmentException(TrimAlignmentRefusal.Untrusted);
                 // A source that could not be lined up with the Mix is neither added to it nor taken out of it (the editor offers no
                 // such slider; this is for a plan made by anything else).
                 if (m.Sum != null && m.Sum.Any(s => s.Track == 0) && m.Sum.Any(s => Array.IndexOf(align.Unlined, s.Track) >= 0))
-                    throw new InvalidOperationException(ClipAlignment.OlderClinkNote);
+                    throw new TrimAlignmentException(TrimAlignmentRefusal.OlderClink);
                 IMFMediaType* t;
                 reader->GetNativeMediaType(i, 0, &t).Check("GetNativeMediaType(audio)");
                 try

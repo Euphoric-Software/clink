@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Media.Imaging;
 using Clink.Screenshots.Imaging;
+using Clink.Services.Localization;
 
 namespace Clink.Screenshots.Editing;
 
@@ -36,8 +37,8 @@ internal static class ImageInput
     public const int MaxSide = PngFile.MaxSide;
     public const long MaxPixels = PngFile.MaxPixels;
 
-    public const string TooLarge = "That picture is too large (the limit is 16384 pixels on a side and 100 megapixels)";
-    public const string Unreadable = "That file could not be read as a picture";
+    public static string TooLarge => L.T("That picture is too large (the limit is 16384 pixels on a side and 100 megapixels)");
+    public static string Unreadable => L.T("That file could not be read as a picture");
 
     /// <summary>The kinds of file <see cref="LoadFile"/> reads, by their first bytes: PNG, JPEG, BMP, GIF. (WIC would also try TIFF, ICO, WMP, ... and guess the codec from the content: more parsers than an editor needs to expose to a file the user dropped in.)</summary>
     internal static bool HasKnownMagic(ReadOnlySpan<byte> head) =>
@@ -72,9 +73,13 @@ internal static class ImageInput
     /// A picture in a stream; see <see cref="LoadFile"/>. <paramref name="pngOnly"/> (the clipboard's "PNG" format): only the PNG
     /// decoder is used, whatever the bytes claim to be.
     /// </summary>
-    public static BgraImage? FromStream(Stream stream, out string? error, bool pngOnly = false)
+    public static BgraImage? FromStream(Stream stream, out string? error, bool pngOnly = false) => FromStream(stream, out error, out _, pngOnly);
+
+    /// <summary>As above; <paramref name="tooLarge"/> says the refusal was the size limit (the error text is translated: it is never compared).</summary>
+    internal static BgraImage? FromStream(Stream stream, out string? error, out bool tooLarge, bool pngOnly = false)
     {
         error = null;
+        tooLarge = false;
         try
         {
             if (stream.CanSeek)
@@ -82,18 +87,19 @@ internal static class ImageInput
                 long at = stream.Position;
                 var size = PeekSize(stream);
                 stream.Position = at;
-                if (size is { } s && !WithinLimits(s.Width, s.Height)) { error = s.Width > 0 && s.Height > 0 ? TooLarge : Unreadable; return null; }
+                if (size is { } s && !WithinLimits(s.Width, s.Height)) { tooLarge = s.Width > 0 && s.Height > 0; error = tooLarge ? TooLarge : Unreadable; return null; }
             }
             var decoder = pngOnly
                 ? new PngBitmapDecoder(stream, BitmapCreateOptions.PreservePixelFormat | BitmapCreateOptions.IgnoreColorProfile, BitmapCacheOption.None)
                 : BitmapDecoder.Create(stream, BitmapCreateOptions.PreservePixelFormat | BitmapCreateOptions.IgnoreColorProfile, BitmapCacheOption.None);
             if (decoder.Frames.Count == 0) { error = Unreadable; return null; }
             var frame = decoder.Frames[0];
-            if (!WithinLimits(frame.PixelWidth, frame.PixelHeight)) { error = frame.PixelWidth > 0 && frame.PixelHeight > 0 ? TooLarge : Unreadable; return null; }
+            if (!WithinLimits(frame.PixelWidth, frame.PixelHeight)) { tooLarge = frame.PixelWidth > 0 && frame.PixelHeight > 0; error = tooLarge ? TooLarge : Unreadable; return null; }
             return BgraImage.From(frame);   // FormatConvertedBitmap(Bgra32) when the format is another
         }
         catch (Exception ex) when (ex is IOException or NotSupportedException or FileFormatException or InvalidOperationException or ArgumentException or COMException)
         {
+            tooLarge = false;
             error = Unreadable;
             return null;
         }
@@ -275,8 +281,8 @@ internal sealed class SystemImageClipboard : IImageClipboard
                 {
                     using (png)
                     {
-                        var image = ImageInput.FromStream(png, out error, pngOnly: true);
-                        if (image != null || error == ImageInput.TooLarge) return (image, null);
+                        var image = ImageInput.FromStream(png, out error, out bool tooLarge, pngOnly: true);
+                        if (image != null || tooLarge) return (image, null);
                         error = null;   // not a readable PNG: the bitmap format may still be
                     }
                 }
@@ -291,7 +297,7 @@ internal sealed class SystemImageClipboard : IImageClipboard
                         return (null, bitmap);
                     }
                 }
-                error = "There is no picture on the clipboard";
+                error = L.T("There is no picture on the clipboard");
                 return (null, null);
             }
             catch (COMException)
@@ -299,7 +305,7 @@ internal sealed class SystemImageClipboard : IImageClipboard
                 Thread.Sleep(60);   // CLIPBRD_E_CANT_OPEN: another program has the clipboard open
             }
         }
-        error = "The clipboard is busy: try again";
+        error = L.T("The clipboard is busy: try again");
         return (null, null);
     }
 

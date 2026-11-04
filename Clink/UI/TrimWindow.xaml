@@ -2,8 +2,9 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:ui="clr-namespace:Clink.UI"
+        xmlns:l="clr-namespace:Clink.UI"
         xmlns:svc="clr-namespace:Clink.Services"
-        Title="Trim clip" Width="940" Height="720" MinWidth="720" MinHeight="560"
+        Title="{l:T 'Trim clip'}" Width="940" Height="720" MinWidth="720" MinHeight="560"
         WindowStyle="None" ResizeMode="CanResizeWithGrip" AllowsTransparency="True" Background="Transparent"
         WindowStartupLocation="CenterScreen" FontFamily="{StaticResource UiFont}" PreviewKeyDown="Window_PreviewKeyDown">
     <Window.Resources>
@@ -83,10 +84,10 @@
     <Border Background="{DynamicResource Bg}" CornerRadius="10" BorderBrush="{DynamicResource Border}" BorderThickness="1">
         <DockPanel>
             <Grid DockPanel.Dock="Top" Height="42" MouseLeftButtonDown="Header_MouseLeftButtonDown" Background="Transparent">
-                <TextBlock x:Name="TitleText" Style="{StaticResource Display}" Text="Trim" Margin="16,0,200,0" VerticalAlignment="Center" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
-                <Button x:Name="OpenExternalButton" Style="{StaticResource LinkButton}" Content="Open in default player" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,44,0"
-                        FontSize="12" Click="OpenExternal_Click" ToolTip="Open the file in your default video player" />
-                <Button Style="{StaticResource IconButton}" Content="✕" HorizontalAlignment="Right" Margin="0,0,8,0" Click="Close_Click" />
+                <TextBlock x:Name="TitleText" Style="{StaticResource Display}" Text="{l:T 'Trim'}" Margin="16,0,200,0" VerticalAlignment="Center" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
+                <Button x:Name="OpenExternalButton" Style="{StaticResource LinkButton}" Content="{l:T 'Open in default player'}" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,44,0"
+                        FontSize="12" Click="OpenExternal_Click" ToolTip="{l:T 'Open the file in your default video player'}" />
+                <Button Style="{StaticResource IconButton}" Content="✕" HorizontalAlignment="Right" Margin="0,0,8,0" Click="Close_Click" AutomationProperties.Name="{l:T 'Close'}" />
             </Grid>
 
             <!-- Bottom row: replace / save / share / status (the buttons are for trimming; the status line is the player's too) -->
@@ -99,12 +100,12 @@
                     <!-- Accent2, not Accent: the accent as text fails 4.5:1 on the light theme for several accents (e.g. Orange, Pink) -->
                     <TextBlock x:Name="StatusText" Style="{StaticResource MutedText}" Foreground="{DynamicResource Accent2}" VerticalAlignment="Center" Margin="0,0,14,0" TextWrapping="Wrap" Text="" MinHeight="17" />
                     <StackPanel x:Name="SaveButtons" Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
-                        <CheckBox x:Name="ReplaceCheck" Content="Replace original" VerticalAlignment="Center" Margin="0,0,14,0" />
-                        <Button x:Name="SaveButton" Content="Save trimmed" Click="Save_Click" Margin="0,0,8,0" />
-                        <Button x:Name="SaveShareButton" Style="{StaticResource AccentButton}" Content="Save &amp; share" Click="SaveShare_Click" />
+                        <CheckBox x:Name="ReplaceCheck" Content="{l:T 'Replace original'}" VerticalAlignment="Center" Margin="0,0,14,0" />
+                        <Button x:Name="SaveButton" Content="{l:T 'Save trimmed'}" Click="Save_Click" Margin="0,0,8,0" />
+                        <Button x:Name="SaveShareButton" Style="{StaticResource AccentButton}" Content="{l:T 'Save &amp; share'}" Click="SaveShare_Click" />
                         <!-- with a token and cloud sharing on: a split button. Save & share = as before, ▾ = the other options (applied to the saved trim) -->
                         <StackPanel x:Name="SaveShareSplit" Orientation="Horizontal" Visibility="Collapsed">
-                            <Button x:Name="SaveShareMain" Style="{StaticResource AccentSplitMain}" Content="Save &amp; share" Click="SaveShare_Click" PreviewKeyDown="SaveShareMain_KeyDown" />
+                            <Button x:Name="SaveShareMain" Style="{StaticResource AccentSplitMain}" Content="{l:T 'Save &amp; share'}" Click="SaveShare_Click" PreviewKeyDown="SaveShareMain_KeyDown" />
                             <Button x:Name="SaveShareArrow" Style="{StaticResource AccentSplitArrow}" Content="{x:Static svc:ShareChoices.SplitArrowLabel}" Click="SaveShareArrow_Click"
                                     AutomationProperties.Name="{x:Static svc:ShareChoices.SplitArrowName}" ToolTip="{x:Static svc:ShareChoices.SplitArrowTip}" />
                         </StackPanel>
@@ -116,9 +117,9 @@
             <Border DockPanel.Dock="Bottom" Padding="16,8,16,8" BorderBrush="{DynamicResource Border}" BorderThickness="0,1,0,0">
                 <StackPanel>
                     <Grid Margin="0,0,0,4">
-                        <TextBlock Text="AUDIO TRACKS" Style="{StaticResource H}" Margin="0" VerticalAlignment="Center" />
+                        <TextBlock Text="{l:T 'AUDIO TRACKS'}" Style="{StaticResource H}" Margin="0" VerticalAlignment="Center" />
                         <TextBlock x:Name="TracksHint" Style="{StaticResource MutedText}" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="110,0,0,0"
-                                   TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" Text="Opening preview…" />
+                                   TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" Text="{l:T 'Opening preview…'}" />
                     </Grid>
                     <StackPanel x:Name="TracksPanel" />
                     <!-- shown when a source (Voice, say) is only inside All audio: its volume cannot be changed there -->
@@ -130,7 +131,7 @@
             <ui:TimelineControl x:Name="Timeline" DockPanel.Dock="Bottom" Margin="6,0,6,2" />
 
             <!-- Transport row -->
-            <Grid DockPanel.Dock="Bottom" Margin="16,8,16,0">
+            <Grid DockPanel.Dock="Bottom" Margin="16,8,16,0" FlowDirection="LeftToRight">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
@@ -139,19 +140,19 @@
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
-                <Button x:Name="PlayButton" Content="▶" Width="40" Click="Play_Click" Margin="0,0,10,0" ToolTip="Play / pause (Space)" />
-                <ToggleButton x:Name="TrimToggle" Grid.Column="1" Style="{StaticResource TrimSwitch}" Content="✂ Trim" Checked="TrimToggle_Changed" Unchecked="TrimToggle_Changed" Margin="0,0,14,0"
-                              ToolTip="Cut this clip: set in and out points, choose what audio to keep, save a trimmed copy" />
+                <!-- the tooltips with key names and the toggle's text ("✂ " + Trim) are set in code (TrimWindow.xaml.cs) -->
+                <Button x:Name="PlayButton" Content="▶" Width="40" Click="Play_Click" Margin="0,0,10,0" />
+                <ToggleButton x:Name="TrimToggle" Grid.Column="1" Style="{StaticResource TrimSwitch}" Checked="TrimToggle_Changed" Unchecked="TrimToggle_Changed" Margin="0,0,14,0"
+                              ToolTip="{l:T 'Cut this clip: set in and out points, choose what audio to keep, save a trimmed copy'}" />
                 <TextBlock x:Name="PosText" Grid.Column="2" FontFamily="Consolas" FontSize="13" VerticalAlignment="Center" Margin="0,0,14,0" Text="0:00.0 / 0:00.0" TextWrapping="NoWrap" />
-                <Button x:Name="SetInButton" Grid.Column="3" Content="[ Set in" Click="SetIn_Click" Padding="8,4" Margin="0,0,6,0" ToolTip="Set the start to the playhead (I)" />
-                <Button x:Name="SetOutButton" Grid.Column="4" Content="Set out ]" Click="SetOut_Click" Padding="8,4" Margin="0,0,12,0" ToolTip="Set the end to the playhead (O)" />
-                <TextBlock x:Name="HintText" Grid.Column="5" Style="{StaticResource MutedText}" VerticalAlignment="Center" HorizontalAlignment="Right" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
-                           Text="Start snaps to keyframes · Space play · I/O set in/out · ←/→ frame step" />
+                <Button x:Name="SetInButton" Grid.Column="3" Content="{l:T '[ Set in'}" Click="SetIn_Click" Padding="8,4" Margin="0,0,6,0" />
+                <Button x:Name="SetOutButton" Grid.Column="4" Content="{l:T 'Set out ]'}" Click="SetOut_Click" Padding="8,4" Margin="0,0,12,0" />
+                <TextBlock x:Name="HintText" Grid.Column="5" Style="{StaticResource MutedText}" VerticalAlignment="Center" HorizontalAlignment="Right" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
             </Grid>
 
             <!-- Video preview (click toggles play) -->
             <Border Background="Black" Margin="1,0,1,0" MouseLeftButtonUp="Preview_Click" Cursor="Hand">
-                <Image x:Name="PreviewImage" Stretch="Uniform" SnapsToDevicePixels="True" />
+                <Image x:Name="PreviewImage" Stretch="Uniform" SnapsToDevicePixels="True" FlowDirection="LeftToRight" />
             </Border>
         </DockPanel>
     </Border>

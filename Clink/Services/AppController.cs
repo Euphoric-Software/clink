@@ -9,9 +9,91 @@ using Clink.Audio;
 using Clink.Capture;
 using Clink.Engine;
 using Clink.Native;
+using Clink.Services.Localization;
 using Clink.UI;
 
 namespace Clink.Services;
+
+/// <summary>
+/// A sentence for the user that is kept as its catalog key plus arguments, so it can be shown in the language of the UI
+/// (<see cref="Shown"/>) and written to the log in English (<see cref="English"/>). An argument may itself be a <see cref="Note"/>
+/// (a reason that is a sentence of its own); it is resolved the same way, so the log never gets a translated piece.
+/// </summary>
+internal sealed class Note
+{
+    public string Key { get; }
+    private readonly (string Name, object? Value)[] _args;
+    private readonly long? _count;
+    private readonly string? _verbatim;
+    private readonly bool _trimPeriod;
+    private readonly Func<string>? _compose;
+
+    private Note(string key, (string Name, object? Value)[] args, long? count = null, string? verbatim = null, bool trimPeriod = false, Func<string>? compose = null) { Key = key; _args = (args ?? Array.Empty<(string, object?)>()).ToArray(); _count = count; _verbatim = verbatim; _trimPeriod = trimPeriod; _compose = compose; }
+
+    /// <summary>This note without a final full stop (<see cref="Shown"/> and <see cref="English"/>), for a sentence that is used as a clause of another one.</summary>
+    public Note WithoutFinalPeriod() => new(Key, _args, _count, _verbatim, trimPeriod: true, compose: _compose);
+
+    /// <summary>
+    /// A note for a text that is put together from several catalog entries (a join of sentences, a choice between entries by a count): the
+    /// text of <paramref name="compose"/> is what <see cref="Shown"/> returns, and <see cref="English"/> runs it again with every catalog call
+    /// answering in English (<see cref="L.InEnglish"/>), so the log never gets a translated piece. <paramref name="compose"/> must only build
+    /// text (no side effects, no waiting) and take any text it was given from outside as it is.
+    /// </summary>
+    public static Note Build(Func<string> compose) => new("(composed)", Array.Empty<(string, object?)>(), compose: compose);
+
+    /// <summary>A note for catalog entry <paramref name="key"/> (its English text, see <see cref="L.T"/>) with <c>{name}</c> arguments.</summary>
+    public static Note Of(string key, params (string Name, object? Value)[] args) => new(key, args);
+
+    /// <summary>A text that is shown and logged exactly as it is (an error text of the system or of a library: no catalog entry).</summary>
+    public static Note Verbatim(string text) => new(text, Array.Empty<(string, object?)>(), null, text);
+
+    /// <summary>An argument (a path, a version, a key combo) that keeps its left-to-right direction inside right-to-left text; the marks are added when the note is <see cref="Shown"/>, never in <see cref="English"/>.</summary>
+    internal readonly record struct LtrArg(string Text);
+
+    /// <summary>A byte count that is written with the units of the language it is shown in (<see cref="Shown"/>) or of English (<see cref="English"/>): the log never gets a translated unit.</summary>
+    internal readonly record struct SizeArg(long Bytes);
+
+    /// <summary>A byte count as an argument of a note (see <see cref="SizeArg"/>); use it instead of <c>Capabilities.FormatBytes</c> in <see cref="Of"/>.</summary>
+    public static SizeArg Size(long bytes) => new(bytes);
+
+    /// <summary>Marks <paramref name="text"/> as a left-to-right argument of a note (see <see cref="LtrArg"/>); use it instead of <see cref="L.Ltr"/> in <see cref="Of"/> / <see cref="PluralOf"/>.</summary>
+    public static LtrArg Ltr(string text) => new(text);
+
+    /// <summary>An argument of unknown direction (a monitor name, a size) that keeps its own direction inside right-to-left text; the marks are added when the note is <see cref="Shown"/> (<see cref="L.Isolate"/>), never in <see cref="English"/>.</summary>
+    internal readonly record struct IsolateArg(string Text);
+
+    /// <summary>Marks <paramref name="text"/> as an argument that keeps its own direction (see <see cref="IsolateArg"/>).</summary>
+    public static IsolateArg Isolate(string text) => new(text);
+
+    private static readonly System.Text.RegularExpressions.Regex s_marks = new("[\u202A-\u202E\u200E\u200F\u2066-\u2069]", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>
+    /// A note for a plural catalog entry (<see cref="L.Plural"/>; <c>{count}</c> is filled in). Only for counts English writes in its "other"
+    /// form (not 1): the English log line is that form.
+    /// </summary>
+    public static Note PluralOf(string key, long count, params (string Name, object? Value)[] args) => new(key, args, count);
+
+    private (string Name, object? Value)[] Resolve(bool english) =>
+        _args.Select(a => (a.Name, a.Value switch
+        {
+            Note n => (object)(english ? n.English : n.Shown),
+            LtrArg l => english ? l.Text : L.Ltr(l.Text),
+            IsolateArg i => english ? i.Text : L.Isolate(i.Text),
+            SizeArg b => english ? L.BytesIn("en", b.Bytes) : L.Bytes(b.Bytes),
+            _ => a.Value,
+        })).ToArray();
+
+    /// <summary>The text in the language of the UI.</summary>
+    public string Shown => Trim(_verbatim ?? (_compose != null ? _compose() : _count is long c ? L.Plural(Key, c, Resolve(false)) : L.T(Key, Resolve(false))));
+
+    private string Trim(string s) => _trimPeriod ? s.TrimEnd('.', '\u3002', '\uFF0E', '\u0964') : s;
+
+    /// <summary>The text in English (logs), whatever the language of the UI is; free of direction marks.</summary>
+    public string English => Trim(_verbatim ?? (_compose != null ? s_marks.Replace(L.InEnglish(_compose), "") : s_marks.Replace(L.TIn("en", Key, _count is long c ? Resolve(true).Append(("count", (object?)c)).ToArray() : Resolve(true)), "")));
+
+    /// <summary>English, so a note that ends up in a log line by string concatenation stays English; use <see cref="Shown"/> for the user.</summary>
+    public override string ToString() => English;
+}
 
 /// <summary>What Clink is doing right now, for the window, the tray and the status dot.</summary>
 internal enum RecordingState { Starting, Recording, WaitingForGame, Paused, Error }
@@ -22,6 +104,12 @@ internal enum RecordingState { Starting, Recording, WaitingForGame, Paused, Erro
 /// the share window itself could not be opened (<see cref="AppController.ShareError"/> says so; no upload was tried).
 /// </summary>
 internal enum ShareOutcome { None, LinkCopied, Uploaded, FileShareOpened, Refused, Failed, WindowFailed, Declined }
+
+/// <summary>
+/// Why a Share was refused (<see cref="AppController.RefusalKind"/>): over Copium's limits for the account, no smaller copy could be made
+/// (the refusal is a whole sentence of its own), or a refusal that is a phrase rather than a sentence (a game is in front).
+/// </summary>
+internal enum ShareRefusalKind { None, OverLimit, SmallerCopy, Phrase }
 
 /// <summary>Owns the engine, settings, clip library, hotkeys, game detection, toasts, status dot, archive, tray icon and the single-instance pipe.</summary>
 internal sealed partial class AppController : IDisposable
@@ -54,6 +142,8 @@ internal sealed partial class AppController : IDisposable
     public static bool DevNoMarker { get; set; }
     /// <summary><c>--dev-demo-status "game"</c> (quiet dev instances only): the game the header pretends to record.</summary>
     public static string? DevDemoStatus { get; set; }
+    /// <summary>Hidden <c>--dev-language &lt;code&gt;</c> (dev instances only): the UI language to look at by hand, whatever the settings say (see <see cref="DevOptions.Language"/>).</summary>
+    public static string? DevLanguage { get; set; }
     /// <summary>The TEST frame, badge and tags are drawn: a dev instance, unless <c>--dev-no-marker</c> hides them.</summary>
     public static bool ShowsDevMarker => IsDev && !DocShots;
     /// <summary>Documentation-screenshot mode: <c>--dev</c> with <c>--dev-quiet</c> and <c>--dev-no-marker</c> (nothing else turns it on).</summary>
@@ -73,7 +163,7 @@ internal sealed partial class AppController : IDisposable
 
     /// <summary>The switches that make a restarted process this same dev instance (see <see cref="DevOptions.Switches"/>); none for a normal run.</summary>
     internal static List<string> DevSwitches() =>
-        IsDev ? DevOptions.Switches(Settings.Dir, DevHotkeys, DevRecord, DevToken, SettingsImport.PackagesRoot, DevQuiet, DevQuietRecord, DevNoMarker, DevDemoStatus) : new List<string>();
+        IsDev ? DevOptions.Switches(Settings.Dir, DevHotkeys, DevRecord, DevToken, SettingsImport.PackagesRoot, DevQuiet, DevQuietRecord, DevNoMarker, DevDemoStatus, DevLanguage) : new List<string>();
     private static readonly TimeSpan GameExitGrace = TimeSpan.FromSeconds(5);   // keep recording this long after the game's process is gone
 
     public static AppController Instance { get; private set; } = null!;
@@ -88,9 +178,15 @@ internal sealed partial class AppController : IDisposable
     public bool IsPaused { get; private set; }
     public string LastNotice { get; private set; } = "";
     /// <summary>Why the last <see cref="ShareAsync"/> refused to upload (Copium's free limits), for the clip row and the toast to show instead of "Upload failed"; null when it was not refused.</summary>
-    public string? ShareRefusal { get; private set; }
+    public string? ShareRefusal => _refusal?.Shown;
+    private Note? _refusal;
+    /// <summary>What kind of refusal <see cref="ShareRefusal"/> is, so a caller words its sentence by the kind instead of editing the refusal text (None when it was not refused).</summary>
+    internal ShareRefusalKind RefusalKind { get; private set; }
     /// <summary>Why the last <see cref="ShareAsync"/> failed (no token, Copium's answer, the network), for the clip row, the toast and the trim editor to show; null when it did not fail.</summary>
-    public string? ShareError { get; private set; }
+    public string? ShareError => _shareError?.Shown;
+    private Note? _shareError;
+    /// <summary><see cref="ShareError"/> as a note (English for a log).</summary>
+    internal Note? ShareErrorNote => _shareError;
     /// <summary>The last upload failed because Copium rejected the token (HTTP 401 / 403): a bulk upload stops instead of trying the rest.</summary>
     internal bool ShareTokenRejected { get; private set; }
     /// <summary>
@@ -99,7 +195,7 @@ internal sealed partial class AppController : IDisposable
     /// </summary>
     public ShareOutcome LastShareOutcome { get; private set; }
     /// <summary>What <see cref="ShareError"/> says when <see cref="LastShareOutcome"/> is <see cref="ShareOutcome.WindowFailed"/>: not an upload failure, so the row and the toast show it as it is.</summary>
-    public const string ShareWindowFailedText = "Could not open the share window";
+    public static string ShareWindowFailedText => L.T("Could not open the share window");
     /// <summary>A Copium upload token is saved: Share uploads. Without one it opens the share window (the file to drag) instead.</summary>
     public bool HasCopiumToken => !string.IsNullOrWhiteSpace(Settings.CopiumToken);
     /// <summary>Version of a downloaded update waiting to be installed, or null.</summary>
@@ -128,15 +224,19 @@ internal sealed partial class AppController : IDisposable
     public bool IsManualRecording => !IsPaused && (Engine.IsRecording || _wantRecording);
 
     /// <summary>One line for the UI header: "Recording · Overwatch", "Recording 00:12 · Overwatch" (manual), "Waiting for a game…", "Paused", "Error", "Starting…".</summary>
-    public string StatusText => !Settings.ClipsEnabled ? "Clips are off" : State switch
+    public string StatusText => StatusTextFor(Settings.ClipsEnabled, State, _wantRecording && !Engine.IsRecording,
+        IsManualRecording && Engine.Recording is { } rec ? rec.Seconds : null, CurrentGame);
+
+    /// <summary><see cref="StatusText"/> for a given situation (so each state can be checked without a running recorder).</summary>
+    internal static string StatusTextFor(bool clipsEnabled, RecordingState state, bool betweenParts, double? manualSeconds, string? game) => !clipsEnabled ? L.T("Clips are off") : state switch
     {
-        RecordingState.Paused => "Paused",
-        _ when _wantRecording && !Engine.IsRecording => "Recording (resuming…)",   // between two parts of a recording
-        RecordingState.Recording when IsManualRecording && Engine.Recording is { } rec => RecordingPolicy.StatusLine(rec.Seconds, CurrentGame),
-        RecordingState.Recording => CurrentGame != null ? $"Recording · {CurrentGame}" : "Recording",
-        RecordingState.WaitingForGame => "Waiting for a game…",
-        RecordingState.Error => "Error",
-        _ => "Starting…",
+        RecordingState.Paused => L.T("Paused"),
+        _ when betweenParts => L.T("Recording (resuming…)"),   // between two parts of a recording
+        RecordingState.Recording when manualSeconds is double secs => RecordingPolicy.StatusLine(secs, game),
+        RecordingState.Recording => game != null ? L.T("Recording · {game}", ("game", L.Isolate(game))) : L.T("status|Recording"),
+        RecordingState.WaitingForGame => L.T("Waiting for a game…"),
+        RecordingState.Error => L.T("Error"),
+        _ => L.T("Starting…"),
     };
 
     public event Action? StateChanged;
@@ -257,7 +357,7 @@ internal sealed partial class AppController : IDisposable
             if (string.Equals(FullPathOrSelf(p.ExePath), self, StringComparison.OrdinalIgnoreCase)) return null;   // this very exe runs already: it holds the lock
             if (ReleaseVersion.Parse(p.Version) is not { } v) continue;
             if (v >= own) return null;   // a copy as new as this one (or newer) is probably the one holding the lock
-            message ??= $"An older Clink (v{v}) is still running from {p.ExePath}. Right-click its tray icon, choose Quit, then start Clink again.";
+            message ??= L.T("An older Clink (v{version}) is still running from {path}. Right-click its tray icon, choose Quit, then start Clink again.", ("version", L.Ltr(v.ToString())), ("path", L.Ltr(p.ExePath)));
         }
         return message;
     }
@@ -470,14 +570,15 @@ internal sealed partial class AppController : IDisposable
         if (cmd != "clip") { _ui.BeginInvoke(DispatcherPriority.ApplicationIdle, () => RunCommand(cmd)); return; }
         // Marked now, not at idle: a --share-last sent right behind this --clip can reach the pipe while Clink is still starting.
         _clipRefusedAt = DateTime.UtcNow;
-        _ui.BeginInvoke(DispatcherPriority.ApplicationIdle, () => ShowBalloon("Clink started", "It was not running, so there was nothing to save yet. "
-            + (GameOnly ? "It records while a game runs." : "It is recording now.")));
+        _ui.BeginInvoke(DispatcherPriority.ApplicationIdle, () => ShowBalloon(L.T("Clink started"), GameOnly
+            ? L.T("It was not running, so there was nothing to save yet. It records while a game runs.")
+            : L.T("It was not running, so there was nothing to save yet. It is recording now.")));
     }
 
     // ------------------------------------------------------------------ features (Settings → App → Features)
 
     /// <summary>What the clip commands say while the Clips feature is off.</summary>
-    internal const string ClipsOffText = "Clips are turned off — Settings → App → Features";
+    internal static string ClipsOffText => L.T("Clips are turned off — Settings → App → Features");
 
     /// <summary>A pipe / command-line command that needs the Clips feature (the replay buffer, recording, the clip library).</summary>
     internal static bool IsClipsCommand(string cmd) => cmd.Trim().ToLowerInvariant() is "clip" or "trim" or "share" or "record" or "pause" or "resume";
@@ -485,8 +586,8 @@ internal sealed partial class AppController : IDisposable
     /// <summary>The hotkey / tray / command line asked for a clip action while Clips is off: footer line, and a toast or balloon where the user is looking.</summary>
     private void ClipsOffNotice()
     {
-        Say(ClipsOffText);
-        NotifyProblem("Clips are off", ClipsOffText);
+        SayT("Clips are turned off — Settings → App → Features");
+        NotifyProblem(L.T("Clips are off"), ClipsOffText);
     }
 
     /// <summary>How many engine starts / stops were asked for (test aid: with Clips off none is).</summary>
@@ -504,7 +605,7 @@ internal sealed partial class AppController : IDisposable
     public bool SetClipsEnabled(bool on)
     {
         if (Settings.ClipsEnabled == on) return true;
-        if (!on && !Settings.ScreenshotsEnabled) { Say("At least one feature has to stay on"); return false; }
+        if (!on && !Settings.ScreenshotsEnabled) { SayT("At least one feature has to stay on"); return false; }
         Settings.ClipsEnabled = on;
         Settings.Save();
         Log.Info("features: Clips turned " + (on ? "on" : "off"));
@@ -521,8 +622,8 @@ internal sealed partial class AppController : IDisposable
             else { Interlocked.Increment(ref _startGen); _starting = false; }   // a start that has not run yet is cancelled
             if (recording)
             {
-                Say("Recording stopped");
-                Toasts.ShowNotice("Recording stopped", "Clips are turned off");
+                SayT("Recording stopped");
+                Toasts.ShowNotice(L.T("Recording stopped"), L.T("Clips are turned off"));
             }
         }
         ApplyFeatures();
@@ -536,7 +637,7 @@ internal sealed partial class AppController : IDisposable
     public bool SetScreenshotsEnabled(bool on)
     {
         if (Settings.ScreenshotsEnabled == on) return true;
-        if (!on && !Settings.ClipsEnabled) { Say("At least one feature has to stay on"); return false; }
+        if (!on && !Settings.ClipsEnabled) { SayT("At least one feature has to stay on"); return false; }
         Settings.ScreenshotsEnabled = on;
         Settings.Save();
         Log.Info("features: Screenshots turned " + (on ? "on" : "off"));
@@ -600,21 +701,21 @@ internal sealed partial class AppController : IDisposable
         ApplyStatusDot();
         if (!IsDev) Updater.StartBackgroundChecks();   // a --dev instance never contacts the update feed (and a build without one never contacts anything)
         // A downloaded update was skipped at startup (install failed earlier, read-only folder, elevated): tell the user, once per start.
-        if (Updater.InstallProblem is string problem) { Say(problem); ShowBalloon("Clink update not installed", problem); }
+        if (Updater.InstallProblemNote is { } problem) { Say(problem); ShowBalloon(L.T("Clink update not installed"), problem.Shown); }
         // A hand edit of settings.json that does not parse, or has values that do not make sense (those keep their defaults).
-        if (Settings.LoadProblem is string unread) { Say(unread); ShowBalloon(Settings.FileWasSkipped ? "Clink settings not loaded" : "Clink settings partly read", unread); }
+        if (Settings.LoadProblem is string unread) { Say(Note.Verbatim(unread)); ShowBalloon(Settings.FileWasSkipped ? L.T("Clink settings not loaded") : L.T("Clink settings partly read"), unread); }   // (the text is English in every language: it names files and settings)
         // The footer line of MigrateHotkeys is easy to miss when Clink starts in the tray; this is a hotkey it just claimed or left unset.
-        if (_hotkeyNotice is string hotkeyNotice) ShowBalloon("Clink hotkey", hotkeyNotice);
+        if (_hotkeyNotice is string hotkeyNotice) ShowBalloon(L.T("Clink hotkey"), hotkeyNotice);
         // Where the settings live. A Clink started from inside a packaged app (an MSIX/Store desktop app, say) sees that app's private copy of
         // AppData, so says so; a real one took another copy's settings over on a first start (App.RunNormal), or looks for a copy
         // worth offering (the tray item, below).
-        if (AppDataRedirect.Notice is string redirected) Say(redirected);
-        if (Settings.ImportedFrom is { } taken) Say($"Imported the settings Clink saved while started from inside {taken.FriendlyName} ({taken.SavedLocalText})");
+        if (AppDataRedirect.NoticeNote is { } redirected) Say(redirected);
+        if (Settings.ImportedFrom is { } taken) SayT("Imported the settings Clink saved while started from inside {app} ({saved})", ("app", Note.Isolate(taken.FriendlyName)), ("saved", taken.SavedLocalText));
         // Settings were imported (now, or by the Clink that restarted into this one) but the clip lists could not be merged: said once,
         // and every later start tries the merge again.
-        if (SettingsImport.TakeClipsNotice() is string clipsNotice) { Say(clipsNotice); ShowBalloon("Clink", clipsNotice); }
+        if (SettingsImport.TakeClipsNoticeNote() is { } clipsNotice) { Say(clipsNotice); ShowBalloon("Clink", clipsNotice.Shown); }
         // An import (now, or by the Clink that restarted into this one) did not take over a network folder: said once, naming which.
-        if (SettingsImport.TakeNetworkPathsNotice() is string pathsNotice) { Say(pathsNotice); ShowBalloon("Clink", pathsNotice); }
+        if (SettingsImport.TakeNetworkPathsNoticeNote() is { } pathsNotice) { Say(pathsNotice); ShowBalloon("Clink", pathsNotice.Shown); }
         SettingsImport.PendingChanged += OnImportPending;
         if (CanOfferImport) _ = SettingsImport.Scan(Settings);
         RaiseStateChanged();
@@ -651,15 +752,15 @@ internal sealed partial class AppController : IDisposable
         {
             // A start asked for while the recorder was not ready expired unfired (every other path resets it to MinValue).
             _recordWhenReadyUntil = DateTime.MinValue;
-            Say("Recording not started: the recorder did not get ready");
-            NotifyProblem("Recording not started", "The recorder did not get ready");
+            SayT("Recording not started: the recorder did not get ready");
+            NotifyProblem(L.T("Recording not started"), L.T("The recorder did not get ready"));
         }
         bool wanted = Settings.ClipsEnabled && !IsPaused && !_restarting && (!GameOnly || _gamePid != 0);
         int failedWait = Engine.DeviceLost ? 10 : 30;
         var backoff = TimeSpan.FromSeconds(Engine.Error == null ? 10 : failedWait << Math.Clamp(_startFailures - 1, 0, 2));
         if (wanted && !Engine.IsRunning && !_starting && now - _lastStartAt > backoff)
         {
-            if (Engine.DeviceLost) Say("The GPU was reset, restarting capture");
+            if (Engine.DeviceLost) SayT("The GPU was reset, restarting capture");
             if (Engine.Error != null) Log.Info("Retrying the recorder after: " + Engine.Error);
             StartEngine();
         }
@@ -764,13 +865,13 @@ internal sealed partial class AppController : IDisposable
     private void OnUpdateReady(ReleaseVersion version)
     {
         if (Updater.PendingVersion != version) return;   // cleared (or replaced) before this ran on the UI thread
-        if (_updateItem != null) { _updateItem.Text = $"Update to v{version}"; _updateItem.Visible = true; }
-        string? problem = Updater.InstallProblemFor(Environment.ProcessPath ?? "");
-        string msg = problem == null
-            ? $"v{version} downloaded - installs on next start, or click 'Update to v{version}'"
-            : $"v{version} downloaded, but {problem}. Install it by hand from {Updater.UpdatesDir}";
+        if (_updateItem != null) { _updateItem.Text = L.T("Update to v{version}", ("version", L.Ltr(version.ToString()))); _updateItem.Visible = true; }
+        var problem = Updater.InstallProblemReason(Environment.ProcessPath ?? "");
+        var msg = problem == null
+            ? Note.Of("v{version} downloaded - installs on next start, or click '{button}'", ("version", Note.Ltr(version.ToString())), ("button", Note.Of("Update to v{version}", ("version", Note.Ltr(version.ToString())))))
+            : Note.Of("v{version} downloaded, but {problem}. Install it by hand from {folder}", ("version", Note.Ltr(version.ToString())), ("problem", problem), ("folder", Note.Ltr(Updater.UpdatesDir)));
         Say(msg);
-        if (!MainWindowVisible) ShowBalloon("Clink update ready", msg);
+        if (!MainWindowVisible) ShowBalloon(L.T("Clink update ready"), msg.Shown);
         UpdateStateChanged?.Invoke();
     }
 
@@ -786,9 +887,9 @@ internal sealed partial class AppController : IDisposable
         if (_disposed) return;
         if (_updateNotices.ShouldShow(notice))
         {
-            Log.Info($"update: notifying '{notice!.Title}': {notice.Text}");
+            Log.Info($"update: notifying '{notice!.TitleNote.English}': {notice.TextNote.English}");
             // The footer first: NotifyProblem stays silent while the window is in front, and the key is spent for the session either way.
-            Say(notice.Text);
+            Say(notice.TextNote);
             NotifyProblem(notice.Title, notice.Text);
         }
         UpdateStateChanged?.Invoke();
@@ -815,33 +916,33 @@ internal sealed partial class AppController : IDisposable
         {
             Log.Error("update: unexpected failure", ex);
             if (_exiting || _disposed) return;
-            Say("Update failed: " + ex.Message);
+            SayT("Update failed: {error}", ("error", ex.Message));
             _applying = false;
         }
     }
 
     private async Task UpdateNowCoreAsync()
     {
-        if (IsDev) { Say(Updater.DevModeNote); return; }   // the updates folder is the real Clink's, and the new process would not be this dev instance
-        if (_applying) { Say("Still checking…"); return; }   // a second click while the first one is still checking the download
+        if (IsDev) { Say(Updater.DevModeNoteText); return; }   // the updates folder is the real Clink's, and the new process would not be this dev instance
+        if (_applying) { SayT("Still checking…"); return; }   // a second click while the first one is still checking the download
         // A download made for the other channel (Dev Build switched since) is never installed; dropping it hides the button (PendingCleared).
         if (Updater.PendingVersion is { } v && !Updater.ShouldInstall(v, Updater.Current, Settings.UseDevBuilds, allowLeaveDev: true))
         {
             Updater.DropStalePending();
-            Say($"v{v} was downloaded for the other update channel and is not installed - click the version in the footer to check again");
+            SayT("v{version} was downloaded for the other update channel and is not installed - click the version in the footer to check again", ("version", Note.Ltr(v.ToString())));
             return;
         }
         string? pending = Updater.PendingPath;
-        if (pending == null || Updater.PendingVersion == null || !File.Exists(pending)) { Say("No update downloaded yet"); return; }
-        string? problem = Updater.InstallProblemFor(Environment.ProcessPath ?? "");
-        if (problem != null) { Say($"Cannot install v{Updater.PendingVersion}: {problem}. Install it by hand from {Updater.UpdatesDir}"); return; }
+        if (pending == null || Updater.PendingVersion == null || !File.Exists(pending)) { SayT("No update downloaded yet"); return; }
+        var problem = Updater.InstallProblemReason(Environment.ProcessPath ?? "");
+        if (problem != null) { SayT("Cannot install v{version}: {problem}. Install it by hand from {folder}", ("version", Note.Ltr(Updater.PendingVersion.Value.ToString())), ("problem", problem), ("folder", Note.Ltr(Updater.UpdatesDir))); return; }
         var version = Updater.PendingVersion.Value;
         _applying = true;
         Updater.ApplyToken token;
         try
         {
             Log.Info($"update: installing v{version} from {pending}");
-            Say($"Checking v{version} before installing…");
+            SayT("Checking v{version} before installing…", ("version", Note.Ltr(version.ToString())));
             // The hash of the whole file and the start-up check (up to 15 s) must not hold the window: off the UI thread.
             token = await Task.Run(() => Updater.PrepareApply(pending));
         }
@@ -849,14 +950,14 @@ internal sealed partial class AppController : IDisposable
         {
             _applying = false;
             Log.Warn("update: not installed: " + refused.Message);
-            Say(Updater.RefusalText(refused, version));
+            Say(Updater.RefusalNote(refused, version));
             return;
         }
         catch (Exception ex)
         {
             _applying = false;
             Log.Error("update: not installed", ex);
-            Say("Update failed to start: " + ex.Message);
+            SayT("Update failed to start: {error}", ("error", Updater.UserErrorOf(ex)));
             return;
         }
         // The window was open for the whole check: the app may be quitting, or the channel switched / a newer download replaced this one.
@@ -864,7 +965,7 @@ internal sealed partial class AppController : IDisposable
         {
             _applying = false;
             Log.Warn($"update: v{version} is no longer the update to install; not starting it");
-            Say($"v{version} is no longer the update to install");
+            SayT("v{version} is no longer the update to install", ("version", Note.Ltr(version.ToString())));
             return;
         }
         try
@@ -877,7 +978,7 @@ internal sealed partial class AppController : IDisposable
         {
             _applying = false;
             Log.Error("update: launch failed", ex);
-            Say("Update failed to start: " + ex.Message);
+            SayT("Update failed to start: {error}", ("error", Updater.UserErrorOf(ex)));
             return;
         }
         Quit(userInitiated: false);   // _applying stays set: this process is on its way out
@@ -915,13 +1016,13 @@ internal sealed partial class AppController : IDisposable
         if (_importItem != null)
         {
             _importItem.Visible = copy != null;
-            if (copy != null) _importItem.Text = $"Import settings saved {copy.SavedLocalText} ({copy.FriendlyName} copy)…";
+            if (copy != null) _importItem.Text = L.T("Import settings saved {saved} ({app} copy)…", ("saved", copy.SavedLocalText), ("app", L.Isolate(copy.FriendlyName)));
         }
         if (copy == null) return;
         if (!_importOffered)
         {
             _importOffered = true;
-            ShowBalloon("Clink", "Settings from another copy of Clink found: right-click the tray icon to import");
+            ShowBalloon("Clink", L.T("Settings from another copy of Clink found: right-click the tray icon to import"));
         }
         if (IsDev && DevAcceptImport && !_importAccepted)
         {
@@ -936,18 +1037,24 @@ internal sealed partial class AppController : IDisposable
     {
         var copy = SettingsImport.Pending;
         if (copy == null || _importInProgress) return;
-        string what = copy.Differences.Count > 0 ? string.Join(", ", copy.Differences) : "a few settings";
-        string text = $"Clink also has settings saved {copy.SavedLocalText} by a copy of Clink that was started from inside {copy.FriendlyName}.\n\n"
-            + $"They differ from yours in: {what}.\n\n"
-            + "Import them? Your current settings are kept as settings.pre-import.json (or the next free settings.pre-import.N.json), and Clink restarts.\n\n"
-            + "Yes: import and restart.\nNo: keep mine and stop asking about this copy.\nCancel: decide later.";
+        string text = ImportQuestion(copy);
         var owner = System.Windows.Application.Current?.MainWindow is { IsVisible: true } w ? w : null;
         TestGuard.CheckLaunch("a message box (import settings)");
-        var answer = owner != null
-            ? MessageBox.Show(owner, text, "Clink", MessageBoxButton.YesNoCancel, MessageBoxImage.Question)
-            : MessageBox.Show(text, "Clink", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+        var answer = Dialog.Show(owner, text, MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
         if (answer == MessageBoxResult.Yes) ImportForeignSettings(copy);
         else if (answer == MessageBoxResult.No) SettingsImport.Decline(Settings, copy);
+    }
+
+    /// <summary>
+    /// What the import question says (a Yes / No / Cancel message box). The Win32 buttons follow the Windows language, not Clink's, so the
+    /// question does not name them: Yes imports and restarts, No keeps ours and stops asking about that copy, closing the box (Cancel) decides later.
+    /// </summary>
+    internal static string ImportQuestion(ForeignSettings copy)
+    {
+        var args = new[] { ("saved", (object?)copy.SavedLocalText), ("app", L.Isolate(copy.FriendlyName)), ("changes", SettingsImport.LabelList(copy.Differences)) };
+        return copy.Differences.Count > 0
+            ? L.T("Clink also has settings saved {saved} by a copy of Clink that was started from inside {app}.\n\nThey differ from yours in: {changes}.\n\nImport them and restart Clink? Your current settings are kept as settings.pre-import.json (or the next free settings.pre-import.N.json).\n\nIf you say no, Clink keeps your settings and stops asking about this copy. To decide later, cancel or close this message.", args)
+            : L.T("Clink also has settings saved {saved} by a copy of Clink that was started from inside {app}.\n\nThey differ from yours in: a few settings.\n\nImport them and restart Clink? Your current settings are kept as settings.pre-import.json (or the next free settings.pre-import.N.json).\n\nIf you say no, Clink keeps your settings and stops asking about this copy. To decide later, cancel or close this message.", args);
     }
 
     private static readonly TimeSpan RecorderStopLimit = TimeSpan.FromSeconds(10);   // how long a restart waits for a recorder that is in the middle of starting
@@ -984,7 +1091,7 @@ internal sealed partial class AppController : IDisposable
         if (_importInProgress)
         {
             Log.Info("import: one is under way already: this request is refused");
-            Say("An import is already under way");
+            SayT("An import is already under way");
             return;
         }
         _importInProgress = true;
@@ -1000,21 +1107,22 @@ internal sealed partial class AppController : IDisposable
         {
             Log.Error("import: failed", ex);
             ContinueAfterFailedRestart(wasRecording);
-            string why = "Could not import those settings: " + ex.Message;
+            var why = Note.Of("Could not import those settings: {error}", ("error", ex.Message));
             Say(why);
-            ShowBalloon("Clink", why);
+            ShowBalloon("Clink", why.Shown);
             return;
         }
-        Say(result.ClipsNotice ?? $"Imported the settings saved {copy.SavedLocalText}: restarting Clink");
+        if (result.ClipsNoticeNote is { } clipsNotice) Say(clipsNotice);
+        else SayT("Imported the settings saved {saved}: restarting Clink", ("saved", copy.SavedLocalText));
         if (RestartClink(out string? error)) return;
 
         ContinueAfterFailedRestart(wasRecording);
         SettingsImport.ForgetPendingClipMerge();
         Settings.Save();
         SettingsImport.Offer(copy);   // at once: whoever called (the App tab's banner) looks at Pending as soon as this returns
-        string text = $"Clink could not restart itself ({error}), so the import was not applied: your settings are as they were";
+        var text = Note.Of("Clink could not restart itself ({error}), so the import was not applied: your settings are as they were", ("error", error));
         Say(text);
-        ShowBalloon("Clink", text);
+        ShowBalloon("Clink", text.Shown);
     }
 
     /// <summary>
@@ -1023,12 +1131,13 @@ internal sealed partial class AppController : IDisposable
     /// archive (it moves clips and updates the index). A clip that is being saved at this moment keeps its file, which the next start
     /// finds in the clips folder, but its index entry is not written. Nothing here throws.
     /// </summary>
-    private void StopForRestart()
+    /// <param name="freezeLibrary">False for a restart that merges nothing into the clip index (the language restart): a recording that ends, a clip or a link that finishes during the restart is still written to clips.json, as an update restart does.</param>
+    private void StopForRestart(bool freezeLibrary = true)
     {
         _restarting = true;
         EndRecordingWish(EngineStopCause.Shutdown);
         Settings.FreezeSaves();
-        Library.FreezeSaves();
+        if (freezeLibrary) Library.FreezeSaves();
         Interlocked.Increment(ref _startGen);   // a recorder start that has not begun is cancelled
         _starting = false;
         // A sign-in stops too: its token could not be saved any more (saves are frozen), so a late approval is revoked, not stored.
@@ -1048,6 +1157,7 @@ internal sealed partial class AppController : IDisposable
         Settings.ThawSaves();
         Library.ThawSaves();
         _restarting = false;
+        _editorResolvedForExit = false;   // this Clink goes on: a later quit asks the editor again
         try { Archive.Start(); } catch (Exception ex) { Log.Warn("restart: could not start the archive again: " + ex.Message); }
         if (restartRecorder) StartEngine();
         _importInProgress = false;
@@ -1116,7 +1226,7 @@ internal sealed partial class AppController : IDisposable
             RefreshTrayIcon();   // a DPI change moves the tray's and the taskbar buttons' icon sizes
             AppIcons.RefreshWindows();
             Monitors = Native.Monitors.Enumerate();
-            Say("Display changed, restarting capture");
+            SayT("Display changed, restarting capture");
             MarkTechnicalRestart();
             StartEngine();
             ApplyStatusDot();
@@ -1209,7 +1319,7 @@ internal sealed partial class AppController : IDisposable
         _lastStartAt = DateTime.UtcNow;   // also when the config fails: Tick retries on its backoff, not every second
         EngineConfig cfg;
         try { cfg = BuildConfig(); }
-        catch (Exception ex) { Say("Cannot start: " + ex.Message); if (_stopping) StopEngine(); return; }   // the new generation cancelled that stop: re-issue it
+        catch (Exception ex) { SayT("Cannot start: {error}", ("error", ex.Message)); if (_stopping) StopEngine(); return; }   // the new generation cancelled that stop: re-issue it
         _stopping = false;
         _starting = true;
         Task.Run(() =>
@@ -1248,12 +1358,12 @@ internal sealed partial class AppController : IDisposable
                         _engineRunGen++;
                         StartQueuedRecording();
                     }
-                    else if (Engine.Error != null)
+                    else if (Engine.ErrorInfo is { } failed)
                     {
-                        Say("Recording failed: " + Engine.Error);
+                        SayT("Recording failed: {error}", ("error", EngineStatusText.ErrorNote(failed)));
                         // The window is usually in the tray while a game runs, so the footer alone is invisible. Once per
                         // streak: Tick keeps retrying.
-                        if (_startFailures++ == 0) NotifyProblem("Clink is not recording", Engine.Error);
+                        if (_startFailures++ == 0) NotifyProblem(L.T("Clink is not recording"), EngineStatusText.Error(failed));
                     }
                 }
                 if (Engine.IsRunning && _announceGame is string game) { _announceGame = null; Toasts.ShowRecordingStarted(game); }
@@ -1290,23 +1400,31 @@ internal sealed partial class AppController : IDisposable
     {
         if (!Settings.ClipsEnabled) { ClipsOffNotice(); return; }
         IsPaused = !IsPaused;
-        if (IsPaused) { EndRecordingWish(EngineStopCause.Pause); StopEngine(); Say("Recording paused"); }
+        if (IsPaused) { EndRecordingWish(EngineStopCause.Pause); StopEngine(); SayT("Recording paused"); }
         else
         {
-            Say(GameOnly && _gamePid == 0 ? "Recording resumed: waiting for a game" : "Recording resumed");
+            if (GameOnly && _gamePid == 0) SayT("Recording resumed: waiting for a game"); else SayT("Recording resumed");
             _announceGame = CurrentGame;   // "Recording started · Game" once the engine is back up, when a game is running
             StartEngine();
         }
-        if (_pauseItem != null) _pauseItem.Text = IsPaused ? "Resume recording" : "Pause recording";
+        if (_pauseItem != null) _pauseItem.Text = PauseItemText;
         RaiseStateChanged();
     }
 
-    public void Say(string msg)
+    /// <summary>The tray's pause item: "Resume recording" while paused, else "Pause recording".</summary>
+    private string PauseItemText => IsPaused ? L.T("Resume recording") : L.T("Pause recording");
+
+    /// <summary>Shows <paramref name="note"/> in the language of the UI and logs it in English.</summary>
+    public void Say(Note note)
     {
-        LastNotice = msg;
-        Log.Info("notice: " + msg);
-        Notice?.Invoke(msg);
+        string shown = note.Shown;
+        LastNotice = shown;
+        Log.Info("notice: " + note.English);
+        Notice?.Invoke(shown);
     }
+
+    /// <summary>Catalog key (its English text) with <c>{name}</c> arguments: shows the translation, logs the English.</summary>
+    public void SayT(string key, params (string Name, object? Value)[] args) => Say(Note.Of(key, args));
 
     /// <summary>Whether Windows' yellow capture border is hidden, as of the last capture start (Hidden until one reports).</summary>
     public CaptureBorderState CaptureBorder { get; private set; }
@@ -1338,13 +1456,17 @@ internal sealed partial class AppController : IDisposable
     {
         _borderNoticeShownThisRun = true;
         Action dontShowAgain = () => { Settings.CaptureBorderNoticeDismissed = true; Settings.Save(); };
-        if (state == CaptureBorderState.UnsupportedOs)
-            Toasts.ShowBorderNotice("Yellow border around the screen?", "Windows 11 is needed to hide it. Not in your clips.", dontShowAgain, null);
-        else if (state == CaptureBorderState.Denied)
-            Toasts.ShowBorderNotice("Yellow border around the screen?", "Allow it in Windows settings, then pause/resume.", dontShowAgain, OpenCaptureBorderSetting);
-        else
-            Toasts.ShowBorderNotice("Couldn't hide the capture border", "Clips are unaffected. Details: Capture tab, log.", dontShowAgain, null);
+        var (title, text) = BorderNoticeTexts(state);
+        Toasts.ShowBorderNotice(title, text, dontShowAgain, state == CaptureBorderState.Denied ? OpenCaptureBorderSetting : null);
     }
+
+    /// <summary>The title and line of the yellow-border toast for a border state that stays (<see cref="ShouldNotify"/>).</summary>
+    internal static (string Title, string Text) BorderNoticeTexts(CaptureBorderState state) => state switch
+    {
+        CaptureBorderState.UnsupportedOs => (L.T("Yellow border around the screen?"), L.T("Windows 11 is needed to hide it. Not in your clips.")),
+        CaptureBorderState.Denied => (L.T("Yellow border around the screen?"), L.T("Allow it in Windows settings, then pause/resume.")),
+        _ => (L.T("Couldn't hide the capture border"), L.T("Clips are unaffected. Details: Capture tab, log.")),
+    };
 
     /// <summary>Opens Windows' "Screenshot borders" settings page.</summary>
     internal static void OpenCaptureBorderSetting()
@@ -1369,7 +1491,7 @@ internal sealed partial class AppController : IDisposable
         Settings.Save();
         Toasts.CloseKind("border");
         if (CaptureBorderKnown && ShouldNotify(CaptureBorder, false, false)) ShowBorderToast(CaptureBorder);
-        else Say("Dismissed notices will show again.");
+        else SayT("Dismissed notices will show again.");
     }
 
     /// <summary>Updates the tray tooltip / menu and the status dot, then raises <see cref="StateChanged"/>. UI thread.</summary>
@@ -1398,29 +1520,32 @@ internal sealed partial class AppController : IDisposable
             if (Settings.OfferedHotkeyDefaults.Count > 0)
                 Log.Info($"settings: hotkey defaults offered ({string.Join(", ", Settings.OfferedHotkeyDefaults)}){(Settings.AddedHotkeyDefaults.Count > 0 ? $", added: {string.Join(", ", Settings.AddedHotkeyDefaults)}" : ", none added (their keys or actions were taken)")}");
         }
-        if (Settings.MainHotkeyAssigned) Say(_hotkeyNotice = "Alt+C now saves the full replay. Change it under Capture → Hotkeys");
-        else if (Settings.MainHotkeyNeedsSetup) Say(_hotkeyNotice = "Set your main hotkey under Capture → Hotkeys: it saves the full replay");
+        if (Settings.MainHotkeyAssigned) { var n = Note.Of("{keys} now saves the full replay. Change it under Capture → Hotkeys", ("keys", Note.Ltr("Alt+C"))); Say(n); _hotkeyNotice = n.Shown; }
+        else if (Settings.MainHotkeyNeedsSetup) { var n = Note.Of("Set your main hotkey under Capture → Hotkeys: it saves the full replay"); Say(n); _hotkeyNotice = n.Shown; }
         // A key Clink just took over (bare PrintScreen used to be Windows' own screenshot): said once, like the main hotkey above.
-        if (SeededHotkeyNotice(Settings) is string seeded)
+        if (SeededHotkeyNote(Settings) is { } seededNote)
         {
-            Say(seeded);
+            Say(seededNote);
+            string seeded = seededNote.Shown;
             _hotkeyNotice = _hotkeyNotice == null ? seeded : _hotkeyNotice + "\n" + seeded;
         }
     }
 
     /// <summary>What to tell the user about default hotkeys this load added as rows (<see cref="Settings.AddedHotkeyDefaults"/>); null when none was.</summary>
-    internal static string? SeededHotkeyNotice(Settings s)
+    internal static string? SeededHotkeyNotice(Settings s) => SeededHotkeyNote(s)?.Shown;
+
+    private static Note? SeededHotkeyNote(Settings s)
     {
         if (!s.ScreenshotsEnabled || (IsDev && !DevHotkeys)) return null;   // no tools, or a --dev instance whose hook binds nothing: the key is not taken over
         if (s.AddedHotkeyDefaults.Contains("screenshot", StringComparer.OrdinalIgnoreCase))
         {
             string keys = ScreenshotHotkeyLabelFor(s.Hotkeys) ?? "PrintScreen";
-            return $"{keys} now takes a Clink screenshot — change it under Capture → Hotkeys";
+            return Note.Of("{keys} now takes a Clink screenshot — change it under Capture → Hotkeys", ("keys", Note.Ltr(keys)));
         }
         if (s.AddedHotkeyDefaults.Contains("screenshot-edit-last", StringComparer.OrdinalIgnoreCase))   // an install that already had the screenshot key
         {
             string keys = ScreenshotEditHotkeyLabelFor(s.Hotkeys) ?? "Shift+PrintScreen";
-            return $"{keys} now edits your last Clink screenshot — change it under Capture → Hotkeys";
+            return Note.Of("{keys} now edits your last Clink screenshot — change it under Capture → Hotkeys", ("keys", Note.Ltr(keys)));
         }
         return null;
     }
@@ -1467,7 +1592,7 @@ internal sealed partial class AppController : IDisposable
     }
 
     /// <summary>"Clip now (F9)" for the tray menu, or just "Clip now" without a binding.</summary>
-    private string ClipTrayText => ClipHotkeyLabel is string l ? $"Clip now ({l})" : "Clip now";
+    private string ClipTrayText => ClipHotkeyLabel is string l ? L.T("Clip now ({keys})", ("keys", L.Ltr(l))) : L.T("Clip now");
 
     /// <summary>What a hotkey row does, by <see cref="HotkeyAction.Action"/> (see <see cref="CommandFor"/>).</summary>
     internal enum HotkeyCommand { Clip, Pause, ShareLast, Record, Screenshot, ScreenshotEditLast, Unknown }
@@ -1497,7 +1622,8 @@ internal sealed partial class AppController : IDisposable
                 // In a game nothing else shows it: a press by mistake would stop recording without a sign. A resume with a game
                 // running gets its "Recording started" toast once the engine is up.
                 if (!MainWindowInFront && Settings.ToastRecording.Enabled && (IsPaused || CurrentGame == null))
-                    Toasts.ShowNotice(IsPaused ? "Recording paused" : "Recording resumed", IsPaused ? $"Press {a.Keys} to resume" : GameOnly ? "Waiting for a game" : "Replay buffer restarted", paused: IsPaused);
+                    Toasts.ShowNotice(IsPaused ? L.T("Recording paused") : L.T("Recording resumed"),
+                        IsPaused ? L.T("Press {keys} to resume", ("keys", L.Ltr(a.Keys.ToString()))) : GameOnly ? L.T("Waiting for a game") : L.T("Replay buffer restarted"), paused: IsPaused);
                 break;
             case HotkeyCommand.ShareLast: ShareLast(); break;
             case HotkeyCommand.Record: ToggleRecording(); break;
@@ -1510,6 +1636,14 @@ internal sealed partial class AppController : IDisposable
 
     // ------------------------------------------------------------------ clips
 
+    /// <summary>Why a clip or a recording cannot start now (the recorder is not up): one sentence for the footer and the notification.</summary>
+    private Note NotRecordingNote(bool waitingForGame) =>
+        _restarting ? Note.Of("Clink is restarting")
+        : IsPaused ? Note.Of("Recording is paused")
+        : waitingForGame ? Note.Of("Not recording: waiting for a game")
+        : Engine.ErrorInfo is { } err && !_starting ? Note.Of("Recording failed: {error}", ("error", EngineStatusText.ErrorNote(err)))
+        : Note.Of("Not recording yet");
+
     /// <param name="seconds">Replay length to save; null = the replay-length slider (<see cref="Settings.BufferSeconds"/>).</param>
     public async void ClipNow(int? seconds = null)
     {
@@ -1518,11 +1652,7 @@ internal sealed partial class AppController : IDisposable
         {
             bool waiting = !IsPaused && GameOnly && _gamePid == 0;
             // A recorder that failed to start says why: "yet" would promise a start that may never come.
-            string why = _restarting ? "Clink is restarting"
-                : IsPaused ? "Recording is paused"
-                : waiting ? "Not recording: waiting for a game"
-                : Engine.Error is string err && !_starting ? "Recording failed: " + err
-                : "Not recording yet";
+            var why = NotRecordingNote(waiting);
             _clipRefusedAt = DateTime.UtcNow;   // a share-last right behind this press must not share the clip before it
             Say(why);
             // The hotkey, the tray item and --clip have no UI of their own and the window is usually in the tray, minimized or
@@ -1531,7 +1661,7 @@ internal sealed partial class AppController : IDisposable
             if (!MainWindowInFront)
             {
                 if (Settings.ClickSound) ClickSound.PlayError();
-                NotifyProblem("Clip not saved", waiting ? why + ". If your game is not detected, add it under Capture → Recording → Custom apps." : why);
+                NotifyProblem(L.T("Clip not saved"), waiting ? L.T("Not recording: waiting for a game. If your game is not detected, add it under Capture → Recording → Custom apps.") : why.Shown);
             }
             return;
         }
@@ -1550,7 +1680,7 @@ internal sealed partial class AppController : IDisposable
             // The names of the tracks the file really has, in file order (the trim editor labels and keeps tracks by them).
             var entry = Library.Add(result.Path, result.DurationSeconds, result.SizeBytes, result.Game, result.AudioTracks);
             saved.TrySetResult(entry);
-            Say($"Clip saved ({result.DurationSeconds:0}s)");
+            SayT("Clip saved ({seconds}s)", ("seconds", result.DurationSeconds.ToString("0", L.FormatCulture)));
             Toasts.ShowClipSaved(entry);
             Archive.NotifyClipSaved();
             ClipSaved?.Invoke(entry);
@@ -1561,9 +1691,9 @@ internal sealed partial class AppController : IDisposable
         catch (Exception ex)
         {
             Log.Error("Save clip", ex);
-            Say("Clip failed: " + ex.Message);
+            SayT("Clip failed: {error}", ("error", UserText.NoteOf(ex)));
             // The click has already played: without this a failed save looks like a saved clip.
-            NotifyProblem("Clip not saved", ex.Message);
+            NotifyProblem(L.T("Clip not saved"), UserText.Of(ex));
         }
         finally { saved.TrySetResult(null); _saving = 0; }
     }
@@ -1584,9 +1714,9 @@ internal sealed partial class AppController : IDisposable
             var newest = Volatile.Read(ref _saving) == 1 || DateTime.UtcNow - _clipRefusedAt < TimeSpan.FromSeconds(3) ? null : NewestShareable();
             if (newest == null || string.IsNullOrEmpty(newest.CopiumLink))
             {
-                Say(CloudOffText);
+                Say(CloudOffNote);   // (worded by ConsentGate)
                 Log.Info("share-last: cloud sharing is off");
-                NotifyProblem("Cloud sharing is off", CloudOffText, overGame: UserNotificationState.FullScreenInFront());
+                NotifyProblem(L.T("Cloud sharing is off"), CloudOffText, overGame: UserNotificationState.FullScreenInFront());
                 return;
             }
         }
@@ -1611,7 +1741,7 @@ internal sealed partial class AppController : IDisposable
         else entry = NewestShareable();
         bool ok = false, joined = false, windowOpened = false;
         string? afterCopy = null;   // this call's own "declined after the smaller copy was made" reason (not the shared LastShareOutcome)
-        if (entry == null) Say("No clips to share yet");
+        if (entry == null) SayT("No clips to share yet");
         else
         {
             // A second press during the same upload gets the same result: the press that started it reports a failure, once.
@@ -1622,11 +1752,11 @@ internal sealed partial class AppController : IDisposable
         }
         // The user answered no question here: the copy took minutes and the sign-in, plan or switches changed meanwhile (the startup
         // account check can do it unasked). Without this the hotkey shows "Making a smaller copy…" and then nothing.
-        if (afterCopy != null) { NotifyProblem("Clip not uploaded", afterCopy, overGame: UserNotificationState.FullScreenInFront()); return; }
+        if (afterCopy != null) { NotifyProblem(L.T("Clip not uploaded"), afterCopy, overGame: UserNotificationState.FullScreenInFront()); return; }
         // The hotkey, the tray item and --share-last have no UI of their own, and the window is usually in the tray, minimized or
         // behind the game: a refusal (or a failure) that only reached the footer would be invisible (NotifyProblem: a toast over
         // the game, a tray balloon otherwise).
-        if (!ok && !joined && !windowOpened && LastNotice.Length > 0) NotifyProblem("Clip not uploaded", LastNotice, overGame: UserNotificationState.FullScreenInFront());
+        if (!ok && !joined && !windowOpened && LastNotice.Length > 0) NotifyProblem(L.T("Clip not uploaded"), LastNotice, overGame: UserNotificationState.FullScreenInFront());
     }
 
     /// <summary>The newest clip "share last clip" means (a recording is hours long: not that), or null.</summary>
@@ -1638,30 +1768,44 @@ internal sealed partial class AppController : IDisposable
     /// refuse it after a long upload; Share says so up front. A clip exactly at a limit passes. Pure.
     /// </summary>
     internal static string? ShareRefusalFor(long size, double duration, bool plus)
-        => ShareSizeOver(size, plus) ? "Over " + Capabilities.CopiumLimits(plus).Label : ShareLengthRefusalFor(duration, plus);
+        => ShareSizeOver(size, plus) ? OverLimitNote(plus).Shown : ShareLengthRefusalFor(duration, plus);
+
+    /// <summary>"Over Copium's free limit (200 MB / 10 min)" / "Over Copium Plus's limit (2 GB / 60 min)" as a note (shown translated, logged in English).</summary>
+    private static Note OverLimitNote(bool plus)
+    {
+        var (maxBytes, maxSeconds, _) = Capabilities.CopiumLimits(plus);
+        var limits = new[] { ("size", (object?)Note.Size(maxBytes)), ("minutes", (object?)(maxSeconds / 60)) };
+        return plus ? Note.Of("Over Copium Plus's limit ({size} / {minutes} min)", limits) : Note.Of("Over Copium's free limit ({size} / {minutes} min)", limits);
+    }
 
     /// <summary>"Over Copium's free limit (200 MB / 10 min)" when the clip is longer than the account takes, else null. A smaller copy cannot help with this. Pure.</summary>
     internal static string? ShareLengthRefusalFor(double duration, bool plus)
-    {
-        var (_, maxSeconds, label) = Capabilities.CopiumLimits(plus);
-        return duration > maxSeconds ? "Over " + label : null;
-    }
-
+        => duration > Capabilities.CopiumLimits(plus).Seconds ? OverLimitNote(plus).Shown : null;
     /// <summary>The clip is bigger than the account takes (a smaller copy can fix this). A clip exactly at the limit is not over. Pure.</summary>
     internal static bool ShareSizeOver(long size, bool plus) => size > Capabilities.CopiumLimits(plus).Bytes;
 
     /// <summary>The footer line for a clip <see cref="ShareRefusalFor"/> turned down: what the account takes, how big the clip is, what to do about it.</summary>
-    internal static string ShareRefusalNotice(long size, double duration, bool plus)
+    internal static string ShareRefusalNotice(long size, double duration, bool plus) => ShareRefusalNoteFor(size, duration, plus).Shown;
+
+    private static Note ShareRefusalNoteFor(long size, double duration, bool plus)
     {
         var (maxBytes, maxSeconds, _) = Capabilities.CopiumLimits(plus);
         // Rounded up: a full 10:00 replay saves a moment over 10 min (it starts on a keyframe) and must not read "10:00".
         int secs = (int)Math.Ceiling(Math.Max(0, duration));
-        string length = duration > 0 ? $" / {secs / 60}:{secs % 60:00}" : "";   // folder-scanned clips have no duration
-        string limits = $"{Capabilities.FormatBytes(maxBytes)} / {maxSeconds / 60} min";
-        string clip = $"this clip is {Capabilities.FormatBytes(size)}{length}";
-        return plus
-            ? $"Copium Plus accepts up to {limits}; {clip} - trim it first"
-            : $"Copium free accepts up to {limits}; {clip} - trim it, or tick 'I have Copium+' if you do";
+        var args = new[]
+        {
+            ("limit", (object?)Note.Size(maxBytes)), ("minutes", maxSeconds / 60), ("size", Note.Size(size)),
+            ("length", $"{secs / 60}:{secs % 60:00}"),
+        };
+        // (folder-scanned clips have no duration: no length in the sentence)
+        if (plus)
+            return duration > 0
+                ? Note.Of("Copium Plus accepts up to {limit} / {minutes} min; this clip is {size} / {length} - trim it first", args)
+                : Note.Of("Copium Plus accepts up to {limit} / {minutes} min; this clip is {size} - trim it first", args);
+        var freeArgs = args.Append(("label", (object?)L.T("I have Copium+"))).ToArray();   // the checkbox's own text, so the sentence names what the user sees
+        return duration > 0
+            ? Note.Of("Copium free accepts up to {limit} / {minutes} min; this clip is {size} / {length} - trim it, or tick '{label}' if you do", freeArgs)
+            : Note.Of("Copium free accepts up to {limit} / {minutes} min; this clip is {size} - trim it, or tick '{label}' if you do", freeArgs);
     }
 
     /// <summary>
@@ -1675,8 +1819,8 @@ internal sealed partial class AppController : IDisposable
     /// <param name="declinedAfterCopy">Called once, with the reason, when this call made a smaller copy and then declined to upload it because the sign-in, plan or switches changed meanwhile (outcome <see cref="ShareOutcome.Declined"/>). Per call, so concurrent shares cannot mix their reasons up; it runs on the awaiting context, never blocks, and is not called for a prompt the user answered.</param>
     public async Task<bool> ShareAsync(ClipEntry entry, IProgress<double>? progress = null, bool announce = false, ConsentContext context = ConsentContext.ClipShare, bool quiet = false, Action? released = null, bool allowFit = true, Action<string>? declinedAfterCopy = null)
     {
-        ShareRefusal = null;
-        ShareError = null;
+        _refusal = null; RefusalKind = ShareRefusalKind.None;
+        _shareError = null;
         ShareTokenRejected = false;
         LastShareOutcome = ShareOutcome.None;
         if (!string.IsNullOrEmpty(entry.CopiumLink))
@@ -1685,7 +1829,7 @@ internal sealed partial class AppController : IDisposable
             if (!quiet)
             {
                 CopyToClipboard(entry.CopiumLink);
-                Say("Link copied");
+                SayT("Link copied");
                 Toasts.ShowShared(entry, entry.CopiumLink);
             }
             LastShareOutcome = ShareOutcome.LinkCopied;
@@ -1697,9 +1841,9 @@ internal sealed partial class AppController : IDisposable
         // comes when a token is saved or at the first real upload. With a token the first share asks and goes on only for "Enable".
         if (!Settings.CloudSharingEnabled)
         {
-            ShareError = CloudOffText;
-            Say(CloudOffText);
-            Consent.Notice(context, ConsentGate.CloudOffTitle, CloudOffText);
+            _shareError = CloudOffNote;
+            Say(CloudOffNote);
+            Consent.Notice(context, ConsentGate.CloudOffTitleNote, CloudOffNote);
             LastShareOutcome = ShareOutcome.Declined;
             return false;
         }
@@ -1708,8 +1852,9 @@ internal sealed partial class AppController : IDisposable
             // The hotkey path over a game must not put a dialog on the picture: it says where to go instead.
             if (announce && !Settings.CopiumConsent && GameOrFullScreenInFront())
             {
-                ShareError = "Sharing needs your OK once — open Clink and press Share";
-                Say(ShareError);
+                var needOk = Note.Of("Sharing needs your OK once — open Clink and press Share");
+                _shareError = needOk;
+                Say(needOk);
                 LastShareOutcome = ShareOutcome.Failed;
                 return false;
             }
@@ -1717,18 +1862,18 @@ internal sealed partial class AppController : IDisposable
             {
                 if (!Settings.CloudSharingEnabled)
                 {
-                    ShareError = CloudOffText;
-                    Say(CloudOffText);
+                    _shareError = CloudOffNote;
+                    Say(CloudOffNote);
                 }
-                else Say("Not shared: sharing with Copium is not enabled");
+                else SayT("Not shared: sharing with Copium is not enabled");
                 LastShareOutcome = ShareOutcome.Declined;
                 return false;
             }
         }
         if (!Settings.CloudSharingEnabled)   // (switched off while the pop-up was up)
         {
-            ShareError = CloudOffText;
-            Say(CloudOffText);
+            _shareError = CloudOffNote;
+            Say(CloudOffNote);
             LastShareOutcome = ShareOutcome.Declined;
             return false;
         }
@@ -1736,7 +1881,7 @@ internal sealed partial class AppController : IDisposable
         {
             if (quiet)   // a bulk upload opens no window (it needs the token first)
             {
-                ShareError = "No Copium token: sign in with Copium under App → Copium";
+                _shareError = Note.Of("No Copium token: sign in with Copium under App → Copium");
                 LastShareOutcome = ShareOutcome.Failed;
                 return false;
             }
@@ -1745,8 +1890,9 @@ internal sealed partial class AppController : IDisposable
             // also a full-screen application the shell reports (a Direct3D game Clink did not detect, another full-screen program).
             if (announce && GameOrFullScreenInFront())
             {
-                ShareError = "No Copium token: open Clink to share the file";
-                Say(ShareError);
+                var noToken = Note.Of("No Copium token: open Clink to share the file");
+                _shareError = noToken;
+                Say(noToken);
                 LastShareOutcome = ShareOutcome.Failed;
                 return false;
             }
@@ -1756,7 +1902,7 @@ internal sealed partial class AppController : IDisposable
         // Defence in depth: nothing is uploaded without the user's yes and with the kill switch off, whichever path got here.
         if (!Settings.CopiumConsent)
         {
-            Say("Not shared: sharing with Copium is not enabled");
+            SayT("Not shared: sharing with Copium is not enabled");
             LastShareOutcome = ShareOutcome.Declined;
             return false;
         }
@@ -1766,16 +1912,16 @@ internal sealed partial class AppController : IDisposable
         bool needsCopy = allowFit && ShareSizeOver(entry.Size, Settings.CopiumPlus) && ShareLengthRefusalFor(entry.Duration, Settings.CopiumPlus) == null;
         if (!needsCopy && ShareRefusalFor(entry.Size, entry.Duration, Settings.CopiumPlus) is string refusal)
         {
-            ShareRefusal = refusal;
-            Say(ShareRefusalNotice(entry.Size, entry.Duration, Settings.CopiumPlus));
+            _refusal = OverLimitNote(Settings.CopiumPlus); RefusalKind = ShareRefusalKind.OverLimit;
+            Say(ShareRefusalNoteFor(entry.Size, entry.Duration, Settings.CopiumPlus));
             LastShareOutcome = ShareOutcome.Refused;
             return false;
         }
         // No smaller copies here (as administrator, a redirected cache folder): known at once, so refuse before any job, mark or toast.
         if (needsCopy && !ShareCopiesAvailable)
         {
-            string unavailable = ShareFitModel.UnavailableText(ShareFitModel.ForCopium(Settings.CopiumPlus), ShareCache.ElevatedReason, entry.Size);
-            ShareRefusal = unavailable;
+            var unavailable = ShareFitModel.UnavailableNote(ShareFitModel.ForCopium(Settings.CopiumPlus), ShareUnavailableKind.Elevated, entry.Size);
+            _refusal = unavailable; RefusalKind = ShareRefusalKind.SmallerCopy;
             Say(unavailable);
             LastShareOutcome = ShareOutcome.Refused;
             return false;
@@ -1784,8 +1930,8 @@ internal sealed partial class AppController : IDisposable
         // up (nothing marks it shared until it is done). A second ask waits for the running upload and gets its result.
         if (_uploads.TryGetValue(entry, out var running))
         {
-            Say("Already uploading this clip…");
-            if (announce && !MainWindowInFront) ShowUploadToast(entry, "Already uploading to Copium…");
+            SayT("Already uploading this clip…");
+            if (announce && !MainWindowInFront) ShowUploadToast(entry, L.T("Already uploading to Copium…"));
             released?.Invoke();   // this caller's row is not the uploader: it must not keep showing the progress
             var joinedOutcome = await running.Task;
             LastShareOutcome = joinedOutcome;   // the running upload's own outcome (a refusal stays a refusal)
@@ -1807,25 +1953,25 @@ internal sealed partial class AppController : IDisposable
             // room, a clip that is too long) must not be preceded by a "Making a smaller copy" that was never going to happen.
             bool toast = announce && !MainWindowInFront;   // read here: the copy's reports come from a worker thread
             var announced = new System.Runtime.CompilerServices.StrongBox<int>();
-            bool Announce(string text)   // once per upload; false when it had been said already
+            bool Announce(Note text)   // once per upload; false when it had been said already (shown translated, logged in English)
             {
                 if (Interlocked.Exchange(ref announced.Value, 1) != 0) return false;
                 Say(text);
-                if (toast) ShowUploadToast(entry, text);
+                if (toast) ShowUploadToast(entry, text.Shown);
                 return true;
             }
             string title = (entry.Game ?? "Clip") + " " + entry.Created.ToString("yyyy-MM-dd HH:mm");
             string path = entry.Path;
-            if (!needsCopy) Announce("Uploading to Copium…");
+            if (!needsCopy) Announce(Note.Of("Uploading to Copium…"));
             else
             {
-                var fit = await FitForCopiumAsync(entry, progress, () => Announce(CopyingToastText), uploadCts.Token);
+                var fit = await FitForCopiumAsync(entry, progress, () => Announce(CopyingNote), uploadCts.Token);
                 copy = fit.Copy;
                 path = fit.Path;
                 if (fit.Refusal != null)
                 {
                     fitRefused = true;
-                    ShareRefusal = fit.Refusal;
+                    _refusal = fit.Refusal; RefusalKind = fit.Kind;
                     Say(fit.Notice ?? fit.Refusal);
                 }
                 else if (!(Settings.CloudSharingEnabled && Settings.CopiumConsent && Settings.CopiumToken == token && Settings.CopiumPlus == plusAtStart))
@@ -1835,23 +1981,23 @@ internal sealed partial class AppController : IDisposable
                     declined = true;
                     copy?.Dispose();
                     copy = null;
-                    string why;
+                    Note why;
                     if (!Settings.CloudSharingEnabled)
                     {
-                        ShareError = CloudOffText;
-                        why = CloudOffText;
+                        _shareError = CloudOffNote;
+                        why = CloudOffNote;
                     }
-                    else if (!Settings.CopiumConsent) why = "Not shared: sharing with Copium is not enabled";
-                    else if (Settings.CopiumToken != token) why = "Not shared: the Copium sign-in changed while the copy was made";
-                    else why = "Not shared: your Copium plan changed while the copy was made. Share it again";
+                    else if (!Settings.CopiumConsent) why = Note.Of("Not shared: sharing with Copium is not enabled");
+                    else if (Settings.CopiumToken != token) why = Note.Of("Not shared: the Copium sign-in changed while the copy was made");
+                    else why = Note.Of("Not shared: your Copium plan changed while the copy was made. Share it again");
                     Say(why);
-                    declinedAfterCopy?.Invoke(why);
+                    declinedAfterCopy?.Invoke(why.Shown);
                 }
                 else
                 {
                     SetSharePhase(entry, SharePhase.Uploading);
                     progress?.Report(0);   // the row / toast / trim line goes from "Making a smaller copy..." to "Uploading..."
-                    if (!Announce("Uploading to Copium…")) Say("Uploading to Copium…");   // no copy was made (it fits, or one was ready): the toast says the upload started
+                    if (!Announce(Note.Of("Uploading to Copium…"))) SayT("Uploading to Copium…");   // no copy was made (it fits, or one was ready): the toast says the upload started
                 }
             }
             if (!fitRefused && !declined)
@@ -1866,7 +2012,7 @@ internal sealed partial class AppController : IDisposable
                 if (!quiet)
                 {
                     CopyToClipboard(up.Link);
-                    Say("Uploaded, link copied");
+                    SayT("Uploaded, link copied");
                     Toasts.ShowShared(entry, up.Link);
                 }
                 ok = true;
@@ -1874,20 +2020,21 @@ internal sealed partial class AppController : IDisposable
         }
         catch (Exception ex)
         {
-            ShareRefusal = null;   // another clip's Share may have been refused while this one was going up
+            _refusal = null; RefusalKind = ShareRefusalKind.None;   // another clip's Share may have been refused while this one was going up
             if (uploadCts.IsCancellationRequested && !_cts.IsCancellationRequested && !Settings.CloudSharingEnabled)
             {
                 Log.Info("Copium upload: cancelled, cloud sharing was turned off");
                 killed = true;
-                ShareError = CloudOffText;
-                Say("Not shared: cloud sharing is off");
+                _shareError = CloudOffNote;
+                SayT("Not shared: cloud sharing is off");
             }
             else
             {
                 Log.Error("Copium upload", ex);
-                ShareError = ex.Message;
+                var failure = UserText.NoteOf(ex);   // Copium's refusals and timeouts carry a note: the row and the toast show it translated, the log (above) has the English Message
+                _shareError = failure;
                 ShareTokenRejected = ex is CopiumHttpException tokenEx && CopiumClient.IsTokenRejection(tokenEx.StatusCode, tokenEx.ErrorText);
-                Say("Upload failed: " + ex.Message);
+                SayT("Upload failed: {error}", ("error", failure));
             }
         }
         finally
@@ -1903,7 +2050,8 @@ internal sealed partial class AppController : IDisposable
         return ok;
     }
 
-    internal const string CopyingToastText = "Making a smaller copy for Copium…";
+    internal static Note CopyingNote => Note.Of("Making a smaller copy for Copium…");
+    internal static string CopyingToastText => CopyingNote.Shown;
 
     /// <summary>Test seam: receives the "upload started" toast text instead of the real toast (a unit test must not put a window on the screen).</summary>
     internal Action<ClipEntry, string>? UploadToastSink { get; set; }
@@ -1931,12 +2079,15 @@ internal sealed partial class AppController : IDisposable
         {
             SharePhase.Copying => ShareFitModel.WorkingText(ShareFitModel.ForCopium(Settings.CopiumPlus), null, p),
             SharePhase.Waiting => ShareFitModel.WaitingText,
-            _ => $"Uploading… {p:P0}",
+            _ => UploadingPercentText(p),
         };
     }
 
+    /// <summary>"Uploading… 40%": the line of an upload that is under way (a clip, or a screenshot of a bulk upload, which has no smaller-copy phase).</summary>
+    internal static string UploadingPercentText(double p) => L.T("Uploading… {percent}", ("percent", p.ToString("P0", L.FormatCulture)));
+
     /// <summary>What <see cref="FitForCopiumAsync"/> found: the file to upload (and the copy to dispose afterwards), or why nothing is uploaded.</summary>
-    private sealed record FitOutcome(string Path, string? Refusal, string? Notice, ShareCopyResult? Copy);
+    private sealed record FitOutcome(string Path, Note? Refusal, Note? Notice, ShareCopyResult? Copy, ShareRefusalKind Kind = ShareRefusalKind.None);   // (every refusal says its kind; an outcome with something to upload has none)
 
     /// <summary>
     /// The copy's reports (any thread) for one upload: the share phase, the caller's progress, and <paramref name="first"/> once, at the
@@ -1988,8 +2139,8 @@ internal sealed partial class AppController : IDisposable
             try { seconds = await Task.Run(() => ShareTranscoderImpl.Probe(src, keyframe).DurationSeconds, ct); }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { Log.Warn("share: could not read the clip's length: " + ex.Message); }
-            if (ShareLengthRefusalFor(seconds, plus) is string tooLong)
-                return new FitOutcome(entry.Path, tooLong, ShareRefusalNotice(entry.Size, seconds, plus), null);
+            if (seconds > Capabilities.CopiumLimits(plus).Seconds)
+                return new FitOutcome(entry.Path, OverLimitNote(plus), ShareRefusalNoteFor(entry.Size, seconds, plus), null, ShareRefusalKind.OverLimit);
         }
         var reports = new CopyReports(this, entry, progress, copyStarted);
         ShareCopyResult result;
@@ -1998,16 +2149,20 @@ internal sealed partial class AppController : IDisposable
         if (result.Outcome == ShareCopyOutcome.UseCopy)
         {
             // A last look at what is about to go up: a copy over the limit or over the length would only be refused by Copium.
-            string? refusal = null;
+            Note? refusal = null;
+            var refusalKind = ShareRefusalKind.SmallerCopy;
             if (result.Bytes > target.LimitBytes)
-                refusal = ShareFitModel.FailedText(target, ShareFitModel.StayedTooBigReason, result.OriginalBytes > 0 ? result.OriginalBytes : entry.Size);
-            else if (ShareLengthRefusalFor(result.Seconds, plus) is string copyTooLong)
-                refusal = copyTooLong;
+                refusal = ShareFitModel.FailedNote(target, ShareFitModel.StayedTooBigReason, result.OriginalBytes > 0 ? result.OriginalBytes : entry.Size, ShareCopyError.StayedTooBig);
+            else if (result.Seconds > Capabilities.CopiumLimits(plus).Seconds)
+            {
+                refusal = OverLimitNote(plus);
+                refusalKind = ShareRefusalKind.OverLimit;
+            }
             if (refusal != null)
             {
-                Log.Info($"Copium upload: the copy is not usable ({result.Bytes} bytes, {result.Seconds:0.#} s): {refusal}");
+                Log.Info($"Copium upload: the copy is not usable ({result.Bytes} bytes, {result.Seconds:0.#} s): {refusal.English}");
                 result.Dispose();
-                return new FitOutcome(entry.Path, refusal, refusal, null);
+                return new FitOutcome(entry.Path, refusal, refusal, null, refusalKind);
             }
             return new FitOutcome(result.Path, null, null, result);
         }
@@ -2024,10 +2179,14 @@ internal sealed partial class AppController : IDisposable
                 throw new IOException("making the smaller copy was cancelled");   // another asker of the same copy cancelled it
             }
             long original = result.OriginalBytes > 0 ? result.OriginalBytes : entry.Size;
-            string text = ShareFitModel.Text(ShareFitModel.StateFor(result), target, original, seconds)
-                ?? "Over " + Capabilities.CopiumLimits(plus).Label;
-            Log.Info($"Copium upload: no smaller copy ({result.Outcome}, {result.ErrorKind}): {text}");
-            return new FitOutcome(entry.Path, text, text, null);
+            var state = ShareFitModel.StateFor(result);
+            Note? stateText = ShareFitModel.TextNote(state, target, original, seconds);
+            Note text = stateText ?? OverLimitNote(plus);
+            // Sentences (a failed or unavailable copy, a clip that can't fit) go into the trim line whole; the over-limit phrase and the
+            // game-in-front phrase ("Too big for Copium: open Clink to make a smaller copy") are not sentences and get their own wording.
+            var kind = stateText == null ? ShareRefusalKind.OverLimit : state.Kind == ShareFitStateKind.Refused ? ShareRefusalKind.Phrase : ShareRefusalKind.SmallerCopy;
+            Log.Info($"Copium upload: no smaller copy ({result.Outcome}, {result.ErrorKind}): {text.English}");
+            return new FitOutcome(entry.Path, text, text, null, kind);
         }
         finally { result.Dispose(); }
     }
@@ -2090,8 +2249,8 @@ internal sealed partial class AppController : IDisposable
     /// <summary>The share window's "Set up Copium…": brings the main window forward and says where to sign in.</summary>
     public void ShowCopiumSetup()
     {
-        if (!Settings.CloudSharingEnabled) { Say(CloudOffText); ShowRequested?.Invoke(); return; }   // there is no token box while sharing is off
-        Say("Sign in with Copium under App → Copium");
+        if (!Settings.CloudSharingEnabled) { Say(CloudOffNote); ShowRequested?.Invoke(); return; }   // there is no token box while sharing is off
+        SayT("Sign in with Copium under App → Copium");
         ShowRequested?.Invoke();
         CopiumSetupRequested?.Invoke();
     }
@@ -2132,7 +2291,7 @@ internal sealed partial class AppController : IDisposable
             if (file != null && File.Exists(file)) TestGuard.Start("explorer.exe", $"/select,\"{file}\"");
             else { TestGuard.CheckLaunch("opening the clips folder"); Directory.CreateDirectory(Settings.ClipsFolder); TestGuard.Start("explorer.exe", $"\"{Settings.ClipsFolder}\""); }
         }
-        catch (Exception ex) { Say("Could not open folder: " + ex.Message); }
+        catch (Exception ex) { SayT("Could not open folder: {error}", ("error", ex.Message)); }
     }
 
     public void SaveSettings() => Settings.Save();
@@ -2147,7 +2306,7 @@ internal sealed partial class AppController : IDisposable
             if (on) key.SetValue("Clink", $"\"{Environment.ProcessPath}\" --minimized");
             else key.DeleteValue("Clink", false);
         }
-        catch (Exception ex) { Say("Startup setting failed: " + ex.Message); }
+        catch (Exception ex) { SayT("Startup setting failed: {error}", ("error", ex.Message)); }
     }
 
     // ------------------------------------------------------------------ status dot (docs/SPEC-v2.md §7)
@@ -2175,33 +2334,7 @@ internal sealed partial class AppController : IDisposable
     {
         try
         {
-            var menu = new System.Windows.Forms.ContextMenuStrip();
-            _statusItem = new System.Windows.Forms.ToolStripMenuItem("Starting…") { Enabled = false };
-            menu.Items.Add(_statusItem);
-            menu.Items.Add(new System.Windows.Forms.ToolStripSeparator());
-            _clipItem = new System.Windows.Forms.ToolStripMenuItem(ClipTrayText, null, (_, _) => _ui.BeginInvoke(() => ClipNow()));
-            menu.Items.Add(_clipItem);
-            _screenshotItem = new System.Windows.Forms.ToolStripMenuItem(ScreenshotTrayText, null, (_, _) => _ui.BeginInvoke(() => Screenshots.CaptureRegion(Clink.Screenshots.ScreenshotTrigger.Tray)))
-                { Visible = Settings.ScreenshotsEnabled };
-            menu.Items.Add(_screenshotItem);
-            _screenshotEditItem = new System.Windows.Forms.ToolStripMenuItem(ScreenshotEditTrayText, null, (_, _) => _ui.BeginInvoke(() => Screenshots.EditLast()))
-                { Visible = Settings.ScreenshotsEnabled };
-            menu.Items.Add(_screenshotEditItem);
-            _recordItem = new System.Windows.Forms.ToolStripMenuItem(RecordItemText, null, (_, _) => _ui.BeginInvoke(ToggleRecording));
-            menu.Items.Add(_recordItem);
-            _shareLastItem = new System.Windows.Forms.ToolStripMenuItem("Share last clip", null, (_, _) => _ui.BeginInvoke(ShareLast));
-            menu.Items.Add(_shareLastItem);
-            menu.Items.Add("Show Clink", null, (_, _) => ShowRequested?.Invoke());
-            _pauseItem = new System.Windows.Forms.ToolStripMenuItem(IsPaused ? "Resume recording" : "Pause recording", null, (_, _) => TogglePause());
-            menu.Items.Add(_pauseItem);
-            _openFolderItem = new System.Windows.Forms.ToolStripMenuItem("Open clips folder", null, (_, _) => OpenFolder());
-            menu.Items.Add(_openFolderItem);
-            _updateItem = new System.Windows.Forms.ToolStripMenuItem("Update Clink", null, (_, _) => UpdateNow()) { Visible = false };
-            menu.Items.Add(_updateItem);
-            _importItem = new System.Windows.Forms.ToolStripMenuItem("Import settings…", null, (_, _) => _ui.BeginInvoke(AskToImport)) { Visible = false };
-            menu.Items.Add(_importItem);
-            menu.Items.Add(new System.Windows.Forms.ToolStripSeparator());
-            menu.Items.Add("Quit", null, (_, _) => Quit());
+            var menu = BuildTrayMenu();
             _trayIcon = LoadTrayIcon();
             _tray = new System.Windows.Forms.NotifyIcon
             {
@@ -2214,6 +2347,42 @@ internal sealed partial class AppController : IDisposable
             ApplyTrayVisibility();
         }
         catch (Exception ex) { Log.Warn("tray: " + ex.Message); }
+    }
+
+    /// <summary>The tray's right-click menu, built and wired but not shown (the unit tests read its texts). Sets the item fields.</summary>
+    internal System.Windows.Forms.ContextMenuStrip BuildTrayMenu()
+    {
+        {
+            var menu = new System.Windows.Forms.ContextMenuStrip();
+            if (L.IsRtl) menu.RightToLeft = System.Windows.Forms.RightToLeft.Yes;   // a right-to-left language mirrors the menu; English leaves the default
+            _statusItem = new System.Windows.Forms.ToolStripMenuItem(L.T("Starting…")) { Enabled = false };
+            menu.Items.Add(_statusItem);
+            menu.Items.Add(new System.Windows.Forms.ToolStripSeparator());
+            _clipItem = new System.Windows.Forms.ToolStripMenuItem(ClipTrayText, null, (_, _) => _ui.BeginInvoke(() => ClipNow()));
+            menu.Items.Add(_clipItem);
+            _screenshotItem = new System.Windows.Forms.ToolStripMenuItem(ScreenshotTrayText, null, (_, _) => _ui.BeginInvoke(() => Screenshots.CaptureRegion(Clink.Screenshots.ScreenshotTrigger.Tray)))
+                { Visible = Settings.ScreenshotsEnabled };
+            menu.Items.Add(_screenshotItem);
+            _screenshotEditItem = new System.Windows.Forms.ToolStripMenuItem(ScreenshotEditTrayText, null, (_, _) => _ui.BeginInvoke(() => Screenshots.EditLast()))
+                { Visible = Settings.ScreenshotsEnabled };
+            menu.Items.Add(_screenshotEditItem);
+            _recordItem = new System.Windows.Forms.ToolStripMenuItem(RecordItemText, null, (_, _) => _ui.BeginInvoke(ToggleRecording));
+            menu.Items.Add(_recordItem);
+            _shareLastItem = new System.Windows.Forms.ToolStripMenuItem(L.T("Share last clip"), null, (_, _) => _ui.BeginInvoke(ShareLast));
+            menu.Items.Add(_shareLastItem);
+            menu.Items.Add(L.T("Show Clink"), null, (_, _) => ShowRequested?.Invoke());
+            _pauseItem = new System.Windows.Forms.ToolStripMenuItem(PauseItemText, null, (_, _) => TogglePause());
+            menu.Items.Add(_pauseItem);
+            _openFolderItem = new System.Windows.Forms.ToolStripMenuItem(L.T("Open clips folder"), null, (_, _) => OpenFolder());
+            menu.Items.Add(_openFolderItem);
+            _updateItem = new System.Windows.Forms.ToolStripMenuItem(L.T("Update Clink"), null, (_, _) => UpdateNow()) { Visible = false };
+            menu.Items.Add(_updateItem);
+            _importItem = new System.Windows.Forms.ToolStripMenuItem(L.T("Import settings…"), null, (_, _) => _ui.BeginInvoke(AskToImport)) { Visible = false };
+            menu.Items.Add(_importItem);
+            menu.Items.Add(new System.Windows.Forms.ToolStripSeparator());
+            menu.Items.Add(L.T("tray|Quit"), null, (_, _) => Quit());
+            return menu;
+        }
     }
 
     /// <summary>
@@ -2260,17 +2429,50 @@ internal sealed partial class AppController : IDisposable
     {
         if (_tray == null) return;
         string status = StatusText;
-        if (State == RecordingState.Error && Engine.Error != null) status = "Error: " + Engine.Error;
-        string text = TrayName + " · " + status;
-        if (text.Length > 120) text = text[..119] + "…";   // NotifyIcon.Text throws above 127 characters
+        status = TrayStatusFor(status, State, Engine.ErrorInfo);
+        string text = TrayText(TrayName, status);
         if (text != _trayText)
         {
             _trayText = text;
-            try { _tray.Text = text; } catch { }
+            try { _tray.Text = RtlFirst(text); } catch { }
             if (_statusItem != null) _statusItem.Text = status;
         }
     }
 
+    /// <summary>The tray's status line: an engine error in its own words while the state is Error, otherwise the status as it is.</summary>
+    internal static string TrayStatusFor(string status, RecordingState state, EngineError? engineError) =>
+        state == RecordingState.Error && engineError != null ? L.T("Error: {error}", ("error", EngineStatusText.Error(engineError))) : status;
+
+    /// <summary>The tray icon's tooltip: the name, a dot and the status, cut to 120 characters (NotifyIcon.Text throws above 127) whatever the language.</summary>
+    internal static string TrayText(string name, string status)
+    {
+        return CutForShell(name + " · " + status, 120);
+    }
+
+    /// <summary>
+    /// <paramref name="text"/> cut to at most <paramref name="limit"/> characters for a surface the shell draws (the tray tooltip, a balloon):
+    /// text that fits is returned as it is; otherwise it ends with "…" and is never cut inside a surrogate pair, and a left-to-right
+    /// embedding (L.Ltr's LRE ... PDF) the cut leaves open is closed (the PDFs count in the limit). One helper for every shell text.
+    /// </summary>
+    internal static string CutForShell(string text, int limit)
+    {
+        if (text.Length <= limit) return text;
+        for (int cut = limit - 1; cut > 0; cut--)
+        {
+            if (char.IsHighSurrogate(text[cut - 1])) continue;   // never split a surrogate pair
+            string head = text[..cut];
+            // never leave an embedding open: close what the cut left open (an LRE costs one PDF, at most a few)
+            int open = 0;
+            foreach (char c in head)
+            {
+                if (c is '\u202A' or '\u202B' or '\u202D' or '\u202E') open++;
+                else if (c == '\u202C' && open > 0) open--;
+            }
+            open = Math.Min(open, 6);
+            if (head.Length + 1 + open <= limit) return head + "…" + new string('\u202C', open);
+        }
+        return "…";
+    }
     public void UpdateTrayHotkey()
     {
         if (_clipItem != null) _clipItem.Text = ClipTrayText;
@@ -2299,10 +2501,18 @@ internal sealed partial class AppController : IDisposable
         if (_screenshotEditItem != null) _screenshotEditItem.Visible = screenshots;
     }
 
+    /// <summary>
+    /// Under a right-to-left language, a right-to-left mark in front of text the shell draws (a tray tooltip, a balloon): Win32 takes the
+    /// direction of the first strong character, and a translation that starts with a left-to-right piece (a hotkey, a path, a name) would lay out left to right.
+    /// </summary>
+    internal static string RtlFirst(string text) => L.IsRtl && text.Length > 0 ? "\u200F" + text : text;
+
     public void ShowBalloon(string title, string text)
     {
         if (IsQuiet) return;   // --dev-quiet: no tray balloon
-        if (text.Length > 250) text = text[..249] + "…";   // Shell_NotifyIcon cuts balloon text at 256 characters
+        text = CutForShell(text, 250);   // Shell_NotifyIcon cuts balloon text at 256 characters
+        title = RtlFirst(title);
+        text = RtlFirst(text);
         if (TestGuard.Active && _tray != null) TestGuard.CheckLaunch("a tray balloon: " + title);   // test mode only: nothing is shown
         try { _tray?.ShowBalloonTip(3000, title, text, System.Windows.Forms.ToolTipIcon.None); } catch { }
     }
@@ -2315,30 +2525,18 @@ internal sealed partial class AppController : IDisposable
 
     private bool _quitAsking;
     private bool _forcedQuitPending;   // an update restart asked to quit while the user's question was up: it cannot be refused
+    private bool _userQuitPending;   // the user's own Quit came in while the language restart's editor question was up: acted on after the answer
+    private bool _editorResolvedForExit;   // the editor's question was answered yes or no for a language restart: the exit path does not ask (or save) again
 
     private async void QuitAsync(bool userInitiated)
     {
         if (_quitAsking)   // the editor's question is up already
         {
             if (!userInitiated) _forcedQuitPending = true;   // remembered: Cancel then no longer keeps Clink running
+            else _userQuitPending = true;   // remembered: the language restart quits instead once the editor's question is answered
             return;
         }
-        bool go = true;
-        if (_screenshotEditor is { IsOpen: true } editor)
-        {
-            _quitAsking = true;
-            try
-            {
-                go = await editor.ConfirmQuitAsync(userInitiated);
-                if (!go && _forcedQuitPending)
-                {
-                    Log.Info("quit: a forced quit came in during the question: saving a copy and quitting");
-                    go = await editor.ConfirmQuitAsync(userInitiated: false);
-                }
-            }
-            catch (Exception ex) { Log.Error("quit: screenshot editor", ex); }
-            finally { _quitAsking = false; _forcedQuitPending = false; }
-        }
+        bool go = await ResolveEditorForQuitAsync(userInitiated);
         if (!go)
         {
             Log.Info("Quit cancelled from the screenshot editor");
@@ -2347,6 +2545,33 @@ internal sealed partial class AppController : IDisposable
         // A throw while cleaning up must not leave a process with no tray icon running on.
         try { StopRecordingForExit(); Dispose(); }
         finally { System.Windows.Application.Current.Shutdown(); }
+    }
+
+    /// <summary>
+    /// The screenshot editor's part of a quit: its quit question (the language restart's seam <see cref="LanguageEditorAsk"/> when set), or a forced
+    /// copy-save. Nothing is asked when the editor was answered already for a language restart (<see cref="_editorResolvedForExit"/>: a no must
+    /// stay a discard). False = the quit was cancelled.
+    /// </summary>
+    private async Task<bool> ResolveEditorForQuitAsync(bool userInitiated)
+    {
+        if (_editorResolvedForExit) return true;
+        Func<bool, Task<bool>>? ask = LanguageEditorAsk;
+        if (ask == null && _screenshotEditor is { IsOpen: true } editor) ask = ui => editor.ConfirmQuitAsync(ui);
+        if (ask == null) return true;
+        bool go = true;
+        _quitAsking = true;
+        try
+        {
+            go = await ask(userInitiated);
+            if (!go && _forcedQuitPending)
+            {
+                Log.Info("quit: a forced quit came in during the question: saving a copy and quitting");
+                go = await ask(false);
+            }
+        }
+        catch (Exception ex) { Log.Error("quit: screenshot editor", ex); }
+        finally { _quitAsking = false; _forcedQuitPending = false; _userQuitPending = false; }
+        return go;
     }
 
     /// <summary>Windows is ending the session (cannot be refused): unsaved screenshot edits are saved as a copy, waiting at most ~3 s with the UI still pumping.</summary>

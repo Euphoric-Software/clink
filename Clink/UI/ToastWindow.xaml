@@ -1,6 +1,7 @@
 ﻿<Window x:Class="Clink.UI.ToastWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:l="clr-namespace:Clink.UI"
         Title="Clink" Width="330" SizeToContent="Height"
         WindowStyle="None" ResizeMode="NoResize" AllowsTransparency="True" Background="Transparent"
         Topmost="True" ShowInTaskbar="False" ShowActivated="False" FontFamily="{StaticResource UiFont}">
@@ -19,37 +20,37 @@
                     <Border x:Name="TestTag" DockPanel.Dock="Right" Visibility="Collapsed" Background="#FFD400" CornerRadius="8" Padding="6,0" Margin="8,0,0,0" VerticalAlignment="Center">
                         <TextBlock Text="TEST" Foreground="#000000" FontWeight="Bold" FontSize="10.5" TextWrapping="NoWrap" />
                     </Border>
-                    <TextBlock x:Name="TitleText" Style="{StaticResource Display}" FontSize="13" Text="Clip saved" Margin="8,0,0,0" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
+                    <TextBlock x:Name="TitleText" Style="{StaticResource Display}" FontSize="13" Text="{l:T 'Clip saved'}" Margin="8,0,0,0" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
                 </DockPanel>
-                <Button Style="{StaticResource IconButton}" Content="✕" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,-6,-8,0" Click="Close_Click" />
+                <Button Style="{StaticResource IconButton}" Content="✕" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,-6,-8,0" Click="Close_Click" AutomationProperties.Name="{l:T 'Close'}" />
             </Grid>
             <TextBlock x:Name="Subtitle" Grid.Row="1" Style="{StaticResource MutedText}" Margin="16,2,0,0" Text="" TextTrimming="CharacterEllipsis" />
-            <StackPanel x:Name="ClipButtons" Grid.Row="2" Orientation="Horizontal" Margin="16,10,0,0">
+            <WrapPanel x:Name="ClipButtons" Grid.Row="2" Orientation="Horizontal" Margin="16,10,0,-4">
                 <!-- MinWidth: as wide as "Uploading… 100%", so Trim and Folder stay put while the percentage grows -->
                 <!-- ShareGroup: the plain Share button, or (token + cloud sharing on) the split button: ShareButton = Share (the share window), ShareArrow = ▾ (the menu) -->
-                <StackPanel x:Name="ShareGroup" Orientation="Horizontal">
-                    <Button x:Name="ShareButton" Style="{StaticResource AccentButton}" Content="Share to Copium" MinWidth="132" Click="Share_Click" PreviewKeyDown="ShareButton_KeyDown" />
+                <StackPanel x:Name="ShareGroup" Orientation="Horizontal" Margin="0,0,0,4">
+                    <Button x:Name="ShareButton" Style="{StaticResource AccentButton}" Content="{l:T 'Share to Copium'}" MinWidth="132" Click="Share_Click" PreviewKeyDown="ShareButton_KeyDown" />
                     <Button x:Name="ShareArrow" Style="{StaticResource AccentSplitArrow}" Visibility="Collapsed" Click="ShareArrow_Click" />
                 </StackPanel>
-                <Button x:Name="TrimButton" Content="Trim" Margin="8,0,0,0" Click="Trim_Click" />
-                <Button x:Name="FolderButton" Content="Folder" Margin="8,0,0,0" Click="Folder_Click" />
-            </StackPanel>
-            <StackPanel x:Name="SharedButtons" Grid.Row="2" Orientation="Horizontal" Margin="16,10,0,0" Visibility="Collapsed">
-                <Button x:Name="CopyButton" Style="{StaticResource AccentButton}" Content="Copy link" Click="Copy_Click" />
-                <Button Content="Open" Margin="8,0,0,0" Click="Open_Click" />
-            </StackPanel>
-            <StackPanel x:Name="ScreenshotButtons" Grid.Row="2" Orientation="Horizontal" Margin="16,10,0,0" Visibility="Collapsed">
-                <Button x:Name="ShotOpenButton" Style="{StaticResource AccentButton}" Content="Open" Click="ShotOpen_Click" />
-                <Button Content="Edit" Margin="8,0,0,0" Click="ShotEdit_Click" AutomationProperties.Name="Edit the screenshot" ToolTip="Open the screenshot in the editor" />
+                <Button x:Name="TrimButton" Content="{l:T 'Trim'}" Margin="8,0,0,4" Click="Trim_Click" />
+                <Button x:Name="FolderButton" Content="{l:T 'toast|Folder'}" Margin="8,0,0,4" Click="Folder_Click" />
+            </WrapPanel>
+            <WrapPanel x:Name="SharedButtons" Grid.Row="2" Orientation="Horizontal" Margin="16,10,0,-4" Visibility="Collapsed">
+                <Button Margin="0,0,0,4" x:Name="CopyButton" Style="{StaticResource AccentButton}" Content="{l:T 'Copy link'}" Click="Copy_Click" />
+                <Button Content="{l:T 'Open'}" Margin="8,0,0,4" Click="Open_Click" />
+            </WrapPanel>
+            <WrapPanel x:Name="ScreenshotButtons" Grid.Row="2" Orientation="Horizontal" Margin="16,10,0,-4" Visibility="Collapsed">
+                <Button Margin="0,0,0,4" x:Name="ShotOpenButton" Style="{StaticResource AccentButton}" Content="{l:T 'Open'}" Click="ShotOpen_Click" />
+                <Button Content="{l:T 'Edit'}" Margin="8,0,0,4" Click="ShotEdit_Click" AutomationProperties.Name="{l:T 'Edit the screenshot'}" ToolTip="{l:T 'Open the screenshot in the editor'}" />
                 <!-- Upload (a token is set and no automatic upload follows) / Uploading 42% / Copy link (uploaded); collapsed otherwise. MinWidth: as wide as "Uploading… 100%". -->
-                <Button x:Name="ShotUploadButton" Content="Upload" Margin="8,0,0,0" MinWidth="64" Visibility="Collapsed" Click="ShotUpload_Click"
-                        AutomationProperties.Name="Upload the screenshot to Copium" ToolTip="Upload the screenshot to Copium" />
-                <Button Content="Folder" Margin="8,0,0,0" Click="ShotFolder_Click" />
-            </StackPanel>
-            <StackPanel x:Name="NoticeButtons" Grid.Row="2" Orientation="Horizontal" Margin="16,10,0,0" Visibility="Collapsed">
-                <Button x:Name="DontShowButton" Style="{StaticResource SmallButton}" Content="Don't show again" Click="DontShow_Click" />
-                <Button x:Name="OpenSettingButton" Style="{StaticResource SmallButton}" Content="Open setting" Margin="8,0,0,0" Click="OpenSetting_Click" />
-            </StackPanel>
+                <Button x:Name="ShotUploadButton" Content="{l:T 'Upload'}" Margin="8,0,0,4" MinWidth="64" Visibility="Collapsed" Click="ShotUpload_Click"
+                        AutomationProperties.Name="{l:T 'Upload the screenshot to Copium'}" ToolTip="{l:T 'Upload the screenshot to Copium'}" />
+                <Button Content="{l:T 'toast|Folder'}" Margin="8,0,0,4" Click="ShotFolder_Click" />
+            </WrapPanel>
+            <WrapPanel x:Name="NoticeButtons" Grid.Row="2" Orientation="Horizontal" Margin="16,10,0,-4" Visibility="Collapsed">
+                <Button Margin="0,0,0,4" x:Name="DontShowButton" Style="{StaticResource SmallButton}" Content="{l:T 'Don\'t show again'}" Click="DontShow_Click" />
+                <Button x:Name="OpenSettingButton" Style="{StaticResource SmallButton}" Content="{l:T 'Open setting'}" Margin="8,0,0,4" Click="OpenSetting_Click" />
+            </WrapPanel>
         </Grid>
     </Border>
 </Window>

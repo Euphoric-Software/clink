@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using Clink.Services.Localization;
 using Microsoft.Win32.SafeHandles;
 using Windows.Win32;
 using Windows.Win32.Foundation;
@@ -26,6 +27,23 @@ internal readonly record struct ArchiveProgress(int Index, int Count, string Fil
 internal readonly record struct ArchivePreview(int DueCount, long DueBytes, int AllCount, long AllBytes);
 
 /// <summary>
+/// A problem the archive reports: <see cref="Shown"/> is the text for the user (in the UI language), <see cref="English"/> the same for the
+/// log, which stays English. <see cref="Setting"/> marks one that is a setting to fix, not something a retry changes.
+/// </summary>
+internal sealed record ArchiveProblem(string English, string Shown, bool Setting = false)
+{
+    /// <summary>The catalog text for <paramref name="key"/> in both languages (the arguments are language-neutral: numbers, names).</summary>
+    public static ArchiveProblem Of(string key, params (string Name, object? Value)[] args) => new(L.TIn("en", key, args), L.T(key, args));
+
+    /// <summary>A text the system or the file system wrote (an exception message): the same for the log and the user.</summary>
+    public static ArchiveProblem Raw(string text) => new(text, text);
+
+    public ArchiveProblem AsSetting() => this with { Setting = true };
+
+    public override string ToString() => Shown;
+}
+
+/// <summary>
 /// Moves clips from the local clips folder to the archive location (NAS share, mapped drive, second drive) in the background:
 /// docs/SPEC-v2.md §9. Runs 1 min after a clip is saved and every 5 min; picks eligible clips oldest-first (older than
 /// <see cref="Settings.ArchiveAfterDays"/>, or while the local folder is above <see cref="Settings.ArchiveWhenLocalExceedsGB"/>);
@@ -36,7 +54,7 @@ internal readonly record struct ArchivePreview(int DueCount, long DueBytes, int 
 /// what they pick (due), with or without the automatic switch, at full speed unless a game is running. It runs on the same thread,
 /// one run at a time, and the automatic pass gives way to it.
 /// A local clip is deleted only when a different, complete copy exists: the archive location is checked for being another name
-/// for the clips folder (<see cref="AliasProblem"/>), and the delete itself goes through <see cref="DeleteGuard"/>, which cannot
+/// for the clips folder (<see cref="AliasCheck"/>), and the delete itself goes through <see cref="DeleteGuard"/>, which cannot
 /// delete a file that is also the archive copy.
 /// </summary>
 internal sealed class ArchiveService
@@ -49,10 +67,14 @@ internal sealed class ArchiveService
     private static readonly TimeSpan FirstRun = TimeSpan.FromSeconds(45);
     private static readonly TimeSpan MinAge = TimeSpan.FromSeconds(30); // a file written seconds ago may still be in use by the muxer / uploader
 
-    // Status lines (the Storage card shows them; "no rule" and "archive location" turn the line amber there).
-    private const string ManualOnlyStatus = "Automatic moves off · Archive now… moves clips by hand";   // the switch is off, a location is set
-    private const string NoLocationStatus = "Automatic moves are on, but no archive location is set";
-    private const string NoRuleStatus = "Automatic moves are on, but no rule is set (days / GB)";
+    /// <summary>The age under which a file is left alone, in seconds (the dialog says it in its words).</summary>
+    internal static int MinAgeSeconds => (int)MinAge.TotalSeconds;
+
+    // Status lines (the Storage card shows them, amber when StatusIsProblem). They are built in the UI language when they are set; the
+    // language does not change while the app runs.
+    private static string ManualOnlyStatus => L.T("Automatic moves off · Archive now… moves clips by hand");   // the switch is off, a location is set
+    private static string NoLocationStatus => L.T("Automatic moves are on, but no archive location is set");
+    private static string NoRuleStatus => L.T("Automatic moves are on, but no rule is set (days / GB)");
 
     private readonly Settings _settings;
     private readonly ClipLibrary _library;
@@ -64,10 +86,11 @@ internal sealed class ArchiveService
     private volatile bool _stop;
     private volatile int _manualQueued;             // _manual.Count, readable without the lock: the automatic pass gives way while it is above 0
     private DateTime _due = DateTime.MaxValue;      // UTC
-    private string _status = "Archive off";
+    private string _status = L.T("Archive off");
+    private bool _statusIsProblem;                  // the status line is a problem or a setting to fix (the card shows it amber): set with the text, never read off it
     private DateTime? _lastMove;
     private bool _reachable;
-    private string? _problem;
+    private ArchiveProblem? _problem;
     private string? _aliasOkKey;                    // "archive|clips folder" that passed the alias probe: the automatic pass does not write probes every 5 minutes
     private int _runFailCode = -1;                  // Win32 code of the last unlisted copy failure in this run (archive thread)
 
@@ -77,8 +100,14 @@ internal sealed class ArchiveService
         _library = library;
     }
 
-    /// <summary>One line for the UI ("12 clips archived · last move 14:02 · NAS reachable", "archive unreachable, will retry", "Copying X (40 %)").</summary>
+    /// <summary>One line for the UI, in the UI language ("12 clips archived · last move 14:02 · NAS reachable", "archive unreachable, will retry", "Copying X (40 %)").</summary>
     public string Status { get { lock (_gate) return _status; } }
+
+    /// <summary>The status line reports a problem, or a setting that needs fixing (no location, no rule, an unreachable archive): the card colours it amber. Set where the status is set; nothing reads the words.</summary>
+    public bool StatusIsProblem { get { lock (_gate) return _statusIsProblem; } }
+
+    /// <summary>The status line and whether it is a problem, read together.</summary>
+    public (string Text, bool IsProblem) ReadStatus() { lock (_gate) return (_status, _statusIsProblem); }
 
     /// <summary>Raised (on the archive thread) whenever <see cref="Status"/> changes or a clip was moved. Marshal to the UI.</summary>
     public event Action? Changed;
@@ -90,7 +119,9 @@ internal sealed class ArchiveService
     public bool IsReachable => _reachable;
 
     /// <summary>What the UI says (and the service reports) when the archive location is not a full path.</summary>
-    public const string FullPathHint = @"Use a full path such as D:\Clips or \\nas\clips";
+    public static string FullPathHint => FullPathHintNote.Shown;
+    /// <summary><see cref="FullPathHint"/> as a note (English in the log).</summary>
+    internal static Note FullPathHintNote => Note.Of("Use a full path such as {example} or {unc}", ("example", Note.Ltr(@"D:\Clips")), ("unc", Note.Ltr(@"\\nas\clips")));
 
     public void Start()
     {
@@ -99,7 +130,7 @@ internal sealed class ArchiveService
         _due = DateTime.UtcNow + FirstRun;
         _thread = new Thread(Loop) { IsBackground = true, Name = "Clink.Archive", Priority = ThreadPriority.Lowest };
         _thread.Start();
-        SetStatus(IdleStatus());
+        SetIdleStatus();
     }
 
     public void Stop()
@@ -169,12 +200,12 @@ internal sealed class ArchiveService
         var s = _settings;
         string? root = s.ArchivePath?.Trim();
         _aliasOkKey = null;   // a new location (or folder): the automatic pass looks at it again before it moves anything
-        if (!s.ArchiveEnabled || string.IsNullOrEmpty(root)) { _problem = null; _reachable = false; SetStatus(IdleStatus()); return; }
-        if (s.ArchiveAfterDays <= 0 && s.ArchiveWhenLocalExceedsGB <= 0) { _problem = null; _reachable = false; SetStatus(NoRuleStatus); return; }
-        if (!Path.IsPathFullyQualified(root)) { _problem = NotFullPathProblem; _reachable = false; SetStatus(IdleStatus()); return; }
-        if (IsSameFolder(root, s.ClipsFolder)) { _problem = SameFolderProblem; _reachable = false; SetStatus(IdleStatus()); return; }
+        if (!s.ArchiveEnabled || string.IsNullOrEmpty(root)) { _problem = null; _reachable = false; SetIdleStatus(); return; }
+        if (s.ArchiveAfterDays <= 0 && s.ArchiveWhenLocalExceedsGB <= 0) { _problem = null; _reachable = false; SetStatus(NoRuleStatus, problem: true); return; }
+        if (!Path.IsPathFullyQualified(root)) { _problem = NotFullPath; _reachable = false; SetIdleStatus(); return; }
+        if (IsSameFolder(root, s.ClipsFolder)) { _problem = SameFolder; _reachable = false; SetIdleStatus(); return; }
         _problem = null; _reachable = false;   // a new location: nothing is known about it until the run looks
-        SetStatus(IdleStatus());
+        SetIdleStatus();
         Schedule(DateTime.UtcNow + TimeSpan.FromSeconds(15));
     }
 
@@ -208,7 +239,7 @@ internal sealed class ArchiveService
     {
         IsBusy = true;
         try { Run(); }
-        catch (Exception ex) { Log.Warn("archive: " + ex.Message); SetStatus(Describe(ex, _settings.ArchivePath) + ", will retry"); }
+        catch (Exception ex) { Log.Warn("archive: " + ex.Message); SetStatus(L.T("{problem}, will retry", ("problem", Describe(ex, _settings.ArchivePath).Shown)), problem: true); }
         finally { IsBusy = false; }
     }
 
@@ -233,30 +264,30 @@ internal sealed class ArchiveService
     {
         var s = _settings;
         string? root = s.ArchivePath?.Trim();
-        if (!s.ArchiveEnabled || string.IsNullOrEmpty(root)) { _problem = null; SetStatus(IdleStatus()); return; }
-        if (s.ArchiveAfterDays <= 0 && s.ArchiveWhenLocalExceedsGB <= 0) { _problem = null; _reachable = false; SetStatus(NoRuleStatus); return; }
+        if (!s.ArchiveEnabled || string.IsNullOrEmpty(root)) { _problem = null; SetIdleStatus(); return; }
+        if (s.ArchiveAfterDays <= 0 && s.ArchiveWhenLocalExceedsGB <= 0) { _problem = null; _reachable = false; SetStatus(NoRuleStatus, problem: true); return; }
         if (!Path.IsPathFullyQualified(root))
         {
             // "\nas\clips" / "nas\clips" (a lost backslash) would resolve against the current folder: the UI refuses it, settings.json may not.
-            _problem = NotFullPathProblem; _reachable = false;
-            SetStatus(IdleStatus());
+            _problem = NotFullPath; _reachable = false;
+            SetIdleStatus();
             return;
         }
         if (IsSameFolder(root, s.ClipsFolder))
         {
             // "Move" onto itself = delete: the UI refuses this spelling, but settings.json can be edited by hand.
-            _problem = SameFolderProblem; _reachable = false;
+            _problem = SameFolder; _reachable = false;
             Log.Warn("archive: the archive location is the clips folder, nothing is moved");
-            SetStatus(IdleStatus());
+            SetIdleStatus();
             return;
         }
 
-        string? problem = Reach(root);
-        if (problem != null)
+        ArchiveProblem? problem = Reach(root);
+        if (problem is { } unreachable)
         {
-            _reachable = false; _problem = problem;
-            Log.Info("archive: " + problem + ", will retry");
-            SetStatus(IdleStatus());
+            _reachable = false; _problem = unreachable;
+            Log.Info("archive: " + unreachable.English + ", will retry");
+            SetIdleStatus();
             return;
         }
         _reachable = true; _problem = null;
@@ -286,11 +317,11 @@ internal sealed class ArchiveService
             {
                 // Something is about to move: be sure the archive is not another name for the clips folder (checked once per location).
                 aliasChecked = true;
-                if (CheckAlias(root, local) is string alias)
+                if (CheckAlias(root, local) is { } alias)
                 {
                     _problem = alias;
-                    Log.Warn("archive: " + alias + ", nothing is moved");
-                    SetStatus(IdleStatus());
+                    Log.Warn("archive: " + alias.English + ", nothing is moved");
+                    SetIdleStatus();
                     return;
                 }
             }
@@ -300,7 +331,7 @@ internal sealed class ArchiveService
             if (outcome == Outcome.Moved) { moved++; localBytes -= fi.Length; }
         }
         if (moved > 0) Log.Info($"archive: run finished, {moved} clip(s) moved to {root}");
-        SetStatus(IdleStatus());
+        SetIdleStatus();
     }
 
     // ------------------------------------------------------------------ which clips
@@ -392,8 +423,8 @@ internal sealed class ArchiveService
         catch (Exception ex)
         {
             Log.Warn("archive: manual run: " + ex.Message);
-            result = req.Result(Describe(ex, _settings.ArchivePath));
-            SetStatus(IdleStatus());
+            result = req.Result(Describe(ex, _settings.ArchivePath).Shown);
+            SetIdleStatus();
         }
         finally { IsBusy = false; }
         req.Done.TrySetResult(result);
@@ -407,19 +438,19 @@ internal sealed class ArchiveService
         if (_stop || req.Ct.IsCancellationRequested) { req.Cancelled = true; return req.Result(null); }
 
         // Refused before it begins: the location is not one a clip can safely be moved to.
-        string? refusal = null;
-        if (root.Length == 0) refusal = "no archive location is set";
-        else if (!Path.IsPathFullyQualified(root)) refusal = _problem = NotFullPathProblem;
-        else if (IsSameFolder(root, s.ClipsFolder)) refusal = _problem = SameFolderProblem;
-        else if (Reach(root) is string unreachable) refusal = _problem = unreachable;
-        else if (AliasProblem(root, s.ClipsFolder) is string alias) refusal = _problem = alias;   // another name for the clips folder: "moving" onto itself deletes the clip
+        ArchiveProblem? refusal = null;
+        if (root.Length == 0) refusal = ArchiveProblem.Of("no archive location is set");
+        else if (!Path.IsPathFullyQualified(root)) refusal = _problem = NotFullPath;
+        else if (IsSameFolder(root, s.ClipsFolder)) refusal = _problem = SameFolder;
+        else if (Reach(root) is { } unreachable) refusal = _problem = unreachable;
+        else if (AliasCheck(root, s.ClipsFolder) is { } alias) refusal = _problem = alias;   // another name for the clips folder: "moving" onto itself deletes the clip
         else _aliasOkKey = AliasKey(root, s.ClipsFolder);
-        if (refusal != null)
+        if (refusal is { } refused)
         {
             _reachable = false;
-            Log.Info("archive: manual run refused: " + refusal);
-            SetStatus(IdleStatus());
-            return req.Result(refusal);
+            Log.Info("archive: manual run refused: " + refused.English);
+            SetIdleStatus();
+            return req.Result(refused.Shown);
         }
         _reachable = true; _problem = null;
 
@@ -455,8 +486,8 @@ internal sealed class ArchiveService
             }
         }
         Log.Info($"archive: manual run finished: {req.Moved} moved ({req.BytesMoved / 1_048_576.0:0.0} MB), {req.InUse} in use, {req.TooNew} too new, {req.Failed} failed{(req.Cancelled ? ", cancelled" : "")}");
-        SetStatus(IdleStatus());
-        return req.Result(req.Failed > 0 ? _problem : null);
+        SetIdleStatus();
+        return req.Result(req.Failed > 0 ? _problem?.Shown : null);
     }
 
     /// <summary>
@@ -499,7 +530,7 @@ internal sealed class ArchiveService
         try { using var probe = new FileStream(src, FileMode.Open, FileAccess.Read, FileShare.None); }
         catch (UnauthorizedAccessException)
         {
-            _problem = "cannot read the local clip: access denied";
+            _problem = ArchiveProblem.Of("cannot read the local clip: access denied");
             Log.Warn($"archive: {name}: access denied to the local file, kept");
             return Outcome.Skipped;
         }
@@ -507,7 +538,7 @@ internal sealed class ArchiveService
         catch (IOException ex) when (IsSharingViolation(ex)) { Log.Info($"archive: {name} is in use, later"); return Outcome.InUse; }
         catch (IOException ex)
         {
-            _problem = "cannot read the local clip: " + ex.Message.TrimEnd('.');
+            _problem = ArchiveProblem.Of("cannot read the local clip: {error}", ("error", ex.Message.TrimEnd('.')));
             Log.Warn($"archive: {name}: {ex.Message}, kept");
             return Outcome.Skipped;
         }
@@ -523,7 +554,7 @@ internal sealed class ArchiveService
                 bool? same = SameFile(src, dest);
                 if (same != false)
                 {
-                    _problem = same == null ? "cannot tell the archive copy from the local file" : SameFolderProblem;
+                    _problem = same == null ? ArchiveProblem.Of("cannot tell the archive copy from the local file") : SameFolder;
                     Log.Warn($"archive: {name}: {(same == null ? "could not compare" : "the archive path is")} the local file itself, nothing moved");
                     return Outcome.Skipped;
                 }
@@ -538,7 +569,8 @@ internal sealed class ArchiveService
                 long free = FreeBytes(root);
                 if (free >= 0 && free < length + (64L << 20))
                 {
-                    _problem = $"archive is full ({FormatBytes(free)} free)";
+                    _problem = new ArchiveProblem(L.TIn("en", "archive is full ({free} free)", ("free", FormatBytesIn("en", free))),
+                        L.T("archive is full ({free} free)", ("free", FormatBytes(free))));
                     return Outcome.Skipped;
                 }
                 string tmp = dest + ".clinkpart";
@@ -556,8 +588,9 @@ internal sealed class ArchiveService
                             Log.Warn($"archive: {name} changed while copying, local file kept");
                             return Outcome.InUse;   // something is writing to it: a later run moves it
                         }
-                        _problem = $"the copy came out short ({copied} of {length} bytes)";   // the clip did not change: the archive (or the read) cut it short, which is not a matter of waiting
-                        Log.Warn($"archive: {name}: {_problem}, local file kept");
+                        var shortCopy = ArchiveProblem.Of("the copy came out short ({copied} of {length} bytes)", ("copied", copied), ("length", length));   // the clip did not change: the archive (or the read) cut it short, which is not a matter of waiting
+                        _problem = shortCopy;
+                        Log.Warn($"archive: {name}: {shortCopy.English}, local file kept");
                         return Outcome.Skipped;
                     }
                     File.Move(tmp, dest, true);
@@ -575,19 +608,19 @@ internal sealed class ArchiveService
             // there in full. The guard holds the archive copy open and the local file open with DELETE access (the same file under
             // two names cannot be opened both ways: that clip is skipped, never destroyed), checks the local file through its own
             // handle, and deletes through that handle, not by name: a trim that renamed its cut over the clip meanwhile keeps it.
-            using var guard = DeleteGuard.Open(src, dest, length, lastWrite, out GuardResult refusal, out string? refusalText);
+            using var guard = DeleteGuard.OpenCore(src, dest, length, lastWrite, out GuardResult refusal, out ArchiveProblem? refusalText);
             if (guard == null) return Declined(refusal, refusalText, src, dest, haveCopy);
 
             // The library entry is updated under the library's lock together with the delete: a reload cannot run in between
             // and drop the entry of a clip whose local file is already gone.
             GuardResult deleteResult = GuardResult.Ready;
-            string? deleteText = null;
-            var move = _library.MoveToArchive(entry, src, dest, () => guard.Delete(out deleteResult, out deleteText));
+            ArchiveProblem? deleteText = null;
+            var move = _library.MoveToArchive(entry, src, dest, () => guard.DeleteCore(out deleteResult, out deleteText));
             if (move != ArchiveMove.Moved)
             {
                 guard.Dispose();   // the archive copy is open until now (and a copy that is open cannot be deleted)
                 if (move == ArchiveMove.NotDeleted) return Declined(deleteResult, deleteText, src, dest, haveCopy);
-                _problem = "the clip left the library while it was being moved";
+                _problem = ArchiveProblem.Of("the clip left the library while it was being moved");
                 Log.Warn($"archive: {name}: no longer in the library, local file kept");
                 if (!haveCopy) TryDeleteCopy(src, dest);
                 return Outcome.Skipped;
@@ -599,9 +632,9 @@ internal sealed class ArchiveService
         catch (OperationCanceledException) { return Outcome.Cancelled; }
         catch (Exception ex)
         {
-            string why = Describe(ex, root);
+            var why = Describe(ex, root);
             _problem = why;
-            Log.Warn($"archive: {name}: {ex.Message} ({why}); local file kept");
+            Log.Warn($"archive: {name}: {ex.Message} ({why.English}); local file kept");
             if (IsUnreachable(ex)) return Outcome.Unreachable;
             // Full, over quota, write-protected or no permission: every other clip would fail the same way after copying a while.
             int code = Win32Code(ex);
@@ -617,7 +650,7 @@ internal sealed class ArchiveService
     /// The delete did not happen: what that means for this clip. The verified copy stays unless it is certainly junk (the clip
     /// changed after it was copied, so the copy is a stale version and the clip itself is still here).
     /// </summary>
-    private Outcome Declined(GuardResult why, string? text, string src, string dest, bool haveCopy)
+    private Outcome Declined(GuardResult why, ArchiveProblem? text, string src, string dest, bool haveCopy)
     {
         string name = Path.GetFileName(src);
         switch (why)
@@ -634,12 +667,13 @@ internal sealed class ArchiveService
                 return Outcome.Gone;
             case GuardResult.CopyDiffers:
                 _problem = text;
-                Log.Warn($"archive: {name}: {text}, local file kept");
+                Log.Warn($"archive: {name}: {text?.English}, local file kept");
                 if (!haveCopy) TryDeleteCopy(src, dest);
                 return Outcome.Skipped;
             default:   // the archive copy is missing or unreadable, the clip is its own archive copy, access denied, an error
-                _problem = text ?? "cannot delete the local clip";
-                Log.Warn($"archive: {name}: {_problem}, local file kept");
+                var problem = text ?? ArchiveProblem.Of("cannot delete the local clip");
+                _problem = problem;
+                Log.Warn($"archive: {name}: {problem.English}, local file kept");
                 return Outcome.Skipped;
         }
     }
@@ -667,7 +701,7 @@ internal sealed class ArchiveService
 
     private static bool IsLinkFile(FileInfo fi) => (fi.Attributes & FileAttributes.ReparsePoint) != 0 && IsLink(fi);
 
-    private const string LinkProblem = "the clip is a link to another file, not a file";
+    private static ArchiveProblem LinkProblem => ArchiveProblem.Of("the clip is a link to another file, not a file");
 
     /// <summary>What a run makes of a file before it looks at it any further (see <see cref="Judge"/>).</summary>
     internal enum FileVerdict { Movable, Link, TooNew }
@@ -685,8 +719,9 @@ internal sealed class ArchiveService
 
     private void RefuseLink(string name)
     {
-        _problem = LinkProblem;
-        Log.Warn($"archive: {name}: {LinkProblem}, kept");
+        var link = LinkProblem;
+        _problem = link;
+        Log.Warn($"archive: {name}: {link.English}, kept");
     }
 
     /// <summary>What a finished copy turned out to be.</summary>
@@ -704,7 +739,7 @@ internal sealed class ArchiveService
 
     // ------------------------------------------------------------------ never delete a clip that has no distinct copy
 
-    /// <summary>Why <see cref="DeleteGuard.Open"/> handed over no guard, or <see cref="DeleteGuard.Delete"/> did not delete.</summary>
+    /// <summary>Why <see cref="DeleteGuard.OpenCore"/> handed over no guard, or <see cref="DeleteGuard.DeleteCore"/> did not delete.</summary>
     internal enum GuardResult
     {
         /// <summary>No problem.</summary>
@@ -760,10 +795,10 @@ internal sealed class ArchiveService
         private DeleteGuard(FileStream copy, SafeFileHandle clip) { _copy = copy; _clip = clip; }
 
         /// <summary>
-        /// Opens both files and checks them; null (with <paramref name="result"/> and, where it helps, a <paramref name="problem"/> in
-        /// the words the dialog shows) when the clip must not be deleted now.
+        /// Opens both files and checks them; null (with <paramref name="result"/> and, where it helps, a <paramref name="problem"/> that
+        /// shows in the language of the UI and logs in English) when the clip must not be deleted now.
         /// </summary>
-        public static DeleteGuard? Open(string clip, string copy, long length, DateTime lastWriteUtc, out GuardResult result, out string? problem)
+        internal static DeleteGuard? OpenCore(string clip, string copy, long length, DateTime lastWriteUtc, out GuardResult result, out ArchiveProblem? problem)
         {
             problem = null;
             FileStream? c = null;
@@ -771,14 +806,14 @@ internal sealed class ArchiveService
             try
             {
                 try { c = new FileStream(copy, FileMode.Open, FileAccess.Read, FileShare.Read, 1); }
-                catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException) { result = GuardResult.CopyMissing; problem = "the archived copy is missing"; return null; }
-                catch (UnauthorizedAccessException) { result = GuardResult.Failed; problem = "cannot read the archived copy: access denied"; return null; }
+                catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException) { result = GuardResult.CopyMissing; problem = ArchiveProblem.Of("the archived copy is missing"); return null; }
+                catch (UnauthorizedAccessException) { result = GuardResult.Failed; problem = ArchiveProblem.Of("cannot read the archived copy: access denied"); return null; }
                 catch (IOException ex) when (IsSharingViolation(ex)) { result = GuardResult.InUse; return null; }
-                catch (IOException ex) { result = GuardResult.Failed; problem = "cannot read the archived copy: " + ex.Message.TrimEnd('.'); return null; }
+                catch (IOException ex) { result = GuardResult.Failed; problem = ArchiveProblem.Of("cannot read the archived copy: {error}", ("error", ex.Message.TrimEnd('.'))); return null; }
                 if (c.Length != length)
                 {
                     result = GuardResult.CopyDiffers;
-                    problem = $"the archived copy is {c.Length} bytes, the clip {length}";
+                    problem = ArchiveProblem.Of("the archived copy is {copy} bytes, the clip {clip}", ("copy", c.Length), ("clip", length));
                     return null;
                 }
 
@@ -786,14 +821,14 @@ internal sealed class ArchiveService
                 if (raw == InvalidHandle) { (result, problem) = FromError(Marshal.GetLastWin32Error()); return null; }
                 h = new SafeFileHandle(raw, ownsHandle: true);
 
-                if (!Info(h, out BY_HANDLE_FILE_INFORMATION mine)) { result = GuardResult.Failed; problem = "cannot look at the local clip"; return null; }
+                if (!Info(h, out BY_HANDLE_FILE_INFORMATION mine)) { result = GuardResult.Failed; problem = ArchiveProblem.Of("cannot look at the local clip"); return null; }
                 long now = ((long)mine.nFileSizeHigh << 32) | mine.nFileSizeLow;
                 DateTime written = DateTime.FromFileTimeUtc(((long)(uint)mine.ftLastWriteTime.dwHighDateTime << 32) | (uint)mine.ftLastWriteTime.dwLowDateTime);   // (the two halves are ints: no sign extension)
                 if (now != length || written != lastWriteUtc) { result = GuardResult.Changed; return null; }
                 if (Info(c.SafeFileHandle, out BY_HANDLE_FILE_INFORMATION theirs) && SameIdentity(mine, theirs))
                 {
                     result = GuardResult.SameFile;
-                    problem = SameFolderProblem;
+                    problem = SameFolder;
                     return null;
                 }
 
@@ -806,7 +841,7 @@ internal sealed class ArchiveService
         }
 
         /// <summary>Marks the local clip for deletion through the handle that was checked. It goes when the guard is disposed.</summary>
-        public bool Delete(out GuardResult result, out string? problem)
+        internal bool DeleteCore(out GuardResult result, out ArchiveProblem? problem)
         {
             byte on = 1;
             if (SetFileInformationByHandle(_clip.DangerousGetHandle(), FileDispositionInfo, ref on, 1) != 0) { result = GuardResult.Ready; problem = null; return true; }
@@ -817,12 +852,12 @@ internal sealed class ArchiveService
         public void Dispose() { _clip.Dispose(); _copy.Dispose(); }
 
         /// <summary>What a failed open or delete of the local clip means.</summary>
-        private static (GuardResult, string?) FromError(int error) => error switch
+        private static (GuardResult, ArchiveProblem?) FromError(int error) => error switch
         {
             32 or 33 or 1224 => (GuardResult.InUse, null),   // sharing violation, lock violation, the file is mapped into a process
             2 or 3 => (GuardResult.Gone, null),
-            5 => (GuardResult.Denied, "cannot delete the local clip: access denied (is it read-only?)"),
-            _ => (GuardResult.Failed, "cannot delete the local clip: " + new System.ComponentModel.Win32Exception(error).Message.TrimEnd('.')),
+            5 => (GuardResult.Denied, ArchiveProblem.Of("cannot delete the local clip: access denied (is it read-only?)")),
+            _ => (GuardResult.Failed, ArchiveProblem.Of("cannot delete the local clip: {error}", ("error", new System.ComponentModel.Win32Exception(error).Message.TrimEnd('.')))),
         };
 
         private static unsafe bool Info(SafeFileHandle handle, out BY_HANDLE_FILE_INFORMATION info)
@@ -847,16 +882,16 @@ internal sealed class ArchiveService
 
     // ------------------------------------------------------------------ is the archive another name for the clips folder?
 
-    private const string AliasProblemText = "archive location is the clips folder under another name";
+    private static ArchiveProblem AliasProblemText => ArchiveProblem.Of("archive location is the clips folder under another name").AsSetting();
 
     private static string AliasKey(string archive, string clips) => archive + "|" + clips;
 
-    /// <summary><see cref="AliasProblem"/>, once per location for the automatic pass (it would otherwise write probes every 5 minutes, and a NAS that sleeps would not).</summary>
-    private string? CheckAlias(string root, string clips)
+    /// <summary><see cref="AliasCheck"/>, once per location for the automatic pass (it would otherwise write probes every 5 minutes, and a NAS that sleeps would not).</summary>
+    private ArchiveProblem? CheckAlias(string root, string clips)
     {
         string key = AliasKey(root, clips);
         if (string.Equals(_aliasOkKey, key, StringComparison.OrdinalIgnoreCase)) return null;
-        string? problem = AliasProblem(root, clips);
+        ArchiveProblem? problem = AliasCheck(root, clips);
         if (problem == null) _aliasOkKey = key;
         return problem;
     }
@@ -868,7 +903,7 @@ internal sealed class ArchiveService
     /// system: a small file written into one folder must not show up in the other, in either direction. A folder that cannot be
     /// written to says nothing here (a copy would fail there too).
     /// </summary>
-    internal static string? AliasProblem(string archive, string clips)
+    internal static ArchiveProblem? AliasCheck(string archive, string clips)
     {
         string name = $".clink-alias-{Guid.NewGuid():N}.tmp";
         string inArchive = Path.Combine(archive, name), inClips = Path.Combine(clips, name);
@@ -895,7 +930,7 @@ internal sealed class ArchiveService
         using var outp = new FileStream(dst, FileMode.Create, FileAccess.Write, FileShare.None, 1, FileOptions.SequentialScan);
         long done = 0;
         int lastStep = -1, lastPercent = 0, n;
-        SetStatus($"Copying {name}…");
+        SetStatus(L.T("Copying {name}…", ("name", L.Ltr(name))));
         Report(manual, name, 0);
         while ((n = inp.Read(_buffer, 0, _buffer.Length)) > 0)
         {
@@ -903,7 +938,7 @@ internal sealed class ArchiveService
             outp.Write(_buffer, 0, n);
             done += n;
             int step = (int)(done * 20 / Math.Max(1, length));
-            if (step != lastStep) { lastStep = step; SetStatus($"Copying {name} ({step * 5} %)"); }
+            if (step != lastStep) { lastStep = step; SetStatus(L.T("Copying {name} ({percent} %)", ("name", L.Ltr(name)), ("percent", step * 5))); }
             if (manual?.Progress != null)
             {
                 int percent = (int)Math.Min(100, done * 100 / Math.Max(1, length));
@@ -928,27 +963,29 @@ internal sealed class ArchiveService
     public Task<(bool ok, string message, long freeBytes)> TestAsync(string path) => Task.Run(() =>
     {
         string p = (path ?? "").Trim();
-        if (p.Length == 0) return (false, "Enter a folder or share path first", 0L);
+        if (p.Length == 0) return (false, L.T("Enter a folder or share path first"), 0L);
         if (!Path.IsPathFullyQualified(p)) return (false, FullPathHint, 0L);
-        if (IsSameFolder(p, _settings.ClipsFolder)) return (false, "Archive location is the clips folder: pick another folder, share or drive", 0L);
-        string? problem = Reach(p);
-        if (problem != null) return (false, Capitalize(problem), 0L);
+        if (IsSameFolder(p, _settings.ClipsFolder)) return (false, L.T("Archive location is the clips folder: pick another folder, share or drive"), 0L);
+        if (Reach(p) is { } problem) return (false, Capitalize(problem.Shown), 0L);
         try
         {
             string probe = Path.Combine(p, $".clink-test-{Guid.NewGuid():N}.tmp");
             File.WriteAllBytes(probe, new byte[16]);
             File.Delete(probe);
         }
-        catch (Exception ex) { return (false, "Reachable, but not writable: " + Capitalize(Describe(ex, p)), 0L); }
+        catch (Exception ex) { return (false, L.T("Reachable, but not writable: {reason}", ("reason", Capitalize(Describe(ex, p).Shown))), 0L); }
         // Another name for the clips folder (a junction, a second share of the same disk) passes the spelling check above; a file written into it shows up in the clips folder.
-        if (AliasProblem(p, _settings.ClipsFolder) is string alias) return (false, Capitalize(alias) + ": pick another folder, share or drive", 0L);
+        if (AliasCheck(p, _settings.ClipsFolder) != null) return (false, L.T("Archive location is the clips folder under another name: pick another folder, share or drive"), 0L);
         long free = FreeBytes(p);
-        string kind = IsUnc(p) ? "Share" : "Folder";
-        return (true, free >= 0 ? $"{kind} reachable · writable · {FormatBytes(free)} free" : $"{kind} reachable · writable", Math.Max(0, free));
+        bool share = IsUnc(p);
+        string text = free >= 0
+            ? L.T(share ? "Share reachable · writable · {size} free" : "Folder reachable · writable · {size} free", ("size", FormatBytes(free)))
+            : L.T(share ? "Share reachable · writable" : "Folder reachable · writable");
+        return (true, text, Math.Max(0, free));
     });
 
     /// <summary>Null when the folder exists (or could be created), else a short reason.</summary>
-    private static string? Reach(string root)
+    private static ArchiveProblem? Reach(string root)
     {
         try
         {
@@ -959,23 +996,32 @@ internal sealed class ArchiveService
         catch (Exception ex) { return Describe(ex, root); }
     }
 
-    private string IdleStatus()
+    /// <summary>The status line when nothing is being copied, and whether it is a problem (the card colours it by that flag, not by its words).</summary>
+    private (string Text, bool Problem) IdleStatus()
     {
         var s = _settings;
-        if (string.IsNullOrWhiteSpace(s.ArchivePath)) return s.ArchiveEnabled ? NoLocationStatus : "Archive off";
-        if (!s.ArchiveEnabled) return ManualOnlyStatus;   // a location is set: Archive now… works, the background moves do not run
+        if (string.IsNullOrWhiteSpace(s.ArchivePath)) return s.ArchiveEnabled ? (NoLocationStatus, true) : (L.T("Archive off"), false);
+        if (!s.ArchiveEnabled) return (ManualOnlyStatus, false);   // a location is set: Archive now… works, the background moves do not run
         int archived = _library.Entries.Count(e => e.IsArchived);
-        var parts = new List<string> { archived == 1 ? "1 clip archived" : $"{archived} clips archived" };
-        if (_lastMove is DateTime t) parts.Add($"last move {t:HH:mm}");
-        if (_problem is SameFolderProblem or NotFullPathProblem or AliasProblemText) parts.Add(_problem);   // a setting to fix, not something a retry changes
-        else if (_problem != null) parts.Add(_problem + ", will retry");
-        else if (_reachable) parts.Add(IsUnc(s.ArchivePath) ? "NAS reachable" : "archive reachable");
-        return string.Join(" · ", parts);
+        var parts = new List<string> { L.Plural("{count} clips archived", archived) };
+        if (_lastMove is DateTime t) parts.Add(L.T("last move {time}", ("time", t.ToString("HH:mm", L.FormatCulture))));
+        bool problem = true;
+        if (_problem is { Setting: true } fix) parts.Add(fix.Shown);   // a setting to fix, not something a retry changes
+        else if (_problem is { } p) parts.Add(L.T("{problem}, will retry", ("problem", p.Shown)));
+        else if (_reachable) { parts.Add(L.T(IsUnc(s.ArchivePath) ? "NAS reachable" : "archive reachable")); problem = false; }
+        else problem = false;
+        return (string.Join(" · ", parts), problem);   // (the separator of the parts: S6 looks at it with the other sentence joins)
     }
 
-    private void SetStatus(string status)
+    private void SetIdleStatus()
     {
-        lock (_gate) { if (_status == status) return; _status = status; }
+        var (text, problem) = IdleStatus();
+        SetStatus(text, problem);
+    }
+
+    private void SetStatus(string status, bool problem = false)
+    {
+        lock (_gate) { if (_status == status && _statusIsProblem == problem) return; _status = status; _statusIsProblem = problem; }
         try { Changed?.Invoke(); } catch (Exception ex) { Log.Warn("archive: Changed handler: " + ex.Message); }
     }
 
@@ -993,18 +1039,19 @@ internal sealed class ArchiveService
         (ex is IOException && Win32Code(ex) == -1 && ex is not FileNotFoundException);
 
     /// <summary>A short, user-facing reason: "access denied: open the share in Explorer once to sign in", "archive unreachable", "archive is full", …</summary>
-    private static string Describe(Exception ex, string? root)
+    private static ArchiveProblem Describe(Exception ex, string? root)
     {
         int code = Win32Code(ex);
         if (ex is UnauthorizedAccessException || Array.IndexOf(s_accessCodes, code) >= 0)
-            return IsNetwork(root) ? "access denied: open the share in Explorer once to sign in" : "access denied";
-        if (code == 112 || code == 39 || code == 1295) return "archive is full";
-        if (code == 19) return "archive is read-only";   // ERROR_WRITE_PROTECT: a degraded NAS volume, a write-locked USB drive
-        if (IsUnreachable(ex)) return "archive unreachable";
-        return ex.Message.TrimEnd('.');
+            return ArchiveProblem.Of(IsNetwork(root) ? "access denied: open the share in Explorer once to sign in" : "access denied");
+        if (code == 112 || code == 39 || code == 1295) return ArchiveProblem.Of("archive is full");
+        if (code == 19) return ArchiveProblem.Of("archive is read-only");   // ERROR_WRITE_PROTECT: a degraded NAS volume, a write-locked USB drive
+        if (IsUnreachable(ex)) return ArchiveProblem.Of("archive unreachable");
+        return ArchiveProblem.Raw(ex.Message.TrimEnd('.'));
     }
 
-    private static string Capitalize(string s) => s.Length == 0 ? s : char.ToUpperInvariant(s[0]) + s[1..];
+    /// <summary>The first letter upper-case, for a reason that starts a sentence of its own (the language's own casing rules).</summary>
+    internal static string Capitalize(string s) => s.Length == 0 ? s : char.ToUpper(s[0], L.UiCulture) + s[1..];
 
     private static bool IsUnc(string? path) => path != null && path.StartsWith(@"\\", StringComparison.Ordinal);
 
@@ -1021,8 +1068,11 @@ internal sealed class ArchiveService
         catch { return false; }
     }
 
-    private const string SameFolderProblem = "archive location is the clips folder";
-    private const string NotFullPathProblem = @"archive location is not a full path (D:\Clips, \\nas\clips)";
+    // Settings to fix: the status says them without "will retry" (a retry changes nothing).
+    private static ArchiveProblem SameFolder => ArchiveProblem.Of("archive location is the clips folder").AsSetting();
+    private static ArchiveProblem NotFullPath => new(
+        L.TIn("en", "archive location is not a full path ({example}, {unc})", ("example", @"D:\Clips"), ("unc", @"\\nas\clips")),
+        L.T("archive location is not a full path ({example}, {unc})", ("example", L.Ltr(@"D:\Clips")), ("unc", L.Ltr(@"\\nas\clips"))), Setting: true);
 
     private static bool IsUnder(string path, string folder)
     {
@@ -1136,11 +1186,21 @@ internal sealed class ArchiveService
         return -1;
     }
 
-    public static string FormatBytes(long bytes)
+    /// <summary>
+    /// "3.4 GB", "820 MB", "512 KB": BINARY units (1 KB = 1024 bytes), as the archive has always shown sizes. Not <see cref="L.Bytes"/>
+    /// (decimal "kB"): the two are different on purpose, so this has templates of its own (<c>bin-unit|...</c>).
+    /// </summary>
+    public static string FormatBytes(long bytes) => Binary(bytes, (key, n) => L.T(key, ("n", n)));
+
+    /// <summary><see cref="FormatBytes"/> in a given language (the log's English).</summary>
+    private static string FormatBytesIn(string locale, long bytes) => Binary(bytes, (key, n) => L.TIn(locale, key, ("n", n)));
+
+    private static string Binary(long bytes, Func<string, string, string> unit)
     {
-        if (bytes >= 1L << 40) return $"{bytes / (double)(1L << 40):0.0} TB";
-        if (bytes >= 1L << 30) return $"{bytes / (double)(1L << 30):0.0} GB";
-        if (bytes >= 1L << 20) return $"{bytes / (double)(1L << 20):0} MB";
-        return $"{bytes / 1024.0:0} KB";
+        var fc = L.FormatCulture;
+        if (bytes >= 1L << 40) return unit("bin-unit|{n} TB", (bytes / (double)(1L << 40)).ToString("0.0", fc));
+        if (bytes >= 1L << 30) return unit("bin-unit|{n} GB", (bytes / (double)(1L << 30)).ToString("0.0", fc));
+        if (bytes >= 1L << 20) return unit("bin-unit|{n} MB", (bytes / (double)(1L << 20)).ToString("0", fc));
+        return unit("bin-unit|{n} KB", (bytes / 1024.0).ToString("0", fc));
     }
 }

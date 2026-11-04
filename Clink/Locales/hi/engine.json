@@ -1,0 +1,28 @@
+{
+  "engine-status|Starting…": "शुरू हो रहा है…",
+  "engine-status|Stopped": "बंद",
+  "engine-status|Recording": "रिकॉर्डिंग हो रही है",
+  "engine-status|Error": "त्रुटि",
+
+  "engine-error|The GPU was reset (graphics driver crash or TDR)": "GPU रीसेट हो गया (ग्राफ़िक्स ड्राइवर क्रैश या TDR)",
+
+
+  "audio-line|{name} ({detail})": "{name} ({detail})",
+
+  "audio-problem|not connected": "जुड़ा नहीं है",
+  "audio-problem|disabled": "बंद है",
+
+  "audio-detail|game + mic + voice, always track 1": "गेम + माइक + वॉइस, हमेशा ट्रैक 1",
+  "audio-detail|waiting for app": "ऐप की प्रतीक्षा है",
+  "audio-detail|everything": "सब कुछ",
+  "audio-detail|everything except {app}": "{app} को छोड़कर सब कुछ",
+  "audio-detail|mix only": "सिर्फ़ मिक्स",
+  "audio-detail|{detail}, mix only": "{detail}, सिर्फ़ मिक्स",
+  "audio-detail|not connected or disabled": "जुड़ा नहीं है या बंद है",
+  "audio-detail|in use by another app (exclusive mode)": "दूसरे ऐप द्वारा उपयोग में (एक्सक्लूसिव मोड)",
+  "audio-detail|access denied": "पहुँच अस्वीकृत",
+  "audio-detail|blocked: allow microphone access for desktop apps in Windows privacy settings": "अवरुद्ध: Windows की गोपनीयता सेटिंग में डेस्कटॉप ऐप के लिए माइक्रोफ़ोन की पहुँच की अनुमति दें",
+  "audio-detail|not an output device": "आउटपुट डिवाइस नहीं है",
+  "audio-detail|not an input device": "इनपुट डिवाइस नहीं है",
+  "audio-detail|Windows Audio service not running": "Windows Audio सेवा नहीं चल रही"
+}

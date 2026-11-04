@@ -1,6 +1,7 @@
 using System.IO;
 using System.Windows;
 using Clink.Screenshots;
+using Clink.Services.Localization;
 
 namespace Clink.Services;
 
@@ -17,7 +18,13 @@ internal sealed partial class AppController
     /// <summary>Test seam: picks the target file instead of the save dialog (null = the user cancelled).</summary>
     internal Func<ClipEntry, string?>? SaveTargetPicker { get; set; }
 
-    private const string Gone = "The clip's file is not there any more";
+    private const string Gone = "The clip's file is not there any more";   // (an exception message: stays English, and is what ends up in the log)
+
+    /// <summary>The clip's file vanished before the copy began (message <see cref="Gone"/>, English for the log); the user is told in their language.</summary>
+    private sealed class ClipFileGoneException() : FileNotFoundException(Gone);
+
+    /// <summary>What the user is told about a failed copy: the clip's file being gone in their language, else the exception's message.</summary>
+    private static object CopyErrorOf(Exception ex) => ex is ClipFileGoneException ? Note.Of("The clip's file is not there any more") : ex.Message;
 
     /// <summary>
     /// Saves a copy of the clip's file where the user picks. The copy is not added to the library and the entry is not changed.
@@ -28,17 +35,17 @@ internal sealed partial class AppController
         string? target = SaveTargetPicker is { } picker ? picker(entry) : PickSaveTarget(entry, owner);
         if (string.IsNullOrWhiteSpace(target)) return new SaveResult(SaveOutcome.Cancelled, null, null);
         string source = entry.Path;
-        if (SaveCopy.TargetProblem(target, source, Settings.ClipsFolder) is { } problem)
+        if (SaveCopy.TargetProblemNote(target, source, Settings.ClipsFolder) is { } problem)
         {
-            Say("Not saved: " + problem);
-            return new SaveResult(SaveOutcome.Refused, null, problem);
+            SayT("Not saved: {reason}", ("reason", problem));
+            return new SaveResult(SaveOutcome.Refused, null, problem.Shown);
         }
         try
         {
-            Say("Saving a copy…");
+            SayT("Saving a copy…");
             var copy = Task.Run(async () =>
             {
-                if (!File.Exists(source)) throw new FileNotFoundException(Gone);   // off the UI thread: an archived clip may sit on a dropped network share
+                if (!File.Exists(source)) throw new ClipFileGoneException();   // off the UI thread: an archived clip may sit on a dropped network share
                 await SaveCopy.CopyAsync(source, target, progress, _cts.Token);
             });
             lock (_saves) _saves.Add(copy);
@@ -47,14 +54,15 @@ internal sealed partial class AppController
         }
         catch (OperationCanceledException)
         {
-            Say("Save cancelled");
+            SayT("Save cancelled");
             return new SaveResult(SaveOutcome.Cancelled, null, "Cancelled");
         }
         catch (Exception ex)
         {
             Log.Error("save a copy", ex);
-            Say("Save failed: " + ex.Message);
-            return new SaveResult(SaveOutcome.Failed, null, ex.Message);
+            var error = CopyErrorOf(ex);
+            SayT("Save failed: {error}", ("error", error));
+            return new SaveResult(SaveOutcome.Failed, null, error is Note shown ? shown.Shown : ex.Message);
         }
         try
         {
@@ -67,7 +75,7 @@ internal sealed partial class AppController
             }
         }
         catch (Exception ex) { Log.Warn("save a copy: could not remember the folder: " + ex.Message); }
-        Say("Saved a copy to " + target);
+        SayT("Saved a copy to {path}", ("path", Note.Ltr(target)));
         return new SaveResult(SaveOutcome.Saved, target, null);
     }
 
@@ -85,11 +93,11 @@ internal sealed partial class AppController
     {
         var dialog = new Microsoft.Win32.SaveFileDialog
         {
-            Filter = "MP4 video (*.mp4)|*.mp4|All files (*.*)|*.*",
+            Filter = L.T("MP4 video (*.mp4)") + "|*.mp4|" + L.T("All files (*.*)") + "|*.*",
             DefaultExt = ".mp4",
             AddExtension = true,
             OverwritePrompt = true,
-            Title = "Save a copy of the clip",
+            Title = L.T("Save a copy of the clip"),
             FileName = SaveCopy.DefaultFileName(entry.Path),
             InitialDirectory = SaveCopy.InitialFolder(Settings.SaveCopyFolder, Environment.GetFolderPath(Environment.SpecialFolder.MyVideos)),
         };
@@ -105,16 +113,17 @@ internal sealed partial class AppController
     /// </summary>
     public bool ShareFile(ClipEntry entry)
     {
-        ShareRefusal = null;
-        ShareError = null;
+        _refusal = null; RefusalKind = ShareRefusalKind.None;
+        _shareError = null;
         if (!OpenShareWindow(entry))
         {
-            ShareError = ShareWindowFailedText;
-            Say(ShareError);
+            var failed = Note.Of("Could not open the share window");   // (AppController.ShareWindowFailedText is the same key, for the clip list)
+            _shareError = failed;
+            Say(failed);
             LastShareOutcome = ShareOutcome.WindowFailed;
             return false;
         }
-        Say("Drag the clip where you want to share it");
+        SayT("Drag the clip where you want to share it");
         LastShareOutcome = ShareOutcome.FileShareOpened;
         return true;
     }

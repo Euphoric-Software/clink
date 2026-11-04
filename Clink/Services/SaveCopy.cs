@@ -1,12 +1,15 @@
 using System.IO;
+using Clink.Services.Localization;
 
 namespace Clink.Services;
 
 /// <summary>"Save a copy…" of a clip file: the pure rules and the safe copy (never leaves a truncated target).</summary>
 internal static class SaveCopy
 {
-    public const string OwnFileText = "That is the clip's own file";
-    public const string InsideClipsText = "Choose a folder outside Clink's clips folder";
+    public static string OwnFileText => OwnFileNote.Shown;
+    public static string InsideClipsText => InsideClipsNote.Shown;
+    private static Note OwnFileNote => Note.Of("That is the clip's own file");
+    private static Note InsideClipsNote => Note.Of("Choose a folder outside Clink's clips folder");
 
     public static string DefaultFileName(string clipPath) => Path.GetFileName(clipPath);
 
@@ -15,18 +18,21 @@ internal static class SaveCopy
         !string.IsNullOrWhiteSpace(remembered) && Directory.Exists(remembered) ? remembered : fallbackMyVideos;
 
     /// <summary>Null when <paramref name="target"/> may be written, else why not.</summary>
-    public static string? TargetProblem(string target, string source, string? clipsFolder)
+    public static string? TargetProblem(string target, string source, string? clipsFolder) => TargetProblemNote(target, source, clipsFolder)?.Shown;
+
+    /// <summary><see cref="TargetProblem"/> as a note (English in the log, the language of the UI on screen).</summary>
+    public static Note? TargetProblemNote(string target, string source, string? clipsFolder)
     {
         string t, s;
         try { t = Path.GetFullPath(target); s = Path.GetFullPath(source); }
-        catch (Exception) { return "That is not a valid file name"; }
-        if (string.Equals(t, s, StringComparison.OrdinalIgnoreCase)) return OwnFileText;
+        catch (Exception) { return Note.Of("That is not a valid file name"); }
+        if (string.Equals(t, s, StringComparison.OrdinalIgnoreCase)) return OwnFileNote;
         if (!string.IsNullOrWhiteSpace(clipsFolder))
         {
             string root;
             try { root = Path.GetFullPath(clipsFolder).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar; }
             catch (Exception) { return null; }
-            if (t.StartsWith(root, StringComparison.OrdinalIgnoreCase)) return InsideClipsText;
+            if (t.StartsWith(root, StringComparison.OrdinalIgnoreCase)) return InsideClipsNote;
         }
         return null;
     }

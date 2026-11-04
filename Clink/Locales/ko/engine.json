@@ -1,0 +1,23 @@
+{
+  "engine-status|Starting…": "시작하는 중…",
+  "engine-status|Stopped": "중지됨",
+  "engine-status|Recording": "녹화 중",
+  "engine-status|Error": "오류",
+  "engine-error|The GPU was reset (graphics driver crash or TDR)": "GPU가 재설정되었습니다(그래픽 드라이버 충돌 또는 TDR)",
+  "audio-line|{name} ({detail})": "{name} ({detail})",
+  "audio-problem|not connected": "연결되지 않음",
+  "audio-problem|disabled": "사용 안 함",
+  "audio-detail|game + mic + voice, always track 1": "게임 + 마이크 + 음성, 항상 트랙 1",
+  "audio-detail|waiting for app": "앱 대기 중",
+  "audio-detail|everything": "모든 소리",
+  "audio-detail|everything except {app}": "{app} 제외 모든 소리",
+  "audio-detail|mix only": "믹스만",
+  "audio-detail|{detail}, mix only": "{detail}, 믹스만",
+  "audio-detail|not connected or disabled": "연결되지 않았거나 사용 안 함",
+  "audio-detail|in use by another app (exclusive mode)": "다른 앱에서 사용 중 (단독 모드)",
+  "audio-detail|access denied": "액세스 거부됨",
+  "audio-detail|blocked: allow microphone access for desktop apps in Windows privacy settings": "차단됨: Windows 개인 정보 설정에서 데스크톱 앱의 마이크 액세스를 허용하세요",
+  "audio-detail|not an output device": "출력 장치가 아님",
+  "audio-detail|not an input device": "입력 장치가 아님",
+  "audio-detail|Windows Audio service not running": "Windows 오디오 서비스가 실행되고 있지 않음"
+}

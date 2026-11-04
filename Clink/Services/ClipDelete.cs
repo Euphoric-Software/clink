@@ -1,5 +1,6 @@
 using System.IO;
 using Clink.Screenshots;
+using Clink.Services.Localization;
 using Clink.UI;
 
 namespace Clink.Services;
@@ -95,24 +96,20 @@ internal sealed class ClipDeleter
     internal static bool TrimsMode(int trimCount) => trimCount > 0;
 
     /// <summary>The trims-mode pop-up's body: what the two choices are, plus the shared link line.</summary>
-    internal static string ConfirmBodyWithTrims(string title, int trimCount, bool shared)
+    internal static string ConfirmBodyWithTrims(string? title, int trimCount, bool shared, bool isTrim = false)
     {
-        string text = $"{title} has {ClipGrouping.TrimsLabel(trimCount)}. Delete just the full clip, or the clip and {(trimCount == 1 ? "its trim" : "its trims")}? Everything goes to the Recycle Bin, where you can restore it.";
-        if (shared) text += " The shared link keeps working.";
+        // title is the game name, or null when the clip has none (the sentence then starts with the generic word, a whole key of its own)
+        string text = title != null
+            ? L.Plural("{title} has {count} trims. Delete just the full clip, or the clip and its trims? Everything goes to the Recycle Bin, where you can restore it.", trimCount, ("title", title))
+            : isTrim
+                ? L.Plural("Trimmed clip has {count} trims. Delete just the full clip, or the clip and its trims? Everything goes to the Recycle Bin, where you can restore it.", trimCount)
+                : L.Plural("Clip has {count} trims. Delete just the full clip, or the clip and its trims? Everything goes to the Recycle Bin, where you can restore it.", trimCount);
+        if (shared) text = L.JoinSentences(text, L.T("The shared link keeps working."));
         return text;
     }
 
-    /// <summary>Why one file cannot be deleted, as a predicate ("is uploading"); <paramref name="past"/> words the two shell outcomes as having happened ("couldn't").</summary>
-    private static string Why(ClipDeleteResult failure, bool past = false) => failure switch
-    {
-        ClipDeleteResult.TrimOpen => "is open in the trim window",
-        ClipDeleteResult.Uploading => "is uploading",
-        ClipDeleteResult.NotLocal => "is on a network or removable drive",
-        ClipDeleteResult.Refused => "is outside the clips and archive folders",
-        ClipDeleteResult.Link => "is a shortcut to another location",
-        ClipDeleteResult.Unreachable => past ? "couldn't be reached" : "can't be reached",
-        _ => past ? "couldn't be moved to the Recycle Bin" : "can't be moved to the Recycle Bin",
-    };
+    // The reasons a file cannot be deleted are worded in whole sentences, one per reason and sentence shape (no predicate fragments are
+    // glued into a sentence: another language needs its own word order and tense). The same seven reasons appear in each shape.
 
     /// <summary>
     /// The line under the trims-mode body when the trims cannot be deleted (one sentence), or null when they can. <paramref name="oneDeleting"/>:
@@ -120,9 +117,18 @@ internal sealed class ClipDeleter
     /// </summary>
     internal static string? TrimsBlockedText(ClipDeleteResult? failure, bool oneDeleting = false)
     {
-        if (oneDeleting) return "Its trims can't be deleted right now: one is already being deleted.";
+        if (oneDeleting) return L.T("Its trims can't be deleted right now: one is already being deleted.");
         if (failure == null) return null;
-        return $"Its trims can't be deleted right now: one {Why(failure.Value)}.";
+        return failure.Value switch
+        {
+            ClipDeleteResult.TrimOpen => L.T("Its trims can't be deleted right now: one is open in the trim window."),
+            ClipDeleteResult.Uploading => L.T("Its trims can't be deleted right now: one is uploading."),
+            ClipDeleteResult.NotLocal => L.T("Its trims can't be deleted right now: one is on a network or removable drive."),
+            ClipDeleteResult.Refused => L.T("Its trims can't be deleted right now: one is outside the clips and archive folders."),
+            ClipDeleteResult.Link => L.T("Its trims can't be deleted right now: one is a shortcut to another location."),
+            ClipDeleteResult.Unreachable => L.T("Its trims can't be deleted right now: one can't be reached."),
+            _ => L.T("Its trims can't be deleted right now: one can't be moved to the Recycle Bin."),
+        };
     }
 
     /// <summary>How a clip-and-trims delete ended: the first failure (or Deleted), how many of the files went, and whether the failing file was a trim (not the clip).</summary>
@@ -131,15 +137,53 @@ internal sealed class ClipDeleter
     /// <summary>What the parent row says after a clip-and-trims delete that stopped early. Each sentence is one idea.</summary>
     internal static string TreeProblemText(TreeOutcome outcome)
     {
+        var r = outcome.Result;
+        int d = outcome.Deleted, n = outcome.Total;
         if (outcome.OnTrim)
         {
-            string trim = $"one of its trims {Why(outcome.Result, past: true)}.";
-            if (outcome.Deleted == 0) return $"Nothing was deleted: {trim}";
-            return $"Deleted {outcome.Deleted} of {outcome.Total} files. One{trim.Substring(3)} The clip and the remaining trims were kept.";
+            if (d == 0)
+                return r switch
+                {
+                    ClipDeleteResult.TrimOpen => L.T("Nothing was deleted: one of its trims is open in the trim window."),
+                    ClipDeleteResult.Uploading => L.T("Nothing was deleted: one of its trims is uploading."),
+                    ClipDeleteResult.NotLocal => L.T("Nothing was deleted: one of its trims is on a network or removable drive."),
+                    ClipDeleteResult.Refused => L.T("Nothing was deleted: one of its trims is outside the clips and archive folders."),
+                    ClipDeleteResult.Link => L.T("Nothing was deleted: one of its trims is a shortcut to another location."),
+                    ClipDeleteResult.Unreachable => L.T("Nothing was deleted: one of its trims couldn't be reached."),
+                    _ => L.T("Nothing was deleted: one of its trims couldn't be moved to the Recycle Bin."),
+                };
+            return r switch
+            {
+                ClipDeleteResult.TrimOpen => L.Plural("Deleted {deleted} of {count} files. One of its trims is open in the trim window. The clip and the remaining trims were kept.", n, ("deleted", d)),
+                ClipDeleteResult.Uploading => L.Plural("Deleted {deleted} of {count} files. One of its trims is uploading. The clip and the remaining trims were kept.", n, ("deleted", d)),
+                ClipDeleteResult.NotLocal => L.Plural("Deleted {deleted} of {count} files. One of its trims is on a network or removable drive. The clip and the remaining trims were kept.", n, ("deleted", d)),
+                ClipDeleteResult.Refused => L.Plural("Deleted {deleted} of {count} files. One of its trims is outside the clips and archive folders. The clip and the remaining trims were kept.", n, ("deleted", d)),
+                ClipDeleteResult.Link => L.Plural("Deleted {deleted} of {count} files. One of its trims is a shortcut to another location. The clip and the remaining trims were kept.", n, ("deleted", d)),
+                ClipDeleteResult.Unreachable => L.Plural("Deleted {deleted} of {count} files. One of its trims couldn't be reached. The clip and the remaining trims were kept.", n, ("deleted", d)),
+                _ => L.Plural("Deleted {deleted} of {count} files. One of its trims couldn't be moved to the Recycle Bin. The clip and the remaining trims were kept.", n, ("deleted", d)),
+            };
         }
-        string clip = $"the clip {Why(outcome.Result, past: true)}";
-        if (outcome.Deleted == 0) return $"Nothing was deleted: {clip}.";
-        return $"Deleted {outcome.Deleted} of {outcome.Total} files. The clip {Why(outcome.Result, past: true)}, so it was kept.";
+        if (d == 0)
+            return r switch
+            {
+                ClipDeleteResult.TrimOpen => L.T("Nothing was deleted: the clip is open in the trim window."),
+                ClipDeleteResult.Uploading => L.T("Nothing was deleted: the clip is uploading."),
+                ClipDeleteResult.NotLocal => L.T("Nothing was deleted: the clip is on a network or removable drive."),
+                ClipDeleteResult.Refused => L.T("Nothing was deleted: the clip is outside the clips and archive folders."),
+                ClipDeleteResult.Link => L.T("Nothing was deleted: the clip is a shortcut to another location."),
+                ClipDeleteResult.Unreachable => L.T("Nothing was deleted: the clip couldn't be reached."),
+                _ => L.T("Nothing was deleted: the clip couldn't be moved to the Recycle Bin."),
+            };
+        return r switch
+        {
+            ClipDeleteResult.TrimOpen => L.Plural("Deleted {deleted} of {count} files. The clip is open in the trim window, so it was kept.", n, ("deleted", d)),
+            ClipDeleteResult.Uploading => L.Plural("Deleted {deleted} of {count} files. The clip is uploading, so it was kept.", n, ("deleted", d)),
+            ClipDeleteResult.NotLocal => L.Plural("Deleted {deleted} of {count} files. The clip is on a network or removable drive, so it was kept.", n, ("deleted", d)),
+            ClipDeleteResult.Refused => L.Plural("Deleted {deleted} of {count} files. The clip is outside the clips and archive folders, so it was kept.", n, ("deleted", d)),
+            ClipDeleteResult.Link => L.Plural("Deleted {deleted} of {count} files. The clip is a shortcut to another location, so it was kept.", n, ("deleted", d)),
+            ClipDeleteResult.Unreachable => L.Plural("Deleted {deleted} of {count} files. The clip couldn't be reached, so it was kept.", n, ("deleted", d)),
+            _ => L.Plural("Deleted {deleted} of {count} files. The clip couldn't be moved to the Recycle Bin, so it was kept.", n, ("deleted", d)),
+        };
     }
 
     /// <summary>The first failing precheck over the trims (path rule, network drive, uploading, trim window), or null when all may go. Call on the UI thread.</summary>
@@ -195,10 +239,8 @@ internal sealed class ClipDeleter
         return entries.Select((e, i) => (e, i, d: Depth(e))).OrderByDescending(t => t.d).ThenBy(t => t.i).Select(t => t.e).ToList();
     }
 
-    private static string Noun(int n, bool screenshots) => screenshots ? (n == 1 ? "screenshot" : "screenshots") : (n == 1 ? "clip" : "clips");
-
     /// <summary>"Delete 6 clips?" / "Delete 3 screenshots?"</summary>
-    internal static string BulkConfirmTitle(int n, bool screenshots) => $"Delete {n} {Noun(n, screenshots)}?";
+    internal static string BulkConfirmTitle(int n, bool screenshots) => screenshots ? L.Plural("Delete {count} screenshots?", n) : L.Plural("Delete {count} clips?", n);
 
     /// <summary>
     /// The bulk pop-up's body: what happens, the shared links, the trims of selected clips that were not selected (they stay and become
@@ -206,26 +248,21 @@ internal sealed class ClipDeleter
     /// </summary>
     internal static string BulkConfirmBody(int n, int shared, int unselectedTrims, int blocked, bool screenshots, int withoutFile = 0)
     {
-        string text = n == 1
-            ? $"1 {Noun(1, screenshots)} will be moved to the Recycle Bin, where you can restore it."
-            : $"{n} {Noun(n, screenshots)} will be moved to the Recycle Bin, where you can restore them.";
-        if (shared > 0) text += screenshots ? " The links stay on Copium." : " The shared links keep working.";
-        if (unselectedTrims > 0)
-            text += unselectedTrims == 1
-                ? " 1 trim of a selected clip is not selected: it stays in the list and moves to the top level."
-                : $" {unselectedTrims} trims of the selected clips are not selected: they stay in the list and move to the top level.";
-        if (blocked > 0)
-            text += blocked == 1
-                ? " 1 can't be deleted right now and will be skipped."
-                : $" {blocked} can't be deleted right now and will be skipped.";
-        if (withoutFile > 0) text += " " + WithoutFileText(withoutFile);
-        return text;
+        // whole sentences, joined by a space
+        var parts = new List<string>
+        {
+            screenshots ? L.Plural("{count} screenshots will be moved to the Recycle Bin, where you can restore them.", n)
+                : L.Plural("{count} clips will be moved to the Recycle Bin, where you can restore them.", n),
+        };
+        if (shared > 0) parts.Add(screenshots ? L.T("The links stay on Copium.") : L.T("The shared links keep working."));
+        if (unselectedTrims > 0) parts.Add(L.Plural("{count} trims of the selected clips are not selected: they stay in the list and move to the top level.", unselectedTrims));
+        if (blocked > 0) parts.Add(L.Plural("{count} can't be deleted right now and will be skipped.", blocked));
+        if (withoutFile > 0) parts.Add(WithoutFileText(withoutFile));
+        return L.JoinSentences(parts);
     }
 
     /// <summary>"1 without a file was left. Use Remove from list for it." (a screenshot row whose file is gone is never part of a bulk delete: the delete would drop its Copium link record).</summary>
-    internal static string WithoutFileText(int n) => n == 1
-        ? "1 without a file was left. Use Remove from list for it."
-        : $"{n} without a file were left. Use Remove from list for them.";
+    internal static string WithoutFileText(int n) => L.Plural("{count} without a file were left. Use Remove from list for them.", n);
 
     /// <summary>Why a selected screenshot is not part of a bulk delete.</summary>
     internal enum ShotSkip { None, Deleting, Uploading, NoFile, Refused, NotLocal }
@@ -266,12 +303,18 @@ internal sealed class ClipDeleter
     /// <summary>The row's problem line for a screenshot a bulk delete left (empty: nothing to say, e.g. a delete already under way).</summary>
     internal static string ShotSkipText(ShotSkip why) => why switch
     {
-        ShotSkip.Uploading => "This screenshot is uploading. Delete it after the upload finishes.",
+        ShotSkip.Uploading => L.T("This screenshot is uploading. Delete it after the upload finishes."),
         ShotSkip.NoFile => ScreenshotRow.NoFileText,
-        ShotSkip.Refused => "Not deleted: not a file in the screenshots folder",
+        ShotSkip.Refused => L.T("Not deleted: not a file in the screenshots folder"),
         ShotSkip.NotLocal => ScreenshotRow.NotLocalText,
         _ => "",
     };
+
+    /// <summary><see cref="ShotBulkSummary"/> as a note (English in the log).</summary>
+    internal static Note ShotBulkSummaryNote(int deleted, int total, int withoutFile) => Note.Build(() => ShotBulkSummary(deleted, total, withoutFile));
+
+    /// <summary><see cref="BulkProblemText"/> as a note (English in the log); its text is empty when nothing was kept.</summary>
+    internal static Note BulkProblemNote(int deleted, int total, ClipDeleteResult? first) => Note.Build(() => BulkProblemText(deleted, total, first));
 
     /// <summary>What the bar says after a bulk screenshot delete: <paramref name="total"/> counts every row the delete was asked for, <paramref name="withoutFile"/> of them left because their file is gone.</summary>
     internal static string ShotBulkSummary(int deleted, int total, int withoutFile)
@@ -279,7 +322,7 @@ internal sealed class ClipDeleter
         int kept = total - deleted;
         string left = withoutFile > 0 ? " " + WithoutFileText(withoutFile) : "";
         if (kept - withoutFile <= 0)
-            return (deleted == 0 ? "Nothing was deleted." : deleted == 1 ? "Deleted 1 screenshot." : $"Deleted {deleted} screenshots.") + left;
+            return (deleted == 0 ? L.T("Nothing was deleted.") : L.Plural("Deleted {count} screenshots.", deleted)) + left;
         return BulkProblemText(deleted, total, null) + left;
     }
 
@@ -288,9 +331,18 @@ internal sealed class ClipDeleter
     {
         int kept = total - deleted;
         if (kept <= 0) return "";
-        string was = kept == 1 ? "1 was" : $"{kept} were";
-        string why = first is { } f ? $": {(kept == 1 ? "it" : "one")} {Why(f)}" : "";
-        return $"Deleted {deleted} of {total}. {was} kept{why}.";
+        // the number is the kept count (the plural form picks "was" / "were" and "it" / "one")
+        if (first is not { } f) return L.Plural("Deleted {deleted} of {total}. {count} were kept.", kept, ("deleted", deleted), ("total", total));
+        return f switch
+        {
+            ClipDeleteResult.TrimOpen => L.Plural("Deleted {deleted} of {total}. {count} were kept: one is open in the trim window.", kept, ("deleted", deleted), ("total", total)),
+            ClipDeleteResult.Uploading => L.Plural("Deleted {deleted} of {total}. {count} were kept: one is uploading.", kept, ("deleted", deleted), ("total", total)),
+            ClipDeleteResult.NotLocal => L.Plural("Deleted {deleted} of {total}. {count} were kept: one is on a network or removable drive.", kept, ("deleted", deleted), ("total", total)),
+            ClipDeleteResult.Refused => L.Plural("Deleted {deleted} of {total}. {count} were kept: one is outside the clips and archive folders.", kept, ("deleted", deleted), ("total", total)),
+            ClipDeleteResult.Link => L.Plural("Deleted {deleted} of {total}. {count} were kept: one is a shortcut to another location.", kept, ("deleted", deleted), ("total", total)),
+            ClipDeleteResult.Unreachable => L.Plural("Deleted {deleted} of {total}. {count} were kept: one can't be reached.", kept, ("deleted", deleted), ("total", total)),
+            _ => L.Plural("Deleted {deleted} of {total}. {count} were kept: one can't be moved to the Recycle Bin.", kept, ("deleted", deleted), ("total", total)),
+        };
     }
 
     /// <summary>The pop-up's answer: remembers "Do not ask again" only for a confirmed delete (Cancel never saves it).</summary>
@@ -336,24 +388,28 @@ internal sealed class ClipDeleter
     }
 
     /// <summary>The pop-up's body: what happens, plus a line for the trims that stay and the link that keeps working.</summary>
-    internal static string ConfirmBody(string title, bool hasTrims, bool shared)
+    internal static string ConfirmBody(string? title, bool hasTrims, bool shared, bool isTrim = false)
     {
-        string text = $"{title} will be moved to the Recycle Bin, where you can restore it.";
-        if (hasTrims) text += " Its trims stay in the list.";
-        if (shared) text += " The shared link keeps working.";
-        return text;
+        // title is the game name, or null when the clip has none (then the generic word is part of a whole key)
+        string first = title != null ? L.T("{title} will be moved to the Recycle Bin, where you can restore it.", ("title", title))
+            : isTrim ? L.T("Trimmed clip will be moved to the Recycle Bin, where you can restore it.")
+            : L.T("Clip will be moved to the Recycle Bin, where you can restore it.");
+        var parts = new List<string> { first };
+        if (hasTrims) parts.Add(L.T("Its trims stay in the list."));
+        if (shared) parts.Add(L.T("The shared link keeps working."));
+        return L.JoinSentences(parts);
     }
 
     /// <summary>What the row says when a delete did not happen.</summary>
     internal static string ProblemText(ClipDeleteResult result) => result switch
     {
-        ClipDeleteResult.TrimOpen => "Close the trim window for this clip first.",
-        ClipDeleteResult.Refused => "Clink only deletes clips that are in the clips or archive folder.",
-        ClipDeleteResult.NotLocal => "This clip is on a network or removable drive, where the Recycle Bin can't take it.",
-        ClipDeleteResult.Link => "This clip is a shortcut to another location, so Clink won't delete it.",
-        ClipDeleteResult.Uploading => "This clip is uploading. Delete it after the upload finishes.",
-        ClipDeleteResult.Unreachable => "Clink couldn't reach this clip's file. Check that its drive and folder are available, then try again.",
-        ClipDeleteResult.Failed => "Windows couldn't move this clip to the Recycle Bin, so it was not deleted.",
+        ClipDeleteResult.TrimOpen => L.T("Close the trim window for this clip first."),
+        ClipDeleteResult.Refused => L.T("Clink only deletes clips that are in the clips or archive folder."),
+        ClipDeleteResult.NotLocal => L.T("This clip is on a network or removable drive, where the Recycle Bin can't take it."),
+        ClipDeleteResult.Link => L.T("This clip is a shortcut to another location, so Clink won't delete it."),
+        ClipDeleteResult.Uploading => L.T("This clip is uploading. Delete it after the upload finishes."),
+        ClipDeleteResult.Unreachable => L.T("Clink couldn't reach this clip's file. Check that its drive and folder are available, then try again."),
+        ClipDeleteResult.Failed => L.T("Windows couldn't move this clip to the Recycle Bin, so it was not deleted."),
         _ => "",
     };
 

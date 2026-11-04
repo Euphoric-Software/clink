@@ -8,6 +8,7 @@ using System.Windows.Threading;
 using Clink.Engine;
 using Clink.Playback;
 using Clink.Services;
+using Clink.Services.Localization;
 
 namespace Clink.UI;
 
@@ -65,6 +66,13 @@ public partial class TrimWindow : Window
     {
         _entry = entry;
         InitializeComponent();
+        if (L.IsRtl) HintText.FlowDirection = FlowDirection.RightToLeft;   // the transport row is pinned left to right; the hint is a sentence
+        // The texts with key names in them (the {l:T} extension takes no arguments), and the toggle's glyph + word.
+        PlayButton.ToolTip = L.T("Play / pause ({keys})", ("keys", L.Ltr("Space")));
+        System.Windows.Automation.AutomationProperties.SetName(PlayButton, L.T("Play / pause ({keys})", ("keys", L.Ltr("Space"))));   // the glyph (▶ / ❚❚) is not a name
+        SetInButton.ToolTip = L.T("Set the start to the playhead ({keys})", ("keys", L.Ltr("I")));
+        SetOutButton.ToolTip = L.T("Set the end to the playhead ({keys})", ("keys", L.Ltr("O")));
+        TrimToggle.Content = "✂ " + L.T("Trim");
         AppIcons.Attach(this);   // has its own taskbar button when it has no owner
         _duration = Math.Max(TimelineControl.MinSelection, entry.Duration);
         Timeline.Duration = _duration;
@@ -180,7 +188,7 @@ public partial class TrimWindow : Window
     private async Task<ClipPlayer?> CreatePlayerAsync()
     {
         string path = _entry.Path;
-        StatusText.Text = "Opening preview…";
+        StatusText.Text = L.T("Opening preview…");
         try
         {
             return await Task.Run(() => new ClipPlayer(path, PreviewMaxWidth));
@@ -188,8 +196,8 @@ public partial class TrimWindow : Window
         catch (Exception ex)
         {
             Log.Warn("Trim preview failed: " + ex.Message);
-            StatusText.Text = "Preview unavailable: " + ex.Message;
-            TracksHint.Text = "No preview; the trim still works.";
+            StatusText.Text = L.T("Preview unavailable: {error}", ("error", UserText.Of(ex)));
+            TracksHint.Text = L.T("No preview; the trim still works.");
             return null;
         }
     }
@@ -237,7 +245,7 @@ public partial class TrimWindow : Window
         if (player.TrackCount == 0)
         {
             TracksHint.Text = "";
-            TracksPanel.Children.Add(new TextBlock { Text = "This clip has no audio.", Style = (Style)FindResource("MutedText") });
+            TracksPanel.Children.Add(new TextBlock { Text = L.T("This clip has no audio."), Style = (Style)FindResource("MutedText") });
             return;
         }
         // The file's own names first: the library's list can also name tracks that were not recorded (mix-only sources).
@@ -255,8 +263,8 @@ public partial class TrimWindow : Window
         for (int i = 0; i < player.TrackCount; i++)
         {
             int index = i;
-            string name = names != null && !string.IsNullOrWhiteSpace(names[i]) ? names[i] : $"Audio {i + 1}";
-            string label = _roles[i] == TrackRole.Mix ? "All audio (mix)" : name;   // the file keeps the name "Mix"
+            string name = names != null && !string.IsNullOrWhiteSpace(names[i]) ? names[i] : $"Audio {i + 1}";   // the name in the file (kept by the export; also what the log says)
+            string label = TrackLabel(fileRoles[i], names != null && !string.IsNullOrWhiteSpace(names[i]) ? names[i] : L.T("Audio {n}", ("n", i + 1)));   // what the row shows: the file keeps the name "Mix"
             bool feeds = MixPlan.FeedsMix(_roles, i);
             var grid = new Grid { Margin = new Thickness(0, 2, 0, 2) };
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -267,8 +275,8 @@ public partial class TrimWindow : Window
             var include = new CheckBox
             {
                 IsChecked = true, Content = label, VerticalAlignment = VerticalAlignment.Center,
-                ToolTip = feeds ? $"Ticked: {name} is also saved as a track of its own, at the volume on the right. Unticked: no track of its own, but its volume still shapes All audio"
-                    : "Ticked: saved in the trimmed clip at the volume on the right. Unticked: left out of the file",
+                ToolTip = feeds ? L.T("Ticked: {name} is also saved as a track of its own, at the volume on the right. Unticked: no track of its own, but its volume still shapes All audio", ("name", label))
+                    : L.T("Ticked: saved in the trimmed clip at the volume on the right. Unticked: left out of the file"),
             };
             include.Checked += (_, _) => OnIncludeChanged(index);
             include.Unchecked += (_, _) => OnIncludeChanged(index);
@@ -283,11 +291,11 @@ public partial class TrimWindow : Window
 
             var listen = new RadioButton
             {
-                Content = "Listen", GroupName = "TrimMonitor", Style = (Style)FindResource("MonitorRadio"),
+                Content = L.T("Listen"), GroupName = "TrimMonitor", Style = (Style)FindResource("MonitorRadio"),
                 VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 0, 0),
                 ToolTip = _roles[i] == TrackRole.Mix && remix
-                    ? "Play All audio in the preview, with the Game, Mic and Voice volumes below applied. Players play one track at a time, usually this one"
-                    : "Play this track in the preview. Players play one track at a time (usually the first), so the preview does too",
+                    ? L.T("Play All audio in the preview, with the Game, Mic and Voice volumes below applied. Players play one track at a time, usually this one")
+                    : L.T("Play this track in the preview. Players play one track at a time (usually the first), so the preview does too"),
             };
             listen.Checked += (_, _) => { _monitor = index; SyncPlayerMix(); };
             Grid.SetColumn(listen, 1);
@@ -297,14 +305,14 @@ public partial class TrimWindow : Window
             {
                 Minimum = 0, Maximum = 200, Value = 100, Width = 170, SmallChange = 5, LargeChange = 25,
                 IsMoveToPointEnabled = true, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 8, 0),
-                ToolTip = feeds ? $"{name}'s volume, in its own track and inside All audio (right-click resets to 100%)"
-                    : _roles[i] == TrackRole.Mix && remix ? "All audio's volume (right-click resets to 100%)"
-                    : "Volume in the saved clip (right-click resets to 100%)",
+                ToolTip = feeds ? L.T("{name}'s volume, in its own track and inside All audio (right-click resets to 100%)", ("name", label))
+                    : _roles[i] == TrackRole.Mix && remix ? L.T("All audio's volume (right-click resets to 100%)")
+                    : L.T("Volume in the saved clip (right-click resets to 100%)"),
             };
-            var percent = new TextBlock { Text = "100%", FontFamily = new FontFamily("Consolas"), Width = 44, TextAlignment = TextAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
+            var percent = new TextBlock { Text = PercentText(100), FontFamily = new FontFamily("Consolas"), Width = 44, TextAlignment = TextAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
             volume.ValueChanged += (_, e) =>
             {
-                percent.Text = $"{e.NewValue:0}%";
+                percent.Text = PercentText(e.NewValue);
                 SyncPlayerMix();
             };
             volume.MouseRightButtonUp += (_, _) => volume.Value = 100;
@@ -328,18 +336,75 @@ public partial class TrimWindow : Window
         if (_rows.Count == 0) return;   // no audio, or no preview: the hint already says so
         // The sources this clip's All audio can be rebuilt from (Game, Mic, Voice: whichever of them the file has as tracks).
         var sources = MixPlan.CanRemix(_roles) ? new[] { TrackRole.Game, TrackRole.Mic, TrackRole.Voice }.Where(r => Array.IndexOf(_roles, r) >= 0).ToArray() : Array.Empty<TrackRole>();
-        string names = JoinNames(sources, "and");
+        string names = JoinNames(sources, or: false);
+        bool one = sources.Length == 1;   // the number of sources decides the verb's form (a branch on the number, not a plural category)
         TracksHint.Text = _trimMode
-            ? sources.Length > 0 ? $"Ticked tracks are saved at their volume · Listen picks what you hear · {names} also shape{(sources.Length > 1 ? "" : "s")} All audio"
-                                 : "Ticked tracks are saved, each at its volume · Listen picks the one you hear (players play one track, usually the first)"
-            : sources.Length > 0 ? $"Listen picks what you hear · the {names} slider{(sources.Length > 1 ? "s change" : " changes")} All audio, live"
-                                 : "Listen picks the track you hear (players play one track, usually the first) · the sliders set its volume";
+            ? sources.Length > 0 ? L.T(one ? "Ticked tracks are saved at their volume · Listen picks what you hear · {names} also shapes All audio"
+                                           : "Ticked tracks are saved at their volume · Listen picks what you hear · {names} also shape All audio", ("names", names))
+                                 : L.T("Ticked tracks are saved, each at its volume · Listen picks the one you hear (players play one track, usually the first)")
+            : sources.Length > 0 ? L.T(one ? "Listen picks what you hear · the {names} slider changes All audio, live"
+                                           : "Listen picks what you hear · the {names} sliders change All audio, live", ("names", names))
+                                 : L.T("Listen picks the track you hear (players play one track, usually the first) · the sliders set its volume");
         TracksHint.ToolTip = TracksHint.Text;
     }
 
-    /// <summary>"Game", "Game and Mic", "Game, Mic and Voice".</summary>
-    private static string JoinNames(IReadOnlyList<TrackRole> roles, string joiner)
-        => roles.Count < 2 ? string.Join("", roles) : string.Join(", ", roles.Take(roles.Count - 1)) + $" {joiner} {roles[^1]}";
+    /// <summary>"Game", "Game and Mic", "Game, Mic and Voice" ("or" instead of "and" when <paramref name="or"/>), each name in the language of the UI.</summary>
+    private static string JoinNames(IReadOnlyList<TrackRole> roles, bool or)
+    {
+        if (roles.Count < 2) return string.Join("", roles.Select(RoleText));
+        string head = string.Join(L.T("list-separator|, "), roles.Take(roles.Count - 1).Select(RoleText));
+        return L.T(or ? "list-or|{head} or {last}" : "list-and|{head} and {last}", ("head", head), ("last", RoleText(roles[^1])));
+    }
+
+    /// <summary>The name of one of Clink's own audio sources (the file keeps the English names; the role is what tells them).</summary>
+    private static string RoleText(TrackRole role) => role switch
+    {
+        TrackRole.Game => L.T("track|Game"),
+        TrackRole.Mic => L.T("track|Mic"),
+        TrackRole.Voice => L.T("track|Voice"),
+        TrackRole.Desktop => L.T("track|Desktop"),
+        _ => role.ToString(),   // Mix and Other never reach a list
+    };
+
+    /// <summary>The sentence for a trim that was refused because the sources inside All audio cannot be changed (the same words as the mix note in the editor).</summary>
+    internal static Note AlignmentRefusalNote(TrimAlignmentRefusal kind) => kind == TrimAlignmentRefusal.Untrusted
+        ? Note.Of("This Windows reads clips differently: sources cannot be changed inside All audio")
+        : Note.Of("Recorded or trimmed by an older Clink: sources cannot be changed inside All audio");
+
+    /// <summary>The label of a track row: "All audio (mix)" for the Mix, the source's name for Clink's own sources, else the name the file has.</summary>
+    private static string TrackLabel(TrackRole fileRole, string fileName) => fileRole switch
+    {
+        TrackRole.Mix => L.T("All audio (mix)"),
+        TrackRole.Game or TrackRole.Mic or TrackRole.Voice or TrackRole.Desktop => RoleText(fileRole),
+        _ => fileName,
+    };
+
+    /// <summary>
+    /// The status after an upload that was refused: "Saved X (trim).mp4, not uploaded: over Copium's free limit (200 MB / 10 min) - tighten the
+    /// selection, or tick 'I have Copium+' if you do". By <paramref name="kind"/>: over the account's limits is a whole sentence of its own
+    /// per plan (the limits are put in it, so no refusal text is cut or re-cased); a smaller copy that could not be made puts the refusal
+    /// (<paramref name="refusal"/>, a whole sentence with its own full stop) in a sentence-level slot as it is; a refusal that is only a
+    /// phrase (<see cref="ShareRefusalKind.Phrase"/>, a game is in front) ends the status with no advice after it.
+    /// </summary>
+    internal static string NotUploadedText(string fileName, ShareRefusalKind kind, string refusal, bool copiumPlus)
+    {
+        string saved = L.Ltr(fileName);
+        if (kind == ShareRefusalKind.OverLimit)
+        {
+            var (maxBytes, maxSeconds, _) = Capabilities.CopiumLimits(copiumPlus);
+            return copiumPlus
+                ? L.T("Saved {name}, not uploaded: over Copium Plus's limit ({size} / {minutes} min) - tighten the selection", ("name", saved), ("size", L.Bytes(maxBytes)), ("minutes", maxSeconds / 60))
+                : L.T("Saved {name}, not uploaded: over Copium's free limit ({size} / {minutes} min) - tighten the selection, or tick '{label}' if you do", ("name", saved), ("size", L.Bytes(maxBytes)), ("minutes", maxSeconds / 60), ("label", L.T("I have Copium+")));
+        }
+        if (kind == ShareRefusalKind.Phrase)
+            return L.T("Saved {name}, not uploaded. {reason}", ("name", saved), ("reason", refusal));
+        return copiumPlus
+            ? L.T("Saved {name}, not uploaded. {reason} Tighten the selection to share it.", ("name", saved), ("reason", refusal))
+            : L.T("Saved {name}, not uploaded. {reason} Tighten the selection, or tick '{label}' if you do.", ("name", saved), ("reason", refusal), ("label", L.T("I have Copium+")));
+    }
+
+    /// <summary>A volume as a percentage ("100%"), rounded away from zero like the "0" format did.</summary>
+    internal static string PercentText(double value) => L.T("unit|{n}%", ("n", value.ToString("0", L.FormatCulture)));
 
     /// <summary>
     /// The sources All audio has no track of its own to change (the default setting does not save Voice as a track): its volume
@@ -352,23 +417,27 @@ public partial class TrimWindow : Window
         string? older = null;
         if (_unlined.Length > 0)
         {
-            bool few = _unlined.Length == 1;
-            older = $"{(_untrusted ? ClipAlignment.UntrustedNote : ClipAlignment.OlderClinkNote)}. The {JoinNames(_unlined, "and")} volume{(few ? "" : "s")} only change{(few ? "s" : "")} {(few ? "its" : "their")} own track{(few ? "" : "s")}.";
+            bool few = _unlined.Length == 1;   // the number decides the wording (a branch, not a plural category)
+            string note = L.T(_untrusted ? "This Windows reads clips differently: sources cannot be changed inside All audio"
+                                         : "Recorded or trimmed by an older Clink: sources cannot be changed inside All audio");
+            older = L.T(few ? "{note}. The {names} volume only changes its own track." : "{note}. The {names} volumes only change their own tracks.",
+                ("note", note), ("names", JoinNames(_unlined, or: false)));
         }
         string? baked = null;
         if (missing.Length > 0)
         {
             var present = new[] { TrackRole.Game, TrackRole.Mic, TrackRole.Voice }.Where(r => !missing.Contains(r) && !_unlined.Contains(r)).ToArray();
             bool many = missing.Length > 1;
-            baked = $"{JoinNames(missing, "and")} {(many ? "are" : "is")} only inside All audio (not saved as {(many ? "tracks" : "a track")} of {(many ? "their" : "its")} own), "
-                + $"so {(many ? "their volumes" : "its volume")} cannot be changed. Turning {JoinNames(present, "or")} down takes it out of the baked mix again, which can leave a faint trace of it.";
+            baked = L.T(many ? "{missing} are only inside All audio (not saved as tracks of their own), so their volumes cannot be changed. Turning {present} down takes it out of the baked mix again, which can leave a faint trace of it."
+                             : "{missing} is only inside All audio (not saved as a track of its own), so its volume cannot be changed. Turning {present} down takes it out of the baked mix again, which can leave a faint trace of it.",
+                ("missing", JoinNames(missing, or: false)), ("present", JoinNames(present, or: true)));
         }
         if (older == null && baked == null)
         {
             MixNote.Visibility = Visibility.Collapsed;
             return;
         }
-        MixNote.Text = older == null ? baked! : baked == null ? older : older + " " + baked;
+        MixNote.Text = L.JoinSentences(older, baked);
         MixNote.Visibility = Visibility.Visible;
     }
 
@@ -442,13 +511,15 @@ public partial class TrimWindow : Window
         TrimToggle.IsChecked = trim;
         _settingMode = false;
         string name = Path.GetFileName(_entry.Path);
-        TitleText.Text = trim ? "Trim · " + name : name;
+        TitleText.Text = trim ? L.T("Trim · {name}", ("name", L.Ltr(name))) : name;
         Title = TitleText.Text;
         Timeline.ShowSelection = trim;
         var editing = trim ? Visibility.Visible : Visibility.Collapsed;
         SetInButton.Visibility = SetOutButton.Visibility = SaveButtons.Visibility = editing;
         OpenExternalButton.Visibility = trim ? Visibility.Collapsed : Visibility.Visible;
-        HintText.Text = trim ? "Start snaps to keyframes · Space play · I/O set in/out · ←/→ frame step" : "Space play / pause · ←/→ frame step · Home / End";
+        HintText.Text = trim
+            ? L.T("Start snaps to keyframes · {space} play · {io} set in/out · {arrows} frame step", ("space", L.Ltr("Space")), ("io", L.Ltr("I/O")), ("arrows", L.Ltr("←/→")))
+            : L.T("{space} play / pause · {arrows} frame step · {homeend}", ("space", L.Ltr("Space")), ("arrows", L.Ltr("←/→")), ("homeend", L.Ltr("Home / End")));
         // The bottom row stays in both modes because the status line is the player's too (a preview that failed says so there);
         // only the save buttons are the editor's, so it shrinks to that line.
         BottomBar.Padding = trim ? new Thickness(16, 10, 16, 14) : new Thickness(16, 2, 16, 8);
@@ -474,7 +545,7 @@ public partial class TrimWindow : Window
         void Open()
         {
             try { TestGuard.Start(new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true }); }
-            catch (Exception ex) { Dispatcher.BeginInvoke(() => StatusText.Text = "Open failed: " + ex.Message); }
+            catch (Exception ex) { Dispatcher.BeginInvoke(() => StatusText.Text = L.T("Open failed: {error}", ("error", ex.Message))); }
         }
         if (!_entry.IsArchived) { Open(); return; }
         // ShellExecute on a share path touches the share again: on its own STA thread (shell extensions expect one), not the UI's.
@@ -489,8 +560,9 @@ public partial class TrimWindow : Window
     {
         var player = _player;
         if (player == null) return;
-        if (player.LastError != null && _playing) { Pause(); StatusText.Text = "Preview stopped: " + player.LastError; }
-        if (player.AudioError != null && !_audioWarned && !_busy) { _audioWarned = true; StatusText.Text = "Preview audio: " + player.AudioError; }
+        if (player.LastError != null && _playing) { Pause(); StatusText.Text = L.T("Preview stopped: {error}", ("error", player.LastErrorShown ?? player.LastError)); }
+        // A late audio warning must not replace the saved/failed share result after reopening the preview.
+        if (player.AudioIssue is { } audioIssue && !_audioWarned && !_busy && string.IsNullOrEmpty(StatusText.Text)) { _audioWarned = true; StatusText.Text = L.T("Preview audio: {error}", ("error", ClipPlayer.AudioIssueText(audioIssue))); }
         double pos = player.Position;
         if (_bitmap != null && player.TryGetFrame(pos, out byte[] bgra, out double pts))
         {
@@ -527,7 +599,9 @@ public partial class TrimWindow : Window
     {
         double len = Math.Max(0, Timeline.SelectionEnd - Timeline.SelectionStart);
         PosText.Text = $"{Fmt(pos)} / {Fmt(_duration)}";
-        PosText.ToolTip = _trimMode ? $"Selection {Fmt(Timeline.SelectionStart)} → {Fmt(Timeline.SelectionEnd)} ({len:0.0}s)" : null;
+        PosText.ToolTip = _trimMode
+            ? L.T("Selection {start} → {end} ({length})", ("start", Fmt(Timeline.SelectionStart)), ("end", Fmt(Timeline.SelectionEnd)), ("length", L.T("unit-short|{n}s", ("n", len.ToString("0.0", L.FormatCulture)))))
+            : null;
     }
 
     /// <summary>m:ss.t, rounded to a tenth first so 59.97 reads 1:00.0 and not 0:60.0.</summary>
@@ -714,27 +788,27 @@ public partial class TrimWindow : Window
     /// </summary>
     private async Task<bool> RunFileChoiceAsync(AppController app, ClipEntry saved, ShareChoice choice)
     {
-        string name = Path.GetFileName(saved.Path);
+        string name = L.Ltr(Path.GetFileName(saved.Path));
         if (choice == ShareChoice.ShareFile)
         {
-            if (app.ShareFile(saved)) { StatusText.Text = $"Saved {name}: drag it from the share window"; return true; }
-            StatusText.Text = $"Saved {name}, not shared: {AppController.ShareWindowFailedText.ToLowerInvariant()}. Choose again to share it.";
+            if (app.ShareFile(saved)) { StatusText.Text = L.T("Saved {name}: drag it from the share window", ("name", name)); return true; }
+            StatusText.Text = L.T("Saved {name}, not shared: could not open the share window. Choose again to share it.", ("name", name));
             return false;
         }
-        StatusText.Text = "Saving a copy…";
-        var progress = new Progress<double>(p => StatusText.Text = $"Saving a copy… {p:P0}");
+        StatusText.Text = L.T("Saving a copy…");
+        var progress = new Progress<double>(p => StatusText.Text = L.T("Saving a copy… {percent}", ("percent", p.ToString("P0", L.FormatCulture))));
         var result = await app.SaveCopyAsync(saved, this, progress);
         switch (result.Outcome)
         {
             case SaveOutcome.Saved:
                 string dir = Path.GetDirectoryName(result.SavedTo) ?? "";
-                StatusText.Text = $"Saved {name}; copy saved to {(Path.GetFileName(dir) is { Length: > 0 } leaf ? leaf : dir)}";
+                StatusText.Text = L.T("Saved {name}; copy saved to {folder}", ("name", name), ("folder", L.Ltr(Path.GetFileName(dir) is { Length: > 0 } leaf ? leaf : dir)));
                 return true;
             case SaveOutcome.Cancelled:
-                StatusText.Text = $"Saved {name}, no copy saved. Choose again to share it.";
+                StatusText.Text = L.T("Saved {name}, no copy saved. Choose again to share it.", ("name", name));
                 return false;
             default:
-                StatusText.Text = $"Saved {name}, copy failed: {result.Error}. Choose again to share it.";
+                StatusText.Text = L.T("Saved {name}, copy failed: {error}. Choose again to share it.", ("name", name), ("error", result.Error));
                 return false;
         }
     }
@@ -764,7 +838,7 @@ public partial class TrimWindow : Window
         try
         {
             Pause();
-            var app = AppController.Instance ?? throw new InvalidOperationException("Clink is not running");
+            var app = AppController.Instance ?? throw new ShownException(Note.Of("Clink is not running"));
             // A retry after a share step that did not finish shares the clip that step saved: nothing that shapes the output changed.
             // "Save trimmed" is an explicit save: always a new trim, and the memory goes.
             ClipEntry? reuse = share ? SavedToReuse() : null;
@@ -775,11 +849,11 @@ public partial class TrimWindow : Window
                 result = reuse;
                 trimmed = true;
                 dst = reuse.Path;
-                StatusText.Text = "Sharing " + Path.GetFileName(reuse.Path);
+                StatusText.Text = L.T("Sharing {name}", ("name", L.Ltr(Path.GetFileName(reuse.Path))));
             }
             else
             {
-                StatusText.Text = "Trimming…";
+                StatusText.Text = L.T("Trimming…");
                 double start = Timeline.SnapToKeyframe(Timeline.SelectionStart), end = Timeline.SelectionEnd;
                 bool replace = ReplaceCheck.IsChecked == true;
                 // Trims are written to the local clips folder (docs/SPEC-v2.md §9: local first, the archive service moves them later
@@ -791,16 +865,18 @@ public partial class TrimWindow : Window
                 dst = Path.Combine(dir, stem + " (trim).mp4");
                 int n = 2;
                 while (File.Exists(dst)) dst = Path.Combine(dir, stem + $" (trim {n++}).mp4");
-                if (end - start < 0.1) throw new InvalidOperationException("Selection is too short");
+                if (end - start < 0.1) throw new ShownException(Note.Of("Selection is too short"));
                 TestGuard.Check(dst);
                 Directory.CreateDirectory(dir);
                 // The rows' names (file order, as the mix); without rows the trimmer reads them from the file itself.
                 string[]? names = _rows.Count > 0 ? _rows.Select(r => r.Name).ToArray() : null;
                 // What the sliders did to All audio is rendered into it here (MixPlan), as the preview plays it.
                 TrackMix[]? mix = _rows.Count > 0 ? MixPlan.Export(_roles, _rows.Select(r => r.Included).ToArray(), _rows.Select(r => r.Gain).ToArray()) : null;
-                if (mix != null && !mix.Any(m => m.Include)) StatusText.Text = "Trimming (no audio)…";
+                if (mix != null && !mix.Any(m => m.Include)) StatusText.Text = L.T("Trimming (no audio)…");
                 string trimDst = dst;
-                string[] keptNames = await Task.Run(() => Trimmer.Trim(src, trimDst, start, end, names, mix));
+                string[] keptNames;
+                try { keptNames = await Task.Run(() => Trimmer.Trim(src, trimDst, start, end, names, mix)); }
+                catch (TrimAlignmentException refused) { throw new ShownException(AlignmentRefusalNote(refused.Kind)); }   // the kind picks the sentence, not the words of the message
                 trimmed = true;
                 replaceProblem = replace ? await ReplaceOriginalAsync(src, dst) : null;
                 if (replace && replaceProblem == null)
@@ -812,14 +888,14 @@ public partial class TrimWindow : Window
                     _entry.CopiumLink = null; _entry.CopiumPageUrl = null; _entry.CopiumId = null;
                     app.Library.Update(_entry);
                     result = _entry;
-                    StatusText.Text = "Replaced " + Path.GetFileName(src);
+                    StatusText.Text = L.T("Replaced {name}", ("name", L.Ltr(Path.GetFileName(src))));
                 }
                 else
                 {
                     result = app.Library.Add(dst, end - start, new FileInfo(dst).Length, _entry.Game, keptNames, isTrim: true, sourcePath: src);
                     StatusText.Text = replaceProblem != null
-                        ? $"Could not replace the original ({replaceProblem}); saved as {Path.GetFileName(dst)} instead"
-                        : "Saved " + Path.GetFileName(dst);
+                        ? L.T("Could not replace the original ({reason}); saved as {name} instead", ("reason", replaceProblem), ("name", L.Ltr(Path.GetFileName(dst))))
+                        : L.T("Saved {name}", ("name", L.Ltr(Path.GetFileName(dst))));
                 }
             }
             if (share && choice is ShareChoice.ShareFile or ShareChoice.SaveCopy)
@@ -833,14 +909,17 @@ public partial class TrimWindow : Window
             }
             else if (share)
             {
-                StatusText.Text = "Uploading…";
+                StatusText.Text = L.T("Uploading…");
                 var progress = new Progress<double>(p => StatusText.Text = app.ShareProgressText(result, p));
                 bool ok = await app.ShareAsync(result, progress, context: ConsentContext.TrimShare);
                 if (!ok && app.LastShareOutcome == ShareOutcome.Declined)
                 {
                     // "Not now" in the Share with Copium? pop-up, or cloud sharing off: the trim is saved, nothing failed.
                     bool cloudOff = !app.Settings.CloudSharingEnabled;
-                    StatusText.Text = $"Saved {Path.GetFileName(result.Path)}, not shared" + (cloudOff ? ": cloud sharing is off" : ". Choose again to share it.");
+                    string sharedName = L.Ltr(Path.GetFileName(result.Path));
+                    StatusText.Text = cloudOff
+                        ? L.T("Saved {name}, not shared: cloud sharing is off", ("name", sharedName))
+                        : L.T("Saved {name}, not shared. Choose again to share it.", ("name", sharedName));
                     await KeepOpenAsync();
                     return;
                 }
@@ -852,16 +931,14 @@ public partial class TrimWindow : Window
                     // is trimmed twice), which is why the buttons come back on here too.
                     if (app.ShareRefusal is string refusal)
                     {
-                        string why = refusal.Length > 1 ? char.ToLowerInvariant(refusal[0]) + refusal[1..] : refusal;
-                        string tick = app.Settings.CopiumPlus ? "" : ", or tick 'I have Copium+' if you do";
-                        StatusText.Text = $"Saved {Path.GetFileName(result.Path)}, not uploaded: {why} - tighten the selection{tick}";
+                        StatusText.Text = NotUploadedText(Path.GetFileName(result.Path), app.RefusalKind, refusal, app.Settings.CopiumPlus);
                     }
-                    else StatusText.Text = $"Saved {Path.GetFileName(result.Path)}, not uploaded: {app.ShareError ?? "upload failed"}. Choose again to retry.";
+                    else StatusText.Text = L.T("Saved {name}, not uploaded: {error}. Choose again to retry.", ("name", L.Ltr(Path.GetFileName(result.Path))), ("error", app.ShareError ?? L.T("upload failed")));
                     await KeepOpenAsync();
                     return;
                 }
                 // No Copium token: the share window opened with the saved clip, which is the result. Close like a success.
-                StatusText.Text = ok ? "Uploaded, link copied" : $"Saved {Path.GetFileName(result.Path)}: drag it from the share window";
+                StatusText.Text = ok ? L.T("Uploaded, link copied") : L.T("Saved {name}: drag it from the share window", ("name", L.Ltr(Path.GetFileName(result.Path))));
             }
             await Task.Delay(replaceProblem != null ? 3000 : 1200);
             Close();
@@ -871,14 +948,15 @@ public partial class TrimWindow : Window
             Log.Error("Trim", ex);
             if (!trimmed)
             {
-                StatusText.Text = "Trim failed: " + ex.Message;
+                StatusText.Text = L.T("Trim failed: {error}", ("error", UserText.Of(ex)));
                 try { if (File.Exists(dst) && !string.Equals(dst, src, StringComparison.OrdinalIgnoreCase)) File.Delete(dst); } catch { }
             }
             else
             {
                 // The trim itself finished: keep the file and say where it is.
                 string kept = File.Exists(dst) ? dst : src;
-                StatusText.Text = $"Saved {Path.GetFileName(kept)}, but: {ex.Message}" + (share && result != null ? ". Choose again to share it." : "");
+                StatusText.Text = L.T(share && result != null ? "Saved {name}, but: {error}. Choose again to share it." : "Saved {name}, but: {error}",
+                    ("name", L.Ltr(Path.GetFileName(kept))), ("error", UserText.Of(ex)));
             }
             try { await KeepOpenAsync(); }
             catch (Exception ex2) { Log.Error("Trim", ex2); }   // the window must not be left disabled by a failure in the recovery itself
@@ -918,7 +996,7 @@ public partial class TrimWindow : Window
         bool released = true;
         try { released = p?.Close() ?? true; }
         catch (Exception ex) { Log.Warn("Preview close: " + ex.Message); released = false; }
-        if (!released) return "the preview is still reading it";
+        if (!released) return L.T("the preview is still reading it");
         await Task.Delay(200);
         try
         {
@@ -929,8 +1007,14 @@ public partial class TrimWindow : Window
         {
             Log.Warn("Trim: could not replace the original: " + ex.Message);
             const int SharingViolation = unchecked((int)0x80070020), LockViolation = unchecked((int)0x80070021);
-            return ex.HResult is SharingViolation or LockViolation ? "file in use" : ex.Message;
+            return ex.HResult is SharingViolation or LockViolation ? L.T("file in use") : ex.Message;
         }
+    }
+
+    /// <summary>A failure whose text the user sees: <see cref="Exception.Message"/> is the note's English (the log), <see cref="UserText.Of"/> the note in the UI language.</summary>
+    private sealed class ShownException : InvalidOperationException
+    {
+        public ShownException(Note note) : base(note.English) { UserText.Attach(this, note); }
     }
 
     private void Header_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)

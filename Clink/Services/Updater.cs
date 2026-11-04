@@ -6,6 +6,7 @@ using System.Net.Http.Headers;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Security.Principal;
+using Clink.Services.Localization;
 
 namespace Clink.Services;
 
@@ -21,8 +22,13 @@ internal sealed record UpdateInfo(ReleaseVersion Version, string Tag, string Exe
 /// A problem of a check pass worth one notification outside the window (<see cref="Updater.CheckFinished"/>): the download attempt cap of a
 /// version was reached, or the checks have been failing for days. <see cref="Key"/> names the version or the channel, so the
 /// same problem is announced once per session however many passes report it (<see cref="UpdateNoticeGate"/>). Title and text fit a tray balloon.
+/// They are kept as <see cref="Note"/>s: <see cref="Title"/> / <see cref="Text"/> are shown in the language of the UI, the notes' English goes to the log.
 /// </summary>
-internal sealed record UpdateNotice(string Key, string Title, string Text);
+internal sealed record UpdateNotice(string Key, Note TitleNote, Note TextNote)
+{
+    public string Title => TitleNote.Shown;
+    public string Text => TextNote.Shown;
+}
 
 /// <summary>Session de-duplication of <see cref="UpdateNotice"/>s: each key is let through once per process (thread-safe).</summary>
 internal sealed class UpdateNoticeGate
@@ -70,7 +76,7 @@ internal sealed class Updater : IDisposable
     private readonly SemaphoreSlim _wake = new(0, 1);        // released by Wake(): cuts the background loop's wait short
     private readonly Dictionary<ReleaseVersion, int> _attempts = new();
     private readonly object _pendingLock = new();            // PendingPath/PendingVersion: set by the check, dropped by the UI too
-    private string? _lastDownloadError;
+    private Note? _lastDownloadError;   // what the last failed exe download reported (a note: English in the log, the language of the UI on screen)
     private Task? _loop;
     /// <summary>Set by <see cref="TrackFailures"/> when this check is the one that finds the background checks failing for days (reset by every check): its notification.</summary>
     private UpdateNotice? _failNotice;
@@ -87,14 +93,35 @@ internal sealed class Updater : IDisposable
     /// <summary>Path of a downloaded, verified newer exe (null until <see cref="UpdateReady"/> fired).</summary>
     public string? PendingPath { get; private set; }
     public ReleaseVersion? PendingVersion { get; private set; }
-    /// <summary>Why the last check returned nothing or could not download what it found, or null if nothing went wrong.</summary>
-    public string? LastError { get; private set; }
+    /// <summary>Why the last check returned nothing or could not download what it found, or null if nothing went wrong. ENGLISH (the log, the tests); <see cref="LastErrorText"/> is the same in the user's language.</summary>
+    public string? LastError => _lastError?.Note.English;
+    /// <summary><see cref="LastError"/> in the language of the UI (null when there is none).</summary>
+    public string? LastErrorText => _lastError?.Note.Shown;
+    /// <summary>The note behind <see cref="LastError"/> / <see cref="LastErrorText"/>.</summary>
+    internal Note? LastErrorNote => _lastError?.Note;
+    /// <summary><see cref="LastError"/> is "updates are off in dev mode" (a --dev instance never checks): the version line says so, so it is not shown again as a problem.</summary>
+    public bool LastErrorIsDevMode => _lastError?.DevMode ?? false;
+    /// <summary>The last problem and whether it is the dev-mode status, in one value so the three views above cannot disagree.</summary>
+    private sealed record LastErrorState(Note Note, bool DevMode);
+    private LastErrorState? _lastError;
     /// <summary>True when <see cref="LastError"/> is about the check itself; false when the check worked and downloading or installing what it found did not.</summary>
     public bool CheckFailed { get; private set; }
     /// <summary>True while <see cref="DownloadAsync"/> is transferring the exe (a manual check waits for it).</summary>
     public bool IsDownloading { get; private set; }
-    /// <summary>Set by <see cref="TryGetPendingUpdate"/> when a downloaded update could not be installed: a message for the user, or null.</summary>
-    public string? InstallProblem { get; private set; }
+    /// <summary>Set by <see cref="TryGetPendingUpdate"/> when a downloaded update could not be installed: a message for the user in their language, or null.</summary>
+    public string? InstallProblem => InstallProblemNote?.Shown;
+    /// <summary>The note behind <see cref="InstallProblem"/> (English via <see cref="Note.English"/>, for the log).</summary>
+    internal Note? InstallProblemNote { get; private set; }
+
+    /// <summary>Records why the last check or download went wrong (null: nothing did). <see cref="LastError"/> gets the English.</summary>
+    private void SetError(Note? note, bool devMode = false)
+    {
+        _lastError = note == null ? null : new LastErrorState(note, devMode);
+
+    }
+
+    /// <summary>"updates are off in dev mode": what a --dev instance leaves as its status (lower case: it follows "Last check failed: " in the card).</summary>
+    private static Note DevModeError => Note.Of("updates are off in dev mode");
 
     /// <summary>A newer release exists (raised on a background thread, before any download).</summary>
     public event Action<UpdateInfo>? UpdateAvailable;
@@ -117,12 +144,14 @@ internal sealed class Updater : IDisposable
         _settings = settings;
         Current = current;
         // The window shows this in the Updates card ("Last check failed: updates are off in dev mode"), as the status of a --dev instance.
-        if (AppController.IsDev) { LastError = DevModeNote.ToLowerInvariant(); CheckFailed = true; }
-        else if (Trust.Misconfigured) { LastError = MisconfiguredNote; CheckFailed = true; }   // and UpdatesEnabled is false: nothing is checked or installed
+        if (AppController.IsDev) { SetError(DevModeError, devMode: true); CheckFailed = true; }
+        else if (Trust.Misconfigured) { SetError(MisconfiguredError); CheckFailed = true; }   // and UpdatesEnabled is false: nothing is checked or installed
     }
 
     /// <summary>What the updater says (<see cref="LastError"/>) when the embedded feed.json is broken (<see cref="FeedState.Misconfigured"/>): it checks nothing at all.</summary>
     public const string MisconfiguredNote = "update configuration invalid: this build's signed update settings (feed.json) are broken, so it does not check for or install updates (details in the log)";
+
+    private static Note MisconfiguredError => Note.Of("update configuration invalid: this build's signed update settings (feed.json) are broken, so it does not check for or install updates (details in the log)");   // (= MisconfiguredNote: a test keeps them equal)
 
     /// <summary>
     /// Where updates are downloaded instead of <c>%LOCALAPPDATA%\Clink\updates</c>, the folder shared by every Clink exe of this user
@@ -149,8 +178,14 @@ internal sealed class Updater : IDisposable
     internal static string UpdatesDirFor(Packaging packaging) => packaging == Packaging.Framework ? Path.Combine(UpdatesRoot, "fx") : UpdatesRoot;
     public static string UpdatesDir => UpdatesDirFor(OwnPackaging);
 
-    /// <summary>What a --dev instance says when asked to look for, download or install an update.</summary>
+    /// <summary>What a --dev instance says when asked to look for, download or install an update. English (exception messages, logs); <see cref="DevModeNoteText"/> shows it in the user's language.</summary>
     public const string DevModeNote = "Updates are off in dev mode";
+
+    /// <summary><see cref="DevModeNote"/> as a note: shown in the language of the UI, English in the log.</summary>
+    internal static Note DevModeNoteText => Note.Of("Updates are off in dev mode");
+
+    /// <summary><see cref="DevModeNote"/> in the language of the UI.</summary>
+    public static string DevModeDisplay => DevModeNoteText.Shown;
 
     /// <summary>
     /// True when this instance may check for, download and install updates: the embedded feed.json is a valid, complete one
@@ -425,6 +460,14 @@ internal sealed class Updater : IDisposable
     /// <summary>What a check says, and the Updates card shows, when this build has no signed update feed (feed.json is empty): nothing is ever contacted.</summary>
     public const string NoUpdatesNote = "Updates aren't available in this build";
 
+    /// <summary><see cref="NoUpdatesNote"/> in the language of the UI.</summary>
+    public static string NoUpdatesDisplay => NoUpdatesNoteText.Shown;
+    /// <summary><see cref="NoUpdatesNote"/> as a note (English in the log).</summary>
+    internal static Note NoUpdatesNoteText => Note.Of("Updates aren't available in this build");
+
+    /// <summary>Why there is nothing to check: a --dev instance never looks for updates; a build without a signed update feed has no updates at all.</summary>
+    internal static Note NoUpdatesReason(bool isDev) => isDev ? DevModeNoteText : NoUpdatesNoteText;
+
     /// <summary>
     /// Background checks that have failed without a single success for longer than this earn one tray notice per session
     /// (<c>checkfailed:&lt;channel&gt;</c>, see <see cref="TrackFailures"/>).
@@ -473,10 +516,10 @@ internal sealed class Updater : IDisposable
         bool dev = _settings.UseDevBuilds;   // one channel for the whole check, even if the box is ticked meanwhile
         var trust = Trust;
         _failNotice = null;
-        if (trust.Misconfigured) { LastError = MisconfiguredNote; CheckFailed = true; Log.Warn("updater: not checking: " + MisconfiguredNote); return null; }
+        if (trust.Misconfigured) { SetError(MisconfiguredError); CheckFailed = true; Log.Warn("updater: not checking: " + MisconfiguredNote); return null; }
         if (!UpdatesEnabled)
         {
-            LastError = AppController.IsDev ? DevModeNote.ToLowerInvariant() : NoUpdatesNote;
+            if (AppController.IsDev) SetError(DevModeError, devMode: true); else SetError(Note.Of("Updates aren't available in this build"));
             CheckFailed = true;
             return null;
         }
@@ -485,7 +528,7 @@ internal sealed class Updater : IDisposable
         try
         {
             var outcome = await CheckFeedAsync(trust, dev, manual, ct).ConfigureAwait(false);
-            LastError = outcome.Error;
+            SetError(outcome.Error);
             if (outcome.FailedHost != null) host = outcome.FailedHost;
             string published = outcome.Used is { } used ? $", published {used.Published.UtcDateTime.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture)} UTC" : "";
             if (outcome.Info is { } info) Log.Info($"updater: v{info.Version} available ({info.ExeSize / 1024} KB{published}) from the signed feed");
@@ -494,12 +537,12 @@ internal sealed class Updater : IDisposable
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            LastError = "cancelled";
+            SetError(Note.Of("update|cancelled"));
             return null;
         }
         catch (Exception ex)
         {
-            LastError = $"Couldn't check for updates ({host})";
+            SetError(Note.Of("Couldn't check for updates ({host})", ("host", Note.Ltr(host))));
             Log.Warn("updater: check failed: " + ex.Message);
             return null;
         }
@@ -537,15 +580,15 @@ internal sealed class Updater : IDisposable
         }
         if (manual || _failedBackgroundPasses < FailingNoticeMinPasses || now - since <= FailingNoticeAfter) return;
         int days = (int)(now - since).TotalDays;
-        _failNotice = new UpdateNotice($"checkfailed:{channelName}", "Clink could not check for updates",
-            $"Clink has not been able to check for updates from {host} for {days} days. Details under Alerts → Updates.");
+        _failNotice = new UpdateNotice($"checkfailed:{channelName}", Note.Of("Clink could not check for updates"),
+            Note.PluralOf("Clink has not been able to check for updates from {host} for {count} days. Details under App → Updates.", days, ("host", Note.Ltr(host))));   // (days >= 3: English "other")
     }
 
     /// <summary>
     /// What <see cref="CheckFeedAsync"/> found: the offer (or null), the plain error of a failed check (or null), why for the log,
     /// the host of the manifest that failed (or null), and the manifest the result rests on (for the log's <c>published</c>).
     /// </summary>
-    private readonly record struct FeedOutcome(UpdateInfo? Info, string? Error, string Why, string? FailedHost = null, FeedManifest? Used = null);
+    private readonly record struct FeedOutcome(UpdateInfo? Info, Note? Error, string Why, string? FailedHost = null, FeedManifest? Used = null);
 
     /// <summary>
     /// The feed part of <see cref="CheckAsync"/>: fetches and verifies stable.json (stable channel) or stable.json and dev.json (dev
@@ -558,7 +601,7 @@ internal sealed class Updater : IDisposable
     private async Task<FeedOutcome> CheckFeedAsync(FeedTrust trust, bool dev, bool manual, CancellationToken ct)
     {
         var fetched = new List<FeedManifest>();
-        (string Channel, string Host, string Error, string Why)? failure = null;   // the first manifest that failed
+        (string Channel, string Host, Note Error, string Why)? failure = null;   // the first manifest that failed
         foreach (string channel in dev ? new[] { "stable", "dev" } : new[] { "stable" })
         {
             // stable.json under feedUrl, dev.json under the dev base (devFeedUrl, or feedUrl when that is empty); binaries must sit under the same base.
@@ -572,7 +615,7 @@ internal sealed class Updater : IDisposable
                 {
                     // A replayed older manifest (or a rolled-back feed): never used, and not an "up to date" either.
                     Log.Warn($"updater: {channel}.json from the signed feed was refused: {below}");
-                    failure ??= (channel, host, $"The update server ({host}) offered an older version than before, so it was not used", below);
+                    failure ??= (channel, host, Note.Of("The update server ({host}) offered an older version than before, so it was not used", ("host", Note.Ltr(host))), below);
                     continue;
                 }
                 fetched.Add(m);
@@ -580,13 +623,15 @@ internal sealed class Updater : IDisposable
             catch (FeedUnreachableException ex)
             {
                 Log.Warn($"updater: {channel}.json could not be reached: {ex.Message}");
-                failure ??= (channel, host, $"Couldn't reach the update server ({host})" + (ex.UserDetail != null ? ": " + ex.UserDetail : ""), ex.Message);
+                failure ??= (channel, host, ex.UserDetail != null
+                    ? Note.Of("Couldn't reach the update server ({host}): {detail}", ("host", Note.Ltr(host)), ("detail", ex.UserDetail))   // (the detail is a fixed English phrase of the feed client)
+                    : Note.Of("Couldn't reach the update server ({host})", ("host", Note.Ltr(host))), ex.Message);
             }
             catch (FeedRejectedException ex)
             {
                 // Fetched but not trustworthy: worth a warning (a broken publish, or someone serving a forged feed), never used.
                 Log.Warn($"updater: {channel}.json from the signed feed was refused: {ex.Message}");
-                failure ??= (channel, host, $"Couldn't verify the update server's answer ({host})", ex.Message);
+                failure ??= (channel, host, Note.Of("Couldn't verify the update server's answer ({host})", ("host", Note.Ltr(host))), ex.Message);
             }
         }
         foreach (var m in fetched) RaiseFloor(m.Channel, m.Version);   // only what verified (and passed its floor) raises a floor
@@ -703,7 +748,7 @@ internal sealed class Updater : IDisposable
         try
         {
             // The hash and size come from the signed manifest (UpdateInfo): nothing unsigned is ever downloaded, and no hash file is requested.
-            if (string.IsNullOrEmpty(info.Sha256)) throw Shown(new InvalidOperationException("the offer carries no signed SHA-256"), "the offer carries no signed SHA-256");
+            if (string.IsNullOrEmpty(info.Sha256)) throw Shown(new InvalidOperationException("the offer carries no signed SHA-256"), Note.Of("update|the offer carries no signed SHA-256"));
             string expected = info.Sha256;
             long done = 0;
             using (var req = new HttpRequestMessage(HttpMethod.Get, info.ExeUrl))
@@ -719,14 +764,14 @@ internal sealed class Updater : IDisposable
                     try { answer = await SendAsync(req, answerLimit.Token, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false); }
                     catch (OperationCanceledException) when (!ct.IsCancellationRequested)
                     {
-                        string text = $"the download server did not answer within {DownloadAnswerTimeout.TotalSeconds.ToString("0.##", CultureInfo.InvariantCulture)} s";
-                        throw Shown(new IOException(text), text);
+                        string secs = DownloadAnswerTimeout.TotalSeconds.ToString("0.##", CultureInfo.InvariantCulture);
+                        throw Shown(new IOException($"the download server did not answer within {secs} s"), Note.Of("update|the download server did not answer within {seconds} s", ("seconds", DownloadAnswerTimeout.TotalSeconds.ToString("0.##", L.FormatCulture))));
                     }
                     answerLimit.CancelAfter(Timeout.InfiniteTimeSpan);   // answered: the timer must not fire into the body's reads
                 }
                 using var resp = answer;
                 // An explicit status check: EnsureSuccessStatusCode's message carries the server's reason phrase, and this text reaches the user.
-                if (!resp.IsSuccessStatusCode) throw Shown(new HttpRequestException($"HTTP {(int)resp.StatusCode}", null, resp.StatusCode), $"HTTP {(int)resp.StatusCode}");
+                if (!resp.IsSuccessStatusCode) throw Shown(new HttpRequestException($"HTTP {(int)resp.StatusCode}", null, resp.StatusCode), Note.Of("update|HTTP {code}", ("code", (int)resp.StatusCode)));
                 // With a signed size, a body that says or turns out to be longer is cut off instead of being transferred in full.
                 if (resp.Content.Headers.ContentLength is long declared && declared != info.ExeSize)
                     throw Shown(new InvalidDataException($"size mismatch: the server announces {declared} bytes, the signed manifest says {info.ExeSize}"), SizeMismatch);
@@ -775,7 +820,7 @@ internal sealed class Updater : IDisposable
                                     double rate = (done - anchor.Done) / (at - anchor.At).TotalSeconds;
                                     if (rate < minRate)
                                         throw Shown(new IOException($"download too slow ({rate / 1024:0.#} KB/s over the last {(at - anchor.At).TotalSeconds.ToString("0.##", CultureInfo.InvariantCulture)} s, at least {minRate / 1024.0:0.#} KB/s needed; {done / 1024} KB so far)"),
-                                            $"download too slow (under {(minRate / 1024.0).ToString("0.#", CultureInfo.InvariantCulture)} KB/s)");
+                                            Note.Of("update|download too slow (under {rate} KB/s)", ("rate", (minRate / 1024.0).ToString("0.#", L.FormatCulture))));
                                 }
                                 if (done > info.ExeSize) throw Shown(new InvalidDataException($"size mismatch: more than the {info.ExeSize} bytes the signed manifest says"), SizeMismatch);
                                 if (total > 0) progress?.Report(Math.Min(1.0, done / (double)total));
@@ -784,12 +829,12 @@ internal sealed class Updater : IDisposable
                         catch (OperationCanceledException) when (!ct.IsCancellationRequested && deadline.IsCancellationRequested)
                         {
                             string over = deadlineLimit.TotalSeconds.ToString("0.##", CultureInfo.InvariantCulture);
-                            throw Shown(new IOException($"download took too long (over {over} s in total, {done / 1024} KB received)"), $"download took too long (over {over} s)");
+                            throw Shown(new IOException($"download took too long (over {over} s in total, {done / 1024} KB received)"), Note.Of("update|download took too long (over {seconds} s)", ("seconds", deadlineLimit.TotalSeconds.ToString("0.##", L.FormatCulture))));
                         }
                         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
                         {
                             string quiet = DownloadReadTimeout.TotalSeconds.ToString("0.##", CultureInfo.InvariantCulture);
-                            throw Shown(new IOException($"download stalled (no data for {quiet} s after {done / 1024} KB)"), $"download stalled (no data for {quiet} s)");
+                            throw Shown(new IOException($"download stalled (no data for {quiet} s after {done / 1024} KB)"), Note.Of("update|download stalled (no data for {seconds} s)", ("seconds", DownloadReadTimeout.TotalSeconds.ToString("0.##", L.FormatCulture))));
                         }
                     }
                 }
@@ -797,11 +842,11 @@ internal sealed class Updater : IDisposable
 
             long length = new FileInfo(partial).Length;
             if (info.ExeSize > 0 && length != info.ExeSize) throw Shown(new InvalidDataException($"size mismatch: got {length} bytes, the signed manifest says {info.ExeSize}"), SizeMismatch);
-            if (!LooksLikeExe(partial)) throw Shown(new InvalidDataException("downloaded file is not a Windows executable"), "the downloaded file is not a Windows executable");
+            if (!LooksLikeExe(partial)) throw Shown(new InvalidDataException("downloaded file is not a Windows executable"), Note.Of("update|the downloaded file is not a Windows executable"));
             string actual = Sha256Hex(partial);
-            if (!string.Equals(expected, actual, StringComparison.OrdinalIgnoreCase)) throw Shown(new InvalidDataException("SHA-256 mismatch"), "SHA-256 mismatch");
+            if (!string.Equals(expected, actual, StringComparison.OrdinalIgnoreCase)) throw Shown(new InvalidDataException("SHA-256 mismatch"), Note.Of("update|SHA-256 mismatch"));
             string? wrongVersion = CheckEmbeddedVersion(partial, info.Version);
-            if (wrongVersion != null) throw Shown(new InvalidDataException($"release {info.Tag} is unusable: {wrongVersion}"), $"the downloaded exe does not report v{info.Version}");
+            if (wrongVersion != null) throw Shown(new InvalidDataException($"release {info.Tag} is unusable: {wrongVersion}"), Note.Of("update|the downloaded exe does not report v{version}", ("version", Note.Ltr(info.Version.ToString()))));
             progress?.Report(1.0);
 
             File.Move(partial, final, overwrite: true);
@@ -834,30 +879,25 @@ internal sealed class Updater : IDisposable
     // ---- what the user is told about a failed download: fixed texts only (like UpdateFeed.FetchCappedAsync's UserDetail), never an
     // exception's own message, which may carry what a server sent (a header line, a reason phrase). The log has the full message.
 
-    private const string UserTextKey = "Clink.Updater.UserText";
-    private const string SizeMismatch = "size mismatch";
+    private static Note SizeMismatch => Note.Of("update|size mismatch");
 
-    /// <summary><paramref name="ex"/>, carrying <paramref name="userText"/> (built here from constants and numbers, never from a server) for <see cref="DownloadErrorText"/>.</summary>
-    private static T Shown<T>(T ex, string userText) where T : Exception
-    {
-        ex.Data[UserTextKey] = userText;
-        return ex;
-    }
+    /// <summary><paramref name="ex"/>, carrying <paramref name="userText"/> (built here from constants and numbers, never from a server) for <see cref="DownloadErrorNote"/>.</summary>
+    private static T Shown<T>(T ex, Note userText) where T : Exception => UserText.Attach(ex, userText);
 
     /// <summary>
     /// The short text the user is shown for a failed exe download from <paramref name="url"/>: the fixed text <see cref="DownloadAsync"/>
     /// attached ("HTTP 503", "download stalled (no data for 60 s)", "SHA-256 mismatch", ...), else one chosen by the kind of failure
     /// ("network error (&lt;host&gt;)"). Never <see cref="Exception.Message"/>.
     /// </summary>
-    internal static string DownloadErrorText(Exception ex, string url)
+    internal static Note DownloadErrorNote(Exception ex, string url)
     {
-        if (ex.Data[UserTextKey] is string text) return text;
-        if (ex is OperationCanceledException) return $"no answer within {FeedClientTimeout.TotalSeconds:0} s";
-        if (ex is HttpRequestException { StatusCode: { } code }) return $"HTTP {(int)code}";
+        if (ex.Data[UserText.Key] is Note text) return text;
+        if (ex is OperationCanceledException) return Note.Of("update|no answer within {seconds} s", ("seconds", FeedClientTimeout.TotalSeconds.ToString("0", L.FormatCulture)));
+        if (ex is HttpRequestException { StatusCode: { } code }) return Note.Of("update|HTTP {code}", ("code", (int)code));
         for (Exception? e = ex; e != null; e = e.InnerException)
-            if (e is HttpRequestException or HttpIOException or System.Net.Sockets.SocketException) return $"network error ({HostOf(url)})";
-        if (ex is IOException or UnauthorizedAccessException) return "the download could not be saved in the updates folder";
-        return "unexpected error (details in the log)";
+            if (e is HttpRequestException or HttpIOException or System.Net.Sockets.SocketException) return Note.Of("update|network error ({host})", ("host", Note.Ltr(HostOf(url))));
+        if (ex is IOException or UnauthorizedAccessException) return Note.Of("update|the download could not be saved in the updates folder");
+        return Note.Of("update|unexpected error (details in the log)");
     }
 
     private static string Sha256Hex(string path)
@@ -950,8 +990,8 @@ internal sealed class Updater : IDisposable
     /// <summary>Replaces the browser in the unit tests (told the one address that would be opened); null otherwise.</summary>
     internal static Action<string>? BrowserOverride { get; set; }
 
-    /// <summary>Opens <see cref="ReleasePageFor"/> in the browser. Null when it was opened, otherwise a message for the footer.</summary>
-    public string? OpenReleasePage(UpdateInfo? info)
+    /// <summary>Opens <see cref="ReleasePageFor"/> in the browser. Null when it was opened, otherwise a note for the footer.</summary>
+    internal Note? OpenReleasePage(UpdateInfo? info)
     {
         string page = ReleasePageFor(info);
         try
@@ -960,7 +1000,7 @@ internal sealed class Updater : IDisposable
             else TestGuard.Start(new ProcessStartInfo(page) { UseShellExecute = true })?.Dispose();
             return null;
         }
-        catch (Exception ex) { return "Could not open the browser: " + Describe(ex); }
+        catch (Exception ex) { return Note.Of("Could not open the browser: {error}", ("error", Describe(ex))); }
     }
 
     private static string Describe(Exception? ex)
@@ -971,16 +1011,17 @@ internal sealed class Updater : IDisposable
 
     // ------------------------------------------------------------------ pending / apply
 
-    private static string HowToInstallByHand => $"install it by hand from {UpdatesDir}";
+    // Texts that end in the same two sentences are whole catalog entries each (the hint and "install it by hand" are not pieces glued on).
+    // A manual check is what clears a .failed marker (see CheckAndMaybeDownloadAsync): "To retry, click Check now under App → Updates."
 
-    /// <summary>A manual check is what clears a <c>.failed</c> marker (see <see cref="CheckAndMaybeDownloadAsync"/>).</summary>
-    private const string RetryHint = "To retry, click Check now under Alerts → Updates.";
+    /// <summary>Why this process cannot install an update over <paramref name="targetExe"/> (it is elevated, or the folder is read-only), or null; in the language of the UI.</summary>
+    public static string? InstallProblemFor(string targetExe) => InstallProblemReason(targetExe)?.Shown;
 
-    /// <summary>Why this process cannot install an update over <paramref name="targetExe"/> (it is elevated, or the folder is read-only), or null.</summary>
-    public static string? InstallProblemFor(string targetExe)
+    /// <summary><see cref="InstallProblemFor"/> as a note (a clause: it goes inside a longer sentence).</summary>
+    internal static Note? InstallProblemReason(string targetExe)
     {
         // An elevated Clink must not run an exe from a folder every process of this user can write to.
-        if (IsElevated()) return ElevatedNote;
+        if (IsElevated()) return ElevatedReason;
         string dir = Path.GetDirectoryName(targetExe) ?? "";
         try
         {
@@ -988,8 +1029,10 @@ internal sealed class Updater : IDisposable
             using var fs = new FileStream(probe, FileMode.Create, FileAccess.Write, FileShare.None, 1, FileOptions.DeleteOnClose);
             return null;
         }
-        catch (Exception) { return $"Clink.exe's folder ({dir}) is not writable"; }
+        catch (Exception) { return Note.Of("Clink.exe's folder ({folder}) is not writable", ("folder", Note.Ltr(dir))); }
     }
+
+    private static Note ElevatedReason => Note.Of("Clink is running as administrator and does not install updates from an elevated process");   // (= ElevatedNote)
 
     /// <summary>Stands in for "is this process elevated" in the unit tests; null otherwise.</summary>
     internal static bool? IsElevatedOverride { get; set; }
@@ -1018,7 +1061,7 @@ internal sealed class Updater : IDisposable
     /// </summary>
     public bool TryGetPendingUpdate(out string path, out ReleaseVersion version)
     {
-        path = ""; version = Current; InstallProblem = null;
+        path = ""; version = Current; InstallProblemNote = null;
         try
         {
             // A build without a signed feed never downloaded anything; the updates folder is shared by every Clink exe on the machine.
@@ -1053,12 +1096,12 @@ internal sealed class Updater : IDisposable
             {
                 // Advice from the current state: retrying only helps where this process could install at all. The reason is
                 // capped so the advice still fits in a tray balloon (250 characters); the log has it in full.
-                string? blocked = InstallProblemFor(Environment.ProcessPath ?? "");
-                string shown = reason.TrimEnd('.');
+                var blocked = InstallProblemReason(Environment.ProcessPath ?? "");
+                string shown = reason.TrimEnd('.');   // (the reason is the English text the failed marker holds)
                 if (shown.Length > 150) shown = shown[..150] + "…";
-                InstallProblem = blocked != null
-                    ? $"Update to v{bestVer} could not be installed: {shown}; {blocked}, so {HowToInstallByHand}."
-                    : $"Update to v{bestVer} could not be installed: {shown}. {RetryHint}";
+                InstallProblemNote = blocked != null
+                    ? Note.Of("Update to v{version} could not be installed: {reason}; {blocked}, so install it by hand from {folder}.", ("version", Note.Ltr(bestVer.ToString())), ("reason", shown), ("blocked", blocked), ("folder", Note.Ltr(UpdatesDir)))
+                    : Note.Of("Update to v{version} could not be installed: {reason}. To retry, click Check now under App → Updates.", ("version", Note.Ltr(bestVer.ToString())), ("reason", shown));
                 Log.Warn($"updater: skipping v{bestVer}, installing it failed earlier: {reason}");
                 return false;
             }
@@ -1070,11 +1113,11 @@ internal sealed class Updater : IDisposable
                 DeleteMarkers(best);
                 return false;
             }
-            reason = InstallProblemFor(Environment.ProcessPath ?? "");
-            if (reason != null)
+            var cannot = InstallProblemReason(Environment.ProcessPath ?? "");
+            if (cannot != null)
             {
-                InstallProblem = $"Update to v{bestVer} is downloaded but {reason}; {HowToInstallByHand}.";
-                Log.Warn($"updater: not installing v{bestVer}: {reason}");
+                InstallProblemNote = Note.Of("Update to v{version} is downloaded but {blocked}; install it by hand from {folder}.", ("version", Note.Ltr(bestVer.ToString())), ("blocked", cannot), ("folder", Note.Ltr(UpdatesDir)));
+                Log.Warn($"updater: not installing v{bestVer}: {cannot.English}");
                 return false;
             }
             path = best; version = bestVer;
@@ -1089,17 +1132,18 @@ internal sealed class Updater : IDisposable
         if (ex is ApplyRefusedException refused)
         {
             // PrepareApply said it all and, where the file is to blame, already wrote the marker (or removed the file): neither is redone here.
-            InstallProblem = RefusalText(refused, version);
-            Log.Warn("updater: " + InstallProblem);
+            InstallProblemNote = RefusalNote(refused, version);
+            Log.Warn("updater: " + InstallProblemNote.English);
             return;
         }
         bool appControl = ex.Message.Contains("Application Control", StringComparison.OrdinalIgnoreCase);
         // Kept short: this text comes back at every start inside a longer message, and tray balloons stop at 250 characters.
+        // (the reason is the English text the failed marker below holds as well)
         string why = appControl
             ? "Smart App Control blocked it (Clink is not code-signed yet). Turn it off in Windows Security › App & browser control, or build Clink from source"
             : Describe(ex);
-        InstallProblem = $"Update to v{version} could not start: {Shorten(why)}. {RetryHint}";
-        Log.Warn("updater: " + InstallProblem);
+        InstallProblemNote = Note.Of("Update to v{version} could not start: {reason}. To retry, click Check now under App → Updates.", ("version", Note.Ltr(version.ToString())), ("reason", Shorten(why)));
+        Log.Warn("updater: " + InstallProblemNote.English);
         // Same marker the apply process writes: this file is not offered again at every start (a manual check retries it).
         try { File.WriteAllText(FailedMarker(pendingExe), $"{why}\n{DateTime.Now:yyyy-MM-dd HH:mm:ss} launch failed"); } catch { }
     }
@@ -1108,9 +1152,24 @@ internal sealed class Updater : IDisposable
     internal const int ReasonCap = 145;
 
     /// <summary>What the user is told when <see cref="PrepareApply"/> refused (a status line or a balloon: at most 250 characters).</summary>
-    internal static string RefusalText(ApplyRefusedException refused, ReleaseVersion version) => refused.Deferred
-        ? $"Update to v{version} was not installed this time: {Shorten(refused.Reason)}. It will be tried again."
-        : $"Update to v{version} not installed: {Shorten(refused.Reason)}. {RetryHint}";
+    internal static string RefusalText(ApplyRefusedException refused, ReleaseVersion version) => RefusalNote(refused, version).Shown;
+
+    /// <summary><see cref="RefusalText"/> as a note (English in the log). The reason is a clause of English from the preflight / verification, or a note (elevated).</summary>
+    internal static Note RefusalNote(ApplyRefusedException refused, ReleaseVersion version)
+    {
+        object reason = (object?)refused.ReasonNote ?? Shorten(refused.Reason);
+        return refused.Deferred
+            ? Note.Of("Update to v{version} was not installed this time: {reason}. It will be tried again.", ("version", Note.Ltr(version.ToString())), ("reason", reason))
+            : Note.Of("Update to v{version} not installed: {reason}. To retry, click Check now under App → Updates.", ("version", Note.Ltr(version.ToString())), ("reason", reason));
+    }
+
+    /// <summary>What the user is told about an exception from starting the update: the text of an <see cref="UpdateStartException"/> / elevated refusal in their language, else the exception's message.</summary>
+    internal static object UserErrorOf(Exception ex) => ex switch
+    {
+        UpdateStartException s => s.Text,
+        ApplyRefusedException { ReasonNote: { } n } => n,
+        _ => ex.Message,
+    };
 
     internal static string Shorten(string reason)
     {
@@ -1191,7 +1250,19 @@ internal sealed class Updater : IDisposable
     {
         public string Reason { get; }
         public bool Deferred { get; }
+        /// <summary>The reason as a note, where the reason is a fixed sentence of ours (the user sees it in their language); null: <see cref="Reason"/> is shown as it is.</summary>
+        public Note? ReasonNote { get; init; }
         public ApplyRefusedException(string message, string reason, bool deferred = false) : base(message) { Reason = reason; Deferred = deferred; }
+    }
+
+    /// <summary>
+    /// Starting the downloaded exe failed. <see cref="Exception.Message"/> is English (the log, the failed marker); <see cref="Text"/> is the same
+    /// for the user, in their language.
+    /// </summary>
+    internal sealed class UpdateStartException : InvalidOperationException
+    {
+        public Note Text { get; }
+        public UpdateStartException(string message, Note text) : base(message) { Text = text; }
     }
 
     /// <summary>A downloaded exe that was verified and passed its start-up check just now; the only way to <see cref="StartApply"/>. Made by <see cref="PrepareApply"/> alone.</summary>
@@ -1254,7 +1325,7 @@ internal sealed class Updater : IDisposable
             Log.Warn($"updater: not applying {newExePath}: {why}");
             throw new ApplyRefusedException("the downloaded exe was not applied: " + why, why);
         }
-        if (IsElevated()) throw new ApplyRefusedException(ElevatedNote, ElevatedNote);
+        if (IsElevated()) throw new ApplyRefusedException(ElevatedNote, ElevatedNote) { ReasonNote = ElevatedReason };
         if (FlavourOfFolder(newExePath) is not { } flavour || VersionFromFile(newExePath) is not { } version)
         {
             string why = "it is not a Clink-<version>.exe in the updates folder";
@@ -1311,7 +1382,7 @@ internal sealed class Updater : IDisposable
     public static void StartApply(ApplyToken token, string targetExePath, IEnumerable<string> restartArgs)
     {
         if (AppController.IsDev) throw new InvalidOperationException(DevModeNote);
-        if (IsElevated()) throw new ApplyRefusedException(ElevatedNote, ElevatedNote);
+        if (IsElevated()) throw new ApplyRefusedException(ElevatedNote, ElevatedNote) { ReasonNote = ElevatedReason };
         string newExePath = token.Exe;
         var psi = new ProcessStartInfo(newExePath)
         {
@@ -1336,9 +1407,9 @@ internal sealed class Updater : IDisposable
                 if (!launch(psi)) throw new InvalidOperationException("the update process exited right away (exit code unknown)");
                 return;
             }
-            using var p = TestGuard.Start(psi) ?? throw new InvalidOperationException("could not start the updater process");
+            using var p = TestGuard.Start(psi) ?? throw new UpdateStartException("could not start the updater process", Note.Of("could not start the updater process"));
             // It waits for this process to exit before doing anything, so leaving early always means it failed.
-            if (p.WaitForExit(2000)) throw new InvalidOperationException($"the update process exited right away (exit code {p.ExitCode})");
+            if (p.WaitForExit(2000)) throw new UpdateStartException($"the update process exited right away (exit code {p.ExitCode})", Note.Of("the update process exited right away (exit code {code})", ("code", p.ExitCode)));
         }
         catch (Exception ex)
         {
@@ -1526,9 +1597,9 @@ internal sealed class Updater : IDisposable
     /// <summary>Manual check (also downloads when auto-update is on, and retries a download whose install failed). Never throws; null = nothing newer or the check failed (see <see cref="LastError"/>).</summary>
     public async Task<UpdateInfo?> CheckNowAsync()
     {
-        if (AppController.IsDev) { LastError = DevModeNote.ToLowerInvariant(); CheckFailed = true; return null; }   // nothing is looked for, downloaded or deleted
+        if (AppController.IsDev) { SetError(DevModeError, devMode: true); CheckFailed = true; return null; }   // nothing is looked for, downloaded or deleted
         try { return await CheckAndMaybeDownloadAsync(_cts.Token, manual: true).ConfigureAwait(false); }
-        catch (Exception ex) { Log.Warn("updater: manual check failed: " + ex.Message); LastError = "the update check failed (details in the log)"; CheckFailed = true; return null; }
+        catch (Exception ex) { Log.Warn("updater: manual check failed: " + ex.Message); SetError(Note.Of("the update check failed (details in the log)")); CheckFailed = true; return null; }
     }
 
     /// <summary>One pass of the background loop (not manual: the download attempt cap applies), for the unit tests.</summary>
@@ -1540,9 +1611,9 @@ internal sealed class Updater : IDisposable
     /// </summary>
     private UpdateNotice DownloadCapNotice(ReleaseVersion version, int tries)
     {
-        string why = (_lastDownloadError ?? "unknown error").ReplaceLineEndings(" ").Trim().TrimEnd('.');
-        if (why.Length > 110) why = why[..110] + "…";
-        return new UpdateNotice($"download:{version}", "Clink update not downloaded", $"Downloading v{version} failed {tries} times ({why}). {RetryHint}");
+        var why = _lastDownloadError ?? Note.Of("update|unknown error");   // (fixed texts of DownloadErrorNote: short enough for the balloon)
+        return new UpdateNotice($"download:{version}", Note.Of("Clink update not downloaded"),
+            Note.PluralOf("Downloading v{version} failed {count} times ({reason}). To retry, click Check now under App → Updates.", tries, ("version", Note.Ltr(version.ToString())), ("reason", why)));   // (tries >= 3: English "other")
     }
 
     private async Task<UpdateInfo?> CheckAndMaybeDownloadAsync(CancellationToken ct, bool manual)
@@ -1576,13 +1647,13 @@ internal sealed class Updater : IDisposable
                 string? failed = FailedReason(existing);
                 if (failed != null && !manual && bad == null)
                 {
-                    LastError = $"installing v{info.Version} failed earlier ({failed.TrimEnd('.')}). {RetryHint}";
+                    SetError(Note.Of("installing v{version} failed earlier ({reason}). To retry, click Check now under App → Updates.", ("version", Note.Ltr(info.Version.ToString())), ("reason", failed.TrimEnd('.'))));
                     Log.Warn($"updater: v{info.Version} is downloaded but installing it failed earlier ({failed}); click the version in the footer to retry");
                     return info;
                 }
                 if (File.Exists(InstalledMarker(existing)))
                 {
-                    LastError = $"v{info.Version} was already installed once from {existing}, yet this exe still reports v{VersionDisplay}";
+                    SetError(Note.Of("v{version} was already installed once from {path}, yet this exe still reports v{current}", ("version", Note.Ltr(info.Version.ToString())), ("path", Note.Ltr(existing)), ("current", Note.Ltr(VersionDisplay))));
                     Log.Warn($"updater: v{info.Version} was already installed from {existing} but this exe is v{VersionDisplay}; not offering it again");
                     return info;
                 }
@@ -1603,7 +1674,7 @@ internal sealed class Updater : IDisposable
             int tries = _attempts.GetValueOrDefault(info.Version);
             if (tries >= MaxDownloadAttempts && !manual)
             {
-                LastError = $"downloading v{info.Version} failed {tries} times ({_lastDownloadError ?? "unknown error"}). {RetryHint}";
+                SetError(Note.PluralOf("downloading v{version} failed {count} times ({reason}). To retry, click Check now under App → Updates.", tries, ("version", Note.Ltr(info.Version.ToString())), ("reason", _lastDownloadError ?? Note.Of("update|unknown error"))));   // (tries >= 3: English "other")
                 notice = DownloadCapNotice(info.Version, tries);
                 return info;
             }
@@ -1616,8 +1687,8 @@ internal sealed class Updater : IDisposable
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }   // shutting down; an HttpClient timeout is a failure like any other
             catch (Exception ex)
             {
-                _lastDownloadError = DownloadErrorText(ex, info.ExeUrl);   // a fixed text: the exception's message (the log below) may hold what a server sent
-                LastError = $"downloading v{info.Version} failed: {_lastDownloadError}";
+                _lastDownloadError = DownloadErrorNote(ex, info.ExeUrl);   // a fixed text: the exception's message (the log below) may hold what a server sent
+                SetError(Note.Of("downloading v{version} failed: {reason}", ("version", Note.Ltr(info.Version.ToString())), ("reason", _lastDownloadError)));
                 Log.Warn($"updater: download of v{info.Version} failed ({tries + 1}/{MaxDownloadAttempts}): {ex.Message}");
                 // The attempt that reaches the cap is announced (once per version: the key), not only the passes the cap then refuses.
                 if (tries + 1 >= MaxDownloadAttempts) notice = DownloadCapNotice(info.Version, tries + 1);
@@ -1657,8 +1728,8 @@ internal sealed class Updater : IDisposable
         string self = Current.ToString();
         if (RecFrom != self) { RecFrom = self; _settings.Save(); }
         // A problem reported at startup (an earlier failed install) is out of date now; keep only what still blocks installing.
-        string? blocked = InstallProblemFor(Environment.ProcessPath ?? "");
-        InstallProblem = blocked == null ? null : $"Update to v{version} is downloaded but {blocked}; {HowToInstallByHand}.";
+        var blocked = InstallProblemReason(Environment.ProcessPath ?? "");
+        InstallProblemNote = blocked == null ? null : Note.Of("Update to v{version} is downloaded but {blocked}; install it by hand from {folder}.", ("version", Note.Ltr(version.ToString())), ("blocked", blocked), ("folder", Note.Ltr(UpdatesDir)));
         Log.Info($"updater: v{version} {how}: {path}");
         try { UpdateReady?.Invoke(version); } catch (Exception ex) { Log.Warn("updater: UpdateReady handler: " + ex.Message); }
         return true;

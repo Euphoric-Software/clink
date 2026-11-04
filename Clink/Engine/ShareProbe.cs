@@ -4,6 +4,7 @@ using Windows.Win32.Media.MediaFoundation;
 using Windows.Win32.System.Com.StructuredStorage;
 using Windows.Win32.System.Variant;
 using Clink.Native;
+using Clink.Services;
 
 namespace Clink.Engine;
 
@@ -34,7 +35,7 @@ internal static unsafe class ShareProbe
     /// <exception cref="ShareTranscodeException">Not a video Clink can read, or no video in it.</exception>
     public static ShareProbeResult Read(string path, double keyframeSeconds)
     {
-        if (!File.Exists(path)) throw new ShareTranscodeException(ShareTranscodeFailure.Unsupported, "the clip file is not there");
+        if (!File.Exists(path)) throw new ShareTranscodeException(ShareTranscodeFailure.Unsupported, Note.Of("reason|the clip file is not there"));
         try { return ReadCore(path, keyframeSeconds); }
         catch (Exception ex) when (ex is not ShareTranscodeException and not OperationCanceledException)
         {
@@ -73,7 +74,7 @@ internal static unsafe class ShareProbe
                 }
                 finally { t->Release(); }
             }
-            if (video == uint.MaxValue) throw new ShareTranscodeException(ShareTranscodeFailure.Unsupported, "the clip has no video");
+            if (video == uint.MaxValue) throw new ShareTranscodeException(ShareTranscodeFailure.Unsupported, Note.Of("reason|the clip has no video"));
 
             long duration = 0;
             PROPVARIANT pv = default;

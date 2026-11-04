@@ -1,15 +1,16 @@
 <Window x:Class="Clink.UI.ShareFilesWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Share files" Width="480" SizeToContent="Height"
+        xmlns:l="clr-namespace:Clink.UI"
+        Title="{l:T 'Share files'}" Width="480" SizeToContent="Height"
         WindowStyle="None" ResizeMode="NoResize" AllowsTransparency="True" Background="Transparent"
         WindowStartupLocation="CenterScreen" Topmost="True" FontFamily="{StaticResource UiFont}" PreviewKeyDown="Window_PreviewKeyDown">
     <!-- Every colour in this file is a DynamicResource: the window follows a theme change while it is open. -->
     <Border Background="{DynamicResource Bg}" CornerRadius="10" BorderBrush="{DynamicResource Border}" BorderThickness="1">
         <StackPanel>
             <Grid Height="42" MouseLeftButtonDown="Header_MouseLeftButtonDown" Background="Transparent">
-                <TextBlock x:Name="TitleText" Style="{StaticResource Display}" Text="Share files" Margin="16,0,0,0" VerticalAlignment="Center" />
-                <Button Style="{StaticResource IconButton}" Content="✕" HorizontalAlignment="Right" Margin="0,0,8,0" Click="Close_Click" ToolTip="Close (Esc)" AutomationProperties.Name="Close" />
+                <TextBlock x:Name="TitleText" Style="{StaticResource Display}" Text="{l:T 'Share files'}" Margin="16,0,0,0" VerticalAlignment="Center" />
+                <Button x:Name="CloseIconButton" Style="{StaticResource IconButton}" Content="✕" HorizontalAlignment="Right" Margin="0,0,8,0" Click="Close_Click" AutomationProperties.Name="{l:T 'Close'}" />
             </Grid>
 
             <TextBlock x:Name="IntroText" Style="{StaticResource MutedText}" Margin="16,0,16,10" TextWrapping="Wrap" />
@@ -43,19 +44,19 @@
                         </Border.Clip>
                         <Grid>
                             <TextBlock Style="{StaticResource Glyph}" Text="&#xE8B9;" FontSize="26" HorizontalAlignment="Center" />
-                            <Image x:Name="ThumbImage" Stretch="UniformToFill" />
+                            <Image x:Name="ThumbImage" Stretch="UniformToFill" FlowDirection="LeftToRight" />
                             <!-- Accent2 on Bg: the pair the theme tests hold to 4.5:1 -->
                             <Border x:Name="MoreBadge" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="6" Padding="7,2" CornerRadius="9"
                                     Background="{DynamicResource Bg}" BorderBrush="{DynamicResource Accent2}" BorderThickness="1" Visibility="Collapsed">
-                                <TextBlock x:Name="MoreText" Foreground="{DynamicResource Accent2}" FontWeight="SemiBold" FontSize="12" />
+                                <TextBlock x:Name="MoreText" Foreground="{DynamicResource Accent2}" FontWeight="SemiBold" FontSize="12" FlowDirection="LeftToRight" />
                             </Border>
                         </Grid>
                     </Border>
                     <StackPanel Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Center">
                         <TextBlock x:Name="NameText" FontWeight="SemiBold" TextWrapping="Wrap" TextTrimming="CharacterEllipsis" MaxHeight="36" />
-                        <TextBlock x:Name="HintText" Style="{StaticResource MutedText}" Margin="0,10,0,0" TextWrapping="Wrap" Text="Drag into Discord, a browser upload box or a folder" />
+                        <TextBlock x:Name="HintText" Style="{StaticResource MutedText}" Margin="0,10,0,0" TextWrapping="Wrap" Text="{l:T 'Drag into Discord, a browser upload box or a folder'}" />
                         <TextBlock x:Name="DiscordText" Style="{StaticResource MutedText}" Margin="0,6,0,0" TextWrapping="Wrap" Visibility="Collapsed"
-                                   Text="Discord takes up to 10 files per message" />
+                                   />
                     </StackPanel>
                 </Grid>
             </Border>
@@ -69,12 +70,11 @@
 
             <Grid Margin="16,4,16,16">
                 <StackPanel Orientation="Horizontal">
-                    <Button x:Name="CopyButton" Style="{StaticResource AccentButton}" Content="Copy files" Click="CopyFiles_Click" Margin="0,0,8,0"
-                            ToolTip="Copy the files, then paste them into Discord or a folder with Ctrl+V (Ctrl+C in this window does the same)" />
-                    <Button x:Name="FolderButton" Content="Open folder" Click="OpenFolder_Click" Margin="0,0,8,0" ToolTip="Show the first file in its folder" />
-                    <Button x:Name="SetUpCopiumButton" Content="Set up Copium…" Click="SetUpCopium_Click" ToolTip="Sign in with Copium under App → Copium: Share then uploads clips and copies the link (after you agree once)" />
+                    <Button x:Name="CopyButton" Style="{StaticResource AccentButton}" Content="{l:T 'Copy files'}" Click="CopyFiles_Click" Margin="0,0,8,0" />
+                    <Button x:Name="FolderButton" Content="{l:T 'Open folder'}" Click="OpenFolder_Click" Margin="0,0,8,0" ToolTip="{l:T 'Show the first file in its folder'}" />
+                    <Button x:Name="SetUpCopiumButton" Content="{l:T 'Set up Copium…'}" Click="SetUpCopium_Click" ToolTip="{l:T 'Sign in with Copium under App → Copium: Share then uploads clips and copies the link (after you agree once)'}" />
                 </StackPanel>
-                <Button Content="Close" Click="Close_Click" HorizontalAlignment="Right" />
+                <Button Content="{l:T 'Close'}" Click="Close_Click" HorizontalAlignment="Right" />
             </Grid>
         </StackPanel>
     </Border>

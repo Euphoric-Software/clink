@@ -1,0 +1,28 @@
+{
+  "engine-status|Starting…": "Запуск…",
+  "engine-status|Stopped": "Остановлено",
+  "engine-status|Recording": "Запись",
+  "engine-status|Error": "Ошибка",
+
+  "engine-error|The GPU was reset (graphics driver crash or TDR)": "GPU был сброшен (сбой видеодрайвера или TDR)",
+
+
+  "audio-line|{name} ({detail})": "{name} ({detail})",
+
+  "audio-problem|not connected": "не подключено",
+  "audio-problem|disabled": "отключено",
+
+  "audio-detail|game + mic + voice, always track 1": "игра + микрофон + голос, всегда дорожка 1",
+  "audio-detail|waiting for app": "ожидание приложения",
+  "audio-detail|everything": "всё",
+  "audio-detail|everything except {app}": "всё, кроме {app}",
+  "audio-detail|mix only": "только микс",
+  "audio-detail|{detail}, mix only": "{detail}, только микс",
+  "audio-detail|not connected or disabled": "не подключено или отключено",
+  "audio-detail|in use by another app (exclusive mode)": "используется другим приложением (монопольный режим)",
+  "audio-detail|access denied": "отказано в доступе",
+  "audio-detail|blocked: allow microphone access for desktop apps in Windows privacy settings": "заблокировано: разрешите классическим приложениям доступ к микрофону в параметрах конфиденциальности Windows",
+  "audio-detail|not an output device": "не устройство вывода",
+  "audio-detail|not an input device": "не устройство ввода",
+  "audio-detail|Windows Audio service not running": "служба Windows Audio не запущена"
+}

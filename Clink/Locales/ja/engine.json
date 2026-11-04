@@ -1,0 +1,28 @@
+{
+  "engine-status|Starting…": "開始中…",
+  "engine-status|Stopped": "停止",
+  "engine-status|Recording": "録画中",
+  "engine-status|Error": "エラー",
+
+  "engine-error|The GPU was reset (graphics driver crash or TDR)": "GPUがリセットされました（グラフィックスドライバーのクラッシュまたはTDR）",
+
+
+  "audio-line|{name} ({detail})": "{name}（{detail}）",
+
+  "audio-problem|not connected": "未接続",
+  "audio-problem|disabled": "無効",
+
+  "audio-detail|game + mic + voice, always track 1": "ゲーム＋マイク＋ボイス、常にトラック1",
+  "audio-detail|waiting for app": "アプリ待ち",
+  "audio-detail|everything": "すべて",
+  "audio-detail|everything except {app}": "{app}以外すべて",
+  "audio-detail|mix only": "ミックスのみ",
+  "audio-detail|{detail}, mix only": "{detail}、ミックスのみ",
+  "audio-detail|not connected or disabled": "未接続または無効",
+  "audio-detail|in use by another app (exclusive mode)": "他のアプリが使用中（排他モード）",
+  "audio-detail|access denied": "アクセス拒否",
+  "audio-detail|blocked: allow microphone access for desktop apps in Windows privacy settings": "ブロック：Windowsのプライバシー設定でデスクトップアプリのマイクへのアクセスを許可してください",
+  "audio-detail|not an output device": "出力デバイスではありません",
+  "audio-detail|not an input device": "入力デバイスではありません",
+  "audio-detail|Windows Audio service not running": "Windows Audioサービスが実行されていません"
+}

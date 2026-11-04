@@ -37,6 +37,7 @@ internal static class ShareMenu
             Style = (Style)target.FindResource("FlyoutMenu"),
             PlacementTarget = target,   // always the arrow: it is never disabled (the main half can be) and the menu items inherit from it
             Placement = PlacementMode.Bottom,
+            FlowDirection = target.FlowDirection,   // a stand-alone ContextMenu is not in the window's tree: it would otherwise read left to right in a right-to-left window
         };
         // a split button: the menu drops from the whole button, left-aligned with the main half that sits right before the arrow
         if (below != null)

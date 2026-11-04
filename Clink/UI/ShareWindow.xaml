@@ -1,19 +1,19 @@
 <Window x:Class="Clink.UI.ShareWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Share clip" Width="480" SizeToContent="Height"
+        xmlns:l="clr-namespace:Clink.UI"
+        Title="{l:T 'Share clip'}" Width="480" SizeToContent="Height"
         WindowStyle="None" ResizeMode="NoResize" AllowsTransparency="True" Background="Transparent"
         WindowStartupLocation="CenterScreen" Topmost="True" FontFamily="{StaticResource UiFont}" PreviewKeyDown="Window_PreviewKeyDown">
     <!-- Every colour in this file is a DynamicResource: the window follows a theme change while it is open. -->
     <Border Background="{DynamicResource Bg}" CornerRadius="10" BorderBrush="{DynamicResource Border}" BorderThickness="1">
         <StackPanel>
             <Grid Height="42" MouseLeftButtonDown="Header_MouseLeftButtonDown" Background="Transparent">
-                <TextBlock Style="{StaticResource Display}" Text="Share clip" Margin="16,0,0,0" VerticalAlignment="Center" />
-                <Button Style="{StaticResource IconButton}" Content="✕" HorizontalAlignment="Right" Margin="0,0,8,0" Click="Close_Click" ToolTip="Close (Esc)" />
+                <TextBlock Style="{StaticResource Display}" Text="{l:T 'Share clip'}" Margin="16,0,0,0" VerticalAlignment="Center" />
+                <Button Style="{StaticResource IconButton}" x:Name="CloseX" Content="✕" HorizontalAlignment="Right" Margin="0,0,8,0" Click="Close_Click" AutomationProperties.Name="{l:T 'Close'}" />
             </Grid>
 
-            <TextBlock x:Name="IntroText" Style="{StaticResource MutedText}" Margin="16,0,16,10"
-                       Text="No Copium token yet, so there is no link to copy. Share the file itself:" />
+            <TextBlock x:Name="IntroText" Style="{StaticResource MutedText}" Margin="16,0,16,10" />
 
             <!-- The file card: drag it out (always a copy, the clip stays in the library) -->
             <Border x:Name="Card" Margin="16,0" CornerRadius="8" Padding="12"
@@ -44,13 +44,13 @@
                         </Border.Clip>
                         <Grid>
                             <TextBlock Style="{StaticResource Glyph}" Text="&#xE714;" FontSize="26" HorizontalAlignment="Center" />
-                            <Image x:Name="ThumbImage" Stretch="UniformToFill" />
+                            <Image x:Name="ThumbImage" Stretch="UniformToFill" FlowDirection="LeftToRight" />
                         </Grid>
                     </Border>
                     <StackPanel Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Center">
                         <TextBlock x:Name="NameText" FontWeight="SemiBold" TextWrapping="Wrap" TextTrimming="CharacterEllipsis" MaxHeight="36" />
                         <TextBlock x:Name="MetaText" Style="{StaticResource MutedText}" Margin="0,2,0,0" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
-                        <TextBlock x:Name="HintText" Style="{StaticResource MutedText}" Margin="0,10,0,0" Text="Drag into Discord, a browser upload box or a folder" />
+                        <TextBlock x:Name="HintText" Style="{StaticResource MutedText}" Margin="0,10,0,0" />
                     </StackPanel>
                 </Grid>
             </Border>
@@ -59,14 +59,14 @@
             <StackPanel x:Name="FitPanel" Margin="18,8,16,0" Visibility="Collapsed">
                 <TextBlock x:Name="FitText" Style="{StaticResource MutedText}" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite" />
                 <ProgressBar x:Name="FitProgress" Height="6" Minimum="0" Maximum="1" Margin="0,8,0,0" Visibility="Collapsed"
-                             AutomationProperties.Name="Smaller copy progress" />
+                             AutomationProperties.Name="{l:T 'Smaller copy progress'}" />
                 <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
                     <Button x:Name="MakeCopyButton" Style="{StaticResource AccentButton}" Click="MakeCopy_Click" Margin="0,0,8,0" Visibility="Collapsed"
-                            ToolTip="Make a smaller copy of this clip for Discord; the clip itself is not changed" />
+                            ToolTip="{l:T 'Make a smaller copy of this clip for Discord; the clip itself is not changed'}" />
                     <Button x:Name="CancelCopyButton" Click="CancelCopy_Click" Margin="0,0,8,0" Visibility="Collapsed"
-                            AutomationProperties.Name="Cancel the smaller copy" ToolTip="Stop making the smaller copy" />
+                            AutomationProperties.Name="{l:T 'Cancel the smaller copy'}" ToolTip="{l:T 'Stop making the smaller copy'}" />
                     <Button x:Name="UseOriginalButton" Click="UseOriginal_Click" Margin="0,0,8,0" Visibility="Collapsed"
-                            AutomationProperties.Name="Use the original clip" ToolTip="Share the original clip instead of the smaller copy" />
+                            AutomationProperties.Name="{l:T 'Use the original clip'}" ToolTip="{l:T 'Share the original clip instead of the smaller copy'}" />
                 </StackPanel>
             </StackPanel>
 
@@ -75,12 +75,11 @@
 
             <Grid Margin="16,4,16,16">
                 <StackPanel Orientation="Horizontal">
-                    <Button x:Name="CopyButton" Style="{StaticResource AccentButton}" Content="Copy file" Click="CopyFile_Click" Margin="0,0,8,0"
-                            ToolTip="Copy the file, then paste it into Discord or a folder with Ctrl+V (Ctrl+C in this window does the same)" />
-                    <Button x:Name="FolderButton" Content="Open folder" Click="OpenFolder_Click" Margin="0,0,8,0" ToolTip="Show the file in its folder" />
-                    <Button x:Name="SetUpCopiumButton" Content="Set up Copium…" Click="SetUpCopium_Click" ToolTip="Sign in with Copium under App → Copium: Share then uploads the clip and copies the link (after you agree once)" />
+                    <Button x:Name="CopyButton" Style="{StaticResource AccentButton}" Content="{l:T 'Copy file'}" Click="CopyFile_Click" Margin="0,0,8,0" />
+                    <Button x:Name="FolderButton" Content="{l:T 'Open folder'}" Click="OpenFolder_Click" Margin="0,0,8,0" ToolTip="{l:T 'Show the file in its folder'}" />
+                    <Button x:Name="SetUpCopiumButton" Content="{l:T 'Set up Copium…'}" Click="SetUpCopium_Click" ToolTip="{l:T 'Sign in with Copium under App → Copium: Share then uploads the clip and copies the link (after you agree once)'}" />
                 </StackPanel>
-                <Button Content="Close" Click="Close_Click" HorizontalAlignment="Right" />
+                <Button Content="{l:T 'Close'}" Click="Close_Click" HorizontalAlignment="Right" />
             </Grid>
         </StackPanel>
     </Border>

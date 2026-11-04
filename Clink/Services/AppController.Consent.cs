@@ -20,7 +20,7 @@ internal sealed partial class AppController
             Say(text);
             // A screenshot action has no footer in front of it; the clip paths report through their own NotifyProblem / row.
             if (context is ConsentContext.ScreenshotUploadManual or ConsentContext.ScreenshotUploadLibrary or ConsentContext.ScreenshotUploadSetting or ConsentContext.Proactive or ConsentContext.TokenSaved)
-                Toasts.ShowNotice(title, text);
+                Toasts.ShowNotice(title.Shown, text.Shown);
         },
         OpenTokenSetup = ShowCopiumSetup,
     };
@@ -124,5 +124,6 @@ internal sealed partial class AppController
     }
 
     /// <summary>The line that stands in for a refused share: footer, notice. Same text everywhere (hotkey, pipe, buttons that are still showing).</summary>
-    internal const string CloudOffText = ConsentGate.CloudOffText;
+    internal static Note CloudOffNote => ConsentGate.CloudOffNote;   // for Say (the log line stays English)
+    internal static string CloudOffText => ConsentGate.CloudOffText;   // (a property: slice S3b makes ConsentGate's text translated, which a const cannot be)
 }

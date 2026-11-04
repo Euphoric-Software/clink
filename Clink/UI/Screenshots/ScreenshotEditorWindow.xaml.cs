@@ -13,6 +13,7 @@ using Windows.Win32.UI.WindowsAndMessaging;
 using Clink.Screenshots;
 using Clink.Screenshots.Editing;
 using Clink.Services;
+using Clink.Services.Localization;
 
 namespace Clink.UI.Screenshots;
 
@@ -46,7 +47,11 @@ public partial class ScreenshotEditorWindow : Window, ICaptureExcludedWindow
             HintText.Text = request.Hint;
             HintText.Visibility = Visibility.Visible;
         }
-        DiscardButton.Content = request.IsNewCapture ? "Discard" : "Close";
+        DiscardButton.Content = request.IsNewCapture ? L.T("Discard") : L.T("Close");
+        // the tooltips that name a key: the key is a {keys} placeholder (key names are not translated)
+        CloseButton.ToolTip = L.T("Close ({keys})", ("keys", L.Ltr("Esc")));
+        DiscardButton.ToolTip = L.T("Close without saving ({keys})", ("keys", L.Ltr("Esc")));
+        DoneButton.ToolTip = L.T("Save the picture, copy it and close ({keys})", ("keys", L.Ltr("Ctrl+Enter")));
         Canvas.Attach(_session);
         Toolbar.Attach(_session);
         Toolbar.CopyRequested += () => Run(CopyAsync);
@@ -88,6 +93,27 @@ public partial class ScreenshotEditorWindow : Window, ICaptureExcludedWindow
     internal static (double W, double H) MinSizeFor(double xamlMinW, double xamlMinH, double dpi, int workW, int workH) =>
         (Math.Min(xamlMinW, 0.9 * workW / dpi), Math.Min(xamlMinH, 0.9 * workH / dpi));
 
+    /// <summary>
+    /// The window width (DIPs) at which the toolbar's longest row fits without being clipped: its natural width plus the host's padding and
+    /// the window border. In English this is below the XAML minimum (860), so nothing changes; in a language with longer button texts the
+    /// window's minimum grows to it (<see cref="MinSizeFor"/> still keeps it within 90% of the work area).
+    /// </summary>
+    internal double ToolbarNeededWidth() => ToolbarNeededWidth(Toolbar, ToolbarHost.Padding);
+
+    internal static double ToolbarNeededWidth(FrameworkElement toolbar, Thickness hostPadding)
+    {
+        try
+        {
+            toolbar.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+            return Math.Ceiling(toolbar.DesiredSize.Width + hostPadding.Left + hostPadding.Right + 2);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("screenshot editor: toolbar width: " + ex.Message);
+            return 0;
+        }
+    }
+
     [System.Runtime.InteropServices.DllImport("shcore.dll")]
     private static extern int GetDpiForMonitor(nint hmonitor, int dpiType, out uint dpiX, out uint dpiY);
 
@@ -112,7 +138,7 @@ public partial class ScreenshotEditorWindow : Window, ICaptureExcludedWindow
             var hwnd = new HWND(new WindowInteropHelper(this).Handle);
             var wa = ScreenPlacement.WorkAreaOf(request.Monitor);
             double dpi = ScaleOfTarget(request, wa);
-            var (minW, minH) = MinSizeFor(MinWidth, MinHeight, dpi, wa.right - wa.left, wa.bottom - wa.top);
+            var (minW, minH) = MinSizeFor(Math.Max(MinWidth, ToolbarNeededWidth()), MinHeight, dpi, wa.right - wa.left, wa.bottom - wa.top);
             MinWidth = minW;
             MinHeight = minH;
             var img = request.Document.Base;
@@ -158,7 +184,7 @@ public partial class ScreenshotEditorWindow : Window, ICaptureExcludedWindow
         catch (Exception ex)
         {
             Log.Error("screenshot editor: insert image", ex);
-            Say("Could not insert the image: " + ex.Message);
+            Say(L.T("Could not insert the image: {error}", ("error", ex.Message)));
         }
         Canvas.Focus();
     }
@@ -168,7 +194,7 @@ public partial class ScreenshotEditorWindow : Window, ICaptureExcludedWindow
     {
         if (_session == null || _inserting) return;
         _inserting = true;
-        Say("Reading the picture…");
+        Say(L.T("Reading the picture…"));
         try
         {
             var (ok, _) = await insert();
@@ -203,7 +229,7 @@ public partial class ScreenshotEditorWindow : Window, ICaptureExcludedWindow
         if (_session == null || _busy) return;
         if (Canvas.IsTextEditing) Canvas.CommitText();
         SetBusy(true);   // the buttons are off while the picture is made
-        Say("Copying…");
+        Say(L.T("Copying…"));
         try
         {
             var image = await _session.ExportAsync();
@@ -214,12 +240,12 @@ public partial class ScreenshotEditorWindow : Window, ICaptureExcludedWindow
                 return (made, PngFile.Encode(made));
             });
             bool ok = ScreenshotClipboard.Copy(bitmap, png);
-            Say(ok ? "Copied to the clipboard" : "The clipboard is busy: not copied");
+            Say(ok ? L.T("Copied to the clipboard") : L.T("The clipboard is busy: not copied"));
         }
         catch (Exception ex)
         {
             Log.Error("screenshot editor: copy", ex);
-            Say("Could not copy: " + ex.Message);
+            Say(L.T("Could not copy: {error}", ("error", ex.Message)));
         }
         finally { SetBusy(false); }
         Canvas.Focus();
@@ -231,7 +257,7 @@ public partial class ScreenshotEditorWindow : Window, ICaptureExcludedWindow
         if (_session == null || _request == null || _busy) return false;
         if (Canvas.IsTextEditing) Canvas.CommitText();
         SetBusy(true);
-        Say("Saving…");
+        Say(L.T("Saving…"));
         try
         {
             var doc = _session.Committed;
@@ -243,15 +269,15 @@ public partial class ScreenshotEditorWindow : Window, ICaptureExcludedWindow
             {
                 _everSaved = true;
                 if (ReferenceEquals(_session.Committed, doc)) _session.MarkSaved();
-                Say(finish ? "" : "Saved");
+                Say(finish ? "" : L.T("Saved"));
             }
-            else Say("Could not save (the reason is in the notification)");
+            else Say(L.T("Could not save (the reason is in the notification)"));
             return ok;
         }
         catch (Exception ex)
         {
             Log.Error("screenshot editor: save", ex);
-            Say("Could not save: " + ex.Message);
+            Say(L.T("Could not save: {error}", ("error", ex.Message)));
             return false;
         }
         finally { SetBusy(false); }
@@ -282,10 +308,10 @@ public partial class ScreenshotEditorWindow : Window, ICaptureExcludedWindow
     }
 
     /// <summary>The app is quitting (see <see cref="EditorWindowHost.ConfirmQuitAsync"/>). True = the quit may go on.</summary>
-    internal async Task<bool> ResolveForQuitAsync(bool userInitiated)
+    internal async Task<bool> ResolveForQuitAsync(bool userInitiated, bool forRestart = false)
     {
         _resolvingQuit = true;   // a close that was deferred while a save ran must not ask a second question of its own
-        try { return await ResolveForQuitCoreAsync(userInitiated); }
+        try { return await ResolveForQuitCoreAsync(userInitiated, forRestart); }
         finally { _resolvingQuit = false; }
     }
 
@@ -293,7 +319,7 @@ public partial class ScreenshotEditorWindow : Window, ICaptureExcludedWindow
     /// <summary>The quit's own question is being resolved: <see cref="RequestCloseAsync"/> stands aside (test seam).</summary>
     internal bool ResolvingQuit => _resolvingQuit;
 
-    private async Task<bool> ResolveForQuitCoreAsync(bool userInitiated)
+    private async Task<bool> ResolveForQuitCoreAsync(bool userInitiated, bool forRestart)
     {
         for (int i = 0; _busy && i < 100; i++) await Task.Delay(50);   // a save under way finishes first
         if (_session == null) return true;
@@ -309,12 +335,30 @@ public partial class ScreenshotEditorWindow : Window, ICaptureExcludedWindow
         Hotkeys.GrantForeground();
         Activate();
         TestGuard.CheckLaunch("a message box (save edits before quit)");
-        var answer = MessageBox.Show(this, "Save your edits before Clink quits?\n\nYes saves the picture, No discards the edits, Cancel keeps Clink running.",
-            "Clink screenshot editor", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+        var answer = Dialog.Show(this, SavePromptText(HoldsUnsavedNewCapture, onQuit: true, onRestart: forRestart),
+            MessageBoxButton.YesNoCancel, MessageBoxImage.Question, caption: L.T("Clink screenshot editor"));
         if (answer == MessageBoxResult.Cancel) return false;
         if (answer == MessageBoxResult.Yes && !await SaveCoreAsync(finish: false)) return false;
         return true;
     }
+
+    /// <summary>The editor holds a capture that was never saved (No on a prompt discards all of it, not just some edits).</summary>
+    private bool HoldsUnsavedNewCapture => _request is { IsNewCapture: true } && !_everSaved;
+
+    /// <summary>
+    /// The question of the save prompt (Yes / No / Cancel). A new capture that was never saved: "Save this screenshot?" (No discards the whole
+    /// capture); a screenshot that is saved already, or came from a file: "Save the changes to this screenshot?". <paramref name="onQuit"/>:
+    /// the prompt Clink asks before it quits; <paramref name="onRestart"/> (with onQuit): before it restarts (the language picker).
+    /// </summary>
+    internal static string SavePromptText(bool unsavedNewCapture, bool onQuit, bool onRestart = false) => (unsavedNewCapture, onQuit, onRestart) switch
+    {
+        (true, true, true) => L.T("Save this screenshot before Clink restarts?"),
+        (true, true, false) => L.T("Save this screenshot before Clink quits?"),
+        (true, false, _) => L.T("Save this screenshot?"),
+        (false, true, true) => L.T("Save the changes to this screenshot before Clink restarts?"),
+        (false, true, false) => L.T("Save the changes to this screenshot before Clink quits?"),
+        (false, false, _) => L.T("Save the changes to this screenshot?"),
+    };
 
     internal void CloseApproved()
     {
@@ -331,8 +375,8 @@ public partial class ScreenshotEditorWindow : Window, ICaptureExcludedWindow
         if (_session.IsDirty)
         {
             TestGuard.CheckLaunch("a message box (save edits)");
-            var answer = MessageBox.Show(this, "Save your edits?\n\nYes saves the picture, No discards the edits, Cancel keeps editing.",
-                "Clink screenshot editor", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
+            var answer = Dialog.Show(this, SavePromptText(HoldsUnsavedNewCapture, onQuit: false),
+                MessageBoxButton.YesNoCancel, MessageBoxImage.Question, caption: L.T("Clink screenshot editor"));
             if (answer == MessageBoxResult.Cancel) return;
             if (answer == MessageBoxResult.Yes && !await SaveCoreAsync(finish: true)) return;
         }
@@ -475,9 +519,9 @@ internal sealed class EditorWindowHost : IScreenshotEditor
     /// The app is quitting: with unsaved edits the editor comes forward and asks (a user's quit can be cancelled: false); an update
     /// restart or a session end cannot be refused: a copy of the edits is saved and the quit goes on. True = go on quitting.
     /// </summary>
-    public async Task<bool> ConfirmQuitAsync(bool userInitiated)
+    public async Task<bool> ConfirmQuitAsync(bool userInitiated, bool forRestart = false)
     {
         var w = _window;
-        return w == null || await w.ResolveForQuitAsync(userInitiated);
+        return w == null || await w.ResolveForQuitAsync(userInitiated, forRestart);
     }
 }

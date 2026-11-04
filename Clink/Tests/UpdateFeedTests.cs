@@ -6,6 +6,7 @@ using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text;
 using Clink.Services;
+using Clink.Services.Localization;
 
 namespace Clink.Tests;
 
@@ -2073,7 +2074,7 @@ internal static class UpdateFeedTests
         // a browser that cannot be started is reported, not thrown
         Updater.FeedOverride = two;
         Updater.BrowserOverride = _ => throw new InvalidOperationException("no browser");
-        Check.Contains(up.OpenReleasePage(good), "Could not open the browser");
+        Check.Contains(up.OpenReleasePage(good)?.English, "Could not open the browser");
     }
 
     // ------------------------------------------------------------------ a feed that keeps failing
@@ -2428,6 +2429,36 @@ internal static class UpdateFeedTests
         Check.Equal(2, shown, "once per version");
     }
 
+    [UnitTest]
+    public static void A_manual_check_whose_download_fails_composes_the_found_but_sentence_whole()
+    {
+        using var dir = new TempDir();
+        Updater.UpdatesDirOverride = dir.File("updates");
+        var (pub, key) = NewKey();
+        using var k = key;
+        Updater.FeedOverride = Trust(stable: new[] { pub });
+        byte[] exe = FakeExe();
+        var net = new FakeNet();
+        byte[] fm = Bytes(Manifest("0.4.2", size: exe.Length, sha: Hex(exe)));
+        net.Feed("stable", fm, Sign(key, fm));
+        net.Status("https://cdn.example/clink/releases/v0.4.2/Clink.exe", 503);
+        Updater.HttpOverride = net.Send;
+        using var up = new Updater(new Settings { AutoUpdate = true }, V("0.4.1"));
+        var info = OffUi(() => up.CheckNowAsync());
+        Check.Equal(V("0.4.2"), info?.Version, "found, not downloaded");
+        var why = up.LastErrorNote;
+        Check.NotNull(why, "the manual check's own failure");
+        // the same composition as MainWindow's Check now handler
+        Note Compose() => Note.Of("Update v{version} found, but {reason} - opening the release page", ("version", Note.Ltr(info!.Version.ToString())), ("reason", why!.WithoutFinalPeriod()));
+        Check.Equal("Update v0.4.2 found, but downloading v0.4.2 failed: HTTP 503 - opening the release page", Compose().English);
+        using (L.Scope("qps-ploc"))
+        {
+            string shown = Compose().Shown;
+            Check.True(PseudoLocale.IsPseudo(shown), "pseudo-translated whole: " + shown);
+            Check.False(shown.Contains("downloading v0.4.2 failed"), "the inner reason is not left English: " + shown);
+        }
+    }
+
     private static HttpResponseMessage Redirect(string to)
     {
         var r = new HttpResponseMessage(HttpStatusCode.Found) { Content = new StringContent("") };
@@ -2631,12 +2662,12 @@ internal static class UpdateFeedTests
         Check.DoesNotContain(up.LastError, "EVIL", "a manual retry too");
 
         // Every kind of failure has its own fixed text.
-        Check.Equal("HTTP 503", Updater.DownloadErrorText(new HttpRequestException("EVIL", null, HttpStatusCode.ServiceUnavailable), exeUrl));
-        Check.Equal("network error (cdn.example)", Updater.DownloadErrorText(new IOException("EVIL", new System.Net.Sockets.SocketException()), exeUrl));
-        Check.Equal("network error (cdn.example)", Updater.DownloadErrorText(new HttpIOException(HttpRequestError.ResponseEnded, "EVIL"), exeUrl));
-        Check.Equal("the download could not be saved in the updates folder", Updater.DownloadErrorText(new UnauthorizedAccessException("EVIL"), exeUrl));
-        Check.Equal("unexpected error (details in the log)", Updater.DownloadErrorText(new FormatException("EVIL"), exeUrl));
-        Check.Equal("no answer within 30 s", Updater.DownloadErrorText(new TaskCanceledException("EVIL"), exeUrl));
+        Check.Equal("HTTP 503", Updater.DownloadErrorNote(new HttpRequestException("EVIL", null, HttpStatusCode.ServiceUnavailable), exeUrl).English);
+        Check.Equal("network error (cdn.example)", Updater.DownloadErrorNote(new IOException("EVIL", new System.Net.Sockets.SocketException()), exeUrl).English);
+        Check.Equal("network error (cdn.example)", Updater.DownloadErrorNote(new HttpIOException(HttpRequestError.ResponseEnded, "EVIL"), exeUrl).English);
+        Check.Equal("the download could not be saved in the updates folder", Updater.DownloadErrorNote(new UnauthorizedAccessException("EVIL"), exeUrl).English);
+        Check.Equal("unexpected error (details in the log)", Updater.DownloadErrorNote(new FormatException("EVIL"), exeUrl).English);
+        Check.Equal("no answer within 30 s", Updater.DownloadErrorNote(new TaskCanceledException("EVIL"), exeUrl).English);
 
         // What DownloadAsync itself says: size, hash, not an executable.
         var plain = new Updater(new Settings(), V("0.4.1"));
@@ -2651,7 +2682,7 @@ internal static class UpdateFeedTests
             bodyNet.Ok(exeUrl, body);
             Updater.HttpOverride = bodyNet.Send;
             var ex = Check.Throws<InvalidDataException>(() => OffUi(() => plain.DownloadAsync(new UpdateInfo(V("0.4.2"), "v0.4.2", exeUrl, exe.Length, sha, ""), null, CancellationToken.None)), name);
-            Check.Equal(expect, Updater.DownloadErrorText(ex, exeUrl), name);
+            Check.Equal(expect, Updater.DownloadErrorNote(ex, exeUrl).English, name);
         }
     }
 
@@ -2667,7 +2698,7 @@ internal static class UpdateFeedTests
     private static void StrayProbeBrowser()
     {
         using var up = new Updater(new Settings(), V("0.4.1"));
-        Check.Contains(up.OpenReleasePage(null), "Could not open the browser");
+        Check.Contains(up.OpenReleasePage(null)?.English, "Could not open the browser");
     }
 
     /// <summary>Not a test: does nothing unfaked.</summary>

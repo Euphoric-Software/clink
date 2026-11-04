@@ -1,5 +1,7 @@
 using Clink.Native;
 using Clink.Screenshots.Imaging;
+using Clink.Services;
+using Clink.Services.Localization;
 
 namespace Clink.Screenshots.Sources;
 
@@ -36,12 +38,13 @@ internal sealed class FrozenDesktop
     /// <summary>Captures every monitor with the first source that handles it. Any thread; no window of ours may exist yet. Throws when a monitor cannot be copied or no source handles it.</summary>
     public static FrozenDesktop CaptureAll(IReadOnlyList<MonitorInfo> monitors, IReadOnlyList<IScreenshotSource> sources)
     {
-        if (monitors.Count == 0) throw new ScreenshotCaptureException("No monitor was found");
+        if (monitors.Count == 0) throw new ScreenshotCaptureException("No monitor was found", Note.Of("No monitor was found"));
         var frozen = new List<FrozenMonitor>(monitors.Count);
         foreach (var monitor in monitors)
         {
             var source = sources.FirstOrDefault(s => s.Handles(monitor))
-                ?? throw new ScreenshotCaptureException($"No screenshot source handles {monitor.ShortName}");
+                ?? throw new ScreenshotCaptureException($"No screenshot source handles {monitor.ShortName}",
+                    Note.Of("No screenshot source handles {monitor}", ("monitor", Note.Ltr(monitor.ShortName))));
             frozen.Add(source.Capture(monitor));
         }
         return new FrozenDesktop(frozen, DateTime.Now);

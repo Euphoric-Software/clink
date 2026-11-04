@@ -1,3 +1,5 @@
+using Clink.Services.Localization;
+
 namespace Clink.Services;
 
 /// <summary>Which Copium entry the version-number popup shows.</summary>
@@ -19,9 +21,9 @@ internal enum CopiumPopupKind
 /// </summary>
 internal sealed class CopiumPopupModel
 {
-    internal const string ToggleLabel = "Auto-upload screenshots";
-    internal const string SignInLink = "Sign in with Copium";
-    internal const string PastedTokenLine = "Copium: API token";
+    internal static string ToggleLabel => L.T("Auto-upload screenshots");
+    internal static string SignInLink => L.T("Sign in with Copium");
+    internal static string PastedTokenLine => L.T("Copium: API token");
 
     public CopiumPopupKind Kind { get; init; }
     /// <summary>The account line (plain text) or the muted cloud-off line; null for the sign-in link.</summary>
@@ -41,7 +43,7 @@ internal sealed class CopiumPopupModel
         if (state.HasToken && state.LinkedViaConnect)
             return new CopiumPopupModel
             {
-                Kind = CopiumPopupKind.Connect, Line = "Copium: " + AccountName(state.Username),
+                Kind = CopiumPopupKind.Connect, Line = AccountLine(state.Username),
                 ToggleVisible = true, ToggleEnabled = true, ToggleChecked = screenshotUploadShown,
             };
         if (state.HasToken)
@@ -53,11 +55,12 @@ internal sealed class CopiumPopupModel
         return new CopiumPopupModel { Kind = CopiumPopupKind.SignedOut, LinkVisible = true };
     }
 
-    private static string AccountName(string? username)
+    /// <summary>"Copium: {name}" (the name cut and isolated: user data of unknown direction), "Copium: signed in" without one.</summary>
+    private static string AccountLine(string? username)
     {
         string name = (username ?? "").Trim();
-        if (name.Length == 0) return "signed in";
+        if (name.Length == 0) return L.T("Copium: signed in");
         if (name.Length > CopiumWelcomeModel.MaxNameChars) name = name[..CopiumWelcomeModel.MaxNameChars].TrimEnd() + "…";
-        return CopiumCardModel.Iso(name);
+        return L.T("Copium: {name}", ("name", CopiumCardModel.Iso(name)));
     }
 }
