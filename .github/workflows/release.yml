@@ -248,20 +248,14 @@ jobs:
 
       - name: Sign both application executables
         if: steps.signing.outputs.enabled == 'true'
-        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
-        with:
-          endpoint: ${{ env.ARTIFACT_SIGNING_ENDPOINT }}
-          signing-account-name: ${{ env.ARTIFACT_SIGNING_ACCOUNT }}
-          certificate-profile-name: ${{ env.ARTIFACT_SIGNING_PROFILE }}
-          files: |
-            ${{ github.workspace }}/dist/sc/Clink.exe
-            ${{ github.workspace }}/dist/fx/Clink.exe
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
-          exclude-environment-credential: true
-          exclude-workload-identity-credential: true
-          exclude-managed-identity-credential: true
+        shell: pwsh
+        run: |
+          # The module is the same pinned version used by Microsoft's Artifact Signing action.
+          # Its tool restore runs outside this repo's intentionally strict NuGet source mapping.
+          Install-Module -Name ArtifactSigning -RequiredVersion 0.1.8 -Force -Repository PSGallery
+          . ./tools/lib/windows-signing-lib.ps1
+          Invoke-WindowsInstallerSigning -Path dist/sc/Clink.exe
+          Invoke-WindowsInstallerSigning -Path dist/fx/Clink.exe
 
       # Both published exes: size guards, --packaging-check, --preflight, the embedded-feed self-test (what the BUILT exes embed from
       # Clink/Assets/feed.json must match what CI reads from the same file: off for an empty file, on for a complete one; a partly

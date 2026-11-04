@@ -1562,11 +1562,6 @@ try {
                 if ($line -match '^\s*(?:- )?uses:\s*(\S+)@([0-9a-f]{40})\s+#\s*v(\d+)\.(\d+)\.(\d+)\s*$') {
                     $seen++
                     $repoName = $Matches[1]
-                    # Artifact Signing v2.0.0 is a reviewed PowerShell composite action, not a Node action.
-                    if ($repoName -ceq 'azure/artifact-signing-action') {
-                        Assert-True ($Matches[2] -ceq 'c7ab2a863ab5f9a846ddb8265964877ef296ee82' -and $Matches[3] -eq '2' -and $Matches[4] -eq '0' -and $Matches[5] -eq '0') "$($wf.Name): unreviewed Artifact Signing composite action"
-                        continue
-                    }
                     Assert-True ($minMajor.ContainsKey($repoName)) "$($wf.Name): unknown action $repoName (add it to this test with its first node24 major)"
                     Assert-True ([int]$Matches[3] -ge $minMajor[$repoName]) "$($wf.Name): $repoName v$($Matches[3]) predates its node24 line"
                     Assert-True ($nodeTwenty -cnotcontains $Matches[2]) "$($wf.Name): $repoName is pinned to a Node 20 commit"

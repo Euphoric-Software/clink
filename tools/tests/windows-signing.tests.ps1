@@ -38,6 +38,24 @@ try {
     Assert-Throws { Assert-WindowsSignature -Path 'fixture.exe' } 'Unexpected Windows publisher'
     $certificate.Publisher = 'Example Publisher LLC'
     Assert-WindowsSignature -Path 'fixture.exe'
+    $fixture = Join-Path ([System.IO.Path]::GetTempPath()) ('clink-signing-fixture-' + [guid]::NewGuid().ToString('N') + '.exe')
+    [System.IO.File]::WriteAllText($fixture, 'synthetic executable')
+    $originalLocation = (Get-Location).Path
+    $script:failSigning = $false
+    function Import-Module { param($Name, $RequiredVersion, $ErrorAction) if ($Name -cne 'ArtifactSigning' -or $RequiredVersion -cne '0.1.8') { throw 'Unexpected module version.' } }
+    function Invoke-ArtifactSigning {
+        param($Files)
+        if ((Get-Location).Path -eq $originalLocation -or (Test-Path -LiteralPath 'nuget.config') -or -not (Test-Path -LiteralPath 'global.json')) { throw 'Signing tools inherited the app restore context.' }
+        if (-not [System.IO.Path]::IsPathRooted($Files) -or -not (Test-Path -LiteralPath $Files)) { throw 'The signing input lost its absolute path.' }
+        if ($script:failSigning) { throw 'synthetic signing failure' }
+    }
+    try {
+        Invoke-WindowsInstallerSigning -Path $fixture
+        if ((Get-Location).Path -cne $originalLocation) { throw 'Signing did not restore the working directory.' }
+        $script:failSigning = $true
+        Assert-Throws { Invoke-WindowsInstallerSigning -Path $fixture } 'synthetic signing failure'
+        if ((Get-Location).Path -cne $originalLocation) { throw 'Signing failure did not restore the working directory.' }
+    } finally { Remove-Item -LiteralPath $fixture -Force }
     Write-Host 'Windows signing configuration, unsigned-file, timestamp and publisher gates passed.'
 } finally {
     foreach ($key in $keys) { [Environment]::SetEnvironmentVariable($key, $saved[$key]) }

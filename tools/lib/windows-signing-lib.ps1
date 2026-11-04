@@ -31,7 +31,7 @@ function Assert-WindowsSignature {
 function Invoke-WindowsInstallerSigning {
     param([Parameter(Mandatory)] [string]$Path)
     if (-not (Get-WindowsSigningEnabled)) { throw 'Installer signing was called while Windows signing is disabled.' }
-    # The pinned artifact-signing-action installs this module before packaging.
+    # The release installs the same pinned module as Microsoft's signing action.
     $parameters = @{
         Endpoint = $env:ARTIFACT_SIGNING_ENDPOINT
         CodeSigningAccountName = $env:ARTIFACT_SIGNING_ACCOUNT
@@ -51,9 +51,17 @@ function Invoke-WindowsInstallerSigning {
         ExcludeAzureDeveloperCliCredential = $true
         ExcludeInteractiveBrowserCredential = $true
     }
-    Import-Module ArtifactSigning -RequiredVersion 0.1.8 -ErrorAction Stop
-    Invoke-ArtifactSigning @parameters
-    Assert-WindowsSignature -Path $Path
+    # Invoke-ArtifactSigning installs its tools with dotnet --add-source. Do not
+    # inherit the app's NuGet source mapping (or relax it) for that independent restore.
+    $directory = Join-Path ([System.IO.Path]::GetTempPath()) ('clink-signing-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $directory -ErrorAction Stop | Out-Null
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot '..\..\global.json') -Destination (Join-Path $directory 'global.json') -ErrorAction Stop
+    Push-Location -LiteralPath $directory -ErrorAction Stop
+    try {
+        Import-Module ArtifactSigning -RequiredVersion 0.1.8 -ErrorAction Stop
+        Invoke-ArtifactSigning @parameters
+    } finally { Pop-Location }
+    Assert-WindowsSignature -Path $parameters.Files
 }
 
 function Get-WindowsInstallerSignTool {
