@@ -20,7 +20,7 @@ internal sealed partial class AppController
             Say(text);
             // A screenshot action has no footer in front of it; the clip paths report through their own NotifyProblem / row.
             if (context is ConsentContext.ScreenshotUploadManual or ConsentContext.ScreenshotUploadLibrary or ConsentContext.ScreenshotUploadSetting or ConsentContext.Proactive or ConsentContext.TokenSaved)
-                Toasts.ShowNotice(title, text);
+                Toasts.ShowNotice(title.Shown, text.Shown);
         },
         OpenTokenSetup = ShowCopiumSetup,
     };
@@ -45,6 +45,7 @@ internal sealed partial class AppController
             var window = new CopiumConsentWindow(CopiumConsentWindow.Mode.Consent, ConsentGate.OffersAutoUpload(context), excludeFromCapture: fromScreenshot || owner == null);
             if (owner != null) { window.Owner = owner; window.WindowStartupLocation = WindowStartupLocation.CenterOwner; }
             Hotkeys.GrantForeground();   // asked for by a hotkey / toast: the dialog must be able to come forward
+            TestGuard.CheckLaunch("the Copium consent window");
             window.ShowDialog();
             return Task.FromResult(window.Answer);
         }
@@ -77,6 +78,7 @@ internal sealed partial class AppController
             var owner = ActiveOwner();
             var window = new CopiumConsentWindow(CopiumConsentWindow.Mode.ConfirmCloudSharing, offerAutoUpload: false, excludeFromCapture: owner == null);
             if (owner != null) { window.Owner = owner; window.WindowStartupLocation = WindowStartupLocation.CenterOwner; }
+            TestGuard.CheckLaunch("the cloud sharing confirm window");
             return window.ShowDialog() == true;
         }
         catch (Exception ex)
@@ -110,6 +112,9 @@ internal sealed partial class AppController
                 try { one.Cancel(); } catch (ObjectDisposedException) { }
             }
             _screenshots?.CancelRunningUpload();
+            // Any sign-in stops, even one that is reading the account after the approval: no /api/me, no "signed in" toast or welcome. A stored
+            // token is kept (unverified); an approval that still arrives is revoked, not stored.
+            _signIn?.StopForCloudSharingOff();
         }
         UpdateTrayHotkey();
         CloudSharingChanged?.Invoke();
@@ -119,5 +124,6 @@ internal sealed partial class AppController
     }
 
     /// <summary>The line that stands in for a refused share: footer, notice. Same text everywhere (hotkey, pipe, buttons that are still showing).</summary>
-    internal const string CloudOffText = ConsentGate.CloudOffText;
+    internal static Note CloudOffNote => ConsentGate.CloudOffNote;   // for Say (the log line stays English)
+    internal static string CloudOffText => ConsentGate.CloudOffText;   // (a property: slice S3b makes ConsentGate's text translated, which a const cannot be)
 }

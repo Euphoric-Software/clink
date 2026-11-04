@@ -453,6 +453,7 @@ internal sealed class RecordingSink
             if (_w == null)
             {
                 _origin = it.Pts;
+                Services.TestGuard.Check(_cfg.FinalPath);
                 Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(_cfg.FinalPath))!);
                 var video = _cfg.Video;
                 if (video.SequenceHeader == null && _cfg.SequenceHeaderProvider?.Invoke() is { } header) video = video with { SequenceHeader = header };
@@ -532,7 +533,7 @@ internal sealed class VideoFanOut
     {
         lock (_gate)
         {
-            if (_sink != null) throw new InvalidOperationException("Already recording");
+            if (_sink != null) throw new AlreadyRecordingException();
             var snap = ring.Snapshot(long.MaxValue, long.MaxValue);   // everything in the ring is at or before now: the last keyframe on
             foreach (var s in snap) sink.OnVideoOwned(s.Pts, s.Keyframe, s.Data);
             _sink = sink;

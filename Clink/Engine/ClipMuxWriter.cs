@@ -181,7 +181,7 @@ internal sealed class ClipMuxWriter : IDisposable
         ObjectDisposedException.ThrowIf(_finished, this);
         if (_mux == null)
         {
-            if (_count == 0) throw new InvalidOperationException("Nothing recorded yet, wait a moment and try again.");
+            if (_count == 0) throw Engine.NothingRecordedError();
             throw new InvalidOperationException(_av1 ? "AV1 encoder did not provide a Sequence Header OBU (no keyframe yet?)" : "Encoder did not provide SPS/PPS (no keyframe yet?)");
         }
         _mux.Finish();

@@ -10,6 +10,7 @@ using System.Windows.Input;
 using System.Windows.Media.Imaging;
 using Clink.Screenshots;
 using Clink.Services;
+using Clink.Services.Localization;
 
 namespace Clink.UI;
 
@@ -47,9 +48,12 @@ public partial class ClipsPane : UserControl
     public ClipsPane()
     {
         InitializeComponent();
+        SelectClearButton.ToolTip = L.T("Clear selection ({keys})", ("keys", L.Ltr("Esc")));   // a key name is not part of the sentence
         ClipLocalList.ItemsSource = _local;
         ClipSharedList.ItemsSource = _shared;
         ShotList.ItemsSource = _shots;
+        _clipSel.Changed += ApplySelection;
+        _shotSel.Changed += ApplySelection;
         // The row a press went down on is good for the release that follows it and no other. A row's own button handles its release
         // (Click), so the row never hears of it and the press would stay remembered: a later press that began somewhere else (the
         // empty part of the list, the tab header) and came up over that row would then play it. So every release in the pane forgets
@@ -91,6 +95,7 @@ public partial class ClipsPane : UserControl
     {
         foreach (var row in _rows.Values.ToList()) row.Refresh();
         foreach (var row in _shotRows.Values.ToList()) row.Refresh();
+        if (App != null) UpdateBar();   // the bar's share buttons follow the token and the cloud setting too
     }
 
     // ------------------------------------------------------------------ the two switches
@@ -134,6 +139,7 @@ public partial class ClipsPane : UserControl
     {
         if (_syncing || App == null) return;
         _wantedFeature = ReferenceEquals(sender, ShotsFeature) ? LibraryFeature.Screenshots : LibraryFeature.Clips;
+        ClearSelections();   // a selection never reaches into the other list
         ViewChanged?.Invoke();
         Refresh();
     }
@@ -142,6 +148,7 @@ public partial class ClipsPane : UserControl
     {
         if (_syncing || App == null) return;
         _level = ReferenceEquals(sender, SharedLevel) ? LibraryLevel.Shared : LibraryLevel.Local;
+        ClearSelections();
         ViewChanged?.Invoke();
         Refresh();
     }
@@ -160,7 +167,7 @@ public partial class ClipsPane : UserControl
         ClipLocalList.Visibility = !shots && !shared ? Visibility.Visible : Visibility.Collapsed;
         ClipSharedList.Visibility = !shots && shared ? Visibility.Visible : Visibility.Collapsed;
         ShotList.Visibility = shots ? Visibility.Visible : Visibility.Collapsed;
-        EmptyText.Text = LibraryView.EmptyText(feature, _level, LibraryView.TrimmedOnly(feature, _trimmedChip));
+        EmptyText.Text = LibraryView.EmptyText(feature, _level, LibraryView.TrimmedOnly(feature, _trimmedChip), AppController.ScreenshotHotkeyLabelFor(App.Settings.Hotkeys));
         EmptyText.Visibility = count == 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
@@ -170,7 +177,7 @@ public partial class ClipsPane : UserControl
         if (App == null) return;
         RestoreState();
         SyncSwitches();
-        if (Feature == LibraryFeature.Screenshots) RefreshShots(); else RefreshClips();
+        if (Feature == LibraryFeature.Screenshots) { _clipSel.Clear(); RefreshShots(); } else { _shotSel.Clear(); RefreshClips(); }
     }
 
     private void RefreshClips()
@@ -212,6 +219,7 @@ public partial class ClipsPane : UserControl
         ShowList(LibraryFeature.Clips, shown.Count);
         // Only listed rows, in list order (newest first), and only while the pane is on screen (IsVisibleChanged refreshes on show).
         if (IsVisible) LoadThumbnails(shown.Where(r => !r.Checked).ToList());
+        PruneSelection();
     }
 
     // Local level: trims nested under the clip they were cut from (ClipGrouping). The Trimmed filter and the Shared level stay flat.
@@ -249,6 +257,7 @@ public partial class ClipsPane : UserControl
         ClipGrouping.SyncRows(_local, view, int.MaxValue);   // a toggle is one contiguous block: never rebuild (the chevron keeps focus)
         if (toggle.IsChecked != row.IsExpanded) toggle.SetCurrentValue(System.Windows.Controls.Primitives.ToggleButton.IsCheckedProperty, row.IsExpanded);
         if (IsVisible && _level == LibraryLevel.Local) LoadThumbnails(view.Where(r => !r.Checked).ToList());
+        PruneSelection();   // collapsing a clip deselects its trims
     }
 
     /// <summary>
@@ -402,7 +411,7 @@ public partial class ClipsPane : UserControl
         }
         if (!Apply(row, path, archived, state, fromAction: true))
         {
-            if (archived && state == FileState.Missing && !e.IsShared) App.Say(e.FileName + " is no longer in the archive");   // dropped from the list
+            if (archived && state == FileState.Missing && !e.IsShared) App.SayT("{file} is no longer in the archive", ("file", Note.Ltr(e.FileName)));   // dropped from the list
             return false;
         }
         if (state == FileState.Present)
@@ -413,7 +422,7 @@ public partial class ClipsPane : UserControl
         if (!archived)
         {
             row.SetProblem(ClipRow.LocalDeleted);
-            App.Say(e.FileName + " is gone (deleted or moved outside Clink)");
+            App.SayT("{file} is gone (deleted or moved outside Clink)", ("file", Note.Ltr(e.FileName)));
             Refresh();   // leaves Local / Trimmed (a shared clip stays in Shared, marked "local file deleted")
         }
         return false;
@@ -433,7 +442,7 @@ public partial class ClipsPane : UserControl
     /// <summary>After a refused click on an archived row: the plain "archive offline" says what could not be done.</summary>
     private static void SayCannot(ClipRow row, string what)
     {
-        if (row.Status == ClipRow.ArchiveOffline) row.SetProblem($"{ClipRow.ArchiveOffline}: cannot {what} right now");
+        if (row.Status == ClipRow.ArchiveOffline) row.SetProblem(ClipRow.CannotText(what));
     }
 
     // ------------------------------------------------------------------ actions
@@ -443,12 +452,111 @@ public partial class ClipsPane : UserControl
     private async void Share_Click(object sender, RoutedEventArgs e)
     {
         var row = RowOf(sender);
-        if (row != null) await ShareAsync(row);
+        if (row == null) return;
+        if (row.IsUploading || row.IsDeleting) return;
+        await ShareAsync(row);   // the plain button (no menu): the split button has its own handlers below
+    }
+
+    /// <summary>The "Share" half of the split button: the share window, as "Share file…" in the menu.</summary>
+    private void ShareMain_Click(object sender, RoutedEventArgs e)
+    {
+        var row = RowOf(sender);
+        if (row == null || row.IsUploading || row.IsDeleting) return;
+        _ = RunShareChoiceAsync(row, ShareChoices.SplitMainChoice);
+    }
+
+    /// <summary>The "▾" half: the menu with every option.</summary>
+    private void ShareArrow_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button arrow && (arrow.Parent as Panel)?.Children.OfType<Button>().FirstOrDefault() is { } main)
+            OpenShareMenu(RowOf(arrow), arrow, main);
+    }
+
+    /// <summary>Alt+Down / Shift+F10 on the "Share" half open the menu too.</summary>
+    private void ShareMain_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (!ShareMenu.IsOpenKey(e) || sender is not Button main) return;
+        if ((main.Parent as Panel)?.Children.OfType<Button>().LastOrDefault() is { } arrow && arrow != main)
+        {
+            e.Handled = true;
+            OpenShareMenu(RowOf(main), arrow, main);
+        }
+    }
+
+    private void OpenShareMenu(ClipRow? row, Button arrow, Button main)
+    {
+        if (row == null || row.IsUploading || row.IsDeleting) return;
+        if (row.ShareMenuItems is { } items)
+            ShareMenu.Open(arrow, items, choice => _ = RunShareChoiceAsync(row, choice), below: main);   // drops from the whole split button
+    }
+
+    private async Task RunShareChoiceAsync(ClipRow row, ShareChoice choice)
+    {
+        try
+        {
+            switch (choice)
+            {
+                case ShareChoice.ShareFile: await ShareFileAsync(row); break;
+                case ShareChoice.SaveCopy: await SaveAsync(row); break;
+                default: await ShareAsync(row); break;   // Upload / Copy link: what the button did before
+            }
+        }
+        catch (Exception ex) { Log.Error("share choice", ex); row.IsUploading = false; }
+    }
+
+    /// <summary>"Share file…": the share window with the clip's file (after the file is looked for, like the other file actions).</summary>
+    internal async Task ShareFileAsync(ClipRow row)
+    {
+        if (row.IsUploading || row.IsDeleting) return;
+        row.Status = null;
+        row.IsProblem = false;
+        row.Progress = 0;
+        row.IsUploading = true;   // keeps a second click out while an archived file is looked up
+        bool there;
+        try { there = await EnsureFileAsync(row); }
+        finally { row.IsUploading = false; }
+        if (!there) { SayCannot(row, "share"); return; }
+        if (!App.ShareFile(row.Entry)) row.SetProblem(AppController.ShareWindowFailedText);
+    }
+
+    /// <summary>"Save a copy…": the save dialog, then the copy with the row's progress bar.</summary>
+    internal async Task SaveAsync(ClipRow row)
+    {
+        if (row.IsUploading || row.IsDeleting) return;
+        row.Status = null;
+        row.IsProblem = false;
+        row.Progress = 0;
+        row.IsSaving = true;
+        row.IsUploading = true;   // the progress bar, and no second click meanwhile
+        try
+        {
+            if (!await EnsureFileAsync(row)) { SayCannot(row, "save"); return; }
+            var progress = new Progress<double>(p => { row.Progress = p; row.Status = L.T("Saving… {percent}", ("percent", p.ToString("P0", L.FormatCulture))); });
+            var result = await App.SaveCopyAsync(row.Entry, Window.GetWindow(this), progress);
+            switch (result.Outcome)
+            {
+                case SaveOutcome.Saved:
+                    string folder = System.IO.Path.GetFileName(System.IO.Path.GetDirectoryName(result.SavedTo) ?? "") is { Length: > 0 } name ? name : (System.IO.Path.GetDirectoryName(result.SavedTo) ?? "");
+                    string text = L.T("Saved to {folder}", ("folder", L.Ltr(folder)));
+                    row.IsProblem = false;
+                    row.Status = text;
+                    _ = Task.Delay(4000).ContinueWith(_ => Dispatcher.BeginInvoke(() => { if (row.Status == text) row.Status = null; }));
+                    break;
+                case SaveOutcome.Cancelled:
+                    row.Status = null;
+                    row.IsProblem = false;
+                    break;
+                default:
+                    row.SetProblem(L.T("Save failed: {error}", ("error", result.Error)));
+                    break;
+            }
+        }
+        finally { row.IsUploading = false; row.IsSaving = false; }
     }
 
     internal async Task ShareAsync(ClipRow row)
     {
-        if (row.IsUploading) return;
+        if (row.IsUploading || row.IsDeleting) return;
         row.Status = null;
         row.IsProblem = false;   // a retry after a failure is progress again, not amber
         row.Progress = 0;
@@ -457,8 +565,8 @@ public partial class ClipsPane : UserControl
             row.IsUploading = true;   // also keeps a second click out while an archived file is looked up
             if (!await EnsureFileAsync(row)) { row.IsUploading = false; return; }
         }
-        row.Status = row.HasLink ? null : "Uploading…";
-        var progress = new Progress<double>(p => { row.Progress = p; row.Status = $"Uploading… {p:P0}"; });
+        row.Status = row.HasLink ? null : L.T("Uploading…");
+        var progress = new Progress<double>(p => { row.Progress = p; row.Status = App.ShareProgressText(row.Entry, p); });
         bool ok = await App.ShareAsync(row.Entry, progress);
         row.IsUploading = false;
         var (status, problem) = ShareStatusFor(ok, App.LastShareOutcome, App.ShareRefusal, App.ShareError, App.Settings.CloudSharingEnabled);
@@ -469,7 +577,7 @@ public partial class ClipsPane : UserControl
         if (ok)
         {
             Refresh();   // the entry is now shared: it joins the Shared tab and gets the cloud icon
-            _ = Task.Delay(4000).ContinueWith(_ => Dispatcher.BeginInvoke(() => { if (row.Status?.StartsWith("Link") == true) row.Status = null; }));
+            _ = Task.Delay(4000).ContinueWith(_ => Dispatcher.BeginInvoke(() => { if (row.Status == ClipRow.LinkCopiedText) row.Status = null; }));
         }
     }
 
@@ -480,11 +588,11 @@ public partial class ClipsPane : UserControl
     /// </summary>
     internal static (string? Status, bool Problem) ShareStatusFor(bool ok, ShareOutcome outcome, string? refusal, string? error, bool cloudOn)
     {
-        if (ok) return ("Link copied to clipboard", false);
+        if (ok) return (ClipRow.LinkCopiedText, false);
         if (outcome == ShareOutcome.FileShareOpened) return (null, false);
-        if (outcome == ShareOutcome.Declined) return (cloudOn ? "Not shared" : "Not shared: cloud sharing is off", false);
+        if (outcome == ShareOutcome.Declined) return (cloudOn ? L.T("Not shared") : L.T("Not shared: cloud sharing is off"), false);
         return (refusal ?? (outcome == ShareOutcome.WindowFailed ? AppController.ShareWindowFailedText
-            : error is string why ? "Upload failed: " + why : "Upload failed"), true);
+            : error is string why ? L.T("Upload failed: {error}", ("error", why)) : L.T("Upload failed")), true);
     }
 
     // Trim / folder / Play look for the file first (EnsureFileAsync): an archived clip on an offline NAS says "archive offline"
@@ -493,7 +601,7 @@ public partial class ClipsPane : UserControl
     private async void Trim_Click(object sender, RoutedEventArgs e)
     {
         var row = RowOf(sender);
-        if (row == null) return;
+        if (row == null || row.IsDeleting) return;
         if (!await EnsureFileAsync(row)) { SayCannot(row, "trim"); return; }
         TrimRequested?.Invoke(row.Entry);
     }
@@ -503,8 +611,98 @@ public partial class ClipsPane : UserControl
         var row = RowOf(sender);
         if (row == null) return;
         if (!await EnsureFileAsync(row)) { SayCannot(row, "open its folder"); return; }
-        try { Process.Start("explorer.exe", $"/select,\"{row.Entry.Path}\""); }
-        catch (Exception ex) { App.Say("Could not open folder: " + ex.Message); }
+        try { TestGuard.Start("explorer.exe", $"/select,\"{row.Entry.Path}\""); }
+        catch (Exception ex) { App.SayT("Could not open folder: {error}", ("error", ex.Message)); }
+    }
+
+    private ClipDeleter NewDeleter() => new(App.Library, () => App.Settings.ClipsFolder, () => App.Settings.ArchivePath) { IsTrimOpen = e => TrimWindow.Find(e) != null, IsUploading = App.IsUploading };
+
+    /// <summary>A deleter that also counts an upload the given rows show (the row knows before the app does).</summary>
+    private ClipDeleter NewDeleter(IReadOnlyList<ClipRow> rows)
+    {
+        var d = NewDeleter();
+        var byEntry = rows.ToDictionary(r => r.Entry, r => r, ReferenceEqualityComparer.Instance as IEqualityComparer<ClipEntry>);
+        var app = d.IsUploading;
+        d.IsUploading = e => app(e) || (byEntry.TryGetValue(e, out var r) && r.IsUploading);
+        return d;
+    }
+
+    /// <summary>
+    /// The Delete button: refuses first what cannot be deleted (a clip whose trim window is open, a file outside the clips / archive
+    /// folder), then asks (unless "Do not ask again" was ticked), then sends the file to the Recycle Bin off the UI thread. A shared
+    /// clip stays in the Shared list with its link. A clip with trims nested under it asks for the clip alone (its trims stay and
+    /// become top-level rows) or the clip and its trims (all go to the Recycle Bin, stopping at the first failure).
+    /// </summary>
+    private async void ClipDelete_Click(object sender, RoutedEventArgs e)
+    {
+        var row = RowOf(sender);
+        if (row == null) return;
+        await DeleteClipAsync(row);
+    }
+
+    internal async Task DeleteClipAsync(ClipRow row)
+    {
+        if (!row.CanDelete) return;
+        if (row.IsUploading) { row.SetProblem(row.IsSaving ? ClipRow.SavingDeleteText : ClipDeleter.ProblemText(ClipDeleteResult.Uploading)); return; }
+        var deleter = NewDeleter();
+        if (deleter.Precheck(row.Entry) is { } refused) { row.SetProblem(ClipDeleter.ProblemText(refused)); return; }
+        var owner = Window.GetWindow(this) ?? Application.Current?.MainWindow;
+        // Trims nested under this row (what the list shows under it, collapsed or not): the pop-up then offers the clip alone or with them.
+        var trimRows = row.IsParent ? ClipGrouping.TrimsOf(_localAll, r => r.Entry, row) : new List<ClipRow>();
+        bool withTrimsMode = ClipDeleter.TrimsMode(trimRows.Count);
+        // a save under way on a trim row refuses like the single row does; an upload there counts too (the row knows before the app does)
+        if (withTrimsMode && trimRows.Any(r => r.IsSaving)) { row.SetProblem(ClipRow.SavingDeleteText); return; }
+        var trimDeleter = withTrimsMode ? NewDeleter(trimRows.Append(row).ToList()) : deleter;
+        bool deleteTrims = false;
+        if (ClipDeleter.ConfirmNeeded(App.Settings, trimRows.Count))
+        {
+            string body = withTrimsMode
+                ? ClipDeleter.ConfirmBodyWithTrims(row.GameTitle, trimRows.Count, row.IsShared, row.Entry.IsTrim)
+                : ClipDeleter.ConfirmBody(row.GameTitle, ClipDeleter.HasTrims(App.Library.Entries, row.Entry), row.IsShared, row.Entry.IsTrim);
+            string? blocked = withTrimsMode
+                ? ClipDeleter.TrimsBlockedText(trimDeleter.PrecheckTrims(trimRows.Select(r => r.Entry)), trimRows.Any(r => r.IsDeleting))
+                : null;
+            var dialog = new ClipDeleteConfirmWindow(body, owner, trimRows.Count, blocked);
+            TestGuard.CheckLaunch("the delete confirm window");
+            bool confirmed = dialog.ShowDialog() == true && dialog.Confirmed;
+            if (!confirmed) return;
+            deleteTrims = dialog.Choice == ClipDeleteChoice.ClipAndTrims;
+            if (ClipDeleter.Remember(confirmed, dialog.DoNotAskAgain))
+            {
+                App.Settings.ClipDeleteConfirmDismissed = true;
+                try { App.Settings.Save(); } catch (Exception ex) { Log.Warn("settings: " + ex.Message); }
+            }
+        }
+        nint ownerHandle = 0;
+        try { if (owner != null) ownerHandle = new System.Windows.Interop.WindowInteropHelper(owner).Handle; }
+        catch { }
+        if (deleteTrims)
+        {
+            // state may have changed while the pop-up was open: DeleteWithTrimsAsync prechecks every file again before it touches any
+            // a trim's own delete may have started while the pop-up was open: both would race on that file, so none goes
+            if (trimRows.Any(r => r.IsDeleting)) { row.SetProblem(L.T("Nothing was deleted: one of its trims is already being deleted.")); return; }
+            var all = trimRows.Append(row).ToList();
+            var mine = all.Where(r => !r.IsDeleting).ToList();   // only the rows this operation marks are cleared again
+            foreach (var r in mine) r.IsDeleting = true;
+            ClipDeleter.TreeOutcome outcome = new(ClipDeleteResult.Failed, 0, all.Count);
+            try { outcome = await trimDeleter.DeleteWithTrimsAsync(row.Entry, trimRows.Select(r => r.Entry).ToList(), ownerHandle); }
+            catch (Exception ex) { Log.Warn("library: clip delete: " + ex.Message); }
+            finally { foreach (var r in mine) r.IsDeleting = false; }
+            if (outcome.Result == ClipDeleteResult.Deleted) Refresh();
+            else
+            {
+                Refresh();   // the trims that did go leave the list
+                row.SetProblem(ClipDeleter.TreeProblemText(outcome));
+            }
+            return;
+        }
+        row.IsDeleting = true;
+        var result = ClipDeleteResult.Failed;
+        try { result = await deleter.DeleteAsync(row.Entry, ownerHandle); }   // IsDeleting stays set until the shell call returns
+        catch (Exception ex) { Log.Warn("library: clip delete: " + ex.Message); }
+        finally { row.IsDeleting = false; }
+        if (result == ClipDeleteResult.Deleted) Refresh();   // (the library says so too, via Changed)
+        else row.SetProblem(ClipDeleter.ProblemText(result));
     }
 
     private object? _pressed;   // the row (clip or screenshot) the left button went down on: a click that began elsewhere must not open this one
@@ -532,7 +730,9 @@ public partial class ClipsPane : UserControl
     {
         var row = RowOf(sender);
         if (row == null || e.Handled || !ClickedOn(row)) return;
+        if (row.IsDeleting) { e.Handled = true; return; }   // a click on the disabled Delete button reaches the row: it must not play the file being recycled
         if (OnButton(e, sender)) return;
+        if (GestureFor(_clipSel.Active) is { } gesture) { e.Handled = true; _clipSel.Apply(row, gesture, VisibleClips); return; }   // selecting: no play
         if (!row.HasLocalFile && !row.Entry.IsArchived) return;   // a shared clip whose file is gone has nothing to play
         e.Handled = true;
         await PlayAsync(row);
@@ -540,22 +740,25 @@ public partial class ClipsPane : UserControl
 
     private async void Thumb_Click(object sender, MouseButtonEventArgs e)
     {
+        if (OnButton(e, sender)) return;
         e.Handled = true;   // the row around the thumbnail would play the clip a second time
         var row = RowOf(sender);
-        if (row == null || !ClickedOn(row)) return;
+        if (row == null || !ClickedOn(row) || row.IsDeleting) return;
+        if (GestureFor(_clipSel.Active) is { } gesture) { _clipSel.Apply(row, gesture, VisibleClips); return; }
         await PlayAsync(row);
     }
 
     /// <summary>Plays a clip: the window opens its player; with nobody listening the system's own player does.</summary>
     private async Task PlayAsync(ClipRow row)
     {
+        if (row.IsDeleting) return;
         if (!await EnsureFileAsync(row)) { SayCannot(row, "play it"); return; }
         if (PlayRequested is { } play) { play(row.Entry); return; }
         string path = row.Entry.Path;
         void Open()
         {
-            try { Process.Start(new ProcessStartInfo(path) { UseShellExecute = true }); }
-            catch (Exception ex) { Dispatcher.BeginInvoke(() => App.Say("Open failed: " + ex.Message)); }
+            try { TestGuard.Start(new ProcessStartInfo(path) { UseShellExecute = true }); }
+            catch (Exception ex) { Dispatcher.BeginInvoke(() => App.SayT("Open failed: {error}", ("error", ex.Message))); }
         }
         if (!row.Entry.IsArchived) { Open(); return; }
         // ShellExecute on a share path touches the share again: on its own STA thread (shell extensions expect one), not the UI's.
@@ -569,9 +772,9 @@ public partial class ClipsPane : UserControl
         var row = RowOf(sender);
         if (row?.Link == null) return;
         App.CopyToClipboard(row.Link);
-        row.Status = "Link copied to clipboard";
+        row.Status = ClipRow.LinkCopiedText;
         row.IsProblem = false;
-        _ = Task.Delay(3000).ContinueWith(_ => Dispatcher.BeginInvoke(() => { if (row.Status?.StartsWith("Link") == true) row.Status = null; }));
+        _ = Task.Delay(3000).ContinueWith(_ => Dispatcher.BeginInvoke(() => { if (row.Status == ClipRow.LinkCopiedText) row.Status = null; }));
     }
 
     private void OpenPage_Click(object sender, RoutedEventArgs e)
@@ -581,8 +784,8 @@ public partial class ClipsPane : UserControl
         if (url == null) return;
         // The address came from the server or from the clip list file: only an https address is handed to the shell.
         if (!Clink.Services.CopiumClient.IsHttpsUrl(url, out var page)) { Log.Warn("clips: not opened: the clip's link is not an https address"); return; }
-        try { Process.Start(new ProcessStartInfo(page.AbsoluteUri) { UseShellExecute = true }); }
-        catch (Exception ex) { App.Say("Could not open the browser: " + ex.Message); }
+        try { TestGuard.Start(new ProcessStartInfo(page.AbsoluteUri) { UseShellExecute = true }); }
+        catch (Exception ex) { App.SayT("Could not open the browser: {error}", ("error", ex.Message)); }
     }
 
     // ------------------------------------------------------------------ screenshots side
@@ -649,6 +852,7 @@ public partial class ClipsPane : UserControl
         // Only rows that have a visual get a thumbnail (a long history is not decoded in one go): a row that is realized later asks itself
         // (ShotRow_Loaded / ShotRow_DataContextChanged, as the list scrolls); the ones already on screen are asked now.
         if (IsVisible) QueueThumbnails(rows.Where(r => ShotList.ItemContainerGenerator.ContainerFromItem(r) != null));
+        PruneSelection();
     }
 
     private void ShotRow_Loaded(object sender, RoutedEventArgs e)
@@ -699,7 +903,9 @@ public partial class ClipsPane : UserControl
     private void Shot_Click(object sender, MouseButtonEventArgs e)
     {
         var row = ShotOf(sender);
-        if (row == null || e.Handled || !ClickedOn(row) || OnButton(e, sender) || !row.HasLocalFile) return;
+        if (row == null || e.Handled || !ClickedOn(row) || OnButton(e, sender)) return;
+        if (GestureFor(_shotSel.Active) is { } gesture) { e.Handled = true; _shotSel.Apply(row, gesture, _shots); return; }   // selecting: no editor
+        if (!row.HasLocalFile) return;
         e.Handled = true;
         EditShot(row);
     }
@@ -721,11 +927,11 @@ public partial class ClipsPane : UserControl
         if (!App.Screenshots.IsOpenableEntry(path) || !File.Exists(path))
         {
             Log.Warn("library: screenshot not opened: not a .png in a screenshots folder");
-            App.Say("Could not open the screenshot: it is not in the screenshots folder, or it is gone");
+            App.SayT("Could not open the screenshot: it is not in the screenshots folder, or it is gone");
             return;
         }
-        try { Process.Start(new ProcessStartInfo(path) { UseShellExecute = true }); }
-        catch (Exception ex) { App.Say("Could not open the screenshot: " + ex.Message); }
+        try { TestGuard.Start(new ProcessStartInfo(path) { UseShellExecute = true }); }
+        catch (Exception ex) { App.SayT("Could not open the screenshot: {error}", ("error", ex.Message)); }
     }
 
     private void ShotFolder_Click(object sender, RoutedEventArgs e)
@@ -733,9 +939,9 @@ public partial class ClipsPane : UserControl
         var row = ShotOf(sender);
         if (row == null) return;
         // The same rule as Open / Edit: a path only the history file names is never probed or handed to the shell.
-        if (!App.Screenshots.IsOpenableEntry(row.Entry.Path)) { App.Say("The screenshot file is gone, or it is not in the screenshots folder"); return; }
-        try { Process.Start("explorer.exe", $"/select,\"{row.Entry.Path}\""); }
-        catch (Exception ex) { App.Say("Could not open folder: " + ex.Message); }
+        if (!App.Screenshots.IsOpenableEntry(row.Entry.Path)) { App.SayT("The screenshot file is gone, or it is not in the screenshots folder"); return; }
+        try { TestGuard.Start("explorer.exe", $"/select,\"{row.Entry.Path}\""); }
+        catch (Exception ex) { App.SayT("Could not open folder: {error}", ("error", ex.Message)); }
     }
 
     /// <summary>Upload goes through the service, which asks for the Copium consent first (and refuses when cloud sharing is off).</summary>
@@ -744,7 +950,7 @@ public partial class ClipsPane : UserControl
         var row = ShotOf(sender);
         if (row == null || row.IsUploading) return;
         row.IsProblem = false;
-        row.Status = "Uploading…";
+        row.Status = L.T("Uploading…");
         row.IsUploading = true;
         bool ok = false;
         try { ok = await App.Screenshots.UploadAsync(row.Entry, manual: true, askAs: ConsentContext.ScreenshotUploadLibrary); }
@@ -753,10 +959,11 @@ public partial class ClipsPane : UserControl
         row.Refresh();
         if (ok)
         {
-            row.Status = "Uploaded";
-            _ = Task.Delay(4000).ContinueWith(_ => Dispatcher.BeginInvoke(() => { if (row.Status == "Uploaded") row.Status = null; }));
+            string uploaded = L.T("screenshot|Uploaded");
+            row.Status = uploaded;
+            _ = Task.Delay(4000).ContinueWith(_ => Dispatcher.BeginInvoke(() => { if (row.Status == uploaded) row.Status = null; }));
         }
-        else row.SetProblem(App.Settings.CloudSharingEnabled ? "Not uploaded" : "Not uploaded: cloud sharing is off");   // the reason was told in a toast
+        else row.SetProblem(App.Settings.CloudSharingEnabled ? L.T("Not uploaded") : L.T("Not uploaded: cloud sharing is off"));   // the reason was told in a toast
     }
 
     private void ShotCopyLink_Click(object sender, RoutedEventArgs e)
@@ -764,9 +971,9 @@ public partial class ClipsPane : UserControl
         var row = ShotOf(sender);
         if (row?.Link == null) return;
         App.CopyToClipboard(row.Link);
-        row.Status = "Link copied to clipboard";
+        row.Status = ClipRow.LinkCopiedText;
         row.IsProblem = false;
-        _ = Task.Delay(3000).ContinueWith(_ => Dispatcher.BeginInvoke(() => { if (row.Status?.StartsWith("Link") == true) row.Status = null; }));
+        _ = Task.Delay(3000).ContinueWith(_ => Dispatcher.BeginInvoke(() => { if (row.Status == ClipRow.LinkCopiedText) row.Status = null; }));
     }
 
     private void ShotOpenPage_Click(object sender, RoutedEventArgs e)
@@ -775,8 +982,8 @@ public partial class ClipsPane : UserControl
         string? url = row?.Entry.CopiumPageUrl ?? row?.Link;
         if (url == null) return;
         if (!CopiumClient.IsHttpsUrl(url, out var page)) { Log.Warn("library: screenshot page not opened: the link is not an https address"); return; }
-        try { Process.Start(new ProcessStartInfo(page.AbsoluteUri) { UseShellExecute = true }); }
-        catch (Exception ex) { App.Say("Could not open the browser: " + ex.Message); }
+        try { TestGuard.Start(new ProcessStartInfo(page.AbsoluteUri) { UseShellExecute = true }); }
+        catch (Exception ex) { App.SayT("Could not open the browser: {error}", ("error", ex.Message)); }
     }
 
     /// <summary>
@@ -787,12 +994,17 @@ public partial class ClipsPane : UserControl
     {
         var row = ShotOf(sender);
         if (row == null || row.IsDeleting || row.IsUploading) return;
-        string what = ScreenshotRow.ConfirmText(row.Entry, row.HasLocalFile);
+        bool hadFile = row.HasLocalFile;   // what the user was asked about: a delete (file) or a Remove from list (no file)
+        string what = ScreenshotRow.ConfirmText(row.Entry, hadFile);
         var owner = Window.GetWindow(this);
-        var answer = owner != null
-            ? MessageBox.Show(owner, what, "Clink", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No)
-            : MessageBox.Show(what, "Clink", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No);
+        TestGuard.CheckLaunch("a message box: " + what);
+        var answer = Dialog.Show(owner, what, MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No);
         if (answer != MessageBoxResult.Yes) return;
+        if (row.IsDeleting || row.IsUploading || !_shots.Contains(row))   // a bulk delete / upload took the row, or it left the list, while the question was up
+        {
+            if (row.IsUploading) row.SetProblem(L.T("This screenshot is uploading. Delete it after the upload finishes."));
+            return;
+        }
         row.IsDeleting = true;
         var result = ScreenshotDeleteResult.Failed;
         nint ownerHandle = 0;
@@ -802,10 +1014,12 @@ public partial class ClipsPane : UserControl
             if (w != null) ownerHandle = new System.Windows.Interop.WindowInteropHelper(w).Handle;
         }
         catch { }
-        try { result = await App.Screenshots.DeleteAsync(row.Entry, ownerHandle); }   // IsDeleting stays set until the shell call returns
+        // requireFile when the user was asked to delete a file: one that went meanwhile keeps its entry (FileGone), never a silent Remove from list
+        try { result = await App.Screenshots.DeleteAsync(row.Entry, ownerHandle, requireFile: hadFile); }   // IsDeleting stays set until the shell call returns
         catch (Exception ex) { Log.Warn("library: screenshot delete: " + ex.Message); }
         finally { row.IsDeleting = false; }
-        if (result is ScreenshotDeleteResult.Deleted or ScreenshotDeleteResult.ListNotUpdated) RefreshShots();   // (the history says so too, once the entry was in it)
+        if (result == ScreenshotDeleteResult.FileGone) { if (OnShots) RefreshShots(); row.SetProblem(ScreenshotRow.DeleteProblemText(result, false)); return; }
+        if (result is ScreenshotDeleteResult.Deleted or ScreenshotDeleteResult.ListNotUpdated) { if (OnShots) RefreshShots(); }   // (the history says so too, once the entry was in it)
         if (result != ScreenshotDeleteResult.Deleted)
             row.SetProblem(ScreenshotRow.DeleteProblemText(result, ScreenshotService.IsOnLocalFixedDrive(row.Entry.Path)));
     }
@@ -815,25 +1029,45 @@ public partial class ClipsPane : UserControl
 internal sealed class ClipRow : INotifyPropertyChanged
 {
     // Status lines about the file itself (cleared once the file is there again; an upload status is left alone).
-    public const string ArchiveOffline = "archive offline", DeletedFromArchiveText = "deleted from the archive", LocalDeleted = "local file deleted";
-    public const string LookingText = "Looking in the archive…";
+    public static string ArchiveOffline => L.T("archive offline");
+    public static string DeletedFromArchiveText => L.T("deleted from the archive");
+    public static string LocalDeleted => L.T("local file deleted");
+    public static string LookingText => L.T("Looking in the archive…");
+    public static string LinkCopiedText => L.T("Link copied to clipboard");
+
+    /// <summary>"archive offline: cannot trim right now": what a refused click could not do (<paramref name="what"/>: share, save, trim, open its folder, play it).</summary>
+    public static string CannotText(string what) => what switch
+    {
+        "share" => L.T("archive offline: cannot share right now"),
+        "save" => L.T("archive offline: cannot save right now"),
+        "trim" => L.T("archive offline: cannot trim right now"),
+        "open its folder" => L.T("archive offline: cannot open its folder right now"),
+        "play it" => L.T("archive offline: cannot play it right now"),
+        _ => ArchiveOffline,
+    };
+
+    private static readonly string[] s_cannotWhat = { "share", "save", "trim", "open its folder", "play it" };
+    private static bool IsCannotText(string s) => s_cannotWhat.Any(w => CannotText(w) == s);
 
     public ClipEntry Entry { get; }
     private BitmapSource? _thumb;
-    private bool _uploading, _problem, _hasLocal = true, _gone;
+    private bool _uploading, _problem, _hasLocal = true, _gone, _deleting;
     private double _progress;
     private string? _status;
 
     public ClipRow(ClipEntry e) { Entry = e; }
 
-    public string Title => string.IsNullOrEmpty(Entry.Game) ? (Entry.IsTrim ? "Trimmed clip" : "Clip") : Entry.Game! + (Entry.IsTrim ? " (trim)" : "");
+    public string Title => string.IsNullOrEmpty(Entry.Game) ? (Entry.IsTrim ? L.T("Trimmed clip") : L.T("Clip"))
+        : Entry.IsTrim ? L.T("{game} (trim)", ("game", L.Isolate(Entry.Game!))) : L.Isolate(Entry.Game!);
+    /// <summary><see cref="Title"/> when it names a game, null when the clip has none (the generic "Clip" / "Trimmed clip" must not be dropped into a {title} slot).</summary>
+    public string? GameTitle => string.IsNullOrEmpty(Entry.Game) ? null : Title;
     public string Meta
     {
         get
         {
-            string dur = Entry.Duration > 0 ? Capabilities.FormatClipLength(Entry.Duration) + " · " : "";
+            string dur = Entry.Duration > 0 ? L.ClipLength(Entry.Duration) + " · " : "";
             // Decimal MB everywhere a size is shown: the unit of the Copium / Discord limits and of the Share pre-check.
-            return $"{Entry.Created:MMM d, HH:mm} · {dur}{Capabilities.FormatBytes(Entry.Size)}";
+            return $"{L.Isolate(Entry.Created.ToString("MMM d, HH:mm", L.FormatCulture))} · {dur}{L.Bytes(Entry.Size)}";
         }
     }
     /// <summary>Shared tab: date, size and where the local copy is (or that it is gone).</summary>
@@ -841,22 +1075,34 @@ internal sealed class ClipRow : INotifyPropertyChanged
     {
         get
         {
-            string size = Entry.Size > 0 ? $" · {Capabilities.FormatBytes(Entry.Size)}" : "";
-            string where = HasLocalFile ? (Entry.IsArchived ? " · in the archive" : "")
+            string size = Entry.Size > 0 ? $" · {L.Bytes(Entry.Size)}" : "";
+            string where = HasLocalFile ? (Entry.IsArchived ? " · " + L.T("in the archive") : "")
                 : !Entry.IsArchived ? " · " + LocalDeleted : DeletedFromArchive ? " · " + DeletedFromArchiveText : " · " + ArchiveOffline;
-            return $"{Entry.Created:MMM d, yyyy HH:mm}{size}{where}";
+            return $"{L.Isolate(Entry.Created.ToString("MMM d, yyyy HH:mm", L.FormatCulture))}{size}{where}";
         }
     }
-    public string ShareLabel => HasLink ? "Copy link" : "Share";
+    public string ShareLabel => ShareChoices.ButtonLabel(HasToken, CloudOn, HasLink);
+    /// <summary>"Share file" for the main half of the split button; null (the label names it) for the plain button.</summary>
+    public string? ShareName => ShareChoices.ButtonName(HasToken, CloudOn, HasLink);
+    /// <summary>The Share button is split (a token and cloud sharing on).</summary>
+    public bool ShareSplit => ShareChoices.IsSplit(HasToken, CloudOn, HasLink);
+    /// <summary>The plain Share button shows: the button shows and it is not split.</summary>
+    public bool SharePlainVisible => ShareChoices.PlainVisible(HasToken, CloudOn, HasLink);
+    /// <summary>The menu to show for this row's Share button, or null when it acts directly.</summary>
+    public IReadOnlyList<ShareChoiceItem>? ShareMenuItems => ShareChoices.For(HasToken, CloudOn, HasLink);
+    private static bool HasToken => AppController.Instance?.HasCopiumToken == true;
+    private static bool CloudOn => AppController.Instance?.Settings.CloudSharingEnabled != false;
     /// <summary>The Share button shows: always for a clip that has a link (Copy link needs no network), otherwise only while cloud sharing is on (Settings → App).</summary>
-    public bool ShareVisible => HasLink || AppController.Instance?.Settings.CloudSharingEnabled != false;
+    public bool ShareVisible => ShareChoices.Visible(CloudOn, HasLink);
     public bool HasLink => !string.IsNullOrEmpty(Entry.CopiumLink);
     public string? Link => Entry.CopiumLink;
     public bool IsShared => Entry.IsShared;
     public bool IsTrim => Entry.IsTrim;
     public bool IsArchived => Entry.IsArchived;
     public bool IsLocalOnly => !Entry.IsShared && !Entry.IsTrim && !Entry.IsArchived;
-    public string ArchiveTip => Entry.IsArchived ? $"Archived {Entry.ArchivedAt:MMM d, HH:mm} → {System.IO.Path.GetDirectoryName(Entry.Path)}" : "";
+    public string ArchiveTip => Entry.IsArchived
+        ? L.T("Archived {date} → {folder}", ("date", L.Isolate(Entry.ArchivedAt!.Value.ToString("MMM d, HH:mm", L.FormatCulture))), ("folder", L.Ltr(System.IO.Path.GetDirectoryName(Entry.Path) ?? "")))
+        : "";
 
     /// <summary>The file is there (checked on a worker; true until known so rows do not flicker).</summary>
     public bool HasLocalFile { get => _hasLocal; set { if (_hasLocal == value) return; _hasLocal = value; Raise(); Raise(nameof(CloudMeta)); } }
@@ -870,6 +1116,13 @@ internal sealed class ClipRow : INotifyPropertyChanged
     public bool Looking { get; set; }
     public BitmapSource? Thumbnail { get => _thumb; set { _thumb = value; Raise(); } }
     public bool IsUploading { get => _uploading; set { _uploading = value; Raise(); } }
+    /// <summary>"Save a copy…" is running on this row (it also sets <see cref="IsUploading"/>, for the bar and to block a second click): Delete says so.</summary>
+    public bool IsSaving { get; set; }
+    public static string SavingDeleteText => L.T("This clip is being saved. Delete it after the save finishes.");
+    /// <summary>The Recycle Bin call for this clip is under way.</summary>
+    public bool IsDeleting { get => _deleting; set { _deleting = value; Raise(); Raise(nameof(CanDelete)); } }
+    /// <summary>The Delete button is on unless a delete is under way (while it uploads a click says so, instead of falling through to the row and playing the clip).</summary>
+    public bool CanDelete => !_deleting;
     public double Progress { get => _progress; set { _progress = value; Raise(); } }
     public string? Status { get => _status; set { _status = value; Raise(); } }
     /// <summary>The status line is a problem (amber) rather than progress (accent).</summary>
@@ -884,7 +1137,7 @@ internal sealed class ClipRow : INotifyPropertyChanged
     public bool IsExpanded => _expanded;
     public int ChildCount => _childCount;
     public string TrimsLabel => ClipGrouping.TrimsLabel(_childCount);
-    public string ToggleName => ClipGrouping.ToggleName(_expanded, _childCount, Title);
+    public string ToggleName => ClipGrouping.ToggleName(_expanded, _childCount, GameTitle, Entry.IsTrim);
     /// <summary>The row's outer margin: a trim under its clip is indented.</summary>
     public Thickness NestMargin => new(IsChild ? 28 : 0, 0, 0, 2);
 
@@ -896,6 +1149,29 @@ internal sealed class ClipRow : INotifyPropertyChanged
             Raise(p);
     }
 
+    // The library selection (ClipsPane keeps the model; the row shows it): the checkbox, the highlight and "Select ..." name follow these.
+    private bool _selected, _selectMode;
+    /// <summary>The row is in the selection.</summary>
+    public bool IsSelected => _selected;
+    /// <summary>The list this row is in has a selection: the checkboxes are all shown and a plain click selects.</summary>
+    public bool SelectMode => _selectMode;
+    /// <summary>The checkbox's accessible name.</summary>
+    public string SelectName
+    {
+        get
+        {
+            string date = L.Isolate(Entry.Created.ToString("MMM d, HH:mm", L.FormatCulture));
+            // the generic "Clip" / "Trimmed clip" is a word, not a name: whole sentences (a gendered article or a case ending cannot be added to a slot)
+            if (GameTitle is { } game) return L.T("Select {title}, {date}", ("title", game), ("date", date));
+            return Entry.IsTrim ? L.T("Select Trimmed clip, {date}", ("date", date)) : L.T("Select Clip, {date}", ("date", date));
+        }
+    }
+
+    public void SetSelection(bool selected, bool selectMode)
+    {
+        if (_selected != selected) { _selected = selected; Raise(nameof(IsSelected)); }
+        if (_selectMode != selectMode) { _selectMode = selectMode; Raise(nameof(SelectMode)); }
+    }
     public void SetProblem(string text) { IsProblem = true; Status = text; }
 
     /// <summary>
@@ -904,7 +1180,9 @@ internal sealed class ClipRow : INotifyPropertyChanged
     /// </summary>
     public void SetFileProblem(string text)
     {
-        if (_status == null || (IsFileProblem(_status) && !_status.StartsWith(text, StringComparison.Ordinal))) SetProblem(text);
+        // "archive offline" is already said more precisely by "archive offline: cannot trim right now": keep that one
+        bool morePrecise = _status != null && text == ArchiveOffline && IsCannotText(_status);
+        if (_status == null || (IsFileProblem(_status) && _status != text && !morePrecise)) SetProblem(text);
     }
 
     /// <summary>The file is there (again): drop an "archive offline" / "deleted" line, keep anything else.</summary>
@@ -917,11 +1195,11 @@ internal sealed class ClipRow : INotifyPropertyChanged
         }
     }
 
-    private static bool IsFileProblem(string s) => s.StartsWith(ArchiveOffline, StringComparison.Ordinal) || s == DeletedFromArchiveText || s == LocalDeleted;
+    private static bool IsFileProblem(string s) => s == ArchiveOffline || IsCannotText(s) || s == DeletedFromArchiveText || s == LocalDeleted;
 
     public void Refresh()
     {
-        foreach (var p in new[] { nameof(ShareLabel), nameof(ShareVisible), nameof(HasLink), nameof(Link), nameof(Meta), nameof(CloudMeta), nameof(Title), nameof(IsShared), nameof(IsTrim), nameof(IsArchived), nameof(IsLocalOnly), nameof(ArchiveTip), nameof(ToggleName) })
+        foreach (var p in new[] { nameof(ShareLabel), nameof(ShareName), nameof(ShareVisible), nameof(ShareSplit), nameof(SharePlainVisible), nameof(HasLink), nameof(Link), nameof(Meta), nameof(CloudMeta), nameof(Title), nameof(IsShared), nameof(IsTrim), nameof(IsArchived), nameof(IsLocalOnly), nameof(ArchiveTip), nameof(ToggleName), nameof(SelectName) })
             Raise(p);
     }
 

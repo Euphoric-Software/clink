@@ -8,8 +8,19 @@ using Windows.Win32.System.Com.StructuredStorage;
 using Windows.Win32.System.Variant;
 using Clink.Audio;
 using Clink.Native;
+using Clink.Services;
+using Clink.Services.Localization;
 
 namespace Clink.Playback;
+
+/// <summary>A failure of the player whose text the user sees: <see cref="Exception.Message"/> is the note's English (the log), <see cref="UserText.Of"/> the note in the UI language.</summary>
+internal sealed class ClipPlayerException : InvalidOperationException
+{
+    public ClipPlayerException(Note note) : base(note.English) { UserText.Attach(this, note); }
+}
+
+/// <summary>Why the preview plays without sound (<see cref="ClipPlayer.AudioIssue"/>).</summary>
+internal enum PlayerAudioIssue { NoDevice, Stopped, CouldNotStart }
 
 /// <summary>
 /// Preview player for the trim editor: decodes the video to BGRA frames and mixes the audio tracks of the clip
@@ -257,8 +268,36 @@ internal sealed unsafe class ClipPlayer : IDisposable
     public bool IsPlaying { get { lock (_gate) return _wantPlaying; } }
     /// <summary>Set when the worker died; the player is dead from then on.</summary>
     public string? LastError { get; private set; }
+    /// <summary><see cref="LastError"/> for the user: in the UI language when the player wrote it, else the exception's own text.</summary>
+    public string? LastErrorShown { get; private set; }
     /// <summary>Set when there is no usable output device; the preview keeps running silently on its own clock.</summary>
     public string? AudioError { get; private set; }
+    /// <summary>Which audio problem <see cref="AudioError"/> is (the first one; that text stays English for the log, <see cref="AudioIssueText"/> is the user's).</summary>
+    internal PlayerAudioIssue? AudioIssue { get { int v = Volatile.Read(ref _audioIssue); return v == 0 ? null : (PlayerAudioIssue)(v - 1); } private set => Volatile.Write(ref _audioIssue, value is { } i ? (int)i + 1 : 0); }
+    private int _audioIssue;   // 0 = none, else the issue + 1: the worker writes it, the UI thread reads it
+
+    /// <summary>The user-visible text of an audio problem, in the UI language.</summary>
+    internal static string AudioIssueText(PlayerAudioIssue issue) => issue switch
+    {
+        PlayerAudioIssue.NoDevice => L.T("no output device, the preview is silent"),
+        PlayerAudioIssue.Stopped => L.T("the output device stopped responding, the preview is silent"),
+        _ => L.T("the output device could not start, the preview is silent"),
+    };
+
+    private static string AudioIssueEnglish(PlayerAudioIssue issue) => issue switch
+    {
+        PlayerAudioIssue.NoDevice => "no output device, the preview is silent",
+        PlayerAudioIssue.Stopped => "the output device stopped responding, the preview is silent",
+        _ => "the output device could not start, the preview is silent",
+    };
+
+    /// <summary>Notes the first audio problem (later ones are only logged).</summary>
+    private void NoteAudioIssue(PlayerAudioIssue issue)
+    {
+        if (AudioIssue != null) return;
+        AudioIssue = issue;
+        AudioError = AudioIssueEnglish(issue);
+    }
     /// <summary>Raised (on the worker thread) when playback reached the end of the clip; the player is paused then.</summary>
     public event Action? Ended;
 
@@ -301,7 +340,7 @@ internal sealed unsafe class ClipPlayer : IDisposable
                 }
                 t->Release();
             }
-            if (videoIdx == uint.MaxValue) throw new InvalidOperationException("No video stream in file");
+            if (videoIdx == uint.MaxValue) throw new ClipPlayerException(Note.Of("No video stream in file"));
             // Track i is the file's i-th audio track (the mix first), the same numbering the trimmer's mix uses. The stream numbers are
             // those of the readers the audio is read with (Engine.ClipSource, with the audio edit lists hidden), not of the video's own
             // reader above: nothing here depends on the two numbering the streams alike.
@@ -389,7 +428,7 @@ internal sealed unsafe class ClipPlayer : IDisposable
             int stride = unchecked((int)Mf.GetU32(a, PInvoke.MF_MT_DEFAULT_STRIDE, (uint)(w * 4)));
             if (initial)
             {
-                if (w <= 0 || h <= 0) throw new InvalidOperationException("Decoder reported an empty frame size");
+                if (w <= 0 || h <= 0) throw new ClipPlayerException(Note.Of("Decoder reported an empty frame size"));
                 _w = w; _h = h; _stride = stride == 0 ? w * 4 : stride;
             }
             else
@@ -408,7 +447,7 @@ internal sealed unsafe class ClipPlayer : IDisposable
             !TrySetAudioType(t, PInvoke.MFAudioFormat_PCM, full: true) &&
             !TrySetAudioType(t, PInvoke.MFAudioFormat_Float, full: false) &&
             !TrySetAudioType(t, PInvoke.MFAudioFormat_PCM, full: false))
-            throw new InvalidOperationException("Audio stream cannot be decoded to PCM");
+            throw new ClipPlayerException(Note.Of("Audio stream cannot be decoded to PCM"));
         IMFMediaType* cur;
         t.Reader->GetCurrentMediaType(t.Stream, &cur).Check("GetCurrentMediaType(audio)");
         try
@@ -418,7 +457,7 @@ internal sealed unsafe class ClipPlayer : IDisposable
             t.SrcChannels = Math.Max(1, (int)Mf.GetU32(a, PInvoke.MF_MT_AUDIO_NUM_CHANNELS, 2));
             t.SrcRate = Math.Max(1, (int)Mf.GetU32(a, PInvoke.MF_MT_AUDIO_SAMPLES_PER_SECOND, Rate));
             if (!t.SrcFloat && Mf.GetU32(a, PInvoke.MF_MT_AUDIO_BITS_PER_SAMPLE, 16) != 16)
-                throw new InvalidOperationException("Unsupported PCM sample size");
+                throw new ClipPlayerException(Note.Of("Unsupported PCM sample size"));
             if (t.SrcRate != Rate || t.SrcChannels != 2 || !t.SrcFloat)
                 Log.Info($"Preview audio stream {t.Stream}: decoding as {(t.SrcFloat ? "float" : "pcm16")} {t.SrcChannels}ch {t.SrcRate} Hz (converted)");
         }
@@ -542,7 +581,7 @@ internal sealed unsafe class ClipPlayer : IDisposable
                 {
                     Log.Warn("Preview audio output unavailable, playing silently: " + ex.Message);
                     _out = null;
-                    AudioError = "no output device, the preview is silent";
+                    NoteAudioIssue(PlayerAudioIssue.NoDevice);
                 }
                 // The first ReadSample starts a reader's media source (a few hundred ms for all tracks); do it here
                 // rather than inside the user's first seek.
@@ -580,7 +619,7 @@ internal sealed unsafe class ClipPlayer : IDisposable
                         int topUp = 0;
                         while (!o.Failed && o.PendingFrames + Block <= fill && topUp++ < 16) { MixBlock(); o.Write(_mix, fill); }
                         if (!o.Failed) { MixBlock(); o.Write(_mix, fill); }
-                        if (o.Failed) DropAudioOutput("the output device stopped responding, the preview is silent");
+                        if (o.Failed) DropAudioOutput(PlayerAudioIssue.Stopped);
                     }
                     else Thread.Sleep(4);
                     FillVideo();
@@ -595,6 +634,7 @@ internal sealed unsafe class ClipPlayer : IDisposable
         }
         catch (Exception ex)
         {
+            LastErrorShown = UserText.Of(ex);   // before LastError: the UI shows LastErrorShown once LastError is set
             LastError = ex.Message;
             Log.Error("Preview player", ex);
         }
@@ -609,7 +649,7 @@ internal sealed unsafe class ClipPlayer : IDisposable
             // Prime the (empty or drained) buffer before starting so the engine has data on its first pass.
             if (!o.Failed && o.PendingFrames + Block <= o.TargetFrames) { MixBlock(); o.Write(_mix, o.TargetFrames); }
             o.Start();
-            if (!o.IsStarted) DropAudioOutput(o.Failed ? "the output device stopped responding, the preview is silent" : "the output device could not start, the preview is silent");
+            if (!o.IsStarted) DropAudioOutput(o.Failed ? PlayerAudioIssue.Stopped : PlayerAudioIssue.CouldNotStart);
         }
         if (!_useAudioClock) lock (_clock) _sw.Start();
     }
@@ -624,8 +664,9 @@ internal sealed unsafe class ClipPlayer : IDisposable
     /// Switches to the stopwatch clock from the current position and discards the output after a device failure, so the
     /// preview carries on silently instead of spinning on an output that never blocks and a clock that never moves.
     /// </summary>
-    private void DropAudioOutput(string why)
+    private void DropAudioOutput(PlayerAudioIssue issue)
     {
+        string why = AudioIssueEnglish(issue);
         var o = _out;
         double pos = Position;
         lock (_clock)
@@ -637,7 +678,7 @@ internal sealed unsafe class ClipPlayer : IDisposable
         }
         _out = null;
         try { o?.Dispose(); } catch (Exception ex) { Log.Warn("Preview audio output dispose: " + ex.Message); }
-        AudioError ??= why;
+        NoteAudioIssue(issue);
         Log.Warn("Preview: " + why);
     }
 

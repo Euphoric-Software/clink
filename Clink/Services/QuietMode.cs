@@ -47,7 +47,7 @@ internal enum QuietWindowKind
 {
     /// <summary>A child window or a message-only window: never shown on its own, left alone.</summary>
     NotTopLevel,
-    /// <summary>The capture overlay (<see cref="QuietMode.OverlayTitle"/>): left alone.</summary>
+    /// <summary>The capture overlay (a window created inside <see cref="QuietMode.CreatingOverlay"/>): left alone.</summary>
     Overlay,
     /// <summary>A window of the application (a WPF window or popup, a dialog): marked, cloaked, placed off-screen, its activation refused.</summary>
     Ours,
@@ -70,11 +70,15 @@ internal static class QuietWindows
     /// Classifies a window by its class alone (<paramref name="classAtom"/>: the class as an atom, 0 when it was given by name; <paramref name="className"/>:
     /// the name, null for an atom). The style does not matter: the main window (<c>WindowStyle="None"</c>, transparent) has neither WS_POPUP nor
     /// WS_CAPTION, and it is the one window that most needs marking. WPF windows and popups are <c>HwndWrapper[...]</c>, dialogs <c>#32770</c>.
+    /// <paramref name="creatingOverlay"/>: the window is being created by a capture overlay (decided by the window's type, never by its translated title).
     /// </summary>
-    public static QuietWindowKind Classify(bool messageOnly, uint style, int classAtom, string? className, string? title)
+    public static QuietWindowKind Classify(bool messageOnly, uint style, int classAtom, string? className, string? title, bool creatingOverlay = false)
     {
         if (messageOnly || (style & WS_CHILD) != 0) return QuietWindowKind.NotTopLevel;
-        if (title == QuietMode.OverlayTitle) return QuietWindowKind.Overlay;
+        // Checked before the class tests on purpose: the overlay is a WPF window (HwndWrapper[...]), which would otherwise be marked Ours. Safe because the
+        // scope covers only the overlay's own Show() and no other top-level window is created synchronously inside it; an IME window created then
+        // is taken for the overlay too, which is also left alone.
+        if (creatingOverlay) return QuietWindowKind.Overlay;
         if (classAtom == DialogAtom || className == "#32770") return QuietWindowKind.Ours;
         // WPF's own zero-size helper windows are left unmarked (least risky): they may rely on their placement for per-monitor DPI, they are
         // never shown and never take the foreground, so there is nothing to hide.
@@ -208,8 +212,28 @@ internal static unsafe class QuietMode
 
     // ------------------------------------------------------------------ windows
 
-    /// <summary>The title the capture overlay carries: capture overlays are left alone (explicit screenshot actions only; never marked as ours, so never cloaked or refused).</summary>
-    internal const string OverlayTitle = "Clink screenshot";
+    /// <summary>
+    /// Capture overlays are left alone (explicit screenshot actions only; never marked as ours, so never cloaked or refused). They are known by type,
+    /// not by their (translated) title: the code that shows a <c>RegionOverlayWindow</c> does so inside this scope, and the creation hook then
+    /// remembers the new window as an overlay.
+    /// </summary>
+    internal static IDisposable CreatingOverlay()
+    {
+        t_overlayDepth++;
+        return new OverlayScope();
+    }
+
+    [ThreadStatic] private static int t_overlayDepth;
+    /// <summary>True while a <see cref="CreatingOverlay"/> scope is open on this thread (tests: the depth returns to 0 once every scope is disposed).</summary>
+    internal static bool IsCreatingOverlay => t_overlayDepth > 0;
+    private static readonly HashSet<nint> s_overlays = new();
+    private static bool IsOverlay(nint hwnd) { lock (s_overlays) return s_overlays.Contains(hwnd); }
+
+    private sealed class OverlayScope : IDisposable
+    {
+        private bool _done;
+        public void Dispose() { if (!_done) { _done = true; t_overlayDepth--; } }
+    }
 
     private const int WH_CBT = 5, HCBT_CREATEWND = 3, HCBT_DESTROYWND = 4, HCBT_ACTIVATE = 5;
     private const int SM_XVIRTUALSCREEN = 76, SM_YVIRTUALSCREEN = 77, SM_CXVIRTUALSCREEN = 78, SM_CYVIRTUALSCREEN = 79;
@@ -299,13 +323,6 @@ internal static unsafe class QuietMode
         return n > 0 ? new string(buffer, 0, n) : "";
     }
 
-    private static string TitleOf(nint hwnd)
-    {
-        char* buffer = stackalloc char[256];
-        int n = GetWindowTextW(hwnd, buffer, 256);
-        return n > 0 ? new string(buffer, 0, n) : "";
-    }
-
     private static bool IsCloaked(nint hwnd) => DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, out int cloaked, sizeof(int)) == 0 && cloaked != 0;
 
     /// <summary>
@@ -319,7 +336,7 @@ internal static unsafe class QuietMode
             if (hwnd == 0 || idObject != 0 || idChild != 0) return;
             uint self = (uint)Environment.ProcessId;
             bool own = ProcessOf(hwnd) == self;
-            bool overlay = own && TitleOf(hwnd) == OverlayTitle;
+            bool overlay = own && IsOverlay(hwnd);
             bool hidden = own && !overlay && (IsOurs(hwnd) || IsCloaked(hwnd));
             var (action, target) = s_guard.OnForeground(hwnd, own, overlay, hidden, h => QuietWindows.IsUsableTarget(IsWindow(h), IsWindowVisible(h), IsCloaked(h), ProcessOf(h) == self), GetForegroundWindow(), Environment.TickCount64);
             switch (action)
@@ -347,7 +364,7 @@ internal static unsafe class QuietMode
         {
             if (code == HCBT_ACTIVATE) { if (IsOurs(wParam)) return 1; }   // a non-zero result refuses the activation (only for windows we marked)
             else if (code == HCBT_CREATEWND) Adjust(wParam, *(nint*)lParam);
-            else if (code == HCBT_DESTROYWND) { lock (s_ours) s_ours.Remove(wParam); }
+            else if (code == HCBT_DESTROYWND) { lock (s_ours) s_ours.Remove(wParam); lock (s_overlays) s_overlays.Remove(wParam); }
         }
         catch (Exception) { }   // a hook must never throw into the window procedure that called it
         return CallNextHookEx(s_hook, code, wParam, lParam);
@@ -391,8 +408,9 @@ internal static unsafe class QuietMode
         string? className = cls > 0xFFFF ? Marshal.PtrToStringUni(cls) : null;
         int classAtom = cls is > 0 and <= 0xFFFF ? (int)cls : 0;
         string? title = name > 0xFFFF ? Marshal.PtrToStringUni(name) : null;
-        var kind = QuietWindows.Classify(messageOnly, style, classAtom, className, title);
+        var kind = QuietWindows.Classify(messageOnly, style, classAtom, className, title, t_overlayDepth > 0);
         if (kind == QuietWindowKind.NotTopLevel) return;
+        if (kind == QuietWindowKind.Overlay) lock (s_overlays) s_overlays.Add(hwnd);
         string classText = className ?? "#atom 0x" + classAtom.ToString("X");
         if (s_loggedCreations < MaxLoggedCreations)
         {
@@ -497,5 +515,6 @@ internal static unsafe class QuietMode
         if (s_winEventHook != 0) { UnhookWinEvent(s_winEventHook); s_winEventHook = 0; }
         if (s_hook != 0) { UnhookWindowsHookEx(s_hook); s_hook = 0; }
         lock (s_ours) s_ours.Clear();
+        lock (s_overlays) s_overlays.Clear();
     }
 }

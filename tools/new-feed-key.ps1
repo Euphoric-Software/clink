@@ -35,7 +35,7 @@ for ($d = $dir; $d; $d = Split-Path -Parent $d) {
 if ($PSVersionTable.PSVersion.Major -ge 7) {
     $ecdsa = [System.Security.Cryptography.ECDsa]::Create([System.Security.Cryptography.ECCurve]::CreateFromFriendlyName('nistP256'))
     try {
-        $pem = $ecdsa.ExportPkcs8PrivateKeyPem()
+        $pem = $ecdsa.ExportPkcs8PrivateKeyPem().Replace("`r`n", "`n").TrimEnd("`n") + "`n"   # .NET writes no newline after the END line; match the 5.1 branch
         $pub = [Convert]::ToBase64String($ecdsa.ExportSubjectPublicKeyInfo())
     } finally { $ecdsa.Dispose() }
 } else {

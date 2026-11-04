@@ -1,0 +1,28 @@
+{
+  "engine-status|Starting…": "Iniciando…",
+  "engine-status|Stopped": "Parado",
+  "engine-status|Recording": "Gravando",
+  "engine-status|Error": "Erro",
+
+  "engine-error|The GPU was reset (graphics driver crash or TDR)": "A GPU foi reiniciada (falha do driver gráfico ou TDR)",
+
+
+  "audio-line|{name} ({detail})": "{name} ({detail})",
+
+  "audio-problem|not connected": "não conectado",
+  "audio-problem|disabled": "desativado",
+
+  "audio-detail|game + mic + voice, always track 1": "jogo + microfone + voz, sempre a faixa 1",
+  "audio-detail|waiting for app": "aguardando o app",
+  "audio-detail|everything": "tudo",
+  "audio-detail|everything except {app}": "tudo, exceto {app}",
+  "audio-detail|mix only": "somente mixagem",
+  "audio-detail|{detail}, mix only": "{detail}, somente mixagem",
+  "audio-detail|not connected or disabled": "não conectado ou desativado",
+  "audio-detail|in use by another app (exclusive mode)": "em uso por outro app (modo exclusivo)",
+  "audio-detail|access denied": "acesso negado",
+  "audio-detail|blocked: allow microphone access for desktop apps in Windows privacy settings": "bloqueado: permita o acesso ao microfone para apps da área de trabalho nas configurações de privacidade do Windows",
+  "audio-detail|not an output device": "não é um dispositivo de saída",
+  "audio-detail|not an input device": "não é um dispositivo de entrada",
+  "audio-detail|Windows Audio service not running": "serviço Áudio do Windows não está em execução"
+}

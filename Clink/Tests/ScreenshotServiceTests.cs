@@ -318,58 +318,73 @@ internal static class ScreenshotServiceTests
     [UnitTest]
     public static void A_busy_clipboard_fails_the_copy_without_a_wait_of_our_own()
     {
-        using var opened = new ManualResetEventSlim();
-        using var release = new ManualResetEventSlim();
-        bool held = false;
-        string owner = "unknown";
-        var holder = new Thread(() =>
+        // The clipboard is one lock for the whole desktop session: anything else that opens and closes it (another program, or a test run
+        // in another worktree) can end our hold between the moment the holder got it and the moment Copy asks. A copy that succeeds then
+        // says nothing about Copy, so such an attempt is told apart (the holder's CloseClipboard fails: it was no longer open) and made
+        // again with a fresh hold. A copy that succeeds while the hold lasted to the end is a real failure and is never retried.
+        const int attempts = 5;
+        string lastLost = "";
+        for (int attempt = 1; attempt <= attempts; attempt++)
         {
+            using var opened = new ManualResetEventSlim();
+            using var release = new ManualResetEventSlim();
+            bool held = false, stillHeldAtEnd = false;
+            string owner = "unknown";
+            var holder = new Thread(() =>
+            {
+                try
+                {
+                    for (int i = 0; i < 200 && !held; i++) { held = global::Windows.Win32.PInvoke.OpenClipboard(default); if (!held) Thread.Sleep(50); }
+                    if (!held)
+                    {
+                        try
+                        {
+                            var w = global::Windows.Win32.PInvoke.GetOpenClipboardWindow();
+                            if (!w.IsNull)
+                            {
+                                global::Windows.Win32.PInvoke.GetWindowThreadProcessId(w, out uint pid);
+                                string name; try { name = System.Diagnostics.Process.GetProcessById((int)pid).ProcessName; } catch { name = "?"; }
+                                owner = $"{name} (pid {pid})";
+                            }
+                            else owner = "a program with no clipboard window";
+                        }
+                        catch { }
+                    }
+                }
+                finally
+                {
+                    opened.Set();
+                    if (held)
+                    {
+                        release.Wait(30_000);
+                        stillHeldAtEnd = global::Windows.Win32.PInvoke.CloseClipboard();   // false: someone else ended our hold meanwhile
+                    }
+                }
+            }) { IsBackground = true };
+            holder.Start();
+            bool copied; long ms;
             try
             {
-                for (int i = 0; i < 200 && !held; i++) { held = global::Windows.Win32.PInvoke.OpenClipboard(default); if (!held) Thread.Sleep(50); }
-                if (!held)
-                {
-                    try
-                    {
-                        var w = global::Windows.Win32.PInvoke.GetOpenClipboardWindow();
-                        if (!w.IsNull)
-                        {
-                            global::Windows.Win32.PInvoke.GetWindowThreadProcessId(w, out uint pid);
-                            string name; try { name = System.Diagnostics.Process.GetProcessById((int)pid).ProcessName; } catch { name = "?"; }
-                            owner = $"{name} (pid {pid})";
-                        }
-                        else owner = "a program with no clipboard window";
-                    }
-                    catch { }
-                }
+                opened.Wait(15_000);
+                if (!held) Check.Fail($"could not open the clipboard for 10 s; held by {owner}");
+                var img = Picture(4, 3).ForceOpaque();
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                copied = ScreenshotClipboard.Copy(img.ToBitmapSource(), PngFile.Encode(img.ToBitmapSource()));
+                ms = sw.ElapsedMilliseconds;
             }
             finally
             {
-                opened.Set();
-                if (held) release.Wait(30_000);
-                if (held) global::Windows.Win32.PInvoke.CloseClipboard();
+                release.Set();
+                holder.Join(5_000);
             }
-        }) { IsBackground = true };
-        holder.Start();
-        try
-        {
-            opened.Wait(15_000);
-            if (!held) Check.Fail($"could not open the clipboard for 10 s; held by {owner}");
-            var img = Picture(4, 3).ForceOpaque();
-            var sw = System.Diagnostics.Stopwatch.StartNew();
-            bool copied = ScreenshotClipboard.Copy(img.ToBitmapSource(), PngFile.Encode(img.ToBitmapSource()));
-            long ms = sw.ElapsedMilliseconds;
-            Log.Info($"[unittest] a busy clipboard failed the copy in {ms} ms");
-            Check.False(copied, "busy: not copied");
+            Log.Info($"[unittest] a busy clipboard: copied={copied} in {ms} ms, hold lasted={stillHeldAtEnd} (attempt {attempt})");
+            if (copied && !stillHeldAtEnd) { lastLost = $"attempt {attempt}: the copy took {ms} ms and the hold had ended"; continue; }   // the hold was lost: not what is being tested
+            Check.False(copied, "busy: not copied (the hold lasted to the end of the copy)");
             Check.True(ms < BusyClipboardBoundMs, $"gave up after {ms} ms (bound {BusyClipboardBoundMs} ms)");
+            return;
         }
-        finally
-        {
-            release.Set();
-            holder.Join(5_000);
-        }
+        Check.Fail($"the clipboard hold was lost in all {attempts} attempts, so Copy was never tried against a busy clipboard; last: {lastLost}");
     }
-
     // ------------------------------------------------------------------ black pictures and the Open button
 
     private static Clink.Screenshots.Sources.FrozenMonitor FakeMonitor(RectI r, BgraImage img) =>

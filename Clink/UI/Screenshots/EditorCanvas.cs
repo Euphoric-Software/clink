@@ -10,6 +10,7 @@ using Clink.Screenshots.Editing;
 using Clink.Screenshots.Geometry;
 using Clink.Screenshots.Imaging;
 using Clink.Services;
+using Clink.Services.Localization;
 
 namespace Clink.UI.Screenshots;
 
@@ -52,6 +53,7 @@ internal sealed class EditorCanvas : FrameworkElement
 
     public EditorCanvas()
     {
+        FlowDirection = FlowDirection.LeftToRight;   // the picture is drawn left to right in every language (a local value: the window root is right-to-left)
         ClipToBounds = true;
         Focusable = true;
         FocusVisualStyle = null;
@@ -446,7 +448,7 @@ internal sealed class EditorCanvas : FrameworkElement
                 }
             }
             foreach (var (_, at) in handles) DrawHandle(dc, ToView(at));
-            if (sel is MagnifyBox mag) DrawSourceFrame(dc, mag.Source, "Source");
+            if (sel is MagnifyBox mag) DrawSourceFrame(dc, mag.Source, L.T("magnify|Source"));
         }
         if (_ghostSource is { } ghost && _move != null) DrawSourceFrame(dc, ghost, null);
     }
@@ -459,7 +461,7 @@ internal sealed class EditorCanvas : FrameworkElement
         dc.DrawRectangle(null, new Pen(Brushes.White, 1), vr);
         dc.DrawRectangle(null, new Pen(Brushes.Black, 1) { DashStyle = new DashStyle(new double[] { 4, 4 }, 0) }, vr);
         if (label == null || vr.Width < 40) return;
-        var text = new FormattedText(label, System.Globalization.CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, new Typeface("Segoe UI"), 11, Brushes.White, VisualTreeHelper.GetDpi(this).PixelsPerDip);
+        var text = new FormattedText(label, L.UiCulture, FlowDirection.LeftToRight, new Typeface("Segoe UI"), 11, Brushes.White, VisualTreeHelper.GetDpi(this).PixelsPerDip);
         var pos = new Point(vr.Left + 2, Math.Max(0, vr.Top - text.Height - 1));
         dc.DrawRectangle(s_dim, null, new Rect(pos.X - 2, pos.Y, text.Width + 4, text.Height));
         dc.DrawText(text, pos);
@@ -1006,6 +1008,7 @@ internal sealed class EditorCanvas : FrameworkElement
     private static ContextMenu BuildTextMenu(TextBox tb)
     {
         var menu = new ContextMenu();
+        if (L.IsRtl) menu.FlowDirection = FlowDirection.RightToLeft;   // the canvas is pinned left to right; its menu belongs to the right-to-left window
         foreach (var cmd in new RoutedUICommand[] { ApplicationCommands.Cut, ApplicationCommands.Copy, ApplicationCommands.Paste, ApplicationCommands.SelectAll })
             menu.Items.Add(new MenuItem { Command = cmd, CommandTarget = tb });
         return menu;

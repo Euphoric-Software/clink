@@ -14,6 +14,7 @@ using Clink.Screenshots.Geometry;
 using Clink.Screenshots.Imaging;
 using Clink.Screenshots.Sources;
 using Clink.Services;
+using Clink.Services.Localization;
 
 namespace Clink.UI.Screenshots;
 
@@ -499,6 +500,7 @@ public partial class RegionOverlayWindow : Window, ICaptureExcludedWindow
             var picker = new InsertImagePicker(new InsertPickerModel(_setup?.Recent), canPaste) { Owner = this };
             picker.SourceInitialized += (_, _) => ScreenPlacement.ExcludeFromCapture(new WindowInteropHelper(picker).Handle);   // like the overlay: not in a replay clip
             bool chosen;
+            TestGuard.CheckLaunch("the insert-image picker");
             _state?.Suspend();   // the picker and the file dialog take the input: no idle cancel while they are open
             try { chosen = picker.ShowDialog() == true; }
             finally { _state?.Resume(); }
@@ -680,9 +682,9 @@ internal sealed class RegionOverlayPicker : IRegionPicker
                     w.InsertEnded = ForceClose;   // a cancel that came while the insert-image dialogs were modal
                     _windows.Add(w);
                 }
-                foreach (var w in _windows.Where(w => !w.WantsKeyboard)) w.Show();
+                foreach (var w in _windows.Where(w => !w.WantsKeyboard)) { using (QuietMode.CreatingOverlay()) w.Show(); }
                 var main = _windows[focus];
-                main.Show();
+                using (QuietMode.CreatingOverlay()) main.Show();
                 main.TakeKeyboard();
                 if (TryGetCursor(out int cx, out int cy)) selection.MoveCursor(cx, cy);
                 _watchdog.Start();
@@ -825,10 +827,14 @@ internal sealed class RegionOverlayPicker : IRegionPicker
             if (!_state.IsIdle(limit)) return;
             bool editing = _state.IsEditing;
             Log.Info($"screenshot: no input for {limit.TotalMinutes:0} minutes: cancelled");
-            if (editing) { try { _notice?.Invoke("Screenshot cancelled", $"Screenshot cancelled after {limit.TotalMinutes:0} minutes without input"); } catch (Exception ex) { Log.Warn("screenshot: idle notice: " + ex.Message); } }
+            if (editing) { try { _notice?.Invoke(L.T("Screenshot cancelled"), IdleCancelledText(limit)); } catch (Exception ex) { Log.Warn("screenshot: idle notice: " + ex.Message); } }
             Cancel();
         }
     }
+
+    /// <summary>The notice text when the editing overlay is cancelled for lack of input: "Screenshot cancelled after 20 minutes without input" (the minutes are a plural).</summary>
+    internal static string IdleCancelledText(TimeSpan limit) =>
+        L.Plural("Screenshot cancelled after {count} minutes without input", (long)Math.Round(limit.TotalMinutes, MidpointRounding.AwayFromZero));
 
     private static bool TryGetCursor(out int x, out int y)
     {

@@ -1,0 +1,10 @@
+<UserControl x:Class="Clink.Tests.L10nCompiledProbe"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:l="clr-namespace:Clink.UI">
+    <!-- Test only: proves {l:T} works in COMPILED XAML (BAML) with xmlns:l="clr-namespace:Clink.UI" (the XmlnsDefinition URI is NOT visible to the markup compiler of its own assembly: MC3074), not just in XamlReader.Parse. -->
+    <StackPanel>
+        <TextBlock x:Name="Label" Text="{l:T 'Save clip'}" ToolTip="{l:T 'Don\'t save'}" />
+        <Button x:Name="Action" Content="{l:T Key='Cancel'}" AutomationProperties.Name="{l:T 'Cancel'}" />
+    </StackPanel>
+</UserControl>

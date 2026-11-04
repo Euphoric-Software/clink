@@ -1,4 +1,5 @@
 using Clink.Engine;
+using Clink.Services.Localization;
 
 namespace Clink.Services;
 
@@ -48,31 +49,47 @@ internal static class RecordingPolicy
     }
 
     /// <summary>"Recording 00:12", with the game when one is detected.</summary>
-    public static string StatusLine(double seconds, string? game) =>
-        game != null ? $"Recording {Elapsed(seconds)} · {game}" : $"Recording {Elapsed(seconds)}";
+    public static string StatusLine(double seconds, string? game) => StatusLineNote(seconds, game).Shown;
+
+    /// <summary><see cref="StatusLine"/> as a note.</summary>
+    public static Note StatusLineNote(double seconds, string? game) =>
+        game != null ? Note.Of("Recording {elapsed} · {game}", ("elapsed", Elapsed(seconds)), ("game", Note.Isolate(game))) : Note.Of("Recording {elapsed}", ("elapsed", Elapsed(seconds)));
 
     /// <summary>The subtitle of the "Recording saved" toast: "12:34 · 1.2 GB".</summary>
-    public static string SavedSummary(double seconds, long bytes) => $"{Elapsed(seconds)} · {Capabilities.FormatBytes(bytes)}";
+    public static string SavedSummary(double seconds, long bytes) => SavedSummaryNote(seconds, bytes).Shown;
+
+    /// <summary><see cref="SavedSummary"/> as a note (the size is written with the units of the language it is shown in, English in the log).</summary>
+    public static Note SavedSummaryNote(double seconds, long bytes) => Note.Of("{elapsed} · {size}", ("elapsed", Elapsed(seconds)), ("size", Note.Size(bytes)));
 
     /// <summary>"Recovered 1 recording" / "Recovered 3 recordings": the one toast after a start that found unfinished recordings.</summary>
-    public static string RecoveredTitle(int count) => count == 1 ? "Recovered 1 recording" : $"Recovered {count} recordings";
+    public static string RecoveredTitle(int count) => L.Plural("Recovered {count} recordings", count);
+
+    /// <summary><see cref="RecoveredTitle"/> as a note (composed, so the plural form is chosen by the count in each language, English for the log).</summary>
+    public static Note RecoveredTitleNote(int count) => Note.Build(() => RecoveredTitle(count));
 
     /// <summary>
     /// The problem a finished recording reports, as (title, text), or null when it ended well (saved, or empty: see the caller).
     /// A failure that still left a file says it was recovered (a full disk finishes the file cleanly: it says saved).
     /// </summary>
-    public static (string Title, string Text)? Problem(RecordingResult r)
+    public static (string Title, string Text)? Problem(RecordingResult r) => ProblemNote(r) is { } p ? (p.Title.Shown, p.Text.Shown) : null;
+
+    /// <summary><see cref="Problem"/> as notes: the title and the text are shown translated and logged in English (the engine's own error text is shown as it is).</summary>
+    public static (Note Title, Note Text)? ProblemNote(RecordingResult r)
     {
-        string kept = r.Path == null ? "" : r.Reason == RecordingEndReason.DiskFull ? " The recording was saved." : " The recording was recovered and saved.";
-        string why = r.Reason switch
+        if (r.Reason is not (RecordingEndReason.DiskFull or RecordingEndReason.WriteFailed or RecordingEndReason.Overflow or RecordingEndReason.Unrecoverable)) return null;
+        return (Note.Of("Recording stopped"), Note.Build(() =>
         {
-            RecordingEndReason.DiskFull => "The disk is nearly full.",
-            RecordingEndReason.WriteFailed => "Writing the file failed" + (string.IsNullOrEmpty(r.Error) ? "." : ": " + r.Error),
-            RecordingEndReason.Overflow => "The disk could not keep up with the recording.",
-            RecordingEndReason.Unrecoverable => "The recording could not be saved" + (string.IsNullOrEmpty(r.Error) ? "." : ": " + r.Error),
-            _ => "",
-        };
-        if (why.Length == 0) return null;
-        return ("Recording stopped", why + kept);
+            bool withError = !string.IsNullOrEmpty(r.Error);
+            string why = r.Reason switch
+            {
+                RecordingEndReason.DiskFull => L.T("The disk is nearly full."),
+                RecordingEndReason.WriteFailed => withError ? L.T("Writing the file failed: {error}", ("error", r.Error)) : L.T("Writing the file failed."),
+                RecordingEndReason.Overflow => L.T("The disk could not keep up with the recording."),
+                RecordingEndReason.Unrecoverable => withError ? L.T("The recording could not be saved: {error}", ("error", r.Error)) : L.T("The recording could not be saved."),
+                _ => "",
+            };
+            string? kept = r.Path == null ? null : r.Reason == RecordingEndReason.DiskFull ? L.T("The recording was saved.") : L.T("The recording was recovered and saved.");
+            return L.JoinSentences(why, kept);
+        }));
     }
 }

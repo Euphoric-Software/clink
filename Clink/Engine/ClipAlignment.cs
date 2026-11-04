@@ -3,6 +3,19 @@ using System.IO;
 
 namespace Clink.Engine;
 
+/// <summary>Why a trim is refused for an alignment reason (<see cref="TrimAlignmentException.Kind"/>).</summary>
+internal enum TrimAlignmentRefusal { Untrusted, OlderClink }
+
+/// <summary>
+/// A trim plan that changes the sources inside All audio was refused because they cannot be put against the Mix. A type with a kind: the
+/// editor words the refusal from the kind in the language of the UI; <see cref="Exception.Message"/> stays the English note (the log).
+/// </summary>
+internal sealed class TrimAlignmentException(TrimAlignmentRefusal kind)
+    : InvalidOperationException(kind == TrimAlignmentRefusal.Untrusted ? ClipAlignment.UntrustedNote : ClipAlignment.OlderClinkNote)
+{
+    public TrimAlignmentRefusal Kind { get; } = kind;
+}
+
 /// <summary>
 /// Where each audio track of a clip sits on the clip's timeline, in 48 kHz frames, and whether the tracks can be added to and
 /// subtracted from each other. Mixing tracks together (the trim editor's All audio follows the Game / Mic / Voice sliders) needs them

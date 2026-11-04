@@ -1,0 +1,23 @@
+{
+  "engine-status|Starting…": "Starten…",
+  "engine-status|Stopped": "Gestopt",
+  "engine-status|Recording": "Opnemen",
+  "engine-status|Error": "Fout",
+  "engine-error|The GPU was reset (graphics driver crash or TDR)": "De GPU is gereset (crash van het grafische stuurprogramma of TDR)",
+  "audio-line|{name} ({detail})": "{name} ({detail})",
+  "audio-problem|not connected": "niet verbonden",
+  "audio-problem|disabled": "uitgeschakeld",
+  "audio-detail|game + mic + voice, always track 1": "game + microfoon + spraakchat, altijd spoor 1",
+  "audio-detail|waiting for app": "wacht op app",
+  "audio-detail|everything": "alles",
+  "audio-detail|everything except {app}": "alles behalve {app}",
+  "audio-detail|mix only": "alleen mix",
+  "audio-detail|{detail}, mix only": "{detail}, alleen mix",
+  "audio-detail|not connected or disabled": "niet verbonden of uitgeschakeld",
+  "audio-detail|in use by another app (exclusive mode)": "in gebruik door een andere app (exclusieve modus)",
+  "audio-detail|access denied": "toegang geweigerd",
+  "audio-detail|blocked: allow microphone access for desktop apps in Windows privacy settings": "geblokkeerd: sta microfoontoegang voor desktop-apps toe in de privacyinstellingen van Windows",
+  "audio-detail|not an output device": "geen uitvoerapparaat",
+  "audio-detail|not an input device": "geen invoerapparaat",
+  "audio-detail|Windows Audio service not running": "Windows Audio-service wordt niet uitgevoerd"
+}

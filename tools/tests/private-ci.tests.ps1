@@ -61,7 +61,7 @@ function Invoke-Child {
     foreach ($k in $Environment.Keys) { $saved[$k] = [Environment]::GetEnvironmentVariable($k); [Environment]::SetEnvironmentVariable($k, [string]$Environment[$k]) }
     try {
         $run = Start-Process -FilePath $hostExe -ArgumentList $quoted -Wait -PassThru -NoNewWindow -RedirectStandardOutput $outFile -RedirectStandardError $errFile
-    } finally { foreach ($k in $saved.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k]) } }
+    } finally { foreach ($k in $saved.Keys) { if ($null -eq $saved[$k]) { Remove-Item -LiteralPath ("Env:" + $k) -ErrorAction SilentlyContinue } else { [Environment]::SetEnvironmentVariable($k, $saved[$k]) } } }
     [pscustomobject]@{ Code = $run.ExitCode; Text = [System.IO.File]::ReadAllText($outFile) + [System.IO.File]::ReadAllText($errFile) }
 }
 
@@ -517,7 +517,7 @@ try {
             $omitted = Invoke-PublishedExe $hostExe @('-NoProfile', '-Command', $probe) 60 (Get-FeedSelfTestEnvironment)
             Assert-True ($omitted.Out -match "(?m)^F=\s*$" -and $omitted.Out -match "(?m)^S=\s*$" -and $omitted.Out -match "(?m)^D=\s*$") "omitted: child sees: $($omitted.Out)"
             Assert-True ([Environment]::GetEnvironmentVariable('CLINK_EXPECT_FEED_URL') -ceq 'stale-from-the-parent') 'the parent value was not restored'
-        } finally { foreach ($n in $names) { [Environment]::SetEnvironmentVariable($n, $before[$n]) } }
+        } finally { foreach ($n in $names) { if ($null -eq $before[$n]) { Remove-Item -LiteralPath ("Env:" + $n) -ErrorAction SilentlyContinue } else { [Environment]::SetEnvironmentVariable($n, $before[$n]) } } }
         $text = [System.IO.File]::ReadAllText($checkScript)
         Assert-True ($text.Contains('Get-FeedSelfTestEnvironment -ExpectFeed $ExpectFeed -ExpectFeedUrl $ExpectFeedUrl -ExpectDevFeedUrl $ExpectDevFeedUrl')) 'check-published.ps1 does not build the self-test environment from its parameters'
         Assert-True ($text.Contains('$feedEnv[$name] = $feedSelfTestEnv[$name]')) 'the feed self-test run does not take the expectation environment'
@@ -582,7 +582,7 @@ try {
             $savedOut = $env:GITHUB_OUTPUT; $savedPrefix = $env:CLINK_FEED_KEY_PREFIX; $savedImm = $env:CLINK_IMMUTABLE_RELEASES
             Push-Location $work
             try {
-                $env:GITHUB_OUTPUT = $out; $env:CLINK_FEED_KEY_PREFIX = ''; [Environment]::SetEnvironmentVariable('CLINK_IMMUTABLE_RELEASES', $null)
+                $env:GITHUB_OUTPUT = $out; $env:CLINK_FEED_KEY_PREFIX = ''; Remove-Item -LiteralPath ("Env:" + 'CLINK_IMMUTABLE_RELEASES') -ErrorAction SilentlyContinue
                 [System.IO.File]::WriteAllText($feedFile, '{"schema":1,"feedUrl":"","stableKeys":[],"devKeys":[]}', $utf8)
                 $err = $null
                 try { . ([scriptblock]::Create($block)) 6>$null 3>$null | Out-Null } catch { $err = $_.Exception.Message }
@@ -593,7 +593,7 @@ try {
                 try { . ([scriptblock]::Create($block)) 6>$null 3>$null | Out-Null } catch { $err = $_.Exception.Message }
                 Assert-True ($null -eq $err) "$name : a feed that is on was refused: $err"
                 Assert-True ([System.IO.File]::ReadAllText($out) -match 'enabled=true') "$name : enabled=true was not written"
-            } finally { Pop-Location; $env:GITHUB_OUTPUT = $savedOut; [Environment]::SetEnvironmentVariable('CLINK_FEED_KEY_PREFIX', $savedPrefix); [Environment]::SetEnvironmentVariable('CLINK_IMMUTABLE_RELEASES', $savedImm) }
+            } finally { Pop-Location; $env:GITHUB_OUTPUT = $savedOut; if ($null -eq $savedPrefix) { Remove-Item -LiteralPath ("Env:" + 'CLINK_FEED_KEY_PREFIX') -ErrorAction SilentlyContinue } else { [Environment]::SetEnvironmentVariable('CLINK_FEED_KEY_PREFIX', $savedPrefix) }; if ($null -eq $savedImm) { Remove-Item -LiteralPath ("Env:" + 'CLINK_IMMUTABLE_RELEASES') -ErrorAction SilentlyContinue } else { [Environment]::SetEnvironmentVariable('CLINK_IMMUTABLE_RELEASES', $savedImm) } }
         }
     }
 
@@ -629,12 +629,12 @@ try {
                 }
                 foreach ($good in '', 'required', 'unavailable') {
                     Remove-Item -LiteralPath $out -ErrorAction SilentlyContinue
-                    [Environment]::SetEnvironmentVariable('CLINK_IMMUTABLE_RELEASES', $(if ($good) { $good } else { $null }))
+                    if ($good) { [Environment]::SetEnvironmentVariable('CLINK_IMMUTABLE_RELEASES', $good) } else { Remove-Item -LiteralPath 'Env:CLINK_IMMUTABLE_RELEASES' -ErrorAction SilentlyContinue }
                     $err = $null
                     try { . ([scriptblock]::Create($block)) 6>$null 3>$null | Out-Null } catch { $err = $_.Exception.Message }
                     Assert-True ($null -eq $err -and ([System.IO.File]::ReadAllText($out) -match 'enabled=true')) "$name : '$good' was refused: $err"
                 }
-            } finally { Pop-Location; $env:GITHUB_OUTPUT = $savedOut; [Environment]::SetEnvironmentVariable('CLINK_FEED_KEY_PREFIX', $savedPrefix); [Environment]::SetEnvironmentVariable('CLINK_IMMUTABLE_RELEASES', $savedImm) }
+            } finally { Pop-Location; $env:GITHUB_OUTPUT = $savedOut; if ($null -eq $savedPrefix) { Remove-Item -LiteralPath ("Env:" + 'CLINK_FEED_KEY_PREFIX') -ErrorAction SilentlyContinue } else { [Environment]::SetEnvironmentVariable('CLINK_FEED_KEY_PREFIX', $savedPrefix) }; if ($null -eq $savedImm) { Remove-Item -LiteralPath ("Env:" + 'CLINK_IMMUTABLE_RELEASES') -ErrorAction SilentlyContinue } else { [Environment]::SetEnvironmentVariable('CLINK_IMMUTABLE_RELEASES', $savedImm) } }
         }
     }
 
@@ -722,11 +722,11 @@ try {
                 $err = $null; try { . ([scriptblock]::Create($block)) 6>$null | Out-Null } catch { $err = $_.Exception.Message }
                 Assert-True ($null -eq $err -and ([System.IO.File]::ReadAllText($out) -match "floor=$([regex]::Escape($tag.Substring(1)))")) "$name : matching seed refused or no floor output: $err"
                 Remove-Item -LiteralPath $out -ErrorAction SilentlyContinue
-                [Environment]::SetEnvironmentVariable('BUILD_SEED', $null)
+                Remove-Item -LiteralPath ("Env:" + 'BUILD_SEED') -ErrorAction SilentlyContinue
                 $err = $null; try { . ([scriptblock]::Create($block)) 6>$null | Out-Null } catch { $err = $_.Exception.Message }
                 Assert-True ($null -ne $err -and $err -match 'stale seed') "$name : a release that appeared after the build was not refused: $err"
                 Assert-True (-not (Test-Path -LiteralPath $out)) "$name : the floor was output although it differs from the seed"
-            } finally { Remove-Item Function:\gh -ErrorAction SilentlyContinue; foreach ($n in $saved.Keys) { [Environment]::SetEnvironmentVariable($n, $saved[$n]) } }
+            } finally { Remove-Item Function:\gh -ErrorAction SilentlyContinue; foreach ($n in $saved.Keys) { if ($null -eq $saved[$n]) { Remove-Item -LiteralPath ("Env:" + $n) -ErrorAction SilentlyContinue } else { [Environment]::SetEnvironmentVariable($n, $saved[$n]) } } }
         }
     }
 
@@ -882,7 +882,7 @@ try {
             Pop-Location
             foreach ($f in 'gh', 'Invoke-WebRequest', 'Invoke-RestMethod') { Remove-Item "Function:\$f" -ErrorAction SilentlyContinue }
             try { [Console]::OutputEncoding = $savedEnc } catch { }
-            foreach ($n in $saved.Keys) { [Environment]::SetEnvironmentVariable($n, $saved[$n]) }
+            foreach ($n in $saved.Keys) { if ($null -eq $saved[$n]) { Remove-Item -LiteralPath ("Env:" + $n) -ErrorAction SilentlyContinue } else { [Environment]::SetEnvironmentVariable($n, $saved[$n]) } }
         }
     }
 
@@ -1092,7 +1092,7 @@ try {
                 $env:ARTIFACT_ID = '777'; $script:ghArtifact = '{"id":777,"name":"clink-package","workflow_run":{"id":4242}}'; $script:ghDeleteFail = $true
                 $o = (. ([scriptblock]::Create($run)) 6>&1 | Out-String)
                 Assert-True ($o -match '::warning::Could not delete' -and $global:LASTEXITCODE -eq 0) "$name : a failed delete was not a warning with exit code 0: $o"
-            } finally { Remove-Item Function:\gh -ErrorAction SilentlyContinue; foreach ($n in $saved.Keys) { [Environment]::SetEnvironmentVariable($n, $saved[$n]) } }
+            } finally { Remove-Item Function:\gh -ErrorAction SilentlyContinue; foreach ($n in $saved.Keys) { if ($null -eq $saved[$n]) { Remove-Item -LiteralPath ("Env:" + $n) -ErrorAction SilentlyContinue } else { [Environment]::SetEnvironmentVariable($n, $saved[$n]) } } }
         }
         Assert-True ((Remove-YamlComments (Read-Workflow 'build.yml')) -notmatch 'actions:\s*write') 'build.yml has actions: write'
     }
@@ -1232,6 +1232,20 @@ try {
 
     # ================================================================== 4. new-feed-key.ps1
     $keyScript = Join-Path $toolsDir 'new-feed-key.ps1'
+    Invoke-Test 'new-feed-key.ps1 normalises the PowerShell 7 PEM text to LF with exactly one final newline' {
+        # Runs on 5.1 too: the script's own normalising expression applied to what .NET's ExportPkcs8PrivateKeyPem() produces (CRLF or LF, no final newline).
+        $src = [System.IO.File]::ReadAllText($keyScript)
+        $ms = [regex]::Matches($src, '(?m)^\s*\$pem\s*=\s*\$ecdsa\.ExportPkcs8PrivateKeyPem\(\)(?<tail>[^\r\n#]*)')
+        Assert-True ($ms.Count -eq 1) "new-feed-key.ps1 must have exactly one live '`$pem = `$ecdsa.ExportPkcs8PrivateKeyPem()' statement (found $($ms.Count); commented copies do not count)"
+        $m = $ms[0]
+        foreach ($raw in @("-----BEGIN PRIVATE KEY-----`r`nQUJD`r`nREVG`r`n-----END PRIVATE KEY-----", "-----BEGIN PRIVATE KEY-----`nQUJD`nREVG`n-----END PRIVATE KEY-----", "-----BEGIN PRIVATE KEY-----`nQUJD`n-----END PRIVATE KEY-----`n")) {
+            $fake = [pscustomobject]@{}
+            $fake | Add-Member -MemberType ScriptMethod -Name ExportPkcs8PrivateKeyPem -Value { $raw }.GetNewClosure()
+            $ecdsa = $fake
+            $pem = Invoke-Expression ('$ecdsa.ExportPkcs8PrivateKeyPem()' + $m.Groups['tail'].Value.Trim())
+            Assert-True ($pem -match '\A-----BEGIN PRIVATE KEY-----\n[A-Za-z0-9+/=\n]+-----END PRIVATE KEY-----\n\z') 'the normalised PEM is not LF-only with one final newline'
+        }
+    }
     $driveRoot = [System.IO.Path]::GetPathRoot($repo)
     $keyDir = Join-Path $driveRoot ('clink-nfk-' + [guid]::NewGuid().ToString('N'))
     $keyDirOk = $false

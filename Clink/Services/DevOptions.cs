@@ -42,12 +42,27 @@ internal sealed record DevOptions(string Folder, bool BindHotkeys)
     public bool NoMarker { get; init; }
     /// <summary><c>--dev-demo-status "game"</c> (with <c>--dev</c> and <c>--dev-quiet</c>): the header shows "Recording · game" without recording anything (a display override only).</summary>
     public string? DemoStatus { get; init; }
+    /// <summary>
+    /// Hidden <c>--dev-language &lt;code&gt;</c> (with <c>--dev</c>): shows the UI in that language whatever the settings say, to look at the
+    /// right-to-left layout by hand (<c>qps-plocm</c>: pseudo text, right-to-left; <c>qps-ploc</c>: pseudo text; <c>ar</c>: right-to-left with the text
+    /// there is; any language Clink knows). The code is written as <c>L.Known</c> does, or is one of the two pseudo codes. Not documented for users.
+    /// </summary>
+    public string? Language { get; init; }
+
+    /// <summary>The code in the spelling Clink uses (<c>pt-BR</c>, <c>qps-ploc</c>) when <paramref name="code"/> is a language it knows or a pseudo-locale, otherwise null.</summary>
+    internal static string? CanonicalLanguage(string code)
+    {
+        string t = code.Trim().Replace('_', '-');
+        if (t.Equals(Localization.L.PseudoCode, StringComparison.OrdinalIgnoreCase)) return Localization.L.PseudoCode;
+        if (t.Equals(Localization.L.PseudoRtlCode, StringComparison.OrdinalIgnoreCase)) return Localization.L.PseudoRtlCode;
+        return Localization.L.CanonicalCode(t);
+    }
 
     /// <summary>Where a bare <c>--dev</c> keeps its data.</summary>
     public static string DefaultFolder => Path.Combine(Path.GetTempPath(), "clink-dev");
 
     private const string Dev = "--dev", DevEquals = "--dev=", Hotkeys = "--dev-hotkeys", Token = "--dev-token", Record_ = "--dev-record", Quiet_ = "--dev-quiet", QuietRecord_ = "--dev-quiet-record",
-        NoMarker_ = "--dev-no-marker", DemoStatus_ = "--dev-demo-status", AcceptImport_ = "--dev-accept-import", PackagesRoot_ = "--packages-root";
+        NoMarker_ = "--dev-no-marker", DemoStatus_ = "--dev-demo-status", Language_ = "--dev-language", AcceptImport_ = "--dev-accept-import", PackagesRoot_ = "--packages-root";
 
     private static bool Is(string arg, string name) => arg.Equals(name, StringComparison.OrdinalIgnoreCase);
 
@@ -119,8 +134,8 @@ internal sealed record DevOptions(string Folder, bool BindHotkeys)
     /// </summary>
     public static DevOptions? Parse(string[] args)
     {
-        bool sawDev = false, hotkeys = false, token = false, record = false, accept = false, sawRoot = false, quiet = false, quietRecord = false, noMarker = false, sawDemo = false;
-        string? folderArg = null, rootArg = null, demoStatus = null;
+        bool sawDev = false, hotkeys = false, token = false, record = false, accept = false, sawRoot = false, quiet = false, quietRecord = false, noMarker = false, sawDemo = false, sawLanguage = false;
+        string? folderArg = null, rootArg = null, demoStatus = null, languageArg = null;
         for (int i = 0; i < args.Length; i++)
         {
             string a = args[i];
@@ -149,6 +164,13 @@ internal sealed record DevOptions(string Folder, bool BindHotkeys)
                 if (i + 1 < args.Length && IsValue(args[i + 1])) demoStatus = Unquote(args[++i]);
                 if (string.IsNullOrWhiteSpace(demoStatus)) throw new ArgumentException("--dev-demo-status needs a game name after it");
             }
+            else if (Is(a, Language_))
+            {
+                sawLanguage = true;
+                if (i + 1 < args.Length && IsValue(args[i + 1])) languageArg = Unquote(args[++i]);
+                if (string.IsNullOrWhiteSpace(languageArg) || CanonicalLanguage(languageArg) == null)
+                    throw new ArgumentException("--dev-language needs a language code after it: qps-plocm, qps-ploc, or one of " + string.Join(", ", Localization.L.Known.Select(k => k.Code)));
+            }
             else if (Is(a, AcceptImport_)) accept = true;
             else if (Is(a, PackagesRoot_))
             {
@@ -156,13 +178,13 @@ internal sealed record DevOptions(string Folder, bool BindHotkeys)
                 if (i + 1 < args.Length && IsValue(args[i + 1])) rootArg = args[++i];
             }
             else if (LooksLikeDevSwitch(a))
-                throw new ArgumentException($"{Shown(a)} is not a dev switch (they are --dev [folder] or --dev=<folder>, --dev-hotkeys, --dev-record, --dev-quiet, --dev-quiet-record, --dev-no-marker, --dev-demo-status <game>, --dev-token, --dev-accept-import and --packages-root <folder>, "
+                throw new ArgumentException($"{Shown(a)} is not a dev switch (they are --dev [folder] or --dev=<folder>, --dev-hotkeys, --dev-record, --dev-quiet, --dev-quiet-record, --dev-no-marker, --dev-demo-status <game>, --dev-language <code>, --dev-token, --dev-accept-import and --packages-root <folder>, "
                     + "written with two plain hyphens and nothing around them; a folder is written with its path, like .\\devdata)");
         }
         if (!sawDev)
         {
-            if (hotkeys || token || record || accept || sawRoot || quiet || quietRecord || noMarker || sawDemo)
-                throw new ArgumentException("--dev-hotkeys, --dev-record, --dev-quiet, --dev-quiet-record, --dev-no-marker, --dev-demo-status, --dev-token, --dev-accept-import and --packages-root only work together with --dev [folder]");
+            if (hotkeys || token || record || accept || sawRoot || quiet || quietRecord || noMarker || sawDemo || sawLanguage)
+                throw new ArgumentException("--dev-hotkeys, --dev-record, --dev-quiet, --dev-quiet-record, --dev-no-marker, --dev-demo-status, --dev-language, --dev-token, --dev-accept-import and --packages-root only work together with --dev [folder]");
             return null;
         }
 
@@ -196,7 +218,7 @@ internal sealed record DevOptions(string Folder, bool BindHotkeys)
             if (SamePath(root, realPackages))
                 throw new ArgumentException("--packages-root is the real %LOCALAPPDATA%\\Packages: a test must not take over the settings of whoever owns this machine (make a fake folder)");
         }
-        return new DevOptions(folder, hotkeys) { PackagesRoot = root, AcceptImport = accept, AllowToken = token, Record = record, Quiet = quiet, QuietRecord = quietRecord, NoMarker = noMarker, DemoStatus = demoStatus };
+        return new DevOptions(folder, hotkeys) { PackagesRoot = root, AcceptImport = accept, AllowToken = token, Record = record, Quiet = quiet, QuietRecord = quietRecord, NoMarker = noMarker, DemoStatus = demoStatus, Language = languageArg == null ? null : CanonicalLanguage(languageArg) };
     }
 
     private static bool SamePath(string a, string b) =>
@@ -366,7 +388,7 @@ internal sealed record DevOptions(string Folder, bool BindHotkeys)
             s.ArchiveEnabled = false;
             s.ArchivePath = null;
         }
-        if (!AllowToken && s.CopiumTokenProtected != null) { s.CopiumTokenProtected = null; changed.Add("no Copium token (--dev-token keeps it)"); }
+        if (!AllowToken && s.CopiumTokenProtected != null) { s.SetCopiumToken(null); changed.Add("no Copium token (--dev-token keeps it)"); }
         if (freshStore && s.ToastRecording.Enabled) { s.ToastRecording.Enabled = false; changed.Add("\"Recording started\" toast off"); }
         return changed;
     }
@@ -394,7 +416,7 @@ internal sealed record DevOptions(string Folder, bool BindHotkeys)
     /// <c>--dev</c> would be a normal start, which takes the real Clink's mutex or forwards to it.
     /// </summary>
     public static List<string> Switches(string folder, bool hotkeys, bool record, bool token, string? packagesRoot, bool quiet = false, bool quietRecord = false,
-        bool noMarker = false, string? demoStatus = null)
+        bool noMarker = false, string? demoStatus = null, string? language = null)
     {
         var list = new List<string> { Dev, folder };
         if (hotkeys) list.Add(Hotkeys);
@@ -404,6 +426,7 @@ internal sealed record DevOptions(string Folder, bool BindHotkeys)
         if (quietRecord) list.Add(QuietRecord_);
         if (noMarker) list.Add(NoMarker_);
         if (demoStatus != null) { list.Add(DemoStatus_); list.Add(demoStatus); }
+        if (language != null) { list.Add(Language_); list.Add(language); }
         if (packagesRoot != null) { list.Add(PackagesRoot_); list.Add(packagesRoot); }
         return list;
     }
@@ -416,7 +439,7 @@ internal sealed record DevOptions(string Folder, bool BindHotkeys)
         for (int i = 0; i < list.Count; i++)
         {
             string a = list[i];
-            if (Is(a, Dev) || Is(a, PackagesRoot_) || Is(a, DemoStatus_)) { if (i + 1 < list.Count && IsValue(list[i + 1])) i++; }
+            if (Is(a, Dev) || Is(a, PackagesRoot_) || Is(a, DemoStatus_) || Is(a, Language_)) { if (i + 1 < list.Count && IsValue(list[i + 1])) i++; }
             else if (a.StartsWith(DevEquals, StringComparison.OrdinalIgnoreCase) || Is(a, Hotkeys) || Is(a, Token) || Is(a, Record_) || Is(a, Quiet_) || Is(a, QuietRecord_) || Is(a, NoMarker_) || Is(a, AcceptImport_)) { }
             else rest.Add(a);
         }

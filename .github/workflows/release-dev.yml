@@ -340,7 +340,7 @@ jobs:
 
       - name: Authenticate Windows signing through GitHub OIDC
         if: steps.signing.outputs.enabled == 'true'
-        uses: azure/login@935127ca5bb3c4b02c9c2c10060028383878f33f # v3
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3
         with:
           client-id: ${{ env.AZURE_CLIENT_ID }}
           tenant-id: ${{ env.AZURE_TENANT_ID }}
@@ -348,7 +348,7 @@ jobs:
 
       - name: Sign both application executables
         if: steps.signing.outputs.enabled == 'true'
-        uses: azure/artifact-signing-action@c0ae2c1d0c1847ab81ac0ab8521bee597cfedd30 # v2
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2
         with:
           endpoint: ${{ env.ARTIFACT_SIGNING_ENDPOINT }}
           signing-account-name: ${{ env.ARTIFACT_SIGNING_ACCOUNT }}
@@ -371,11 +371,13 @@ jobs:
         run: |
           . ./tools/lib/windows-signing-lib.ps1
           $signInstaller = $null
+          $installerSignTool = $null
           if (Get-WindowsSigningEnabled) {
             Assert-WindowsSignature -Path dist/sc/Clink.exe, dist/fx/Clink.exe
-            $signInstaller = { param($file) Invoke-WindowsInstallerSigning -Path $file }
+            $installerSignTool = Get-WindowsInstallerSignTool
+            $signInstaller = { param($file) Assert-WindowsSignature -Path $file }
           }
-          ./tools/package.ps1 -ExePath dist/sc/Clink.exe -FrameworkExePath dist/fx/Clink.exe -Version $env:VERSION -OutDir dist/package -IsccPath (Join-Path $env:RUNNER_TEMP 'InnoSetup\ISCC.exe') -RuntimeInfoPath (Join-Path $env:RUNNER_TEMP 'dotnet-runtime.json') -RequireInstaller -SignInstaller $signInstaller
+          ./tools/package.ps1 -ExePath dist/sc/Clink.exe -FrameworkExePath dist/fx/Clink.exe -Version $env:VERSION -OutDir dist/package -IsccPath (Join-Path $env:RUNNER_TEMP 'InnoSetup\ISCC.exe') -RuntimeInfoPath (Join-Path $env:RUNNER_TEMP 'dotnet-runtime.json') -RequireInstaller -SignInstaller $signInstaller -InstallerSignTool $installerSignTool
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $pkg = Get-Content -Raw dist/package/package.json | ConvertFrom-Json
           Add-Content -Path $env:GITHUB_OUTPUT -Value "exe_sha256=$($pkg.files.exe.sha256)"
@@ -384,6 +386,11 @@ jobs:
           Add-Content -Path $env:GITHUB_OUTPUT -Value "setup_sha256=$($pkg.files.installer.sha256)"
           Add-Content -Path $env:GITHUB_OUTPUT -Value "notices_sha256=$($pkg.files.notices.sha256)"
           Get-Content dist/package/Clink.exe.sha256, dist/package/Clink-framework.exe.sha256
+
+      - name: Verify the signed installer and embedded uninstaller
+        if: steps.signing.outputs.enabled == 'true'
+        shell: pwsh
+        run: ./tools/test-signed-installer.ps1 -Path dist/package/Clink-Setup.exe
 
       - name: Upload package artifact
         id: upload

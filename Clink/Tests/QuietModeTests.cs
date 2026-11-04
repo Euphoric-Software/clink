@@ -167,7 +167,8 @@ internal static class QuietModeTests
         // left alone
         Check.Equal(QuietWindowKind.NotTopLevel, QuietWindows.Classify(false, 0x40000000 | 0x10000000, 0, wpf, null), "a child window");
         Check.Equal(QuietWindowKind.NotTopLevel, QuietWindows.Classify(true, 0x00000000, 0, wpf, null), "a message-only window");
-        Check.Equal(QuietWindowKind.Overlay, QuietWindows.Classify(false, 0x80000000, 0, wpf, QuietMode.OverlayTitle), "the capture overlay is exempt");
+        Check.Equal(QuietWindowKind.Overlay, QuietWindows.Classify(false, 0x80000000, 0, wpf, "Bildschirmfoto", creatingOverlay: true), "the capture overlay is exempt, whatever its (translated) title");
+        Check.Equal(QuietWindowKind.Ours, QuietWindows.Classify(false, 0x80000000, 0, wpf, "Clink screenshot"), "a window is not an overlay because of its title");
         Check.Equal(QuietWindowKind.Foreign, QuietWindows.Classify(false, 0x00000000, 0, "WindowsForms10.Window.0.app.0.5c39d4_r3_ad1", ""), "the tray icon's WinForms window");
         Check.Equal(QuietWindowKind.Foreign, QuietWindows.Classify(false, 0x88000000, 0, "CicMarshalWndClass", "CicMarshalWnd"), "a text-services window");
         Check.Equal(QuietWindowKind.Foreign, QuietWindows.Classify(false, 0x80000000, 0x8000, null, null), "a native menu (#32768, an atom)");
@@ -176,6 +177,32 @@ internal static class QuietModeTests
         // WPF's zero-size helper windows are not rewritten or marked
         Check.Equal(QuietWindowKind.Foreign, QuietWindows.Classify(false, 0x00000000, 0, wpf, "SystemResourceNotifyWindow"), "WPF's system-resource helper window");
         Check.Equal(QuietWindowKind.Foreign, QuietWindows.Classify(false, 0x00000000, 0, wpf, "MediaContextNotificationWindow"), "WPF's media-context helper window");
+    }
+
+    [UnitTest]
+    public static void The_overlay_scope_always_returns_to_depth_zero()
+    {
+        Check.False(QuietMode.IsCreatingOverlay, "no scope at the start");
+        using (QuietMode.CreatingOverlay())
+        {
+            Check.True(QuietMode.IsCreatingOverlay);
+            using (QuietMode.CreatingOverlay()) Check.True(QuietMode.IsCreatingOverlay, "nested");
+            Check.True(QuietMode.IsCreatingOverlay, "the outer scope is still open after the inner one");
+        }
+        Check.False(QuietMode.IsCreatingOverlay, "nested scopes unwind to 0");
+        var scope = QuietMode.CreatingOverlay();
+        var other = QuietMode.CreatingOverlay();
+        scope.Dispose(); scope.Dispose();
+        Check.True(QuietMode.IsCreatingOverlay, "a second Dispose of one scope does not take another's depth");
+        other.Dispose();
+        Check.False(QuietMode.IsCreatingOverlay, "a repeated Dispose leaves the depth at 0, not negative");
+        try { using (QuietMode.CreatingOverlay()) throw new InvalidOperationException("boom"); }
+        catch (InvalidOperationException) { }
+        Check.False(QuietMode.IsCreatingOverlay, "an exception inside the using still closes the scope");
+        var once = QuietMode.CreatingOverlay(); once.Dispose(); once.Dispose();
+        Check.False(QuietMode.IsCreatingOverlay, "never negative: a later scope still opens and closes cleanly");
+        using (QuietMode.CreatingOverlay()) Check.True(QuietMode.IsCreatingOverlay);
+        Check.False(QuietMode.IsCreatingOverlay);
     }
 
     [UnitTest]

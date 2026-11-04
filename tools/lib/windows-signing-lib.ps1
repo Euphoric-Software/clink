@@ -51,6 +51,15 @@ function Invoke-WindowsInstallerSigning {
         ExcludeAzureDeveloperCliCredential = $true
         ExcludeInteractiveBrowserCredential = $true
     }
+    Import-Module ArtifactSigning -RequiredVersion 0.1.8 -ErrorAction Stop
     Invoke-ArtifactSigning @parameters
     Assert-WindowsSignature -Path $Path
+}
+
+function Get-WindowsInstallerSignTool {
+    # Inno's $q and $f placeholders preserve paths with spaces. This is passed as
+    # one ISCC argument; no shell interpolation of the command is involved.
+    $pwsh = (Get-Command pwsh -CommandType Application -ErrorAction Stop).Source
+    $script = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\sign-windows.ps1'))
+    return ('$q{0}$q -NoProfile -NonInteractive -File $q{1}$q $f' -f $pwsh, $script)
 }

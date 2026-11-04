@@ -11,6 +11,7 @@ using Windows.Win32.UI.WindowsAndMessaging;
 using Clink.Native;
 using Clink.Screenshots;
 using Clink.Services;
+using Clink.Services.Localization;
 
 namespace Clink.UI;
 
@@ -45,33 +46,33 @@ internal sealed class Toasts : IScreenshotToasts
         // The v1 window and the controller may both report the same save during the transition: one toast per clip.
         if (ReferenceEquals(entry, _lastClip) && DateTime.UtcNow - _lastClipAt < TimeSpan.FromSeconds(3)) return;
         _lastClip = entry; _lastClipAt = DateTime.UtcNow;
-        Add(new ToastWindow(this, "clip", entry, null, "Clip saved", ClipSubtitle(entry), Duration(_settings.ToastClip), false));
+        Add(new ToastWindow(this, "clip", entry, null, L.T("Clip saved"), ClipSubtitle(entry), Duration(_settings.ToastClip), false));
     });
 
     public void ShowShared(ClipEntry entry, string link) => Post(() =>
     {
         if (!_settings.ToastShared.Enabled) return;
-        Add(new ToastWindow(this, "shared", entry, link, "Shared · link copied", link, Duration(_settings.ToastShared), false));
+        Add(new ToastWindow(this, "shared", entry, link, L.T("Shared · link copied"), link, Duration(_settings.ToastShared), false));
     });
 
     public void ShowRecordingStarted(string game) => Post(() =>
     {
         if (!_settings.ToastRecording.Enabled) return;
-        Add(new ToastWindow(this, "recording", null, null, "Recording started", game, Duration(_settings.ToastRecording), false));
+        Add(new ToastWindow(this, "recording", null, null, L.T("Recording started"), game, Duration(_settings.ToastRecording), false));
     });
 
     /// <summary>"Recording started" for a manual recording (kind "record", red dot; <see cref="ShowRecordingStarted"/> is the replay buffer). Follows the "Recording" switch.</summary>
     public void ShowRecordStarted(string text) => Post(() =>
     {
         if (!_settings.ToastRecording.Enabled) return;
-        Add(new ToastWindow(this, "record", null, null, "Recording started", text, Duration(_settings.ToastRecording), false));
+        Add(new ToastWindow(this, "record", null, null, L.T("Recording started"), text, Duration(_settings.ToastRecording), false));
     });
 
     /// <summary>"Recording saved" with its length and size (kind "recorded", green dot). Follows the "Recording" switch.</summary>
     public void ShowRecordSaved(string text) => Post(() =>
     {
         if (!_settings.ToastRecording.Enabled) return;
-        Add(new ToastWindow(this, "recorded", null, null, "Recording saved", text, Duration(_settings.ToastRecording), false));
+        Add(new ToastWindow(this, "recorded", null, null, L.T("Recording saved"), text, Duration(_settings.ToastRecording), false));
     });
 
     /// <summary>
@@ -82,10 +83,10 @@ internal sealed class Toasts : IScreenshotToasts
         Post(() => Add(new ToastWindow(this, paused ? "paused" : "info", null, null, title, text, Duration(_settings.ToastRecording), false)));
 
     /// <summary>"Uploading to Copium…" for the share-last hotkey / tray / --share-last, which have no progress UI of their own. Follows the "Shared" switch.</summary>
-    public void ShowUploading(ClipEntry entry, string title = "Uploading to Copium…") => Post(() =>
+    public void ShowUploading(ClipEntry entry, string? title = null) => Post(() =>
     {
         if (!_settings.ToastShared.Enabled) return;
-        Add(new ToastWindow(this, "info", entry, null, title, ClipSubtitle(entry), Duration(_settings.ToastShared), false));
+        Add(new ToastWindow(this, "info", entry, null, title ?? L.T("Uploading to Copium…"), ClipSubtitle(entry), Duration(_settings.ToastShared), false));
     });
 
     /// <summary>
@@ -95,7 +96,7 @@ internal sealed class Toasts : IScreenshotToasts
     public void ShowScreenshot(ScreenshotEntry entry, ScreenshotToastState state) => Post(() =>
     {
         if (!_settings.ToastScreenshot.Enabled) return;
-        Add(new ToastWindow(this, "screenshot", null, null, "Screenshot saved", ScreenshotService.Subtitle(entry, state), Duration(_settings.ToastScreenshot), false, entry, state.CanUpload));
+        Add(new ToastWindow(this, "screenshot", null, null, L.T("Screenshot saved"), ScreenshotService.Subtitle(entry, state), Duration(_settings.ToastScreenshot), false, entry, state.CanUpload));
     });
 
     /// <summary>
@@ -126,7 +127,7 @@ internal sealed class Toasts : IScreenshotToasts
             _window = _owner._open.LastOrDefault(w => !w.IsDismissed && w.Shot != null && string.Equals(w.Shot.Path, _entry.Path, StringComparison.OrdinalIgnoreCase));
             if (_window == null)
             {
-                _window = new ToastWindow(_owner, "screenshot", null, null, "Screenshot saved", ScreenshotService.Subtitle(_entry, default), Duration(_owner._settings.ToastScreenshot), false, _entry);
+                _window = new ToastWindow(_owner, "screenshot", null, null, L.T("Screenshot saved"), ScreenshotService.Subtitle(_entry, default), Duration(_owner._settings.ToastScreenshot), false, _entry);
                 _owner.Add(_window);
             }
             _window.CancelHandler = () => OnCancel?.Invoke();
@@ -161,7 +162,10 @@ internal sealed class Toasts : IScreenshotToasts
     });
 
     /// <summary>Re-stacks the open toasts after one changed its height.</summary>
-    internal void Relayout() => Post(Layout);
+    internal void Relayout() { RelayoutRequests++; Post(Layout); }
+
+    /// <summary>How many times a toast asked for a re-stack (a test reads it).</summary>
+    internal int RelayoutRequests { get; private set; }
 
     /// <summary>Shows a sample toast of a kind ("clip" | "shared" | "recording" | "screenshot") with the current position and duration, ignoring the enable switch.</summary>
     public void Preview(string kind) => Post(() =>
@@ -171,17 +175,17 @@ internal sealed class Toasts : IScreenshotToasts
         switch ((kind ?? "clip").Trim().ToLowerInvariant())
         {
             case "shared":
-                Add(new ToastWindow(this, "shared", sample, "https://copium.pics/v/example", "Shared · link copied", "https://copium.pics/v/example", Duration(_settings.ToastShared), true));
+                Add(new ToastWindow(this, "shared", sample, "https://copium.pics/v/example", L.T("Shared · link copied"), "https://copium.pics/v/example", Duration(_settings.ToastShared), true));
                 break;
             case "recording":
-                Add(new ToastWindow(this, "recording", null, null, "Recording started", game, Duration(_settings.ToastRecording), true));
+                Add(new ToastWindow(this, "recording", null, null, L.T("Recording started"), game, Duration(_settings.ToastRecording), true));
                 break;
             case "screenshot":
                 var shot = new ScreenshotEntry { Path = "Screenshot 2026-10-20 21-04-11.png", Width = 2560, Height = 1440, Size = 1_200_000, Created = DateTime.Now };
-                Add(new ToastWindow(this, "screenshot", null, null, "Screenshot saved", ScreenshotService.Subtitle(shot, new ScreenshotToastState(true, false)), Duration(_settings.ToastScreenshot), true, shot, canUpload: true));
+                Add(new ToastWindow(this, "screenshot", null, null, L.T("Screenshot saved"), ScreenshotService.Subtitle(shot, new ScreenshotToastState(true, false)), Duration(_settings.ToastScreenshot), true, shot, canUpload: true));
                 break;
             default:
-                Add(new ToastWindow(this, "clip", sample, null, "Clip saved", ClipSubtitle(sample), Duration(_settings.ToastClip), true));
+                Add(new ToastWindow(this, "clip", sample, null, L.T("Clip saved"), ClipSubtitle(sample), Duration(_settings.ToastClip), true));
                 break;
         }
     });
@@ -199,15 +203,28 @@ internal sealed class Toasts : IScreenshotToasts
 
     private static TimeSpan Duration(ToastSetting s) => TimeSpan.FromSeconds(Math.Clamp(s.Seconds, 1, 30));
 
-    private static string ClipSubtitle(ClipEntry e)
+    internal static string ClipSubtitle(ClipEntry e)
     {
-        string game = string.IsNullOrEmpty(e.Game) ? "" : e.Game + " · ";
         // Decimal MB, the unit the Copium / Discord limits and the Share pre-check use, so a size never reads as under a limit it is over.
-        return $"{game}{Capabilities.FormatClipLength(e.Duration)} · {Capabilities.FormatBytes(e.Size)}";
+        var args = new[] { ("length", (object?)Capabilities.FormatClipLength(e.Duration)), ("size", Capabilities.FormatBytes(e.Size)) };
+        return string.IsNullOrEmpty(e.Game)
+            ? L.T("{length} · {size}", args)
+            : L.T("{game} · {length} · {size}", args.Append(("game", (object?)L.Isolate(e.Game))).ToArray());
     }
+
+    /// <summary>
+    /// Stands in for putting a toast on the screen in the unit tests: gets the toast (built, never shown). Null otherwise. In test mode with
+    /// no override a toast is refused and recorded (<see cref="TestGuard.CheckLaunch"/>): a test must not show anything on the owner's screen.
+    /// </summary>
+    internal static Action<ToastWindow>? ShowOverride { get; set; }
 
     private void Add(ToastWindow t)
     {
+        if (TestGuard.Active)
+        {
+            if (ShowOverride is { } fake) { fake(t); return; }
+            TestGuard.CheckLaunch("a toast: " + t.Kind + " " + t.TitleText.Text);
+        }
         _open.Add(t);
         t.Closed += (_, _) => { if (_open.Remove(t)) Layout(); };   // the others move up only once the fade-out has finished
         t.Opacity = 0;             // shown invisible, placed, then faded in: no flash at the wrong spot
@@ -269,6 +286,8 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
     private readonly TimeSpan _duration;
     private readonly bool _preview;
     private bool _busy;
+    private bool _menuOpen;      // the Share menu is open: the toast stays up (no fade, no hide timer)
+    private System.Windows.Controls.ContextMenu? _menu;
     private bool _dismissed;     // fading out; Close() follows when the fade ends
 
     internal string Kind { get; } = "clip";
@@ -307,7 +326,7 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         _preview = preview;
         TitleText.Text = title;
         Subtitle.Text = subtitle;
-        Subtitle.ToolTip = subtitle;
+        Subtitle.ToolTip = kind == "shared" ? L.Ltr(subtitle) : subtitle;   // (a shared toast's line is the link: a URL stays left to right in a right-to-left tooltip)
         Dot.SetResourceReference(System.Windows.Shapes.Shape.FillProperty, kind switch { "shared" or "info" => "Accent", "recording" or "record" => "Danger", "problem" or "border" => "Warn", "paused" => "Muted", _ => "Good" });
         if (kind is "problem" or "border") Subtitle.TextWrapping = TextWrapping.Wrap;   // the reason is the point: all of it, not an ellipsis
         NoticeButtons.Visibility = kind == "border" ? Visibility.Visible : Visibility.Collapsed;
@@ -320,14 +339,55 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
             else if (canUpload && CloudOn) ShotUploadButton.Visibility = Visibility.Visible;   // (cloud sharing off: no Upload button)
         }
         // Cloud sharing off (Settings → App): nothing on a toast uploads. Existing links stay copyable.
-        if (kind == "clip" && !CloudOn) ShareButton.Visibility = Visibility.Collapsed;
+        if (kind == "clip" && !CloudOn) ShareGroup.Visibility = Visibility.Collapsed;
         // "Share" alone without a token: the button then opens the share window (the file to drag), it does not upload.
-        if (kind == "clip") ShareButton.Content = entry?.IsShared == true ? "Copy link" : AppController.Instance?.HasCopiumToken == true ? "Share to Copium" : "Share";
+        if (kind == "clip")
+        {
+            ShareButton.Content = ShareChoices.ToastLabel(HasToken, CloudOn, entry?.IsShared == true);
+            if (ShareChoices.ButtonName(HasToken, CloudOn, entry?.IsShared == true) is { } name) System.Windows.Automation.AutomationProperties.SetName(ShareButton, name);
+            if (ShareChoices.IsSplit(HasToken, CloudOn, entry?.IsShared == true))
+                ApplySplitLayout();
+        }
         _hide.Interval = duration;
-        _hide.Tick += (_, _) => { if (!_busy) Dismiss(); };
+        _hide.Tick += (_, _) => { if (!_busy && !_menuOpen) Dismiss(); };
         MouseEnter += (_, _) => _hide.Stop();
-        MouseLeave += (_, _) => { if (!_busy && !_dismissed) _hide.Start(); };
+        MouseLeave += (_, _) => { if (!_busy && !_dismissed && !_menuOpen) _hide.Start(); };
+        SizeChanged += (_, e) => NoteSizeChanged(e.HeightChanged);   // a toast that grows (a button row that wraps) re-stacks the others
         SourceInitialized += (_, _) => ScreenPlacement.ExcludeFromCaptureUnlessDocShots(new WindowInteropHelper(this).Handle);
+    }
+
+    /// <summary>A toast whose height changed asks its owner to re-stack the open toasts (UI thread; the owner is null for the parameterless v1 constructor).</summary>
+    internal void NoteSizeChanged(bool heightChanged) { if (heightChanged) _owner?.Relayout(); }
+
+    /// <summary>The widest busy status of the main half ("Saving… 100%" is shorter): it sets the main half's width so the layout does not shift while the percentage grows.</summary>
+    internal static string WidestShareStatus => UploadingText(1.0);
+
+    /// <summary>"Uploading… 40%": a busy status of an upload (the percentage in the user's regional format).</summary>
+    private static string UploadingText(double fraction) => L.T("Uploading… {percent}", ("percent", fraction.ToString("P0", L.FormatCulture)));
+
+    /// <summary>"Saving… 40%": a busy status of a save-a-copy.</summary>
+    private static string SavingText(double fraction) => L.T("Saving… {percent}", ("percent", fraction.ToString("P0", L.FormatCulture)));
+
+    /// <summary>
+    /// The split button: Share (the share window) and ▾ (the menu), as on a clip row. The card is 330 wide, so the row gets 6 px gaps
+    /// (plain mode keeps 8) and the main half is exactly as wide as <see cref="WidestShareStatus"/> needs (measured with the real
+    /// style, font and padding), not a fixed 132: it holds the longest busy status without growing, so the arrow, Trim and Folder stay put.
+    /// </summary>
+    internal void ApplySplitLayout()
+    {
+        object? label = ShareButton.Content;
+        ShareButton.Style = (Style)FindResource("AccentSplitMain");
+        ShareButton.MinWidth = 0;
+        ShareButton.Content = WidestShareStatus;
+        ShareButton.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        ShareButton.MinWidth = Math.Ceiling(ShareButton.DesiredSize.Width);
+        ShareButton.Content = label;
+        ShareButton.ToolTip = ShareChoices.SplitMainTip;
+        ShareArrow.Content = ShareChoices.SplitArrowLabel;
+        ShareArrow.ToolTip = ShareChoices.SplitArrowTip;
+        System.Windows.Automation.AutomationProperties.SetName(ShareArrow, ShareChoices.SplitArrowName);
+        ShareArrow.Visibility = Visibility.Visible;
+        TrimButton.Margin = FolderButton.Margin = new Thickness(6, 0, 0, 4);   // (the 4 px bottom is the gap between wrapped rows, as in the XAML)
     }
 
     /// <summary>
@@ -337,7 +397,7 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
     static ToastWindow() => CaptureExclusion.Register();
 
     /// <summary>v1 MainWindow compatibility (<c>new ToastWindow().Show(entry)</c>); the v2 UI goes through <see cref="AppController.Toasts"/>.</summary>
-    public ToastWindow() : this(null!, "clip", null, null, "Clip saved", "", TimeSpan.FromSeconds(7), false) { }
+    public ToastWindow() : this(null!, "clip", null, null, L.T("Clip saved"), "", TimeSpan.FromSeconds(7), false) { }
 
     /// <summary>v1 API: forwards to the toast service.</summary>
     internal void Show(ClipEntry entry) => AppController.Instance?.Toasts.ShowClipSaved(entry);
@@ -366,6 +426,7 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         if (_dismissed) return;
         _dismissed = true;
         _hide.Stop();
+        if (_menu is { IsOpen: true }) _menu.IsOpen = false;
         IsHitTestVisible = false;
         var fade = new DoubleAnimation(0, FadeOutTime) { FillBehavior = FillBehavior.HoldEnd };
         fade.Completed += (_, _) => { try { Close(); } catch { } };
@@ -381,46 +442,202 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
     /// <summary>The cloud kill switch is on (or there is no controller, as in a preview made by a test).</summary>
     private static bool CloudOn => AppController.Instance?.Settings.CloudSharingEnabled != false;
 
+    private static bool HasToken => AppController.Instance?.HasCopiumToken == true;
+
     private async void Share_Click(object sender, RoutedEventArgs e)
+    {
+        if (Entry == null || _busy || _preview) return;
+        if (ShareChoices.IsSplit(HasToken, CloudOn, Entry.IsShared))
+        {
+            // the "Share" half of the split button: what "Share file…" does in the menu
+            _hide.Stop();
+            await RunChoiceAsync(ShareChoices.SplitMainChoice);
+            return;
+        }
+        await UploadAsync();
+    }
+
+    /// <summary>The "▾" half: the menu with every option.</summary>
+    private void ShareArrow_Click(object sender, RoutedEventArgs e) => OpenShareMenu();
+
+    /// <summary>Alt+Down / Shift+F10 on the "Share" half open the menu too.</summary>
+    private void ShareButton_KeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (ShareArrow.Visibility != Visibility.Visible || !ShareMenu.IsOpenKey(e)) return;
+        e.Handled = true;
+        OpenShareMenu();
+    }
+
+    private void OpenShareMenu()
+    {
+        if (Entry == null || _busy || _preview || _menuOpen) return;
+        if (ShareChoices.For(HasToken, CloudOn, Entry.IsShared) is not { } items) return;
+        _hide.Stop();   // the menu is open: the toast stays (it restarts when the menu closes without a choice)
+        bool picked = false;
+        _menuOpen = true;
+        // PlacementTarget is the arrow (same window as the toast: CaptureExclusion finds the toast through it); the menu drops from the left edge of the whole button
+        _menu = ShareMenu.Open(ShareArrow, items, choice =>
+        {
+            picked = true;
+            _ = RunChoiceAsync(choice);
+        }, onClosed: () => { _menuOpen = false; if (!picked && !_busy && !_dismissed && !IsMouseOver) StartTimer(); }, below: ShareButton);
+    }
+
+    /// <summary>Both halves of the split button (the one button when plain) on or off.</summary>
+    private void SetShareEnabled(bool enabled) => ShareButton.IsEnabled = ShareArrow.IsEnabled = enabled;
+
+    internal async Task RunChoiceAsync(ShareChoice choice)
+    {
+        try
+        {
+            switch (choice)
+            {
+                case ShareChoice.ShareFile:
+                    if (Entry == null) break;
+                    if (AppController.Instance.ShareFile(Entry)) { Dismiss(); break; }   // the share window took over
+                    string noWindow = L.T("Could not open the share window");   // (AppController.ShareWindowFailedText is the same key, for the clip list)
+                    ShowShareFailure(L.T("Share failed"), noWindow, noWindow);
+                    _hide.Interval = TimeSpan.FromSeconds(8);
+                    _hide.Start();
+                    break;
+                case ShareChoice.SaveCopy: await SaveCopyAsync(); break;
+                default: await UploadAsync(); break;   // Upload / Copy link: what the button did before
+            }
+        }
+        catch (Exception ex)
+        {
+            // e.g. the save dialog threw after "Saving…" disabled both halves: put the label and both halves back, and let the toast time out
+            Log.Error("toast share choice", ex);
+            _busy = false;
+            if (!_dismissed) { RestoreShareLabel(); StartTimer(); }
+        }
+    }
+
+    /// <summary>"Save a copy…" from the toast: the dialog is owned by the toast, which stays up while it is open and while it copies.</summary>
+    private async Task SaveCopyAsync()
+    {
+        if (Entry == null || _busy || _preview) return;
+        var app = AppController.Instance;
+        _busy = true;
+        _hide.Stop();
+        ShareButton.ToolTip = null;
+        SetShareStatus(L.T("Saving…"));
+        SetShareEnabled(false);
+        var progress = new Progress<double>(p => SetShareStatus(SavingText(p)));
+        SaveResult result;
+        try { result = await app.SaveCopyAsync(Entry, this, progress); }
+        finally { _busy = false; }
+        if (_dismissed) return;
+        SetShareEnabled(true);
+        switch (result.Outcome)
+        {
+            case SaveOutcome.Saved:
+            {
+                string dir = System.IO.Path.GetDirectoryName(result.SavedTo) ?? "";
+                string folder = System.IO.Path.GetFileName(dir) is { Length: > 0 } leaf ? leaf : dir;
+                ShowSubtitle(L.T("Saved to {folder}", ("folder", L.Ltr(folder))), wrap: false);
+                RestoreShareLabel();
+                StartTimer();
+                break;
+            }
+            case SaveOutcome.Cancelled:
+                RestoreShareLabel();
+                StartTimer();
+                break;
+            default:
+                ShowShareFailure(L.T("Save failed"), result.Error, result.Error);
+                _hide.Interval = TimeSpan.FromSeconds(8);
+                _hide.Start();
+                break;
+        }
+    }
+
+    /// <summary>
+    /// A failure. Plain button: the short <paramref name="label"/> replaces the button text, <paramref name="tip"/> is its tooltip and
+    /// <paramref name="subtitle"/> (if any) goes below. Split button: the main half opens the share window, so it keeps reading "Share"
+    /// (name "Share file"); the failure goes to the subtitle and to the main half's tooltip instead.
+    /// </summary>
+    private void ShowShareFailure(string label, string? tip, string? subtitle)
+    {
+        if (ShareArrow.Visibility != Visibility.Visible)
+        {
+            SetShareStatus(label);
+            ShareButton.ToolTip = tip;
+            if (subtitle != null) ShowSubtitle(subtitle, wrap: true);
+            return;
+        }
+        ShowSubtitle(subtitle ?? tip ?? label, wrap: true);
+        RestoreShareLabel();
+        ShareButton.ToolTip = tip ?? label;
+    }
+
+    /// <summary>A busy status in place of the Share label ("Saving… 40%") or a plain-button failure: the label's accessible name ("Share file", split button only) no longer fits it, so the content speaks for itself.</summary>
+    private void SetShareStatus(string text)
+    {
+        ShareButton.Content = text;
+        ShareButton.ClearValue(System.Windows.Automation.AutomationProperties.NameProperty);
+    }
+
+    /// <summary>The Share label back after a status, with its accessible name when it has one.</summary>
+    private void RestoreShareLabel()
+    {
+        ShareButton.Content = ShareChoices.ToastLabel(HasToken, CloudOn, Entry?.IsShared == true);
+        if (ShareChoices.ButtonName(HasToken, CloudOn, Entry?.IsShared == true) is { } name)
+            System.Windows.Automation.AutomationProperties.SetName(ShareButton, name);
+        if (ShareArrow.Visibility == Visibility.Visible) ShareButton.ToolTip = ShareChoices.SplitMainTip;
+        SetShareEnabled(true);
+    }
+
+    private void ShowSubtitle(string text, bool wrap)
+    {
+        Subtitle.Text = text;
+        Subtitle.ToolTip = text;
+        if (wrap) Subtitle.TextWrapping = TextWrapping.Wrap;
+        UpdateLayout();              // a line that wraps grows the toast: SizeChanged (NoteSizeChanged) then asks the owner to re-stack, once
+    }
+
+    /// <summary>Uploads the clip to Copium (or copies its link; with no token opens the share window): what the Share button always did.</summary>
+    private async Task UploadAsync()
     {
         if (Entry == null || _busy || _preview) return;
         _busy = true;
         _hide.Stop();
-        var before = ShareButton.Content;
-        ShareButton.IsEnabled = false;
+        SetShareEnabled(false);
         ShareButton.ToolTip = null;
-        ShareButton.Content = "Uploading…";
-        var progress = new Progress<double>(p => ShareButton.Content = $"Uploading… {p:P0}");
-        bool ok = await AppController.Instance.ShareAsync(Entry, progress);
+        SetShareStatus(L.T("Uploading…"));
+        var progress = new Progress<double>(p => SetShareStatus(AppController.Instance.ShareProgressText(Entry, p)));
+        string? afterCopy = null;   // this call's own reason when a smaller copy was made and then not uploaded
+        bool ok = await AppController.Instance.ShareAsync(Entry, progress, declinedAfterCopy: reason => afterCopy = reason);
         _busy = false;
         if (ok) { Dismiss(); return; }   // the "Shared" toast takes over
         var app = AppController.Instance;
         if (app.LastShareOutcome == ShareOutcome.FileShareOpened) { Dismiss(); return; }   // no Copium token: the share window took over
         if (_dismissed) return;          // closed while it was uploading
+        if (afterCopy != null)
+        {
+            // The copy was made but the sign-in or plan changed meanwhile: say so on the button instead of quietly restoring "Share".
+            ShowShareFailure(L.T("Not shared"), afterCopy, afterCopy);
+            SetShareEnabled(true);
+            if (!CloudOn) ShareGroup.Visibility = Visibility.Collapsed;   // cloud sharing was turned off during the copy: as the Declined branch below, nothing to press (the reason stays in the subtitle)
+            _hide.Interval = TimeSpan.FromSeconds(8);
+            _hide.Start();
+            return;
+        }
         if (app.LastShareOutcome == ShareOutcome.Declined)
         {
             // "Not now" in the Share with Copium? pop-up, or cloud sharing off: nothing failed. The button is as it was (or gone).
-            ShareButton.Content = before;
-            ShareButton.IsEnabled = true;
-            if (!CloudOn) ShareButton.Visibility = Visibility.Collapsed;
+            RestoreShareLabel();
+            if (!CloudOn) ShareGroup.Visibility = Visibility.Collapsed;
             StartTimer();
             return;
         }
         // Short labels (the card is 330 wide); the full refusal or failure reason is the tooltip. The rare "could not open the share
         // window" (no token) is no upload failure: the subtitle below names it.
-        ShareButton.Content = app.ShareRefusal != null ? (app.Settings.CopiumPlus ? "Over Plus limit" : "Over free limit")
-            : app.LastShareOutcome == ShareOutcome.WindowFailed ? "Share failed" : "Upload failed";
-        ShareButton.ToolTip = app.ShareRefusal ?? app.ShareError;
-        if (app.ShareRefusal == null && app.ShareError is string why)
-        {
-            // The reason belongs here, where the user is looking: the footer that also has it is usually in the tray.
-            Subtitle.Text = why;
-            Subtitle.ToolTip = why;
-            Subtitle.TextWrapping = TextWrapping.Wrap;
-            UpdateLayout();
-            _owner?.Relayout();          // it may have grown a line: keep the stack inside the work area
-        }
-        ShareButton.IsEnabled = true;
+        // The reason belongs in the subtitle, where the user is looking: the footer that also has it is usually in the tray.
+        ShowShareFailure(app.ShareRefusal != null ? (app.Settings.CopiumPlus ? L.T("Over Plus limit") : L.T("Over free limit"))
+                : app.LastShareOutcome == ShareOutcome.WindowFailed ? L.T("Share failed") : L.T("Upload failed"),
+            app.ShareRefusal ?? app.ShareError, app.ShareRefusal == null ? app.ShareError : null);
+        SetShareEnabled(true);
         _hide.Interval = TimeSpan.FromSeconds(8);
         _hide.Start();
     }
@@ -433,6 +650,7 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         if (!app.RequestTrim(Entry))
         {
             var main = System.Windows.Application.Current?.MainWindow;
+            TestGuard.CheckLaunch("the trim window");
             new TrimWindow(Entry) { Owner = main?.IsVisible == true ? main : null }.Show();
         }
     }
@@ -446,7 +664,7 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
     private void Copy_Click(object sender, RoutedEventArgs e)
     {
         if (Link != null && !_preview) AppController.Instance.CopyToClipboard(Link);
-        CopyButton.Content = "Copied ✓";
+        CopyButton.Content = L.T("Copied ✓");
         StartTimer();
     }
 
@@ -459,8 +677,8 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
             if (!CopiumClient.IsHttpsUrl(url, out var page)) Log.Warn("toast: not opened: the clip's link is not an https address");
             else
             {
-                try { Process.Start(new ProcessStartInfo(page.AbsoluteUri) { UseShellExecute = true }); }
-                catch (Exception ex) { AppController.Instance.Say("Could not open the browser: " + ex.Message); }
+                try { TestGuard.Start(new ProcessStartInfo(page.AbsoluteUri) { UseShellExecute = true }); }
+                catch (Exception ex) { AppController.Instance.SayT("Could not open the browser: {error}", ("error", ex.Message)); }
             }
         }
         Dismiss();
@@ -472,8 +690,8 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
     {
         ShotUploadButton.Visibility = Visibility.Visible;
         ShotUploadButton.IsEnabled = true;
-        ShotUploadButton.Content = "Copy link";
-        ShotUploadButton.ToolTip = "Copy the Copium link";
+        ShotUploadButton.Content = L.T("Copy link");
+        ShotUploadButton.ToolTip = L.T("Copy the Copium link");
         ShotUploadButton.SetResourceReference(StyleProperty, "AccentButton");
     }
 
@@ -485,20 +703,24 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         _hide.Stop();
         if (!_uploading) _subtitleBeforeUpload = Subtitle.Text;
         _uploading = true;
-        TitleText.Text = "Uploading screenshot…";
-        Subtitle.Text = "Uploading…";
+        TitleText.Text = L.T("Uploading screenshot…");
+        Subtitle.Text = L.T("Uploading…");
         // The button is the way out of a slow or stuck upload: Cancel (the progress is the second line, there is no room for both).
         ShotUploadButton.Visibility = Visibility.Visible;
         ShotUploadButton.IsEnabled = CancelHandler != null;   // an upload still queued behind another has nothing to cancel yet
-        ShotUploadButton.Content = "Cancel";
-        ShotUploadButton.ToolTip = "Stop uploading this screenshot (it stays saved; Retry uploads it again)";
-        System.Windows.Automation.AutomationProperties.SetName(ShotUploadButton, "Cancel the upload");
+        ShotUploadButton.Content = L.T("Cancel");
+        ShotUploadButton.ToolTip = L.T("Stop uploading this screenshot (it stays saved; Retry uploads it again)");
+        System.Windows.Automation.AutomationProperties.SetName(ShotUploadButton, L.T("Cancel the upload"));
     }
 
     internal void SetUploadProgress(double fraction)
     {
         if (_dismissed || !_busy) return;
-        Subtitle.Text = $"Uploading… {Math.Clamp(fraction, 0, 1):P0}";
+        // At 100% the bytes are sent and the link is awaited: the plain "Uploading…" (the widest line, "Uploading… 100%", would wrap this row for the moment before the link).
+        // That is whenever the text would equal the 100% text: "P0" rounds 0.995 up to 100%, so a fraction below 1 can read 100% too.
+        double clamped = Math.Clamp(fraction, 0, 1);
+        string text = UploadingText(clamped);
+        Subtitle.Text = fraction >= 1 || text == WidestShareStatus ? L.T("Uploading…") : text;
     }
 
     /// <summary>The upload is over (linked, failed, cancelled): the button is an ordinary one again and the second line is back.</summary>
@@ -507,7 +729,7 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         _uploading = false;
         CancelHandler = null;
         if (_subtitleBeforeUpload != null) { Subtitle.Text = _subtitleBeforeUpload; _subtitleBeforeUpload = null; }
-        System.Windows.Automation.AutomationProperties.SetName(ShotUploadButton, "Upload the screenshot to Copium");
+        System.Windows.Automation.AutomationProperties.SetName(ShotUploadButton, L.T("Upload the screenshot to Copium"));
     }
 
     internal void UploadSucceeded(string link, bool linkCopied)
@@ -516,11 +738,11 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         if (_dismissed || Shot == null) return;
         EndUploadState();
         _shotLink = link;
-        TitleText.Text = linkCopied ? "Screenshot saved · link copied" : "Screenshot saved · uploaded";
+        TitleText.Text = linkCopied ? L.T("Screenshot saved · link copied") : L.T("Screenshot saved · uploaded");
         Subtitle.Text = link;
-        Subtitle.ToolTip = link;
+        Subtitle.ToolTip = L.Ltr(link);   // a URL stays left to right in a right-to-left tooltip
         ShowLinkButton();
-        if (!string.IsNullOrEmpty(Shot.CopiumPageUrl)) ShotOpenButton.ToolTip = "Open the screenshot on Copium";
+        if (!string.IsNullOrEmpty(Shot.CopiumPageUrl)) ShotOpenButton.ToolTip = L.T("Open the screenshot on Copium");
         StartTimer();
     }
 
@@ -530,10 +752,10 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         _busy = false;
         if (_dismissed || Shot == null) return;
         EndUploadState();
-        TitleText.Text = "Screenshot saved";
+        TitleText.Text = L.T("Screenshot saved");
         ShotUploadButton.IsEnabled = true;
-        ShotUploadButton.Content = "Retry";
-        ShotUploadButton.ToolTip = "Upload the screenshot to Copium again";
+        ShotUploadButton.Content = L.T("Retry");
+        ShotUploadButton.ToolTip = L.T("Upload the screenshot to Copium again");
         StartTimer();
     }
 
@@ -543,7 +765,7 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         _busy = false;
         if (_dismissed || Shot == null) return;
         EndUploadState();
-        TitleText.Text = "Screenshot saved";
+        TitleText.Text = L.T("Screenshot saved");
         ShotUploadButton.Visibility = Visibility.Collapsed;
         StartTimer();
     }
@@ -555,7 +777,7 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         {
             // Cancel: the service stops the HTTP call; the toast then goes back to Retry (UploadFailed).
             ShotUploadButton.IsEnabled = false;
-            ShotUploadButton.Content = "Cancelling…";
+            ShotUploadButton.Content = L.T("Cancelling…");
             CancelHandler?.Invoke();
             return;
         }
@@ -563,7 +785,7 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         if (_shotLink is string link)
         {
             AppController.Instance.CopyToClipboard(link);   // an existing link stays copyable whatever the kill switch says
-            ShotUploadButton.Content = "Copied ✓";
+            ShotUploadButton.Content = L.T("Copied ✓");
             StartTimer();
             return;
         }
@@ -595,8 +817,8 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
         // Uploaded: the page on Copium (an https address only: it came from the server); otherwise the file.
         if (Shot != null && !_preview && _shotLink != null && Uri.TryCreate(Shot.CopiumPageUrl, UriKind.Absolute, out var page) && page.Scheme == Uri.UriSchemeHttps)
         {
-            try { Process.Start(new ProcessStartInfo(page.AbsoluteUri) { UseShellExecute = true }); }
-            catch (Exception ex) { AppController.Instance.Say("Could not open the browser: " + ex.Message); }
+            try { TestGuard.Start(new ProcessStartInfo(page.AbsoluteUri) { UseShellExecute = true }); }
+            catch (Exception ex) { AppController.Instance.SayT("Could not open the browser: {error}", ("error", ex.Message)); }
             Dismiss();
             return;
         }
@@ -607,12 +829,12 @@ public partial class ToastWindow : Window, ICaptureExcludedWindow
             if (!AppController.Instance.Screenshots.IsOpenableEntry(Shot.Path))
             {
                 Log.Warn("screenshot: not opened: not a .png in a screenshots folder");
-                AppController.Instance.Say("Could not open the screenshot: it is not in the screenshots folder");
+                AppController.Instance.SayT("Could not open the screenshot: it is not in the screenshots folder");
             }
             else
             {
-                try { Process.Start(new ProcessStartInfo(Shot.Path) { UseShellExecute = true }); }
-                catch (Exception ex) { AppController.Instance.Say("Could not open the screenshot: " + ex.Message); }
+                try { TestGuard.Start(new ProcessStartInfo(Shot.Path) { UseShellExecute = true }); }
+                catch (Exception ex) { AppController.Instance.SayT("Could not open the screenshot: {error}", ("error", ex.Message)); }
             }
         }
         Dismiss();

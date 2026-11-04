@@ -5,6 +5,7 @@ using System.Windows.Media.Imaging;
 using Clink.Screenshots;
 using Clink.Screenshots.Editing;
 using Clink.Services;
+using Clink.Services.Localization;
 
 namespace Clink.UI;
 
@@ -77,17 +78,22 @@ internal static class LibraryView
     }
 
     /// <summary>"Local 12", or just "Local" when there is nothing in it.</summary>
-    public static string Label(string name, int count) => count > 0 ? $"{name} {count}" : name;
-
-    /// <summary>The text of the empty list.</summary>
-    public static string EmptyText(LibraryFeature feature, LibraryLevel level, bool trimmedOnly) => (feature, level) switch
+    public static string Label(string name, int count) => name switch
     {
-        (LibraryFeature.Screenshots, LibraryLevel.Local) => "No screenshots yet — press PrintScreen",
-        (LibraryFeature.Screenshots, _) => "No shared screenshots",
-        (_, LibraryLevel.Local) when trimmedOnly => "No trimmed clips yet. Trim saves a cut copy next to the original.",
-        (_, LibraryLevel.Local) => "No clips yet. Press the hotkey while gaming.",
-        _ when trimmedOnly => "No trimmed clips are shared.",
-        _ => "Nothing shared to Copium yet. Clips shared to Copium are listed here, even after the local file is gone.",
+        "Local" => count > 0 ? L.T("level|Local {count}", ("count", count)) : L.T("level|Local"),
+        "Shared" => count > 0 ? L.T("level|Shared {count}", ("count", count)) : L.T("level|Shared"),
+        _ => throw new ArgumentOutOfRangeException(nameof(name), name, "only the two segments of the pane have a label"),
+    };
+
+    /// <summary>The text of the empty list. <paramref name="screenshotKeys"/> are the keys of the screenshot hotkey (default PrintScreen).</summary>
+    public static string EmptyText(LibraryFeature feature, LibraryLevel level, bool trimmedOnly, string? screenshotKeys = null) => (feature, level) switch
+    {
+        (LibraryFeature.Screenshots, LibraryLevel.Local) => L.T("No screenshots yet — press {keys}", ("keys", L.Ltr(screenshotKeys ?? "PrintScreen"))),
+        (LibraryFeature.Screenshots, _) => L.T("No shared screenshots"),
+        (_, LibraryLevel.Local) when trimmedOnly => L.T("No trimmed clips yet. Trim saves a cut copy next to the original."),
+        (_, LibraryLevel.Local) => L.T("No clips yet. Press the hotkey while gaming."),
+        _ when trimmedOnly => L.T("No trimmed clips are shared."),
+        _ => L.T("Nothing shared to Copium yet. Clips shared to Copium are listed here, even after the local file is gone."),
     };
 }
 
@@ -180,40 +186,70 @@ internal sealed class ScreenshotRow : INotifyPropertyChanged
         Refresh();
     }
 
+    // The library selection (ClipsPane keeps the model; the row shows it): the checkbox, the highlight and "Select ..." name follow these.
+    private bool _selected, _selectMode;
+    /// <summary>The row is in the selection.</summary>
+    public bool IsSelected => _selected;
+    /// <summary>The list this row is in has a selection: the checkboxes are all shown and a plain click selects.</summary>
+    public bool SelectMode => _selectMode;
+    /// <summary>The checkbox's accessible name.</summary>
+    public string SelectName
+    {
+        get
+        {
+            string date = L.Isolate(Entry.Created.ToString("MMM d, HH:mm", L.FormatCulture));
+            // the generic "Screenshot" is a word, not a name: a whole sentence (a gendered article or a case ending cannot be added to a slot)
+            return string.IsNullOrWhiteSpace(Entry.Game) ? L.T("Select Screenshot, {date}", ("date", date)) : L.T("Select {title}, {date}", ("title", Title), ("date", date));
+        }
+    }
+
+    public void SetSelection(bool selected, bool selectMode)
+    {
+        if (_selected != selected) { _selected = selected; Raise(nameof(IsSelected)); }
+        if (_selectMode != selectMode) { _selectMode = selectMode; Raise(nameof(SelectMode)); }
+    }
     public void SetProblem(string text) { IsProblem = true; Status = text; }
 
-    public const string NotLocalText = "Delete is only available for screenshots on a local fixed drive";
-    public const string RemoveHint = "Remove from this list. The link stays on Copium";
+    public static string NotLocalText => L.T("Delete is only available for screenshots on a local fixed drive");
+    public static string NoFileText => L.T("Its file is already gone. Use Remove from list.");
+    public static string RemoveHint => L.T("Remove from this list. The link stays on Copium");
 
     /// <summary>The question before a delete: names the file; a shared one says its link stays.</summary>
     public static string ConfirmText(ScreenshotEntry e, bool hasFile)
     {
-        string name = System.IO.Path.GetFileName(e.Path);
-        string kept = string.IsNullOrEmpty(e.CopiumLink) ? "" : " The link stays on Copium.";
-        return hasFile ? $"Move '{name}' to the Recycle Bin?{kept} If it cannot go to the Recycle Bin, Windows asks again before anything is deleted for good." :$"Remove '{name}' from the list? Its file is already gone.{kept}";
+        string name = L.Ltr(System.IO.Path.GetFileName(e.Path));
+        bool linked = !string.IsNullOrEmpty(e.CopiumLink);
+        if (hasFile)
+            return linked
+                ? L.T("Move '{name}' to the Recycle Bin? The link stays on Copium. If it cannot go to the Recycle Bin, Windows asks again before anything is deleted for good.", ("name", name))
+                : L.T("Move '{name}' to the Recycle Bin? If it cannot go to the Recycle Bin, Windows asks again before anything is deleted for good.", ("name", name));
+        return linked
+            ? L.T("Remove '{name}' from the list? Its file is already gone. The link stays on Copium.", ("name", name))
+            : L.T("Remove '{name}' from the list? Its file is already gone.", ("name", name));
     }
 
     /// <summary>The row's problem line for a delete that did not happen (<paramref name="onLocalFixedDrive"/>: the file's drive, to tell why a refusal was one).</summary>
     public static string DeleteProblemText(ScreenshotDeleteResult result, bool onLocalFixedDrive) => result switch
     {
         ScreenshotDeleteResult.Refused when !onLocalFixedDrive => NotLocalText,
-        ScreenshotDeleteResult.Refused => "Not deleted: not a file in the screenshots folder",
-        ScreenshotDeleteResult.EditorOpen => "Not deleted: close the editor first",
-        ScreenshotDeleteResult.ListNotUpdated => "The file was removed from disk but the list could not be updated",
-        _ => "Not deleted: the file could not be moved to the Recycle Bin (or the Windows confirmation was declined)",
+        ScreenshotDeleteResult.Refused => L.T("Not deleted: not a file in the screenshots folder"),
+        ScreenshotDeleteResult.EditorOpen => L.T("Not deleted: close the editor first"),
+        ScreenshotDeleteResult.ListNotUpdated => L.T("The file was removed from disk but the list could not be updated"),
+        ScreenshotDeleteResult.FileGone => NoFileText,
+        _ => L.T("Not deleted: the file could not be moved to the Recycle Bin (or the Windows confirmation was declined)"),
     };
 
-    public static string TitleFor(ScreenshotEntry e) => string.IsNullOrWhiteSpace(e.Game) ? "Screenshot" : e.Game!;
+    public static string TitleFor(ScreenshotEntry e) => string.IsNullOrWhiteSpace(e.Game) ? L.T("Screenshot") : L.Isolate(e.Game!);
 
     /// <summary>"1920×1080 · 412 KB · Oct 25, 14:03" (the size of the picture is left out when it is not known).</summary>
     public static string MetaFor(ScreenshotEntry e, int width, int height)
     {
-        string dims = width > 0 && height > 0 ? $"{width}×{height} · " : "";
-        return $"{dims}{Capabilities.FormatBytes(e.Size)} · {e.Created:MMM d, HH:mm}";
+        string dims = width > 0 && height > 0 ? L.Ltr($"{width}×{height}") + " · " : "";
+        return $"{dims}{L.Bytes(e.Size)} · {L.Isolate(e.Created.ToString("MMM d, HH:mm", L.FormatCulture))}";
     }
 
     public string Title => TitleFor(Entry);
-    public string Meta => MetaFor(Entry, _w, _h) + (_exists ? "" : " · file deleted");
+    public string Meta => MetaFor(Entry, _w, _h) + (_exists ? "" : " · " + L.T("file deleted"));
     public bool HasLocalFile => _exists;
     public bool HasLink => !string.IsNullOrEmpty(Entry.CopiumLink);
     public string? Link => Entry.CopiumLink;
@@ -246,7 +282,7 @@ internal sealed class ScreenshotRow : INotifyPropertyChanged
 
     public void Refresh()
     {
-        foreach (var p in new[] { nameof(Title), nameof(Meta), nameof(HasLocalFile), nameof(HasLink), nameof(Link), nameof(HasPage), nameof(UploadVisible), nameof(DeleteVisible), nameof(RemoveVisible), nameof(IsEdited) })
+        foreach (var p in new[] { nameof(Title), nameof(Meta), nameof(HasLocalFile), nameof(HasLink), nameof(Link), nameof(HasPage), nameof(UploadVisible), nameof(DeleteVisible), nameof(RemoveVisible), nameof(IsEdited), nameof(SelectName) })
             Raise(p);
     }
 

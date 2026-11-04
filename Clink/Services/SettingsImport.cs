@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
+using Clink.Services.Localization;
 
 namespace Clink.Services;
 
@@ -32,8 +33,11 @@ internal sealed record ForeignSettings(string Package, string Folder, DateTime S
 /// <param name="BackupPath">Where the settings it replaced were kept (<c>settings.pre-import.json</c>, or the next free <c>settings.pre-import.N.json</c>); null when there were none.</param>
 /// <param name="ClipsProblem">Why the clip lists were not merged; null when they were, or the other copy had no clips to merge.</param>
 /// <param name="NetworkPathsKept">The folder settings (<c>ScreenshotsFolder</c>, <c>ClipsFolder</c>, <c>ArchivePath</c>) whose network path in the other copy was NOT taken over: ours stayed.</param>
-internal sealed record ImportResult(string? BackupPath, string? ClipsProblem, IReadOnlyList<string>? NetworkPathsKept = null)
+internal sealed record ImportResult(string? BackupPath, string? ClipsProblem, IReadOnlyList<string>? NetworkPathsKept = null, Func<string>? ClipsReason = null)
 {
+    /// <summary><see cref="ClipsNotice"/> as a note: English for a log, the language of the UI on screen (the reason is worded again for each).</summary>
+    public Note? ClipsNoticeNote => ClipsReason != null ? Note.Build(() => SettingsImport.ClipsNoticeFor(ClipsReason()))
+        : ClipsProblem == null ? null : Note.Build(() => SettingsImport.ClipsNoticeFor(ClipsProblem));
     /// <summary>"Settings imported; the clip list could not be merged: …", or null when it was merged.</summary>
     public string? ClipsNotice => ClipsProblem == null ? null : SettingsImport.ClipsNoticeFor(ClipsProblem);
     /// <summary>"Settings imported; the other copy's network folders were not taken over: …", or null when there were none.</summary>
@@ -60,10 +64,15 @@ internal static class AppDataRedirect
     public static string? FinalFolder { get; private set; }
 
     /// <summary>The line shown once per start when redirected; null otherwise.</summary>
-    public static string? Notice => Package == null ? null : NoticeFor(FriendlyName ?? Package);
+    public static string? Notice => NoticeNote?.Shown;
 
-    public static string NoticeFor(string friendlyName) =>
-        $"Clink was started from inside {friendlyName}: Windows keeps a private copy of its settings for that app, so changes made now are not seen by Clink started from Explorer or the Start menu";
+    /// <summary><see cref="Notice"/> as a note.</summary>
+    internal static Note? NoticeNote => Package == null ? null : NoticeNoteFor(FriendlyName ?? Package);
+
+    public static string NoticeFor(string friendlyName) => NoticeNoteFor(friendlyName).Shown;
+
+    internal static Note NoticeNoteFor(string friendlyName) =>
+        Note.Of("Clink was started from inside {app}: Windows keeps a private copy of its settings for that app, so changes made now are not seen by Clink started from Explorer or the Start menu", ("app", Note.Isolate(friendlyName)));
 
     /// <summary>
     /// Looks at where <see cref="Settings.Dir"/> really is and sets <see cref="Package"/>, <see cref="FriendlyName"/> and
@@ -76,6 +85,7 @@ internal static class AppDataRedirect
         try
         {
             string dir = Settings.Dir;
+            TestGuard.Check(dir);
             Directory.CreateDirectory(dir);
             string? folder = FinalFolderOf(dir);
             if (folder == null)
@@ -372,6 +382,8 @@ internal static class SettingsImport
     {
         ("video quality", new[] { nameof(Settings.Resolution), nameof(Settings.Fps), nameof(Settings.BitrateMbps), nameof(Settings.Codec), nameof(Settings.HdrKnee), nameof(Settings.HdrPeak), nameof(Settings.KeyframeSeconds), nameof(Settings.CaptureCursor) }),
         ("size target", new[] { nameof(Settings.SizeTarget) }),
+        ("Discord plan", new[] { nameof(Settings.DiscordPlan) }),
+        ("sharing", new[] { nameof(Settings.ShareCopiesDuringGames) }),
         ("monitor", new[] { nameof(Settings.MonitorDevice) }),
         ("replay length", new[] { nameof(Settings.BufferSeconds) }),
         ("recording mode", new[] { nameof(Settings.RecordingMode), nameof(Settings.CustomApps) }),
@@ -390,8 +402,24 @@ internal static class SettingsImport
         ("startup", new[] { nameof(Settings.StartMinimized), nameof(Settings.RunAtStartup) }),
         ("updates", new[] { nameof(Settings.AutoUpdate) }),
         ("theme", new[] { nameof(Settings.Theme), nameof(Settings.Accent) }),
+        ("language", new[] { nameof(Settings.Language) }),
     };
     private const string OtherLabel = "other settings";
+
+    private static string Tr(string? locale, string key, params (string Name, object? Value)[] args) => locale == null ? L.T(key, args) : L.TIn(locale, key, args);
+
+    /// <summary>
+    /// A label as <see cref="Differences"/> returns it (English, the identity the code and the tests use) in the active language, or in
+    /// <paramref name="locale"/>: the catalog entry "setting|&lt;label&gt;" (the label is the entry's English text).
+    /// </summary>
+    internal static string LabelText(string label, string? locale = null) => Tr(locale, "setting|" + label);
+
+    /// <summary>
+    /// Labels as one list for a sentence ("video quality, hotkeys"): each in the active language, joined with the language's list separator
+    /// (the catalog entry "list-separator|, "), so no sentence is built from English pieces. Use this wherever <see cref="Differences"/> reaches the user.
+    /// </summary>
+    internal static string LabelList(IEnumerable<string> labels, string? locale = null) =>
+        string.Join(Tr(locale, "list-separator|, "), labels.Select(l => LabelText(l, locale)));
     /// <summary>Said in place of "Copium token" when the other copy holds a token that this user on this machine cannot decrypt: an import keeps ours.</summary>
     internal const string UnusableTokenNote = "the incoming Copium token cannot be used on this machine";
 
@@ -410,10 +438,14 @@ internal static class SettingsImport
         || key.Equals(nameof(Settings.UseDevBuilds), StringComparison.OrdinalIgnoreCase)
         || key.Equals(nameof(Settings.CopiumImageUploadUrl), StringComparison.OrdinalIgnoreCase)   // where the token is sent: this machine's own choice, never another copy's
         || key.Equals(nameof(Settings.ImportDeclined), StringComparison.OrdinalIgnoreCase)
+        || key.Equals(nameof(Settings.SaveCopyFolder), StringComparison.OrdinalIgnoreCase)   // the last "Save a copy" folder on this machine
+        || key.Equals(nameof(Settings.EncoderExperiment), StringComparison.OrdinalIgnoreCase)   // a hidden per-machine experiment: never another copy's
         // consent and sharing controls: what this person agreed to on this machine is never another copy's to decide
         || key.Equals(nameof(Settings.CloudSharingEnabled), StringComparison.OrdinalIgnoreCase)
         || key.StartsWith("CopiumConsent", StringComparison.OrdinalIgnoreCase)
         || key.StartsWith("CopiumNudge", StringComparison.OrdinalIgnoreCase)
+        || key.Equals(nameof(Settings.CopiumWelcomeShown), StringComparison.OrdinalIgnoreCase)   // Sign in with Copium: the one-time welcome and the last token name are this installation's
+        || key.Equals(nameof(Settings.CopiumTokenName), StringComparison.OrdinalIgnoreCase)
         || key.Equals("CopiumAutoUploadNoticeShown", StringComparison.OrdinalIgnoreCase)   // S6's one-time notice: gone, but a settings.json written by S6 still carries it
         || key.Equals(nameof(Settings.ScreenshotEditorExcludeFromCapture), StringComparison.OrdinalIgnoreCase);
 
@@ -449,22 +481,46 @@ internal static class SettingsImport
     };
 
     /// <summary>"Settings imported; a network folder in the other copy is never taken over silently, so your own stayed: screenshots folder, archive location".</summary>
-    internal static string NetworkPathsNoticeFor(IReadOnlyList<string> kept) =>
-        "Settings imported; a network folder in the other copy is never taken over silently, so your own stayed: " + string.Join(", ", kept.Select(FriendlyFolder))
-        + " (set a network folder yourself under Settings if you want one)";
+    internal static string NetworkPathsNoticeFor(IReadOnlyList<string> kept, string? locale = null) =>
+        Tr(locale, "Settings imported; a network folder in the other copy is never taken over silently, so your own stayed: {folders} (set a network folder yourself under Settings if you want one)",
+            ("folders", LabelList(kept.Select(FriendlyFolder), locale)));
 
     internal static string NetworkPathsNoticePath => Path.Combine(Settings.Dir, "import-paths.notice");
 
     /// <summary>Said once at the next start (<c>AppController.Start</c>; an import restarts Clink, so it is kept in a file): which network folders an import did not take over.</summary>
-    public static string? TakeNetworkPathsNotice()
+    public static string? TakeNetworkPathsNotice() => TakeNetworkPathsNoticeNote()?.Shown;
+
+    /// <summary><see cref="TakeNetworkPathsNotice"/> as a note (the sentence is worded again in English for the log).</summary>
+    public static Note? TakeNetworkPathsNoticeNote()
     {
         try
         {
             string path = NetworkPathsNoticePath;
             if (!File.Exists(path)) return null;
             string text = File.ReadAllText(path).Trim();
+            TestGuard.Check(path);
             File.Delete(path);
-            return text.Length == 0 ? null : text;
+            if (text.Length == 0) return null;
+            if (text.StartsWith('['))
+            {
+                List<string?>? listed;
+                try { listed = JsonSerializer.Deserialize<List<string?>>(text); }
+                catch (JsonException ex)
+                {
+                    Log.Warn("import: the note about network folders is not a list of setting names and is not shown: " + ex.Message);
+                    return null;
+                }
+                var kept = new List<string>();
+                int unknown = 0;
+                foreach (string? name in listed ?? new List<string?>())
+                {
+                    if (name != null && s_folderKeys.Contains(name)) kept.Add(name);
+                    else unknown++;
+                }
+                if (unknown > 0) Log.Warn($"import: the note about network folders names {unknown} unknown setting(s), left out");
+                return kept.Count > 0 ? Note.Build(() => NetworkPathsNoticeFor(kept)) : null;
+            }
+            return Note.Verbatim(text);
         }
         catch (Exception ex)
         {
@@ -477,15 +533,21 @@ internal static class SettingsImport
     internal static bool IsTokenUnusable(Settings s) => !string.IsNullOrEmpty(s.CopiumTokenProtected) && s.CopiumToken == null;
 
     // Differences that say nothing: this installation's own settings (above), the schema number, whether the audio banner was
-    // dismissed, and the protected Copium token (its DPAPI text differs on every save: the token is compared decrypted).
+    // dismissed, whether the bitrate was picked (it travels with an import but is never a reason for an offer), and the
+    // protected Copium token (its DPAPI text differs on every save: the token is compared decrypted).
     private static bool IsVolatile(string key) =>
         IsOwnKey(key)
+        || key.Equals(nameof(Settings.BitrateChosen), StringComparison.OrdinalIgnoreCase)
         || key.Equals(nameof(Settings.SchemaVersion), StringComparison.OrdinalIgnoreCase)
         || key.Equals(nameof(Settings.AudioSetupSeen), StringComparison.OrdinalIgnoreCase)
         || key.Equals(nameof(Settings.SeededHotkeyDefaults), StringComparison.OrdinalIgnoreCase)
         || key.Equals(nameof(Settings.ScreenshotEditor), StringComparison.OrdinalIgnoreCase)   // the editor's last-used colour and width
         || key.Equals(nameof(Settings.CaptureBorderNoticeDismissed), StringComparison.OrdinalIgnoreCase)
-        || key.Equals(nameof(Settings.CopiumTokenProtected), StringComparison.OrdinalIgnoreCase);
+        || key.Equals(nameof(Settings.ClipDeleteConfirmDismissed), StringComparison.OrdinalIgnoreCase)
+        || key.Equals(nameof(Settings.CopiumTokenProtected), StringComparison.OrdinalIgnoreCase)
+        // the account name and "linked by Sign in" follow the token, which is compared decrypted and labelled on its own
+        || key.Equals(nameof(Settings.CopiumAccountName), StringComparison.OrdinalIgnoreCase)
+        || key.Equals(nameof(Settings.CopiumLinkedViaConnect), StringComparison.OrdinalIgnoreCase);
 
     /// <summary>A settings key that an import offer names in the user's words or ignores: anything else would be listed as "other settings".</summary>
     internal static bool HasLabelOrIsVolatile(string key) =>
@@ -511,6 +573,8 @@ internal static class SettingsImport
         // The consent is ours (IsOwnKey): the automatic upload is judged against it, not against the other copy's yes.
         theirs.CopiumConsent = ours.CopiumConsent;
         if (!theirs.CopiumConsent) theirs.ScreenshotUpload = false;
+        // As an import would (KeepOurOwn with keepOurToken): their token is unusable here, so our linked token stays and so does its Copium+ flag.
+        if (IsTokenUnusable(theirs)) theirs.CopiumPlus = ours.CopiumPlus;
         KeepOurNetworkPaths(ours, theirs);   // as an import would: a network folder is not taken over, so it is no difference to offer
         var a = ours.ToElement().EnumerateObject().ToDictionary(p => p.Name, p => p.Value, StringComparer.OrdinalIgnoreCase);
         var b = theirs.ToElement().EnumerateObject().ToDictionary(p => p.Name, p => p.Value, StringComparer.OrdinalIgnoreCase);
@@ -668,6 +732,7 @@ internal static class SettingsImport
         var incoming = Settings.FromJson(theirs);   // throws when it is not JSON, or not a JSON object
 
         string dir = Settings.Dir;
+        TestGuard.Check(dir);
         Directory.CreateDirectory(dir);
         var networkKept = new List<string>();
         string text = KeepOurOwn(theirs, ReadOurSettings(), keepOurToken: IsTokenUnusable(incoming), networkKept);
@@ -676,18 +741,17 @@ internal static class SettingsImport
 
         if (networkKept.Count > 0)
         {
-            string note = NetworkPathsNoticeFor(networkKept);
-            Log.Warn("import: " + note);
-            try { File.WriteAllText(NetworkPathsNoticePath, note); }
+            Log.Warn("import: " + NetworkPathsNoticeFor(networkKept, "en"));   // the log stays English
+            try { TestGuard.Check(NetworkPathsNoticePath); File.WriteAllText(NetworkPathsNoticePath, JsonSerializer.Serialize(networkKept)); }   // the setting names, not words: the sentence is built in the user's language when it is shown
             catch (Exception ex) { Log.Warn("import: could not note the network folders that were kept: " + ex.Message); }
         }
-        string? clipsProblem = MergeClipIndex(copy.Folder);
+        var (clipsProblem, clipsReason) = MergeClipIndex(copy.Folder);
         if (Pending?.DeclineKey == copy.DeclineKey) SetPending(null);
         Log.Info($"import: took over the settings saved {copy.SavedLocalText} inside {copy.Package}"
             + (copy.Differences.Count > 0 ? $" (changes: {string.Join(", ", copy.Differences)})" : "")
             + (backup != null ? $"; the replaced settings are kept as {Path.GetFileName(backup)}" : "")
             + (clipsProblem != null ? "; the clip list was not merged" : ""));
-        return new ImportResult(backup, clipsProblem, networkKept);
+        return new ImportResult(backup, clipsProblem, networkKept, clipsReason);
     }
 
     // ------------------------------------------------------------------ what an import keeps of ours
@@ -766,9 +830,12 @@ internal static class SettingsImport
 
         if (keepOurToken)
         {
-            const string token = nameof(Settings.CopiumTokenProtected);
-            foreach (string key in t.Select(p => p.Key).Where(k => k.Equals(token, StringComparison.OrdinalIgnoreCase)).ToList()) t.Remove(key);
-            if (Find(o, token) is { Value: not null } mine) t[mine.Key] = mine.Value!.DeepClone();
+            // the token and what describes it (the account name, whether Sign in made it, its Copium+ flag) stay ours together
+            foreach (string token in new[] { nameof(Settings.CopiumTokenProtected), nameof(Settings.CopiumAccountName), nameof(Settings.CopiumLinkedViaConnect), nameof(Settings.CopiumPlus) })
+            {
+                foreach (string key in t.Select(p => p.Key).Where(k => k.Equals(token, StringComparison.OrdinalIgnoreCase)).ToList()) t.Remove(key);
+                if (Find(o, token) is { Value: not null } mine) t[mine.Key] = mine.Value!.DeepClone();
+            }
         }
         string after = t.ToJsonString();
         return after == before ? theirs : t.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
@@ -786,6 +853,7 @@ internal static class SettingsImport
             if (File.Exists(path)) continue;
             try
             {
+                TestGuard.Check(path);
                 File.Copy(Settings.FilePath, path, overwrite: false);
                 return path;
             }
@@ -798,15 +866,18 @@ internal static class SettingsImport
     // ------------------------------------------------------------------ merging the clip lists
 
     /// <summary>"Settings imported; the clip list could not be merged: …".</summary>
-    internal static string ClipsNoticeFor(string problem) => "Settings imported; the clip list could not be merged: " + problem;
+    internal static string ClipsNoticeFor(string problem) => L.T("Settings imported; the clip list could not be merged: {reason}", ("reason", problem));
 
-    private static string? s_clipsNotice;
+    private static Func<string>? s_clipsNotice;   // the reason kept as data (a renderer), worded in the current language only when TakeClipsNotice is called: it is made before the UI language is set
 
     /// <summary>
     /// Said once to the user (<c>AppController.Start</c>): the settings were imported but the clip list could not be merged, and why.
     /// Set by an import that did not merge, and by the first retry that does not (<see cref="RetryPendingClipMerge"/>).
     /// </summary>
-    public static string? TakeClipsNotice() => Interlocked.Exchange(ref s_clipsNotice, null);
+    public static string? TakeClipsNotice() => Interlocked.Exchange(ref s_clipsNotice, null)?.Invoke();
+
+    /// <summary><see cref="TakeClipsNotice"/> as a note (the reason is worded again in English for the log).</summary>
+    public static Note? TakeClipsNoticeNote() => Interlocked.Exchange(ref s_clipsNotice, null) is { } render ? Note.Build(render) : null;
 
     internal sealed record ClipsMarker(string From, string Reason, int Attempts);
 
@@ -830,6 +901,7 @@ internal static class SettingsImport
     {
         try
         {
+            TestGuard.Check(ClipsMarkerPath);
             Directory.CreateDirectory(Settings.Dir);
             File.WriteAllText(ClipsMarkerPath, JsonSerializer.Serialize(marker));
         }
@@ -839,7 +911,7 @@ internal static class SettingsImport
     /// <summary>Drops the note about a clip merge still to do (it is done, there is nothing to merge from any more, or the import was taken back).</summary>
     internal static void ForgetPendingClipMerge()
     {
-        try { if (File.Exists(ClipsMarkerPath)) File.Delete(ClipsMarkerPath); }
+        try { if (File.Exists(ClipsMarkerPath)) { TestGuard.Check(ClipsMarkerPath); File.Delete(ClipsMarkerPath); } }
         catch (Exception ex) { Log.Warn("import: could not remove the note about a pending clip merge: " + ex.Message); }
     }
 
@@ -851,13 +923,14 @@ internal static class SettingsImport
     }
 
     /// <summary>Merges <paramref name="folder"/>'s clip list into ours and keeps the marker in step. Returns why it could not, or null. Never throws.</summary>
-    private static string? MergeClipIndex(string folder)
+    private static (string? Problem, Func<string>? Render) MergeClipIndex(string folder)
     {
-        string? problem = TryMergeClips(folder);
-        if (problem == null) { ForgetPendingClipMerge(); return null; }
-        WriteClipsMarker(new ClipsMarker(folder, problem, 1));
-        Interlocked.Exchange(ref s_clipsNotice, ClipsNoticeFor(problem));
-        return problem;
+        var (render, english) = TryMergeClipsCore(folder);
+        if (render == null) { ForgetPendingClipMerge(); return (null, null); }
+        string problem = render();
+        WriteClipsMarker(new ClipsMarker(folder, english ?? problem, 1));   // the file keeps the English reason, whatever language the user runs
+        Interlocked.Exchange(ref s_clipsNotice, () => ClipsNoticeFor(render()));
+        return (problem, render);
     }
 
     /// <summary>
@@ -876,15 +949,15 @@ internal static class SettingsImport
             ForgetPendingClipMerge();
             return;
         }
-        string? problem = TryMergeClips(marker.From);
-        if (problem == null)
+        var (render, english) = TryMergeClipsCore(marker.From);
+        if (render == null)
         {
             Log.Info($"import: finished the clip merge from {marker.From} that was pending");
             ForgetPendingClipMerge();
             return;
         }
-        if (marker.Attempts <= 1) Interlocked.Exchange(ref s_clipsNotice, ClipsNoticeFor(problem));
-        WriteClipsMarker(marker with { Reason = problem, Attempts = marker.Attempts + 1 });
+        if (marker.Attempts <= 1) Interlocked.Exchange(ref s_clipsNotice, () => ClipsNoticeFor(render()));
+        WriteClipsMarker(marker with { Reason = english ?? render(), Attempts = marker.Attempts + 1 });
     }
 
     /// <summary>
@@ -894,12 +967,29 @@ internal static class SettingsImport
     /// giving up on it), the two cannot be combined, or ours cannot be written. The clips folder is scanned at every start anyway,
     /// so a clip is never lost, only its link, game and length. Never throws.
     /// </summary>
-    internal static string? TryMergeClips(string folder)
+    internal static string? TryMergeClips(string folder) => TryMergeClipsBoth(folder).User;
+
+    /// <summary>The same, with the reason twice: <c>User</c> in the user's language (for the notice), <c>English</c> for what is stored in the marker file.</summary>
+    internal static (string? User, string? English) TryMergeClipsBoth(string folder)
     {
-        static string Skipped(string reason)
+        var (render, english) = TryMergeClipsCore(folder);
+        return (render?.Invoke(), english);
+    }
+
+    /// <summary>The same, with the user's reason as a renderer: it is worded in the language current when it is called (a notice kept for later is worded when shown, not when made).</summary>
+    private static (Func<string>? Render, string? English) TryMergeClipsCore(string folder)
+    {
+        static (Func<string>?, string?) Skipped(string key, params (string Name, object? Value)[] args)
         {
-            Log.Warn("import: the clip list was not merged: " + reason);
-            return reason;
+            string en = L.TIn("en", key, args);
+            Log.Warn("import: the clip list was not merged: " + en);   // the log stays English; the reason the user reads is in their language
+            return (() => L.T(key, args), en);
+        }
+        static (Func<string>?, string?) SkippedBy(string key, Exception ex)
+        {
+            string en = L.TIn("en", key, ("error", Describe(ex, "en")));
+            Log.Warn("import: the clip list was not merged: " + en);
+            return (() => L.T(key, ("error", Describe(ex))), en);
         }
 
         string theirsPath = Path.Combine(folder, "clips.json");
@@ -907,36 +997,37 @@ internal static class SettingsImport
         try
         {
             var info = new FileInfo(theirsPath);
-            if (!info.Exists) { Log.Info("import: the other copy has no clip list: nothing to merge"); return null; }
-            if (info.Length > MaxFileBytes) return Skipped($"the other copy's clip list is too big ({Bytes(info.Length)} bytes; more than {Bytes(MaxFileBytes)} is not read)");
+            if (!info.Exists) { Log.Info("import: the other copy has no clip list: nothing to merge"); return (null, null); }
+            if (info.Length > MaxFileBytes) return Skipped("the other copy's clip list is too big ({size} bytes; more than {limit} is not read)", ("size", Bytes(info.Length)), ("limit", Bytes(MaxFileBytes)));
             theirs = File.ReadAllText(theirsPath);
             _ = ClipObjects(theirs, null, "");
         }
-        catch (Exception ex) { return Skipped($"the other copy's clip list cannot be read ({Describe(ex)})"); }
+        catch (Exception ex) { return SkippedBy("the other copy's clip list cannot be read ({error})", ex); }
 
         string mine = ClipLibrary.IndexPathOverride ?? Path.Combine(Settings.Dir, "clips.json");
         string? ours;
         try { ours = AtomicFile.ReadWithFallback(mine, text => { _ = ClipObjects(text, null, ""); return text; }); }
-        catch (Exception ex) { return Skipped($"your clip list cannot be read, nor its backup ({Describe(ex)})"); }
+        catch (Exception ex) { return SkippedBy("your clip list cannot be read, nor its backup ({error})", ex); }
 
         string merged;
         var left = new List<string>();
         try { merged = MergeClips(ours, theirs, left); }
-        catch (Exception ex) { return Skipped($"the clip lists could not be combined ({Describe(ex)})"); }
+        catch (Exception ex) { return SkippedBy("the clip lists could not be combined ({error})", ex); }
         foreach (string reason in left) Log.Info("import: clip list: " + reason);
 
         try
         {
+            TestGuard.Check(mine);
             Directory.CreateDirectory(Path.GetDirectoryName(mine) ?? Settings.Dir);
             AtomicFile.WriteAllText(mine, merged);
         }
-        catch (Exception ex) { return Skipped($"your clip list cannot be written ({Describe(ex)})"); }
-        return null;
+        catch (Exception ex) { return SkippedBy("your clip list cannot be written ({error})", ex); }
+        return (null, null);
     }
 
-    private static string Describe(Exception ex) => ex switch
+    private static string Describe(Exception ex, string? locale = null) => ex switch
     {
-        JsonException { LineNumber: long line } => $"not valid JSON: error on line {line + 1}",
+        JsonException { LineNumber: long line } => Tr(locale, "not valid JSON: error on line {line}", ("line", line + 1)),
         _ => ex.Message,
     };
 

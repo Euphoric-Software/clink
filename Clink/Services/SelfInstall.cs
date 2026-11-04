@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text.RegularExpressions;
+using Clink.Services.Localization;
 
 namespace Clink.Services;
 
@@ -17,7 +18,8 @@ internal enum RelocationKind
     LaunchExisting,
 }
 
-internal sealed record RelocationPlan(RelocationKind Kind, string Source, string Target, string? Reason = null)
+/// <param name="Reason">Why, in English (for the log). <paramref name="UserReason"/>: the same for the user, in the UI language (set for a refusal, the only reason that is shown).</param>
+internal sealed record RelocationPlan(RelocationKind Kind, string Source, string Target, string? Reason = null, string? UserReason = null)
 {
     public string NewPath => Target + ".new";
     public string BackupPath => Target + ".bak";
@@ -36,7 +38,8 @@ internal enum RelocationOutcome
 }
 
 /// <param name="RollbackError">Set when undoing a failed install did not fully work (a file could not be deleted or put back); also appended to <paramref name="Error"/>.</param>
-internal sealed record RelocationResult(RelocationOutcome Outcome, string? Error = null, string? Sha256 = null, string? RollbackError = null)
+/// <param name="UserError">What <paramref name="Error"/> says, for the user, in the UI language (<paramref name="Error"/> itself stays English for the log).</param>
+internal sealed record RelocationResult(RelocationOutcome Outcome, string? Error = null, string? Sha256 = null, string? RollbackError = null, string? UserError = null)
 {
     public bool ShouldExit => Outcome is RelocationOutcome.Moved or RelocationOutcome.LaunchedExisting;
 }
@@ -52,6 +55,12 @@ internal interface IChildProcess : IDisposable
 internal sealed class RecycleAbortedException : IOException
 {
     public RecycleAbortedException(string message) : base(message) { }
+}
+
+/// <summary>A failure of the install whose text the user sees: <see cref="Exception.Message"/> is the note's English (the log), <see cref="UserText.Of"/> the note in the UI language.</summary>
+internal sealed class SelfInstallException : IOException
+{
+    public SelfInstallException(Note note) : base(note.English) { UserText.Attach(this, note); }
 }
 
 /// <summary>The disk and process access of <see cref="SelfInstall"/>. Real: <see cref="SelfInstallSystem"/>.</summary>
@@ -121,17 +130,18 @@ internal static class SelfInstall
     {
         string source = InstallLocation.Normalize(sourceExe);
         if (source.Length == 0 || string.IsNullOrWhiteSpace(targetFolder) || !Path.IsPathFullyQualified(source) || !Path.IsPathFullyQualified(targetFolder))
-            return new RelocationPlan(RelocationKind.Refused, source, "", "The paths are not full paths.");
+            return new RelocationPlan(RelocationKind.Refused, source, "", "The paths are not full paths.", L.T("The paths are not full paths."));
         string target = Path.Combine(InstallLocation.Normalize(targetFolder), TargetFileName);
-        if (elevated) return new RelocationPlan(RelocationKind.Refused, source, target, "Clink is running as administrator; it will not install itself from an elevated process.");
+        if (elevated) return new RelocationPlan(RelocationKind.Refused, source, target, "Clink is running as administrator; it will not install itself from an elevated process.",
+            L.T("Clink is running as administrator; it will not install itself from an elevated process."));
         if (!string.IsNullOrWhiteSpace(devFolder) && !InstallLocation.Under(InstallLocation.Normalize(target), devFolder))
-            return new RelocationPlan(RelocationKind.Refused, source, target, "A --dev instance only installs inside its own dev folder.");
+            return new RelocationPlan(RelocationKind.Refused, source, target, "A --dev instance only installs inside its own dev folder.", L.T("A --dev instance only installs inside its own dev folder."));
         if (source.Equals(target, StringComparison.OrdinalIgnoreCase) || (sys.FileExists(target) && sys.SameFile(source, target)))
             return new RelocationPlan(RelocationKind.NoOp, source, target, "Already there.");
         if (sys.FileExists(target))
         {
             if (!sys.LooksLikeClink(target))
-                return new RelocationPlan(RelocationKind.Refused, source, target, "The file at the target is not Clink; it is left alone.");
+                return new RelocationPlan(RelocationKind.Refused, source, target, "The file at the target is not Clink; it is left alone.", L.T("The file at the target is not Clink; it is left alone."));
             if (sys.VersionOf(target) is { } existing && existing >= currentVersion)
                 return new RelocationPlan(RelocationKind.LaunchExisting, source, target, $"The target holds {existing}, this is {currentVersion}.");
         }
@@ -167,26 +177,26 @@ internal static class SelfInstall
         switch (plan.Kind)
         {
             case RelocationKind.NoOp: return new RelocationResult(RelocationOutcome.NothingToDo);
-            case RelocationKind.Refused: return new RelocationResult(RelocationOutcome.Refused, plan.Reason);
+            case RelocationKind.Refused: return new RelocationResult(RelocationOutcome.Refused, plan.Reason, UserError: plan.UserReason);
             case RelocationKind.LaunchExisting:
                 try
                 {
                     string hash = sys.Sha256(plan.Source);
                     using var child = sys.Start(plan.Target, LaunchArguments(currentPid, plan.Source, hash, devArgs));
-                    if (child.WaitForExit(SurvivalMilliseconds)) return new RelocationResult(RelocationOutcome.Failed, "The installed Clink ended right after it started.");
+                    if (child.WaitForExit(SurvivalMilliseconds)) return new RelocationResult(RelocationOutcome.Failed, "The installed Clink ended right after it started.", UserError: L.T("The installed Clink ended right after it started."));
                     return new RelocationResult(RelocationOutcome.LaunchedExisting, null, hash);
                 }
-                catch (Exception ex) { return new RelocationResult(RelocationOutcome.Failed, ex.Message); }
+                catch (Exception ex) { return new RelocationResult(RelocationOutcome.Failed, ex.Message, UserError: UserText.Of(ex)); }
         }
 
         string newPath = plan.NewPath, backup = plan.BackupPath, target = plan.Target;
         bool backedUp = false, swapped = false;
         try
         {
-            if (!sys.FileExists(plan.Source)) return new RelocationResult(RelocationOutcome.Failed, "The source file is gone.");
+            if (!sys.FileExists(plan.Source)) return new RelocationResult(RelocationOutcome.Failed, "The source file is gone.", UserError: L.T("The source file is gone."));
             bool targetExists = sys.FileExists(target);
-            if (targetExists && !sys.LooksLikeClink(target)) return new RelocationResult(RelocationOutcome.Failed, "The file in the target folder is not Clink; it is left alone.");
-            if (targetExists && sys.IsReadOnly(target)) return new RelocationResult(RelocationOutcome.Failed, "The existing Clink.exe in the target folder is read-only.");
+            if (targetExists && !sys.LooksLikeClink(target)) return new RelocationResult(RelocationOutcome.Failed, "The file in the target folder is not Clink; it is left alone.", UserError: L.T("The file in the target folder is not Clink; it is left alone."));
+            if (targetExists && sys.IsReadOnly(target)) return new RelocationResult(RelocationOutcome.Failed, "The existing Clink.exe in the target folder is read-only.", UserError: L.T("The existing Clink.exe in the target folder is read-only."));
             string hash = sys.Sha256(plan.Source);
 
             sys.CreateDirectory(Path.GetDirectoryName(target)!);
@@ -196,7 +206,7 @@ internal static class SelfInstall
             if (!string.Equals(sys.Sha256(newPath), hash, StringComparison.OrdinalIgnoreCase))
             {
                 sys.Delete(newPath);
-                return new RelocationResult(RelocationOutcome.Failed, "The copy does not match the original (hash mismatch).");
+                return new RelocationResult(RelocationOutcome.Failed, "The copy does not match the original (hash mismatch).", UserError: L.T("The copy does not match the original (hash mismatch)."));
             }
 
             if (targetExists)
@@ -204,7 +214,7 @@ internal static class SelfInstall
                 if (sys.FileExists(backup) && !TryRecycle(sys, backup, ownerHwnd))
                 {
                     Rollback(plan, sys, false, false);
-                    return new RelocationResult(RelocationOutcome.Failed, "An older Clink.exe.bak is in the way and cannot be moved to the Recycle Bin.");
+                    return new RelocationResult(RelocationOutcome.Failed, "An older Clink.exe.bak is in the way and cannot be moved to the Recycle Bin.", UserError: L.T("An older Clink.exe.bak is in the way and cannot be moved to the Recycle Bin."));
                 }
                 MoveWithRetry(sys, target, backup, overwrite: false);
                 backedUp = true;
@@ -216,7 +226,7 @@ internal static class SelfInstall
             using (var child = sys.Start(target, LaunchArguments(currentPid, plan.Source, hash, devArgs)))
             {
                 if (child.WaitForExit(SurvivalMilliseconds))
-                    return Failed("The new copy ended right after it started.", Rollback(plan, sys, swapped, backedUp));
+                    return Failed("The new copy ended right after it started.", L.T("The new copy ended right after it started."), Rollback(plan, sys, swapped, backedUp));
             }
             // No recycle here: the shell can block on a prompt while the parent still holds the single-instance mutex, and the child gives up after its
             // --after-pid wait. The .bak stays; the pre-step above recycles it on the next install.
@@ -224,12 +234,14 @@ internal static class SelfInstall
         }
         catch (Exception ex)
         {
-            return Failed(ex.Message, Rollback(plan, sys, swapped, backedUp));
+            return Failed(ex.Message, UserText.Of(ex), Rollback(plan, sys, swapped, backedUp));
         }
     }
 
-    private static RelocationResult Failed(string error, string? rollbackError) =>
-        new(RelocationOutcome.Failed, rollbackError == null ? error : error + " (Rollback incomplete: " + rollbackError + ")", null, rollbackError);
+    /// <summary>A failed install: the English error for the log and the same for the user, each with what could not be undone, if anything.</summary>
+    private static RelocationResult Failed(string error, string userError, (string English, string User)? rollback) =>
+        new(RelocationOutcome.Failed, rollback is not { } r ? error : error + " (Rollback incomplete: " + r.English + ")", null, rollback?.English,
+            rollback is not { } u ? userError : L.T("{error} (Rollback incomplete: {rollback})", ("error", userError), ("rollback", u.User)));
 
     /// <summary>File.Move retried for about 5 s on sharing / access errors (virus scanner, indexer); anything else throws at once.</summary>
     private static void MoveWithRetry(ISelfInstallSystem sys, string from, string to, bool overwrite)
@@ -258,17 +270,28 @@ internal static class SelfInstall
     }
 
     /// <summary>Undoes what was done. Returns what could not be undone (null = all fine); never throws.</summary>
-    private static string? Rollback(RelocationPlan plan, ISelfInstallSystem sys, bool swapped, bool backedUp)
+    private static (string English, string User)? Rollback(RelocationPlan plan, ISelfInstallSystem sys, bool swapped, bool backedUp)
     {
-        var problems = new List<string>();
-        try { if (sys.FileExists(plan.NewPath)) sys.Delete(plan.NewPath); } catch (Exception ex) { problems.Add("could not remove " + plan.NewPath + ": " + ex.Message); }
-        if (swapped) { try { if (sys.FileExists(plan.Target)) DeleteWithRetry(sys, plan.Target); } catch (Exception ex) { problems.Add("could not remove " + plan.Target + ": " + ex.Message); } }
+        var english = new List<string>();
+        var user = new List<string>();
+        void CouldNotRemove(string path, Exception ex)
+        {
+            english.Add("could not remove " + path + ": " + ex.Message);
+            user.Add(L.T("could not remove {path}: {error}", ("path", L.Ltr(path)), ("error", ex.Message)));
+        }
+        try { if (sys.FileExists(plan.NewPath)) sys.Delete(plan.NewPath); } catch (Exception ex) { CouldNotRemove(plan.NewPath, ex); }
+        if (swapped) { try { if (sys.FileExists(plan.Target)) DeleteWithRetry(sys, plan.Target); } catch (Exception ex) { CouldNotRemove(plan.Target, ex); } }
         if (backedUp)
         {
             try { if (sys.FileExists(plan.BackupPath)) MoveWithRetry(sys, plan.BackupPath, plan.Target, overwrite: true); }
-            catch (Exception ex) { problems.Add("could not restore " + plan.BackupPath + " to " + plan.Target + ": " + ex.Message); }
+            catch (Exception ex)
+            {
+                english.Add("could not restore " + plan.BackupPath + " to " + plan.Target + ": " + ex.Message);
+                user.Add(L.T("could not restore {backup} to {target}: {error}", ("backup", L.Ltr(plan.BackupPath)), ("target", L.Ltr(plan.Target)), ("error", ex.Message)));
+            }
         }
-        return problems.Count == 0 ? null : string.Join("; ", problems);
+        // (the "; " between the problems is the list separator of this sentence: S6 looks at it with the other sentence joins)
+        return english.Count == 0 ? null : (string.Join("; ", english), string.Join("; ", user));
     }
 
     // ------------------------------------------------------------------ recycling
@@ -426,7 +449,7 @@ internal sealed class SelfInstallSystem : ISelfInstallSystem
     {
         var psi = new ProcessStartInfo(exePath) { UseShellExecute = false, WorkingDirectory = Path.GetDirectoryName(exePath) ?? "" };
         foreach (string a in args) psi.ArgumentList.Add(a);
-        return new Child(Process.Start(psi) ?? throw new IOException("The new copy could not be started."));
+        return new Child(TestGuard.Start(psi) ?? throw new SelfInstallException(Note.Of("The new copy could not be started.")));
     }
 
     public void Sleep(int milliseconds) => Thread.Sleep(milliseconds);

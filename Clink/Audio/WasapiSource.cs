@@ -9,8 +9,125 @@ using Clink.Native;
 
 namespace Clink.Audio;
 
-/// <param name="Problem">null for an active endpoint; otherwise why it cannot be used right now ("not connected", "disabled").</param>
-internal sealed record AudioDeviceInfo(string Id, string Name, string? Problem = null);
+/// <summary>Why an audio endpoint cannot be used right now (None: it is active).</summary>
+internal enum AudioProblemKind { None, NotConnected, Disabled }
+
+/// <summary>The audio tracks the engine records (their English names are also the track names inside a clip file).</summary>
+internal enum TrackKind { Mix, Game, Mic, Voice, Desktop }
+
+/// <summary>What an audio track's detail says. <see cref="Name"/> and <see cref="Other"/> carry user data / system text as the argument.</summary>
+internal enum AudioDetailKind
+{
+    /// <summary>A device or app name, shown as it is (arg).</summary>
+    Name,
+    /// <summary>"everything": the fallback that captures all audio but Clink's own.</summary>
+    Everything,
+    /// <summary>"everything except {arg}": the fallback that leaves the voice app out.</summary>
+    EverythingExcept,
+    /// <summary>The Mix track: "game + mic + voice, always track 1".</summary>
+    MixParts,
+    WaitingForApp,
+    NotConnectedOrDisabled,
+    InUseExclusive,
+    AccessDenied,
+    MicBlocked,
+    NotOutputDevice,
+    NotInputDevice,
+    AudioServiceDown,
+    /// <summary>A failure with no plain-words text: the raw message of an exception, or a hex HRESULT (arg). Shown as it is.</summary>
+    Other,
+}
+
+/// <summary>
+/// One audio track detail: the kind and its argument. It is a positional record, so the constructor is open as well (Explain uses it for
+/// the plain-words kinds); the factories cover the common cases. The English text (logs, selftest, <see cref="English"/>) is derived from
+/// the kind and what the UI translates is the same kind, so the two cannot drift apart. A raw string goes in only through
+/// <see cref="Other"/> / <see cref="Named"/> (user data or system text, shown as it is); a test guards against new English literals there.
+/// </summary>
+internal sealed record AudioDetail(AudioDetailKind Kind, string? Arg = null)
+{
+    public static readonly AudioDetail MixParts = new(AudioDetailKind.MixParts);
+    public static readonly AudioDetail WaitingForApp = new(AudioDetailKind.WaitingForApp);
+    public static readonly AudioDetail Everything = new(AudioDetailKind.Everything);
+
+    /// <summary>A device or app name; null when there is none (then the track has no detail).</summary>
+    public static AudioDetail? Named(string? name) => name == null ? null : new AudioDetail(AudioDetailKind.Name, name);
+    public static AudioDetail EverythingExcept(string? app) => new(AudioDetailKind.EverythingExcept, app);
+    public static AudioDetail Other(string text) => new(AudioDetailKind.Other, text);
+
+    /// <summary>The English text, exactly what the status line showed before the texts became translatable.</summary>
+    public string English => AudioText.Detail(Kind, Arg);
+}
+
+/// <summary>The English texts of the audio status (logs, --selftest and the controller use these; the UI translates through EngineStatusText).</summary>
+internal static class AudioText
+{
+    public static string TrackName(TrackKind kind) => kind switch
+    {
+        TrackKind.Mix => "Mix",
+        TrackKind.Game => "Game",
+        TrackKind.Mic => "Mic",
+        TrackKind.Voice => "Voice",
+        TrackKind.Desktop => "Desktop",
+        _ => kind.ToString(),
+    };
+
+    /// <summary>The kind of a track named by <see cref="TrackName"/> (the names the engine gives its tracks); false for any other name.</summary>
+    public static bool TryKindOf(string name, out TrackKind kind)
+    {
+        switch (name)
+        {
+            case "Mix": kind = TrackKind.Mix; return true;
+            case "Game": kind = TrackKind.Game; return true;
+            case "Mic": kind = TrackKind.Mic; return true;
+            case "Voice": kind = TrackKind.Voice; return true;
+            case "Desktop": kind = TrackKind.Desktop; return true;
+            default: kind = default; return false;
+        }
+    }
+
+    /// <summary>The kind of a track named by <see cref="TrackName"/>; a name that is not one of ours is a bug (ArgumentException).</summary>
+    public static TrackKind KindOf(string name) =>
+        TryKindOf(name, out var k) ? k : throw new ArgumentException("not an engine audio track name: " + name, nameof(name));
+
+    public static string? Problem(AudioProblemKind kind) => kind switch
+    {
+        AudioProblemKind.NotConnected => "not connected",
+        AudioProblemKind.Disabled => "disabled",
+        _ => null,
+    };
+
+    public static string Detail(AudioDetailKind kind, string? arg) => kind switch
+    {
+        AudioDetailKind.Name or AudioDetailKind.Other => arg ?? "",
+        AudioDetailKind.Everything => "everything",
+        AudioDetailKind.EverythingExcept => $"everything except {arg}",
+        AudioDetailKind.MixParts => "game + mic + voice, always track 1",
+        AudioDetailKind.WaitingForApp => "waiting for app",
+        AudioDetailKind.NotConnectedOrDisabled => "not connected or disabled",
+        AudioDetailKind.InUseExclusive => "in use by another app (exclusive mode)",
+        AudioDetailKind.AccessDenied => "access denied",
+        AudioDetailKind.MicBlocked => "blocked: allow microphone access for desktop apps in Windows privacy settings",
+        AudioDetailKind.NotOutputDevice => "not an output device",
+        AudioDetailKind.NotInputDevice => "not an input device",
+        AudioDetailKind.AudioServiceDown => "Windows Audio service not running",
+        _ => arg ?? "",
+    };
+
+    /// <summary>The detail of a track as the status line showed it: the source's detail, with ", mix only" for a track that is only part of the mix; null for none.</summary>
+    public static string? Detail(AudioDetail? info, bool mixOnly)
+    {
+        string? detail = info?.English;
+        return mixOnly ? (detail == null ? "mix only" : detail + ", mix only") : detail;
+    }
+}
+
+/// <param name="ProblemKind">None for an active endpoint; otherwise why it cannot be used right now (not connected, disabled).</param>
+internal sealed record AudioDeviceInfo(string Id, string Name, AudioProblemKind ProblemKind = AudioProblemKind.None)
+{
+    /// <summary>null for an active endpoint; otherwise why it cannot be used right now, in English ("not connected", "disabled").</summary>
+    public string? Problem => AudioText.Problem(ProblemKind);
+}
 
 /// <summary>Base for WASAPI capture sources that deliver 48 kHz stereo float packets with QPC timestamps.</summary>
 internal abstract unsafe class WasapiSource : IDisposable
@@ -32,9 +149,13 @@ internal abstract unsafe class WasapiSource : IDisposable
 
     public abstract string Name { get; }
     /// <summary>What is actually being captured, for the status line: the chosen device's name, the process; null when there is nothing to add to the track name.</summary>
-    public string? Detail { get; protected set; }
+    public string? Detail => DetailInfo?.English;
+    /// <summary><see cref="Detail"/> as kind + argument (what the UI translates). Set where the detail is: always together, as one immutable value.</summary>
+    public AudioDetail? DetailInfo { get; protected set; }
     public bool IsRunning => _running;
-    public string? LastError { get; protected set; }
+    public string? LastError => LastErrorInfo?.English;
+    /// <summary><see cref="LastError"/> as kind + argument.</summary>
+    public AudioDetail? LastErrorInfo { get; protected set; }
 
     protected abstract IAudioClient* Activate();
     protected virtual uint ExtraStreamFlags => 0;
@@ -61,7 +182,7 @@ internal abstract unsafe class WasapiSource : IDisposable
         }
         catch (Exception ex)
         {
-            LastError = Explain(ex.HResult) ?? ex.Message;
+            LastErrorInfo = Explain(ex.HResult) ?? AudioDetail.Other(ex.Message);
             _failures++;
             _nextRetry = DateTime.UtcNow + TimeSpan.FromSeconds(Math.Min(MaxRetrySeconds, 2 * _failures));
             if (_failures <= 2) Log.Warn($"Audio source '{Name}' failed to start: {ex.Message}");
@@ -71,14 +192,13 @@ internal abstract unsafe class WasapiSource : IDisposable
     }
 
     /// <summary>What a failure means in plain words for the status line ("○ Mic (not connected or disabled)"), or null when there is no better text than the raw error.</summary>
-    private string? Explain(int hr) => (uint)hr switch
+    private AudioDetail? Explain(int hr) => (uint)hr switch
     {
-        0x88890004 or 0x80070490 => "not connected or disabled",                   // AUDCLNT_E_DEVICE_INVALIDATED, E_NOTFOUND
-        0x8889000A => "in use by another app (exclusive mode)",                       // AUDCLNT_E_DEVICE_IN_USE
-        0x80070005 => IsLoopback ? "access denied"
-            : "blocked: allow microphone access for desktop apps in Windows privacy settings",   // E_ACCESSDENIED
-        0x88890003 => IsLoopback ? "not an output device" : "not an input device", // AUDCLNT_E_WRONG_ENDPOINT_TYPE
-        0x88890010 => "Windows Audio service not running",                            // AUDCLNT_E_SERVICE_NOT_RUNNING
+        0x88890004 or 0x80070490 => new AudioDetail(AudioDetailKind.NotConnectedOrDisabled),   // AUDCLNT_E_DEVICE_INVALIDATED, E_NOTFOUND
+        0x8889000A => new AudioDetail(AudioDetailKind.InUseExclusive),                         // AUDCLNT_E_DEVICE_IN_USE
+        0x80070005 => new AudioDetail(IsLoopback ? AudioDetailKind.AccessDenied : AudioDetailKind.MicBlocked),   // E_ACCESSDENIED
+        0x88890003 => new AudioDetail(IsLoopback ? AudioDetailKind.NotOutputDevice : AudioDetailKind.NotInputDevice),   // AUDCLNT_E_WRONG_ENDPOINT_TYPE
+        0x88890010 => new AudioDetail(AudioDetailKind.AudioServiceDown),                       // AUDCLNT_E_SERVICE_NOT_RUNNING
         _ => null,
     };
 
@@ -181,7 +301,7 @@ internal abstract unsafe class WasapiSource : IDisposable
         }
         catch (Exception ex)
         {
-            LastError = Explain(ex.HResult) ?? ex.Message;
+            LastErrorInfo = Explain(ex.HResult) ?? AudioDetail.Other(ex.Message);
             Log.Warn($"Audio source '{Name}' error: {ex.Message}");
             Stop();
             return false;
@@ -190,7 +310,7 @@ internal abstract unsafe class WasapiSource : IDisposable
 
     private void Fail(HRESULT hr)
     {
-        LastError = Explain(hr.Value) ?? $"0x{(uint)hr.Value:X8}";
+        LastErrorInfo = Explain(hr.Value) ?? AudioDetail.Other($"0x{(uint)hr.Value:X8}");
         if (hr == HRESULT.AUDCLNT_E_DEVICE_INVALIDATED) Log.Info($"Audio source '{Name}': device invalidated, will retry");
         else Log.Warn($"Audio source '{Name}' capture failed 0x{(uint)hr.Value:X8}");
         Stop();
@@ -294,11 +414,11 @@ internal abstract unsafe class WasapiSource : IDisposable
                     PInvoke.CoTaskMemFree(id.Value);
                     var state = DEVICE_STATE.DEVICE_STATE_ACTIVE;
                     if (includeInactive && dev->GetState(out DEVICE_STATE st).Succeeded) state = st;
-                    string? problem = state switch
+                    var problem = state switch
                     {
-                        DEVICE_STATE.DEVICE_STATE_ACTIVE => null,
-                        DEVICE_STATE.DEVICE_STATE_DISABLED => "disabled",
-                        _ => "not connected",
+                        DEVICE_STATE.DEVICE_STATE_ACTIVE => AudioProblemKind.None,
+                        DEVICE_STATE.DEVICE_STATE_DISABLED => AudioProblemKind.Disabled,
+                        _ => AudioProblemKind.NotConnected,
                     };
                     list.Add(new AudioDeviceInfo(idStr, FriendlyName(dev) ?? idStr, problem));
                 }
@@ -361,7 +481,7 @@ internal sealed unsafe class EndpointSource : WasapiSource
                 en->GetDefaultAudioEndpoint(Flow, ERole.eConsole, &dev).Check("GetDefaultAudioEndpoint");
                 _defaultId = EndpointId(dev);
             }
-            Detail = FriendlyName(dev);   // confirms in the status line which device the pick (or the Windows default) resolved to
+            DetailInfo = AudioDetail.Named(FriendlyName(dev));   // confirms in the status line which device the pick (or the Windows default) resolved to
             Guid iid = IAudioClient.IID_Guid;
             void* p;
             dev->Activate(&iid, CLSCTX.CLSCTX_ALL, null, &p).Check("IMMDevice.Activate(IAudioClient)");
@@ -413,12 +533,12 @@ internal sealed unsafe class ProcessSource : WasapiSource
     public bool Include { get; }
     public override string Name { get; }
 
-    public ProcessSource(uint pid, bool include, string name, string? detail = null)
+    public ProcessSource(uint pid, bool include, string name, AudioDetail? detail = null)
     {
         ProcessId = pid;
         Include = include;
         Name = name;
-        Detail = detail;
+        DetailInfo = detail;
     }
 
     protected override uint ExtraStreamFlags => PInvoke.AUDCLNT_STREAMFLAGS_LOOPBACK;

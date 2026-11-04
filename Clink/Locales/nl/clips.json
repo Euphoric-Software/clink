@@ -1,0 +1,424 @@
+{
+  "Archived {date} → {folder}": "Gearchiveerd op {date} → {folder}",
+  "Cancelled.": "Geannuleerd.",
+  "Cancelled. {saved} of {total} saved.": "Geannuleerd. {saved} van {total} opgeslagen.",
+  "Choose a folder outside Clink's clips folder": "Kies een map buiten de clipsmap van Clink",
+  "Clear selection": "Selectie wissen",
+  "Clear selection ({keys})": "Selectie wissen ({keys})",
+  "Click to copy the link": "Klik om de link te kopiëren",
+  "Clink couldn't reach this clip's file. Check that its drive and folder are available, then try again.": "Clink heeft geen toegang tot het bestand van deze clip. Controleer of de schijf en map beschikbaar zijn en probeer het opnieuw.",
+  "Clink only deletes clips that are in the clips or archive folder.": "Clink verwijdert alleen clips die in de clips- of archiefmap staan.",
+  "Clip will be moved to the Recycle Bin, where you can restore it.": "De clip wordt naar de Prullenbak verplaatst, waar je hem kunt terugzetten.",
+  "Close the trim window for this clip first.": "Sluit eerst het venster Inkorten van deze clip.",
+  "Copy files": "Bestanden kopiëren",
+  "Copy links": "Links kopiëren",
+  "Copy the Copium links of the selected clips, one per line": "De Copium-links van de geselecteerde clips kopiëren, één per regel",
+  "Copy the Copium links, one per line": "De Copium-links kopiëren, één per regel",
+  "Copy the files, then paste them into Discord or a folder with {paste} ({copy} in this window does the same)": "Kopieer de bestanden en plak ze met {paste} in Discord of een map ({copy} in dit venster doet hetzelfde)",
+  "Could not copy the files: {error}": "Kan de bestanden niet kopiëren: {error}",
+  "Could not open the screenshot: it is not in the screenshots folder, or it is gone": "Kan de screenshot niet openen: hij staat niet in de map met screenshots of bestaat niet meer",
+  "Delete (to the Recycle Bin)": "Verwijderen (naar de Prullenbak)",
+  "Delete clip": "Clip verwijderen",
+  "Delete clip?": "Clip verwijderen?",
+  "Delete full clip only": "Alleen volledige clip verwijderen",
+  "Delete goes straight to the Recycle Bin from now on. Settings, Alerts, Reset \"Don't show again\" brings this question back": "Verwijderen gaat voortaan rechtstreeks naar de Prullenbak. Via Instellingen, Meldingen, \"Niet meer tonen\" opnieuw instellen komt deze vraag terug",
+  "Delete is only available for screenshots on a local fixed drive": "Verwijderen kan alleen voor screenshots op een lokale vaste schijf",
+  "Delete screenshot": "Screenshot verwijderen",
+  "Deleting…": "Verwijderen…",
+  "Do not ask again": "Niet meer vragen",
+  "Drag or copy the files into Discord, a browser or a folder": "Sleep of kopieer de bestanden naar Discord, een browser of een map",
+  "Drag the files where you want them, or copy them:": "Sleep de bestanden naar de gewenste plek, of kopieer ze:",
+  "Dropped. The originals stay in your library.": "Neergezet. De originelen blijven in je bibliotheek.",
+  "Edit screenshot": "Screenshot bewerken",
+  "File copied. Paste with {keys} into Discord or a folder.": "Bestand gekopieerd. Plak met {keys} in Discord of een map.",
+  "Files copied. Paste with {keys} into Discord or a folder.": "Bestanden gekopieerd. Plak met {keys} in Discord of een map.",
+  "Its file is already gone. Use Remove from list.": "Het bestand bestaat niet meer. Gebruik Uit lijst verwijderen.",
+  "Its trims can't be deleted right now: one can't be moved to the Recycle Bin.": "De ingekorte versies kunnen nu niet worden verwijderd: één kan niet naar de Prullenbak worden verplaatst.",
+  "Its trims can't be deleted right now: one can't be reached.": "De ingekorte versies kunnen nu niet worden verwijderd: één is niet toegankelijk.",
+  "Its trims can't be deleted right now: one is a shortcut to another location.": "De ingekorte versies kunnen nu niet worden verwijderd: één is een snelkoppeling naar een andere locatie.",
+  "Its trims can't be deleted right now: one is already being deleted.": "De ingekorte versies kunnen nu niet worden verwijderd: één wordt al verwijderd.",
+  "Its trims can't be deleted right now: one is on a network or removable drive.": "De ingekorte versies kunnen nu niet worden verwijderd: één staat op een netwerk- of verwisselbare schijf.",
+  "Its trims can't be deleted right now: one is open in the trim window.": "De ingekorte versies kunnen nu niet worden verwijderd: één is geopend in het venster Inkorten.",
+  "Its trims can't be deleted right now: one is outside the clips and archive folders.": "De ingekorte versies kunnen nu niet worden verwijderd: één staat buiten de clips- en archiefmappen.",
+  "Its trims can't be deleted right now: one is uploading.": "De ingekorte versies kunnen nu niet worden verwijderd: één wordt geüpload.",
+  "Its trims stay in the list.": "De ingekorte versies blijven in de lijst.",
+  "Link copied to clipboard": "Link naar klembord gekopieerd",
+  "Local only (not shared, not archived)": "Alleen lokaal (niet gedeeld, niet gearchiveerd)",
+  "Looking for the files…": "Bestanden zoeken…",
+  "Move '{name}' to the Recycle Bin? If it cannot go to the Recycle Bin, Windows asks again before anything is deleted for good.": "'{name}' naar de Prullenbak verplaatsen? Als het niet naar de Prullenbak kan, vraagt Windows opnieuw om bevestiging voordat iets definitief wordt verwijderd.",
+  "Move '{name}' to the Recycle Bin? The link stays on Copium. If it cannot go to the Recycle Bin, Windows asks again before anything is deleted for good.": "'{name}' naar de Prullenbak verplaatsen? De link blijft op Copium bestaan. Als het niet naar de Prullenbak kan, vraagt Windows opnieuw om bevestiging voordat iets definitief wordt verwijderd.",
+  "Move the selected clips to the Recycle Bin": "De geselecteerde clips naar de Prullenbak verplaatsen",
+  "Move the selected files to the Recycle Bin": "De geselecteerde bestanden naar de Prullenbak verplaatsen",
+  "No Copium token yet, so there is no link to copy. Share the files themselves:": "Nog geen Copium-token, dus er is geen link om te kopiëren. Deel de bestanden zelf:",
+  "No clips yet. Press the hotkey while gaming.": "Nog geen clips. Druk tijdens het gamen op de sneltoets.",
+  "No screenshots yet — press {keys}": "Nog geen screenshots — druk op {keys}",
+  "No shared screenshots": "Geen gedeelde screenshots",
+  "No trimmed clips are shared.": "Er zijn geen ingekorte clips gedeeld.",
+  "No trimmed clips yet. Trim saves a cut copy next to the original.": "Nog geen ingekorte clips. Inkorten slaat een ingekorte kopie naast het origineel op.",
+  "None of the files could be reached": "Geen van de bestanden was toegankelijk",
+  "None of the files could be reached.": "Geen van de bestanden was toegankelijk.",
+  "Not deleted: close the editor first": "Niet verwijderd: sluit eerst de editor",
+  "Not deleted: not a file in the screenshots folder": "Niet verwijderd: geen bestand in de map met screenshots",
+  "Not deleted: the file could not be moved to the Recycle Bin (or the Windows confirmation was declined)": "Niet verwijderd: het bestand kon niet naar de Prullenbak worden verplaatst (of de bevestiging van Windows is geweigerd)",
+  "Not uploaded": "Niet geüpload",
+  "Not uploaded: cloud sharing is off": "Niet geüpload: delen via de cloud staat uit",
+  "Nothing shared to Copium yet. Clips shared to Copium are listed here, even after the local file is gone.": "Nog niets gedeeld op Copium. Clips die je op Copium deelt, staan hier, ook als het lokale bestand weg is.",
+  "Nothing was deleted.": "Er is niets verwijderd.",
+  "Nothing was deleted: one of its trims couldn't be moved to the Recycle Bin.": "Er is niets verwijderd: een van de ingekorte versies kon niet naar de Prullenbak worden verplaatst.",
+  "Nothing was deleted: one of its trims couldn't be reached.": "Er is niets verwijderd: een van de ingekorte versies was niet toegankelijk.",
+  "Nothing was deleted: one of its trims is a shortcut to another location.": "Er is niets verwijderd: een van de ingekorte versies is een snelkoppeling naar een andere locatie.",
+  "Nothing was deleted: one of its trims is already being deleted.": "Er is niets verwijderd: een van de ingekorte versies wordt al verwijderd.",
+  "Nothing was deleted: one of its trims is on a network or removable drive.": "Er is niets verwijderd: een van de ingekorte versies staat op een netwerk- of verwisselbare schijf.",
+  "Nothing was deleted: one of its trims is open in the trim window.": "Er is niets verwijderd: een van de ingekorte versies is geopend in het venster Inkorten.",
+  "Nothing was deleted: one of its trims is outside the clips and archive folders.": "Er is niets verwijderd: een van de ingekorte versies staat buiten de clips- en archiefmappen.",
+  "Nothing was deleted: one of its trims is uploading.": "Er is niets verwijderd: een van de ingekorte versies wordt geüpload.",
+  "Nothing was deleted: the clip couldn't be moved to the Recycle Bin.": "Er is niets verwijderd: de clip kon niet naar de Prullenbak worden verplaatst.",
+  "Nothing was deleted: the clip couldn't be reached.": "Er is niets verwijderd: de clip was niet toegankelijk.",
+  "Nothing was deleted: the clip is a shortcut to another location.": "Er is niets verwijderd: de clip is een snelkoppeling naar een andere locatie.",
+  "Nothing was deleted: the clip is on a network or removable drive.": "Er is niets verwijderd: de clip staat op een netwerk- of verwisselbare schijf.",
+  "Nothing was deleted: the clip is open in the trim window.": "Er is niets verwijderd: de clip is geopend in het venster Inkorten.",
+  "Nothing was deleted: the clip is outside the clips and archive folders.": "Er is niets verwijderd: de clip staat buiten de clips- en archiefmappen.",
+  "Nothing was deleted: the clip is uploading.": "Er is niets verwijderd: de clip wordt geüpload.",
+  "Nothing was deleted: the screenshots are uploading.": "Er is niets verwijderd: de screenshots worden geüpload.",
+  "Nothing was deleted: the screenshots can't be deleted right now.": "Er is niets verwijderd: de screenshots kunnen nu niet worden verwijderd.",
+  "Nothing was saved.": "Er is niets opgeslagen.",
+  "Nothing was uploaded.": "Er is niets geüpload.",
+  "Open in the default image viewer": "Openen in de standaardviewer voor afbeeldingen",
+  "Open page": "Pagina openen",
+  "Open screenshot": "Screenshot openen",
+  "Open the clip on copium.pics": "De clip openen op copium.pics",
+  "Open the screenshot on copium.pics": "De screenshot openen op copium.pics",
+  "Open the share window: drag the files into Discord, a browser or a folder": "Het deelvenster openen: sleep de bestanden naar Discord, een browser of een map",
+  "Remove '{name}' from the list? Its file is already gone.": "'{name}' uit de lijst verwijderen? Het bestand bestaat niet meer.",
+  "Remove '{name}' from the list? Its file is already gone. The link stays on Copium.": "'{name}' uit de lijst verwijderen? Het bestand bestaat niet meer. De link blijft op Copium bestaan.",
+  "Remove from this list. The link stays on Copium": "Uit deze lijst verwijderen. De link blijft op Copium bestaan",
+  "S_ave copies…": "Kopieën _opslaan…",
+  "Save copies of the selected clip files to another folder": "Kopieën van de geselecteerde clipbestanden opslaan in een andere map",
+  "Saving copies…": "Kopieën opslaan…",
+  "Saving {index} of {total}…": "{index} van {total} opslaan…",
+  "Screenshots list": "Lijst met screenshots",
+  "Select {title}, {date}": "{title} selecteren, {date}",
+  "Select Clip, {date}": "Clip selecteren, {date}",
+  "Select Trimmed clip, {date}": "Ingekorte clip selecteren, {date}",
+  "Select Screenshot, {date}": "Screenshot selecteren, {date}",
+  "Share files": "Bestanden delen",
+  "Shared to Copium": "Gedeeld op Copium",
+  "Show in folder": "Tonen in map",
+  "Show only trimmed clips": "Alleen ingekorte clips tonen",
+  "Show the first file in its folder": "Het eerste bestand tonen in de map",
+  "Show the local file in its folder": "Het lokale bestand tonen in de map",
+  "Sign in with Copium under App → Copium: Share then uploads clips and copies the link (after you agree once)": "Inloggen met Copium onder App → Copium: Delen uploadt dan clips en kopieert de link (nadat je eenmalig akkoord bent gegaan)",
+  "Something went wrong: {error}": "Er ging iets mis: {error}",
+  "Stop after the current upload; links already made stay": "Stoppen na de huidige upload; links die al zijn gemaakt blijven",
+  "Stop saving; copies already made stay": "Stoppen met opslaan; kopieën die al zijn gemaakt blijven",
+  "Stopped: {error}.": "Gestopt: {error}.",
+  "Stopping after this one…": "Stoppen na deze…",
+  "That is not a valid file name": "Dit is geen geldige bestandsnaam",
+  "That is the clip's own file": "Dat is het eigen bestand van de clip",
+  "The file could not be reached.": "Het bestand was niet toegankelijk.",
+  "The file was removed from disk but the list could not be updated": "Het bestand is van de schijf verwijderd, maar de lijst kon niet worden bijgewerkt",
+  "The files are in different folders": "De bestanden staan in verschillende mappen",
+  "The links stay on Copium.": "De links blijven op Copium bestaan.",
+  "The screenshot file is gone, or it is not in the screenshots folder": "Het screenshotbestand bestaat niet meer of staat niet in de map met screenshots",
+  "The shared link keeps working.": "De gedeelde link blijft werken.",
+  "The shared links keep working.": "De gedeelde links blijven werken.",
+  "There are no links to copy": "Er zijn geen links om te kopiëren",
+  "This clip is a shortcut to another location, so Clink won't delete it.": "Deze clip is een snelkoppeling naar een andere locatie, dus Clink verwijdert hem niet.",
+  "This clip is being saved. Delete it after the save finishes.": "Deze clip wordt opgeslagen. Verwijder hem nadat het opslaan klaar is.",
+  "This clip is on a network or removable drive, where the Recycle Bin can't take it.": "Deze clip staat op een netwerk- of verwisselbare schijf, waar de Prullenbak hem niet kan verwerken.",
+  "This clip is uploading. Delete it after the upload finishes.": "Deze clip wordt geüpload. Verwijder hem nadat het uploaden klaar is.",
+  "This screenshot is uploading. Delete it after the upload finishes.": "Deze screenshot wordt geüpload. Verwijder hem nadat het uploaden klaar is.",
+  "Trimmed clip": "Ingekorte clip",
+  "Trimmed clip will be moved to the Recycle Bin, where you can restore it.": "De ingekorte clip wordt naar de Prullenbak verplaatst, waar je hem kunt terugzetten.",
+  "Upload the clips that have no link yet, then copy all links": "De clips zonder link uploaden en daarna alle links kopiëren",
+  "Upload the screenshots that have no link yet, then copy all links": "De screenshots zonder link uploaden en daarna alle links kopiëren",
+  "Uploading {index} of {total}…": "{index} van {total} uploaden…",
+  "Uploading {index} of {total}… {percent}": "{index} van {total} uploaden… {percent}",
+  "Use Copy links to try again.": "Probeer het opnieuw met Links kopiëren.",
+  "Windows couldn't move this clip to the Recycle Bin, so it was not deleted.": "Windows kon deze clip niet naar de Prullenbak verplaatsen, dus hij is niet verwijderd.",
+  "_Copy links": "_Links kopiëren",
+  "_Share files…": "Bestanden _delen…",
+  "_Upload and copy links": "_Uploaden en links kopiëren",
+  "archive offline": "archief offline",
+  "archive offline: cannot open its folder right now": "archief offline: kan de map nu niet openen",
+  "archive offline: cannot play it right now": "archief offline: kan nu niet afspelen",
+  "archive offline: cannot save right now": "archief offline: kan nu niet opslaan",
+  "archive offline: cannot share right now": "archief offline: kan nu niet delen",
+  "archive offline: cannot trim right now": "archief offline: kan nu niet inkorten",
+  "deleted from the archive": "verwijderd uit het archief",
+  "file deleted": "bestand verwijderd",
+  "filter|Trimmed": "Ingekort",
+  "in the archive": "in het archief",
+  "level|Local": "Lokaal",
+  "level|Local {count}": "Lokaal {count}",
+  "level|Shared": "Gedeeld",
+  "level|Shared {count}": "Gedeeld {count}",
+  "local file deleted": "lokaal bestand verwijderd",
+  "screenshot|Uploaded": "Geüpload",
+  "selection|Clear": "Wissen",
+  "{error}.": "{error}.",
+  "{file} is gone (deleted or moved outside Clink)": "{file} bestaat niet meer (verwijderd of buiten Clink om verplaatst)",
+  "{file} is no longer in the archive": "{file} staat niet meer in het archief",
+  "{game} (trim)": "{game} (ingekort)",
+  "{title} will be moved to the Recycle Bin, where you can restore it.": "De clip van {title} wordt naar de Prullenbak verplaatst, waar je hem kunt terugzetten.",
+  "Clip has {count} trims. Delete just the full clip, or the clip and its trims? Everything goes to the Recycle Bin, where you can restore it.": {
+    "one": "Clip heeft {count} ingekorte versie. Alleen de volledige clip verwijderen, of de clip en de ingekorte versie? Alles gaat naar de Prullenbak, waar je het kunt terugzetten.",
+    "other": "Clip heeft {count} ingekorte versies. Alleen de volledige clip verwijderen, of de clip en de ingekorte versies? Alles gaat naar de Prullenbak, waar je het kunt terugzetten."
+  },
+  "Delete clip and {count} trims": {
+    "one": "Clip en {count} ingekorte versie verwijderen",
+    "other": "Clip en {count} ingekorte versies verwijderen"
+  },
+  "Delete {count} clips?": {
+    "one": "{count} clip verwijderen?",
+    "other": "{count} clips verwijderen?"
+  },
+  "Delete {count} screenshots?": {
+    "one": "{count} screenshot verwijderen?",
+    "other": "{count} screenshots verwijderen?"
+  },
+  "Deleted {count} clips": {
+    "one": "{count} clip verwijderd",
+    "other": "{count} clips verwijderd"
+  },
+  "Deleted {count} screenshots.": {
+    "one": "{count} screenshot verwijderd.",
+    "other": "{count} screenshots verwijderd."
+  },
+  "Deleted {deleted} of {count} files. One of its trims couldn't be moved to the Recycle Bin. The clip and the remaining trims were kept.": {
+    "one": "{deleted} van {count} bestanden verwijderd. Eén van de ingekorte versies kon niet naar de Prullenbak worden verplaatst. De clip en de overige ingekorte versies zijn bewaard.",
+    "other": "{deleted} van {count} bestanden verwijderd. Eén van de ingekorte versies kon niet naar de Prullenbak worden verplaatst. De clip en de overige ingekorte versies zijn bewaard."
+  },
+  "Deleted {deleted} of {count} files. One of its trims couldn't be reached. The clip and the remaining trims were kept.": {
+    "one": "{deleted} van {count} bestanden verwijderd. Eén van de ingekorte versies was niet toegankelijk. De clip en de overige ingekorte versies zijn bewaard.",
+    "other": "{deleted} van {count} bestanden verwijderd. Eén van de ingekorte versies was niet toegankelijk. De clip en de overige ingekorte versies zijn bewaard."
+  },
+  "Deleted {deleted} of {count} files. One of its trims is a shortcut to another location. The clip and the remaining trims were kept.": {
+    "one": "{deleted} van {count} bestanden verwijderd. Eén van de ingekorte versies is een snelkoppeling naar een andere locatie. De clip en de overige ingekorte versies zijn bewaard.",
+    "other": "{deleted} van {count} bestanden verwijderd. Eén van de ingekorte versies is een snelkoppeling naar een andere locatie. De clip en de overige ingekorte versies zijn bewaard."
+  },
+  "Deleted {deleted} of {count} files. One of its trims is on a network or removable drive. The clip and the remaining trims were kept.": {
+    "one": "{deleted} van {count} bestanden verwijderd. Eén van de ingekorte versies staat op een netwerk- of verwisselbare schijf. De clip en de overige ingekorte versies zijn bewaard.",
+    "other": "{deleted} van {count} bestanden verwijderd. Eén van de ingekorte versies staat op een netwerk- of verwisselbare schijf. De clip en de overige ingekorte versies zijn bewaard."
+  },
+  "Deleted {deleted} of {count} files. One of its trims is open in the trim window. The clip and the remaining trims were kept.": {
+    "one": "{deleted} van {count} bestanden verwijderd. Eén van de ingekorte versies is geopend in het venster Inkorten. De clip en de overige ingekorte versies zijn bewaard.",
+    "other": "{deleted} van {count} bestanden verwijderd. Eén van de ingekorte versies is geopend in het venster Inkorten. De clip en de overige ingekorte versies zijn bewaard."
+  },
+  "Deleted {deleted} of {count} files. One of its trims is outside the clips and archive folders. The clip and the remaining trims were kept.": {
+    "one": "{deleted} van {count} bestanden verwijderd. Eén van de ingekorte versies staat buiten de clips- en archiefmappen. De clip en de overige ingekorte versies zijn bewaard.",
+    "other": "{deleted} van {count} bestanden verwijderd. Eén van de ingekorte versies staat buiten de clips- en archiefmappen. De clip en de overige ingekorte versies zijn bewaard."
+  },
+  "Deleted {deleted} of {count} files. One of its trims is uploading. The clip and the remaining trims were kept.": {
+    "one": "{deleted} van {count} bestanden verwijderd. Eén van de ingekorte versies wordt geüpload. De clip en de overige ingekorte versies zijn bewaard.",
+    "other": "{deleted} van {count} bestanden verwijderd. Eén van de ingekorte versies wordt geüpload. De clip en de overige ingekorte versies zijn bewaard."
+  },
+  "Deleted {deleted} of {count} files. The clip couldn't be moved to the Recycle Bin, so it was kept.": {
+    "one": "{deleted} van {count} bestanden verwijderd. De clip kon niet naar de Prullenbak worden verplaatst en is dus bewaard.",
+    "other": "{deleted} van {count} bestanden verwijderd. De clip kon niet naar de Prullenbak worden verplaatst en is dus bewaard."
+  },
+  "Deleted {deleted} of {count} files. The clip couldn't be reached, so it was kept.": {
+    "one": "{deleted} van {count} bestanden verwijderd. De clip was niet toegankelijk en is dus bewaard.",
+    "other": "{deleted} van {count} bestanden verwijderd. De clip was niet toegankelijk en is dus bewaard."
+  },
+  "Deleted {deleted} of {count} files. The clip is a shortcut to another location, so it was kept.": {
+    "one": "{deleted} van {count} bestanden verwijderd. De clip is een snelkoppeling naar een andere locatie en is dus bewaard.",
+    "other": "{deleted} van {count} bestanden verwijderd. De clip is een snelkoppeling naar een andere locatie en is dus bewaard."
+  },
+  "Deleted {deleted} of {count} files. The clip is on a network or removable drive, so it was kept.": {
+    "one": "{deleted} van {count} bestanden verwijderd. De clip staat op een netwerk- of verwisselbare schijf en is dus bewaard.",
+    "other": "{deleted} van {count} bestanden verwijderd. De clip staat op een netwerk- of verwisselbare schijf en is dus bewaard."
+  },
+  "Deleted {deleted} of {count} files. The clip is open in the trim window, so it was kept.": {
+    "one": "{deleted} van {count} bestanden verwijderd. De clip is geopend in het venster Inkorten en is dus bewaard.",
+    "other": "{deleted} van {count} bestanden verwijderd. De clip is geopend in het venster Inkorten en is dus bewaard."
+  },
+  "Deleted {deleted} of {count} files. The clip is outside the clips and archive folders, so it was kept.": {
+    "one": "{deleted} van {count} bestanden verwijderd. De clip staat buiten de clips- en archiefmappen en is dus bewaard.",
+    "other": "{deleted} van {count} bestanden verwijderd. De clip staat buiten de clips- en archiefmappen en is dus bewaard."
+  },
+  "Deleted {deleted} of {count} files. The clip is uploading, so it was kept.": {
+    "one": "{deleted} van {count} bestanden verwijderd. De clip wordt geüpload en is dus bewaard.",
+    "other": "{deleted} van {count} bestanden verwijderd. De clip wordt geüpload en is dus bewaard."
+  },
+  "Deleted {deleted} of {total}. {count} were kept.": {
+    "one": "{deleted} van {total} verwijderd. {count} is bewaard.",
+    "other": "{deleted} van {total} verwijderd. {count} zijn bewaard."
+  },
+  "Deleted {deleted} of {total}. {count} were kept: one can't be moved to the Recycle Bin.": {
+    "one": "{deleted} van {total} verwijderd. {count} is bewaard: hij kan niet naar de Prullenbak worden verplaatst.",
+    "other": "{deleted} van {total} verwijderd. {count} zijn bewaard: één kan niet naar de Prullenbak worden verplaatst."
+  },
+  "Deleted {deleted} of {total}. {count} were kept: one can't be reached.": {
+    "one": "{deleted} van {total} verwijderd. {count} is bewaard: hij is niet toegankelijk.",
+    "other": "{deleted} van {total} verwijderd. {count} zijn bewaard: één is niet toegankelijk."
+  },
+  "Deleted {deleted} of {total}. {count} were kept: one is a shortcut to another location.": {
+    "one": "{deleted} van {total} verwijderd. {count} is bewaard: hij is een snelkoppeling naar een andere locatie.",
+    "other": "{deleted} van {total} verwijderd. {count} zijn bewaard: één is een snelkoppeling naar een andere locatie."
+  },
+  "Deleted {deleted} of {total}. {count} were kept: one is on a network or removable drive.": {
+    "one": "{deleted} van {total} verwijderd. {count} is bewaard: hij staat op een netwerk- of verwisselbare schijf.",
+    "other": "{deleted} van {total} verwijderd. {count} zijn bewaard: één staat op een netwerk- of verwisselbare schijf."
+  },
+  "Deleted {deleted} of {total}. {count} were kept: one is open in the trim window.": {
+    "one": "{deleted} van {total} verwijderd. {count} is bewaard: hij is geopend in het venster Inkorten.",
+    "other": "{deleted} van {total} verwijderd. {count} zijn bewaard: één is geopend in het venster Inkorten."
+  },
+  "Deleted {deleted} of {total}. {count} were kept: one is outside the clips and archive folders.": {
+    "one": "{deleted} van {total} verwijderd. {count} is bewaard: hij staat buiten de clips- en archiefmappen.",
+    "other": "{deleted} van {total} verwijderd. {count} zijn bewaard: één staat buiten de clips- en archiefmappen."
+  },
+  "Deleted {deleted} of {total}. {count} were kept: one is uploading.": {
+    "one": "{deleted} van {total} verwijderd. {count} is bewaard: hij wordt geüpload.",
+    "other": "{deleted} van {total} verwijderd. {count} zijn bewaard: één wordt geüpload."
+  },
+  "Discord takes up to {count} files per message": {
+    "one": "Discord accepteert maximaal {count} bestand per bericht",
+    "other": "Discord accepteert maximaal {count} bestanden per bericht"
+  },
+  "Hide {count} trims of Clip": {
+    "one": "{count} ingekorte versie van Clip verbergen",
+    "other": "{count} ingekorte versies van Clip verbergen"
+  },
+  "Hide {count} trims of Trimmed clip": {
+    "one": "{count} ingekorte versie van Ingekorte clip verbergen",
+    "other": "{count} ingekorte versies van Ingekorte clip verbergen"
+  },
+  "Hide {count} trims of {title}": {
+    "one": "{count} ingekorte versie van {title} verbergen",
+    "other": "{count} ingekorte versies van {title} verbergen"
+  },
+  "Saved {count} copies.": {
+    "one": "{count} kopie opgeslagen.",
+    "other": "{count} kopieën opgeslagen."
+  },
+  "Saved {saved} of {count} copies.": {
+    "one": "{saved} van {count} kopie opgeslagen.",
+    "other": "{saved} van {count} kopieën opgeslagen."
+  },
+  "Select up to {count} files to share at once": {
+    "one": "Selecteer maximaal {count} bestand om in één keer te delen",
+    "other": "Selecteer maximaal {count} bestanden om in één keer te delen"
+  },
+  "Share {count} clips": {
+    "one": "{count} clip delen",
+    "other": "{count} clips delen"
+  },
+  "Share {count} screenshots": {
+    "one": "{count} screenshot delen",
+    "other": "{count} screenshots delen"
+  },
+  "Show {count} trims of Clip": {
+    "one": "{count} ingekorte versie van Clip tonen",
+    "other": "{count} ingekorte versies van Clip tonen"
+  },
+  "Show {count} trims of Trimmed clip": {
+    "one": "{count} ingekorte versie van Ingekorte clip tonen",
+    "other": "{count} ingekorte versies van Ingekorte clip tonen"
+  },
+  "Show {count} trims of {title}": {
+    "one": "{count} ingekorte versie van {title} tonen",
+    "other": "{count} ingekorte versies van {title} tonen"
+  },
+  "Trimmed clip has {count} trims. Delete just the full clip, or the clip and its trims? Everything goes to the Recycle Bin, where you can restore it.": {
+    "one": "Ingekorte clip heeft {count} ingekorte versie. Alleen de volledige clip verwijderen, of de clip en de ingekorte versie? Alles gaat naar de Prullenbak, waar je het kunt terugzetten.",
+    "other": "Ingekorte clip heeft {count} ingekorte versies. Alleen de volledige clip verwijderen, of de clip en de ingekorte versies? Alles gaat naar de Prullenbak, waar je het kunt terugzetten."
+  },
+  "Uploaded {count} clips.": {
+    "one": "{count} clip geüpload.",
+    "other": "{count} clips geüpload."
+  },
+  "Uploaded {count} screenshots.": {
+    "one": "{count} screenshot geüpload.",
+    "other": "{count} screenshots geüpload."
+  },
+  "Uploaded {uploaded} of {count} clips.": {
+    "one": "{uploaded} van {count} clip geüpload.",
+    "other": "{uploaded} van {count} clips geüpload."
+  },
+  "Uploaded {uploaded} of {count} screenshots.": {
+    "one": "{uploaded} van {count} screenshot geüpload.",
+    "other": "{uploaded} van {count} screenshots geüpload."
+  },
+  "{count} are too large to share.": {
+    "one": "{count} is te groot om te delen.",
+    "other": "{count} zijn te groot om te delen."
+  },
+  "{count} can't be deleted right now and will be skipped.": {
+    "one": "{count} kan nu niet worden verwijderd en wordt overgeslagen.",
+    "other": "{count} kunnen nu niet worden verwijderd en worden overgeslagen."
+  },
+  "{count} clips selected": {
+    "one": "{count} clip geselecteerd",
+    "other": "{count} clips geselecteerd"
+  },
+  "{count} clips will be moved to the Recycle Bin, where you can restore them.": {
+    "one": "{count} clip wordt naar de Prullenbak verplaatst, waar je hem kunt terugzetten.",
+    "other": "{count} clips worden naar de Prullenbak verplaatst, waar je ze kunt terugzetten."
+  },
+  "{count} could not be reached.": {
+    "one": "{count} was niet toegankelijk.",
+    "other": "{count} waren niet toegankelijk."
+  },
+  "{count} failed.": {
+    "one": "{count} is mislukt.",
+    "other": "{count} zijn mislukt."
+  },
+  "{count} failed: {error}.": {
+    "one": "{count} is mislukt: {error}.",
+    "other": "{count} zijn mislukt: {error}."
+  },
+  "{count} files": {
+    "one": "{count} bestand",
+    "other": "{count} bestanden"
+  },
+  "{count} files could not be reached and were left out.": {
+    "one": "{count} bestand was niet toegankelijk en is weggelaten.",
+    "other": "{count} bestanden waren niet toegankelijk en zijn weggelaten."
+  },
+  "{count} links are on the clipboard.": {
+    "one": "{count} link staat op het klembord.",
+    "other": "{count} links staan op het klembord."
+  },
+  "{count} links are ready but couldn't be copied to the clipboard.": {
+    "one": "{count} link is klaar maar kon niet naar het klembord worden gekopieerd.",
+    "other": "{count} links zijn klaar maar konden niet naar het klembord worden gekopieerd."
+  },
+  "{count} links copied": {
+    "one": "{count} link gekopieerd",
+    "other": "{count} links gekopieerd"
+  },
+  "{count} screenshots selected": {
+    "one": "{count} screenshot geselecteerd",
+    "other": "{count} screenshots geselecteerd"
+  },
+  "{count} screenshots will be moved to the Recycle Bin, where you can restore them.": {
+    "one": "{count} screenshot wordt naar de Prullenbak verplaatst, waar je hem kunt terugzetten.",
+    "other": "{count} screenshots worden naar de Prullenbak verplaatst, waar je ze kunt terugzetten."
+  },
+  "{count} trims": {
+    "one": "{count} ingekorte versie",
+    "other": "{count} ingekorte versies"
+  },
+  "{count} trims of the selected clips are not selected: they stay in the list and move to the top level.": {
+    "one": "{count} ingekorte versie van een geselecteerde clip is niet geselecteerd: hij blijft in de lijst en gaat naar het hoogste niveau.",
+    "other": "{count} ingekorte versies van de geselecteerde clips zijn niet geselecteerd: ze blijven in de lijst en gaan naar het hoogste niveau."
+  },
+  "{count} were busy.": {
+    "one": "{count} was bezig.",
+    "other": "{count} waren bezig."
+  },
+  "{count} were not tried.": {
+    "one": "{count} is niet geprobeerd.",
+    "other": "{count} zijn niet geprobeerd."
+  },
+  "{count} without a file were left. Use Remove from list for them.": {
+    "one": "{count} zonder bestand is in de lijst gebleven. Gebruik daarvoor Uit lijst verwijderen.",
+    "other": "{count} zonder bestand zijn in de lijst gebleven. Gebruik daarvoor Uit lijst verwijderen."
+  },
+  "{title} has {count} trims. Delete just the full clip, or the clip and its trims? Everything goes to the Recycle Bin, where you can restore it.": {
+    "one": "De clip van {title} heeft {count} ingekorte versie. Alleen de volledige clip verwijderen, of de clip en de ingekorte versie? Alles gaat naar de Prullenbak, waar je het kunt terugzetten.",
+    "other": "De clip van {title} heeft {count} ingekorte versies. Alleen de volledige clip verwijderen, of de clip en de ingekorte versies? Alles gaat naar de Prullenbak, waar je het kunt terugzetten."
+  }
+}

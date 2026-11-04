@@ -21,6 +21,7 @@ param(
     [string]$IsccPath,
     [string]$ProductVersion,   # the setup's ProductVersion text, e.g. 0.4.2-dev.11+<sha>; default: <Version>+<first 12 hex of the framework exe's commit> (just <Version> when the exe has none); max 50 characters
     [scriptblock]$SignInstaller, # optional signing callback, called before installer hashes/package.json are calculated
+    [string]$InstallerSignTool, # Inno SignTool command (contains $f); signs the embedded uninstaller, temporary copies and setup
     [switch]$SkipInstaller,     # never build the installer, even when Inno Setup is installed (CI package dry run)
     [switch]$RequireInstaller,   # fail instead of skipping when Inno Setup is missing
     [switch]$SkipSetupSizeCheck, # TEST-ONLY (the script tests use a fake ISCC that writes a tiny file): skips the "setup exe > 1 MiB" check on the ISCC output
@@ -169,6 +170,9 @@ if ($iscc) {
     $numeric = ($Version -replace '-.*$', '') + '.0'
     $iss = Join-Path $root 'installer\Clink.iss'
     $isccArguments = @("/DAppVersion=$Version", "/DAppFileVersion=$numeric", "/DAppProductVersion=$ProductVersion", "/DSourceExe=$fxOut", "/DOutDir=$OutDir", "/DNoticesFile=$noticesOut")
+    if ($InstallerSignTool) {
+        $isccArguments += '/DArtifactSigning', "/SartifactSigning=$InstallerSignTool"
+    }
     if ($runtime) {
         $isccArguments += "/DDotNetRuntimeUrl=$($runtime.Url)", "/DDotNetRuntimeSha256=$($runtime.Sha256)", "/DDotNetRuntimeVersion=$($runtime.Version)"
     } else {
@@ -186,6 +190,12 @@ if ($iscc) {
     if ($isccExit -ne 0) {
         $isccOutput | ForEach-Object { Write-Output "ISCC: $_" }
         throw "ISCC failed (exit code $isccExit)"
+    }
+    # A language that lacks one of Clink's own messages (or an Inno message) compiles with only a warning and shows English at run time: refuse it.
+    $missingTranslations = @($isccOutput | Where-Object { [string]$_ -match 'has not been defined for the "' })
+    if ($missingTranslations.Count -gt 0) {
+        $missingTranslations | ForEach-Object { Write-Output "ISCC: $_" }
+        throw "ISCC reported $($missingTranslations.Count) message(s) 'has not been defined for the ... language': every language must define every message (installer\ClinkMessages.isi)."
     }
     if (-not (Test-Path -LiteralPath $setupPath)) { throw "ISCC did not produce $setupPath" }
     # A real setup exe embeds the framework exe (megabytes); an empty or stub file means ISCC went wrong without failing.

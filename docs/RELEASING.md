@@ -76,9 +76,10 @@ Set these **repository Actions variables**, not feed-signing secrets:
 The release build jobs have `id-token: write` for OIDC and use no long-lived Azure credentials. The stable job checks
 the tagged commit is on `main` before authenticating; dev signing requires a push or dispatch on `dev`. After the
 existing build checks, both application flavours are signed and verified. `tools/package.ps1` embeds the signed
-framework executable in the installer and calls the optional installer signer before calculating its checksum and
-`package.json`. The pinned Artifact Signing action installs the PowerShell module used by that callback. A callback
-failure aborts packaging. The signed update manifests then describe the final signed bytes. PR build workflows retain no
+framework executable in the installer. Inno Setup uses the pinned Artifact Signing module through a SignTool hook to
+sign its embedded uninstaller, temporary setup copies and final setup. The verification callback runs before calculating
+the checksum and `package.json`; signing or verification failure aborts packaging. A fresh-runner installer check verifies
+the installed app and uninstaller signatures and removes the test installation. The signed update manifests then describe the final signed bytes. PR build workflows retain no
 signing access.
 
 Activation requires identity **Completed**, profile active, the profile signer assignment propagated, matching

@@ -62,7 +62,7 @@ function Invoke-ScriptChild {
     try {
         $run = Start-Process -FilePath $hostExe -ArgumentList $quoted -Wait -PassThru -NoNewWindow -RedirectStandardOutput $outFile -RedirectStandardError $errFile
         $code = $run.ExitCode
-    } finally { foreach ($key in $saved.Keys) { [Environment]::SetEnvironmentVariable($key, $saved[$key]) } }
+    } finally { foreach ($key in $saved.Keys) { if ($null -eq $saved[$key]) { Remove-Item -LiteralPath ("Env:" + $key) -ErrorAction SilentlyContinue } else { [Environment]::SetEnvironmentVariable($key, $saved[$key]) } } }
     [pscustomobject]@{ Code = $code; Out = [System.IO.File]::ReadAllText($outFile); Err = [System.IO.File]::ReadAllText($errFile) }
 }
 
@@ -244,7 +244,10 @@ try {
         $out = Get-ScratchFolder 'pkg-signed-installer'
         $fake = New-FakeIscc 'fake-iscc-signing' (Join-Path $out 'Clink-Setup.exe')
         $parameters = @{ ExePath = $scExe; FrameworkExePath = $fxExe; Version = '0.4.2'; OutDir = $out; MinRuntime = '10.0.0'; IsccPath = $fake.Cmd; RuntimeInfoPath = $runtimeInfo; RequireInstaller = $true; SkipVersionCheck = $true; SkipSetupSizeCheck = $true }
-        & $packageScript @parameters -SignInstaller { param($file) [System.IO.File]::AppendAllText($file, 'synthetic-signature') } | Out-Null
+        $tool = '$qC:\Program Files\PowerShell\7\pwsh.exe$q -File $qC:\signing tools\sign.ps1$q $f'
+        & $packageScript @parameters -InstallerSignTool $tool -SignInstaller { param($file) [System.IO.File]::AppendAllText($file, 'synthetic-signature') } | Out-Null
+        $arguments = [System.IO.File]::ReadAllText($fake.Args)
+        Assert-True ($arguments.Contains('/DArtifactSigning') -and $arguments.Contains('/SartifactSigning=' + $tool)) 'Inno signing command or enable define was lost'
         $setup = Join-Path $out 'Clink-Setup.exe'
         Assert-True ([System.IO.File]::ReadAllText($setup).EndsWith('synthetic-signature')) 'signer did not alter installer bytes'
         $hash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -288,6 +291,22 @@ try {
         Assert-True ($r.Out -notmatch 'Compiling something') "a non-warning ISCC line was echoed on success: $($r.Out)"
         Assert-True ($r.Out -match 'ISCC exit code: 0') "the exit code is not echoed: $($r.Out)"
         Assert-True (-not ([System.IO.File]::ReadAllText((Join-Path $warnDir 'iscc-args.txt')) -match '/Qp')) 'ISCC was called with /Qp, which suppresses warnings'
+    }
+
+    Invoke-Test 'package.ps1 fails when ISCC reports a message that has not been defined for a language (both ISCC wordings), with exit code 0' {
+        $i = 0
+        foreach ($warning in 'Warning: A message named "ButtonNext" has not been defined for the "hindi" language. Will use the English message from Default.isl.',
+                             'Warning: Custom message "ClinkRetryYes" has not been defined for the "arabic" language. Will use the custom message from the first language in which it was defined.') {
+            $i++
+            $o = Get-ScratchFolder "pkg-iscc-undef$i"
+            $d = Get-ScratchFolder "fake-iscc-undef$i"
+            $c = Join-Path $d 'ISCC.cmd'
+            [System.IO.File]::WriteAllText($c, "@echo off`r`necho Line 3: $warning`r`necho x> `"$(Join-Path $o 'Clink-Setup.exe')`"`r`nexit /b 0`r`n", [System.Text.Encoding]::ASCII)
+            $r = Invoke-ScriptChild $packageScript @('-ExePath', $scExe, '-FrameworkExePath', $fxExe, '-Version', '0.4.2', '-OutDir', $o, '-MinRuntime', '10.0.0', '-IsccPath', $c, '-RuntimeInfoPath', $runtimeInfo, '-RequireInstaller', '-SkipVersionCheck', '-SkipSetupSizeCheck')
+            Assert-True ($r.Code -ne 0) "a missing translation was accepted ($i): $($r.Out)"
+            Assert-True (($r.Out + $r.Err) -match 'has not been defined for the') "the missing-translation warning is not reported ($i): $($r.Out) $($r.Err)"
+            Assert-True (-not (Test-Path -LiteralPath (Join-Path $o 'package.json'))) "wrote package.json after a missing translation ($i)"
+        }
     }
 
     Invoke-Test 'package.ps1 -RequireInstaller passes all four /D values (runtime url, sha256, version, absolute NoticesFile) and lists the notices in package.json' {
@@ -405,7 +424,7 @@ try {
         [System.IO.File]::WriteAllText($partial, ('{"version":"' + $rtVersion + '","url":"' + $rtUrl + '"}'), $utf8)
         $out = Get-ScratchFolder 'pkg-refuse-partial'
         $r = Invoke-ScriptChild $packageScript ($good + @('-OutDir', $out, '-RuntimeInfoPath', $partial))
-        Assert-True ($r.Code -ne 0 -and (($r.Out + $r.Err) -match "no 'sha256'")) "a runtime info file without sha256 was not refused clearly: $($r.Out) $($r.Err)"
+        Assert-True ($r.Code -ne 0 -and (($r.Out + $r.Err) -match "(?s)has no.*'sha256'")) "a runtime info file without sha256 was not refused clearly: $($r.Out) $($r.Err)"
     }
 
     Invoke-Test 'package.ps1 without -RequireInstaller and without runtime info warns and builds the installer without the runtime defines' {

@@ -589,7 +589,7 @@ try {
         [Environment]::SetEnvironmentVariable('CLINK_FEED_SIGNING_KEY', $keyPem[$KeyIndex].Private)
         try {
             $run = Start-Process -FilePath $hostExe -ArgumentList $quoted -Wait -PassThru -NoNewWindow -RedirectStandardOutput $outFile -RedirectStandardError $errFile
-        } finally { [Environment]::SetEnvironmentVariable('CLINK_FEED_SIGNING_KEY', $null) }
+        } finally { Remove-Item -LiteralPath ("Env:" + 'CLINK_FEED_SIGNING_KEY') -ErrorAction SilentlyContinue }
         [pscustomobject]@{ Code = $run.ExitCode; Text = [System.IO.File]::ReadAllText($outFile) + [System.IO.File]::ReadAllText($errFile) }
     }
     function Assert-ManifestRefused {
@@ -996,7 +996,7 @@ try {
         $env:PATH = "$bin;$savedPath"
         foreach ($n in 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_ENDPOINT', 'R2_BUCKET') { [Environment]::SetEnvironmentVariable($n, 'x-' + $n) }
         [Environment]::SetEnvironmentVariable('R2_ENDPOINT', 'https://example.invalid')
-        [Environment]::SetEnvironmentVariable('CLINK_FEED_KEY_PREFIX', $null)
+        Remove-Item -LiteralPath ("Env:" + 'CLINK_FEED_KEY_PREFIX') -ErrorAction SilentlyContinue
         try {
             $upload = Join-Path $toolsDir 'upload-feed.ps1'
             $run = {
@@ -1018,10 +1018,12 @@ try {
             # A good base gets past the guard (and then stops at the missing manifest, still without a bucket call).
             $ok = & $run (New-FeedJsonFile 'guard-ok' -Extra '"devFeedUrl":"https://dl-dev.example/clink/",') 'dev' '0.4.2-dev.1'
             Assert-True ($ok.Code -ne 0 -and $ok.Text -notmatch "is not '/clink/'" -and $ok.Text -match 'Missing') "the good dev base did not get past the guard: $($ok.Text)"
-            Assert-True (-not (Test-Path -LiteralPath $awsLog)) "aws was called: $([System.IO.File]::ReadAllText($awsLog))"
+            # The message text is built first by PowerShell, so it must not read a log that only exists when aws WAS called.
+            $awsCalls = if (Test-Path -LiteralPath $awsLog) { [System.IO.File]::ReadAllText($awsLog) } else { '' }
+            Assert-True (-not (Test-Path -LiteralPath $awsLog)) "aws was called: $awsCalls"
         } finally {
             $env:PATH = $savedPath
-            foreach ($n in 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_ENDPOINT', 'R2_BUCKET') { [Environment]::SetEnvironmentVariable($n, $null) }
+            foreach ($n in 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_ENDPOINT', 'R2_BUCKET') { Remove-Item -LiteralPath ("Env:" + $n) -ErrorAction SilentlyContinue }
         }
     }
 
@@ -1684,7 +1686,7 @@ try {
                 $runStep = { param([string]$FeedUrl, [string]$Prefix, [string]$Extra = '')
                     Remove-Item -LiteralPath $out -ErrorAction SilentlyContinue
                     Copy-Item -LiteralPath (New-FeedJsonFile "rf-$ch" -FeedUrl $FeedUrl -Extra $Extra) -Destination $feedFile -Force
-                    [Environment]::SetEnvironmentVariable('CLINK_FEED_KEY_PREFIX', $(if ($Prefix) { $Prefix } else { $null }))
+                    if ($Prefix) { [Environment]::SetEnvironmentVariable('CLINK_FEED_KEY_PREFIX', $Prefix) } else { Remove-Item -LiteralPath 'Env:CLINK_FEED_KEY_PREFIX' -ErrorAction SilentlyContinue }
                     try { . ([scriptblock]::Create($block)) 6>$null 3>$null | Out-Null; $null } catch { $_.Exception.Message } }
                 $err = & $runStep 'https://dl.example/clink/' ''
                 Assert-True ($null -eq $err) "$name : a matching base was refused: $err"
@@ -1699,7 +1701,7 @@ try {
                 # With the feed off the step REFUSES to publish (H1) before the prefix is looked at, and writes no output.
                 $off = & { Remove-Item -LiteralPath $out -ErrorAction SilentlyContinue; [System.IO.File]::WriteAllText($feedFile, '{"schema":1,"feedUrl":"","stableKeys":[],"devKeys":[]}', $utf8); [Environment]::SetEnvironmentVariable('CLINK_FEED_KEY_PREFIX', 'evil'); try { . ([scriptblock]::Create($block)) 6>$null 3>$null | Out-Null; $null } catch { $_.Exception.Message } }
                 Assert-True ($null -ne $off -and $off -match 'refusing to publish' -and -not (Test-Path -LiteralPath $out)) "$name : the feed-off path did not refuse: $off"
-            } finally { Pop-Location; $env:GITHUB_OUTPUT = $savedOut; [Environment]::SetEnvironmentVariable('CLINK_FEED_KEY_PREFIX', $savedPrefix) }
+            } finally { Pop-Location; $env:GITHUB_OUTPUT = $savedOut; if ($null -eq $savedPrefix) { Remove-Item -LiteralPath ("Env:" + 'CLINK_FEED_KEY_PREFIX') -ErrorAction SilentlyContinue } else { [Environment]::SetEnvironmentVariable('CLINK_FEED_KEY_PREFIX', $savedPrefix) } }
         }
     }
 
@@ -1799,13 +1801,13 @@ try {
                 @('off', (New-FeedJsonFile 'ut-off' -FeedUrl '' -Stable @() -Dev @()), 'off', '', '')
             )
             foreach ($c in $cases) {
-                foreach ($n in $saved.Keys) { [Environment]::SetEnvironmentVariable($n, $null) }
+                foreach ($n in $saved.Keys) { Remove-Item -LiteralPath ("Env:" + $n) -ErrorAction SilentlyContinue }
                 $block = $head.Replace('. ./tools/feed-lib.ps1', ". '$(Join-Path $toolsDir 'feed-lib.ps1')'").Replace('Clink/Assets/feed.json', $c[1].Replace('\', '/'))
                 . ([scriptblock]::Create($block)) 6>$null | Out-Null
                 $got = @($env:CLINK_EXPECT_FEED, [string]$env:CLINK_EXPECT_FEED_URL, [string]$env:CLINK_EXPECT_DEV_FEED_URL)
                 Assert-True ($got[0] -ceq $c[2] -and $got[1] -ceq $c[3] -and $got[2] -ceq $c[4]) "$($c[0]): expected [$($c[2]) | $($c[3]) | $($c[4])], got [$($got -join ' | ')]"
             }
-        } finally { foreach ($n in $saved.Keys) { [Environment]::SetEnvironmentVariable($n, $saved[$n]) } }
+        } finally { foreach ($n in $saved.Keys) { if ($null -eq $saved[$n]) { Remove-Item -LiteralPath ("Env:" + $n) -ErrorAction SilentlyContinue } else { [Environment]::SetEnvironmentVariable($n, $saved[$n]) } } }
     }
 
     Invoke-Test 'dev "Determine version": N is above every dev N taken by a release (all pages) OR by a git tag (an immutable release keeps its tag), with strict case-sensitive matching (run against a fake gh)' {
@@ -1854,7 +1856,7 @@ try {
             Assert-Throws { [void](& $version '1') } 'Could not list the tags' 'a failed tag listing'
         } finally {
             Pop-Location
-            foreach ($n in $saved.Keys) { [Environment]::SetEnvironmentVariable($n, $saved[$n]) }
+            foreach ($n in $saved.Keys) { if ($null -eq $saved[$n]) { Remove-Item -LiteralPath ("Env:" + $n) -ErrorAction SilentlyContinue } else { [Environment]::SetEnvironmentVariable($n, $saved[$n]) } }
         }
     }
 

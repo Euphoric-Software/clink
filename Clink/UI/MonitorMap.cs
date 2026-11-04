@@ -16,6 +16,7 @@ internal sealed class MonitorMap : Canvas
     public MonitorMap()
     {
         Height = 92;
+        FlowDirection = FlowDirection.LeftToRight;   // the monitors sit where they are on the desktop, in every language (a local value: the window root is right-to-left)
         ClipToBounds = true;
         SizeChanged += (_, _) => Rebuild();
     }

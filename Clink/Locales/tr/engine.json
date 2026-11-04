@@ -1,0 +1,28 @@
+{
+  "engine-status|Starting…": "Başlatılıyor…",
+  "engine-status|Stopped": "Durduruldu",
+  "engine-status|Recording": "Kayıt yapılıyor",
+  "engine-status|Error": "Hata",
+
+  "engine-error|The GPU was reset (graphics driver crash or TDR)": "GPU sıfırlandı (grafik sürücüsü çökmesi veya TDR)",
+
+
+  "audio-line|{name} ({detail})": "{name} ({detail})",
+
+  "audio-problem|not connected": "bağlı değil",
+  "audio-problem|disabled": "devre dışı",
+
+  "audio-detail|game + mic + voice, always track 1": "oyun + mikrofon + sesli sohbet, her zaman 1. iz",
+  "audio-detail|waiting for app": "uygulama bekleniyor",
+  "audio-detail|everything": "her şey",
+  "audio-detail|everything except {app}": "{app} dışındaki her şey",
+  "audio-detail|mix only": "yalnızca karışım",
+  "audio-detail|{detail}, mix only": "{detail}, yalnızca karışım",
+  "audio-detail|not connected or disabled": "bağlı değil veya devre dışı",
+  "audio-detail|in use by another app (exclusive mode)": "başka bir uygulama tarafından kullanılıyor (özel mod)",
+  "audio-detail|access denied": "erişim reddedildi",
+  "audio-detail|blocked: allow microphone access for desktop apps in Windows privacy settings": "engellendi: Windows gizlilik ayarlarında masaüstü uygulamalarına mikrofon erişimi için izin ver",
+  "audio-detail|not an output device": "çıkış aygıtı değil",
+  "audio-detail|not an input device": "giriş aygıtı değil",
+  "audio-detail|Windows Audio service not running": "Windows Ses hizmeti çalışmıyor"
+}

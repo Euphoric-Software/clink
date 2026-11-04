@@ -1,3 +1,5 @@
+using Clink.Services.Localization;
+
 namespace Clink.Services;
 
 /// <summary>What asked to share: the gate shows the same pop-up for all of them, but a screenshot context also offers "upload every screenshot".</summary>
@@ -34,8 +36,12 @@ internal readonly record struct ConsentAnswer(ConsentChoice Choice, bool AutoUpl
 /// </summary>
 internal sealed class ConsentGate
 {
-    public const string CloudOffTitle = "Cloud sharing is off";
-    public const string CloudOffText = "Cloud sharing is turned off — Settings → App → Cloud sharing";
+    public static string CloudOffTitle => CloudOffTitleNote.Shown;
+    /// <summary><see cref="CloudOffTitle"/> as a note.</summary>
+    public static Note CloudOffTitleNote => Note.Of("Cloud sharing is off");
+    public static string CloudOffText => CloudOffNote.Shown;
+    /// <summary>The same sentence as a <see cref="Note"/>: shown translated, logged in English (use it with <c>Say</c>; <see cref="CloudOffText"/> is for display only).</summary>
+    public static Note CloudOffNote => Note.Of("Cloud sharing is off — enable it under App → Cloud sharing");
 
     private readonly Settings _settings;
     private TaskCompletionSource<bool>? _asking;
@@ -45,7 +51,7 @@ internal sealed class ConsentGate
     /// <summary>Shows the pop-up for a context and returns the answer. The default says "Not now" (no window): the app installs the real one.</summary>
     public Func<ConsentContext, Task<ConsentAnswer>> Prompt { get; set; } = _ => Task.FromResult(new ConsentAnswer(ConsentChoice.NotNow));
     /// <summary>Tells the user something (context, title, text): the footer, a toast. Default: log only.</summary>
-    public Action<ConsentContext, string, string> Notice { get; set; } = (_, title, text) => Log.Info("consent: " + title + ": " + text);
+    public Action<ConsentContext, Note, Note> Notice { get; set; } = (_, title, text) => Log.Info("consent: " + title.English + ": " + text.English);
     /// <summary>Opens the token setup (the App tab's token box) when the user said yes and there is no token yet.</summary>
     public Action OpenTokenSetup { get; set; } = () => { };
 
@@ -57,6 +63,26 @@ internal sealed class ConsentGate
 
     /// <summary>The pop-up offers the "upload every screenshot" box for a screenshot action. Not for a clip, and not when the user is turning that very setting on.</summary>
     public static bool OffersAutoUpload(ConsentContext context) => context is ConsentContext.ScreenshotUploadManual or ConsentContext.ScreenshotUploadLibrary or ConsentContext.Proactive;
+
+    /// <summary>
+    /// The welcome's "Automatically upload every screenshot I take" box when it opens (D1): ticked while the user has not agreed to sharing
+    /// yet (it only takes effect with "Start sharing"); with consent already given, the setting as it is.
+    /// </summary>
+    public static bool WelcomeInitialAutoUpload(Settings s) => !s.CopiumConsent || s.ScreenshotUpload;
+
+    /// <summary>
+    /// The welcome's answer. "Start sharing": consent, and the automatic screenshot upload exactly as the box says. "Not now": no consent change.
+    /// Either way the welcome counts as shown. Only these three settings are ever touched: clips and videos are never uploaded automatically (D3).
+    /// </summary>
+    public static void ApplyWelcome(Settings s, bool startSharing, bool autoUpload)
+    {
+        if (startSharing)
+        {
+            s.CopiumConsent = true;
+            s.ScreenshotUpload = autoUpload;
+        }
+        s.CopiumWelcomeShown = true;
+    }
 
     /// <summary>A clip context has its own "no token" path (the share window), so the gate does not also open the token setup.</summary>
     private static bool IsClip(ConsentContext context) => context is ConsentContext.ClipShare or ConsentContext.ShareLast or ConsentContext.TrimShare;
@@ -71,7 +97,7 @@ internal sealed class ConsentGate
         if (!_settings.CloudSharingEnabled)
         {
             Log.Info($"consent: refused ({context}): cloud sharing is off");
-            Notice(context, CloudOffTitle, CloudOffText);
+            Notice(context, CloudOffTitleNote, CloudOffNote);
             return false;
         }
         if (_settings.CopiumConsent) return true;

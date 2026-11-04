@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using Clink.Screenshots.Imaging;
 using Clink.Services;
+using Clink.Services.Localization;
 
 namespace Clink.Screenshots.Editing;
 
@@ -59,8 +60,8 @@ internal sealed class ComposeQueue
     /// <summary>Raised on the <c>post</c> thread when a compose of the newest state succeeds after <see cref="Failed"/> was raised: the UI clears the message.</summary>
     public event Action? Recovered;
 
-    public const string RetryingNotice = "Preview failed — retrying";
-    public const string GaveUpNotice = "Preview failed — it is tried again with the next change (the reason is in the log)";
+    public static string RetryingNotice => L.T("Preview failed — retrying");
+    public static string GaveUpNotice => L.T("Preview failed — it is tried again with the next change (the reason is in the log)");
 
     /// <summary>Diagnostics for the tests.</summary>
     public int Started { get; private set; }
