@@ -471,6 +471,68 @@ internal static class EncoderBenchTests
     }
 
     [UnitTest]
+    public static void A_reference_that_is_the_out_folders_cli_log_is_refused_before_the_log_is_touched()
+    {
+        foreach (int size in new[] { 64, 2 * 1024 * 1024 + 1024 })
+        {
+            using var dir = new TempDir();
+            string outDir = dir.File("out");
+            Directory.CreateDirectory(outDir);
+            // Same folder is refused while parsing (exit 2); the reference reaching the log by another name (a hard link) is what Run must catch.
+            string reference = dir.File("reference.mp4"), log = Path.Combine(outDir, Log.CliFile);
+            byte[] bytes = new byte[size];
+            new Random(size).NextBytes(bytes);
+            File.WriteAllBytes(reference, bytes);
+            if (!CreateHardLink(log, reference, 0)) Check.Skip("hard links are not available here");
+            var said = new StringWriter();
+            var oldOut = Console.Out;
+            int code;
+            try { Console.SetOut(said); code = EncoderBench.Run(new[] { Verb, reference, outDir }); }
+            finally { Console.SetOut(oldOut); }
+            Check.Equal(1, code, "refused, size " + size);
+            Check.Contains(said.ToString(), "bench log");
+            Check.True(File.ReadAllBytes(reference).AsSpan().SequenceEqual(bytes), "bytes unchanged, size " + size);
+            Check.True(File.ReadAllBytes(log).AsSpan().SequenceEqual(bytes), "the log name still has the same bytes, size " + size);
+            Check.Equal(1, Directory.GetFileSystemEntries(outDir).Length, "no rotated file or other output, size " + size);
+        }
+    }
+
+    [UnitTest]
+    public static void A_reference_reaching_the_cli_log_or_its_prev_file_through_a_junction_is_refused_and_survives()
+    {
+        foreach (string refName in new[] { Log.CliFile, Path.GetFileName(Log.PrevPathFor("x", Log.CliFile)) })
+        {
+            using var dir = new TempDir();
+            string outDir = dir.File("out"), junction = dir.File("j");
+            Directory.CreateDirectory(outDir);
+            if (!TestJunction.TryMake(junction, outDir, out string why)) { TestJunction.Skipped(nameof(A_reference_reaching_the_cli_log_or_its_prev_file_through_a_junction_is_refused_and_survives), why); return; }
+            try
+            {
+                // The reference is out\<refName> under another folder name; out\clink-cli.log is over 2 MB, so Log.Init would move it over the .prev file.
+                byte[] reference = new byte[4096], oldLog = new byte[2 * 1024 * 1024 + 1024];
+                new Random(1).NextBytes(reference);
+                new Random(2).NextBytes(oldLog);
+                string viaJunction = Path.Combine(junction, refName);
+                if (refName == Log.CliFile) reference = oldLog;
+                File.WriteAllBytes(viaJunction, reference);
+                if (refName != Log.CliFile) File.WriteAllBytes(Path.Combine(outDir, Log.CliFile), oldLog);
+                int before = Directory.GetFileSystemEntries(outDir).Length;
+                var said = new StringWriter();
+                var oldOut = Console.Out;
+                int code;
+                try { Console.SetOut(said); code = EncoderBench.Run(new[] { Verb, viaJunction, outDir }); }
+                finally { Console.SetOut(oldOut); }
+                Check.Equal(1, code, "refused, reference " + refName);
+                Check.Contains(said.ToString(), "bench log");
+                Check.True(File.ReadAllBytes(viaJunction).AsSpan().SequenceEqual(reference), "the reference is unchanged, " + refName);
+                Check.Equal(before, Directory.GetFileSystemEntries(outDir).Length, "no rotated file or other output, " + refName);
+                Check.True(File.ReadAllBytes(Path.Combine(outDir, Log.CliFile)).Length == oldLog.Length, "the log was not rotated, " + refName);
+            }
+            finally { TestJunction.Remove(junction); }
+        }
+    }
+
+    [UnitTest]
     public static void The_reference_line_and_the_version_for_the_log_and_the_json()
     {
         var info = new BenchReferenceInfo { Codec = "h264", Width = 1920, Height = 1080, Fps = 60, OverallMbps = 48.34, ClinkBrand = false };
