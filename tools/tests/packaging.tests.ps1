@@ -1155,9 +1155,9 @@ try {
             $text = [System.IO.File]::ReadAllText((Join-Path $workflowDir $name))
             $build = $text.Substring($text.IndexOf("`n  build:"), $text.IndexOf("`n  publish:") - $text.IndexOf("`n  build:"))
             $publish = $text.Substring($text.IndexOf("`n  publish:"))
-            # Order inside the build job: publish -> notices check -> resolver -> freshness -> check-published -> Inno -> package.
+            # Exercise the signed EXEs before packaging: publish -> notices -> resolver -> freshness -> Inno -> sign -> check -> package.
             $order = @('publish-flavours.ps1', 'make-notices.ps1 -Check -AssetsFile Clink/obj_sc/project.assets.json', 'id: runtime', 'resolve-dotnet-runtime.ps1',
-                'check-runtime-freshness.ps1 -AssetsFile Clink/obj_sc/project.assets.json -LatestVersion $env:LATEST_RUNTIME', 'check-published.ps1', 'Install Inno Setup (pinned, hash-verified)', 'tools/package.ps1')
+                'check-runtime-freshness.ps1 -AssetsFile Clink/obj_sc/project.assets.json -LatestVersion $env:LATEST_RUNTIME', 'Install Inno Setup (pinned, hash-verified)', 'Sign both application executables', 'check-published.ps1', 'tools/package.ps1')
             $previous = -1
             foreach ($needle in $order) {
                 $at = $build.IndexOf($needle)
