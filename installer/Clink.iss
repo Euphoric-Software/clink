@@ -60,6 +60,10 @@
 #endif
 
 [Setup]
+#ifdef ArtifactSigning
+SignTool=artifactSigning
+SignedUninstaller=yes
+#endif
 ; Fixed forever: changing it breaks upgrade-in-place. Doubled brace is Inno's escape for a literal brace.
 AppId={{7D4A9E3B-5C21-4F6A-9B08-2E1C6A5D3F74}
 AppName=Clink

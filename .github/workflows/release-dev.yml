@@ -12,8 +12,8 @@
 # existing dev tag); the app compares N numerically.
 #
 # Three jobs (contract v2, see docs/RELEASING.md):
-#   build   - no secrets, no environment, contents: read. Builds, runs the unit tests (a dev build never ships with failing
-#             tests), packages and uploads the package as an artifact (kept 1 day).
+#   build   - no long-lived secrets, no environment, contents: read plus id-token: write for optional Azure OIDC signing.
+#             Builds, tests, signs when enabled, packages and uploads the package as an artifact (kept 1 day).
 #   publish - NO environment (the plan has none on a private repo), contents: write only; the signing key, the R2 credentials and the
 #             purge token are REPO secrets, named only by the steps that need them; the job runs only for a push to refs/heads/dev (or a dispatch on it).
 #             Guards, re-checks the artifact, REFUSES to publish when Clink/Assets/feed.json does not enable the feed (the feed is ON
@@ -46,6 +46,16 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: read
+      id-token: write
+    env:
+      ARTIFACT_SIGNING_ENABLED: ${{ vars.ARTIFACT_SIGNING_ENABLED }}
+      ARTIFACT_SIGNING_ENDPOINT: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+      ARTIFACT_SIGNING_ACCOUNT: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+      ARTIFACT_SIGNING_PROFILE: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
+      ARTIFACT_SIGNING_PUBLISHER: ${{ vars.ARTIFACT_SIGNING_PUBLISHER }}
+      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
     outputs:
       version: ${{ steps.version.outputs.version }}
       exe_sha256: ${{ steps.package.outputs.exe_sha256 }}
@@ -61,6 +71,14 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
+
+      - name: Validate Windows signing configuration
+        id: signing
+        shell: pwsh
+        run: |
+          . ./tools/lib/windows-signing-lib.ps1
+          $enabled = Get-WindowsSigningEnabled
+          "enabled=$($enabled.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
 
       # A fresh NuGet package folder and HTTP cache per run, under the runner temp folder: nothing a runner image or an earlier job left in
       # ~/.nuget/packages is ever used, so every package is downloaded and its signature checked by this restore. No actions/cache here.
@@ -275,6 +293,55 @@ jobs:
           ./tools/check-runtime-freshness.ps1 -AssetsFile Clink/obj_sc/project.assets.json -LatestVersion $env:LATEST_RUNTIME
           if ($LASTEXITCODE -ne 0) { throw 'The self-contained Clink.exe bundles an outdated .NET runtime (see the output above).' }
 
+      # Pinned Inno Setup 6.7.3 (>= 6.3 is needed for x64compatible). Official release asset of github.com/jrsoftware/issrc;
+      # the SHA-256 below was computed from a scratch download and matches the digest GitHub shows for the asset.
+      # Installed into the runner temp folder; nothing from it is trusted before the hash matches.
+      - name: Install Inno Setup (pinned, hash-verified)
+        shell: pwsh
+        env:
+          INNO_URL: https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe
+          INNO_SHA256: 9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732
+        run: |
+          $setup = Join-Path $env:RUNNER_TEMP 'innosetup-6.7.3.exe'
+          Invoke-WebRequest -Uri $env:INNO_URL -OutFile $setup -UseBasicParsing
+          $actual = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $env:INNO_SHA256) { throw "Inno Setup installer hash mismatch: got $actual, expected $env:INNO_SHA256" }
+          $dir = Join-Path $env:RUNNER_TEMP 'InnoSetup'
+          $run = Start-Process -FilePath $setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', "/DIR=$dir" -Wait -PassThru
+          if ($run.ExitCode -ne 0) { throw "Inno Setup install failed (exit code $($run.ExitCode))" }
+          if (-not (Test-Path (Join-Path $dir 'ISCC.exe'))) { throw 'ISCC.exe not found after the Inno Setup install' }
+
+      - name: Verify development signing source
+        if: steps.signing.outputs.enabled == 'true'
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -cne 'refs/heads/dev' -or $env:GITHUB_EVENT_NAME -cnotin 'push', 'workflow_dispatch') { throw 'Windows signing requires the dev branch.' }
+
+      - name: Authenticate Windows signing through GitHub OIDC
+        if: steps.signing.outputs.enabled == 'true'
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign both application executables
+        if: steps.signing.outputs.enabled == 'true'
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ env.ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ env.ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ env.ARTIFACT_SIGNING_PROFILE }}
+          files: |
+            ${{ github.workspace }}/dist/sc/Clink.exe
+            ${{ github.workspace }}/dist/fx/Clink.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          exclude-environment-credential: true
+          exclude-workload-identity-credential: true
+          exclude-managed-identity-credential: true
+
       # Both published exes: size guards, --packaging-check, --preflight, the embedded-feed self-test (what the BUILT exes embed from
       # Clink/Assets/feed.json must match what CI reads from the same file: off for an empty file, on for a complete one; a partly
       # filled file already fails in Get-FeedConfig) and ProductVersion == the version (the updater refuses a download whose embedded
@@ -296,31 +363,21 @@ jobs:
             ./tools/check-published.ps1 -ScExe dist/sc/Clink.exe -FxExe dist/fx/Clink.exe -Version $env:VERSION -ExpectFeed $cfg.Mode -TimeoutSeconds 90
           }
 
-      # Pinned Inno Setup 6.7.3 (>= 6.3 is needed for x64compatible). Official release asset of github.com/jrsoftware/issrc;
-      # the SHA-256 below was computed from a scratch download and matches the digest GitHub shows for the asset.
-      # Installed into the runner temp folder; nothing from it is trusted before the hash matches.
-      - name: Install Inno Setup (pinned, hash-verified)
-        shell: pwsh
-        env:
-          INNO_URL: https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe
-          INNO_SHA256: 9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732
-        run: |
-          $setup = Join-Path $env:RUNNER_TEMP 'innosetup-6.7.3.exe'
-          Invoke-WebRequest -Uri $env:INNO_URL -OutFile $setup -UseBasicParsing
-          $actual = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($actual -ne $env:INNO_SHA256) { throw "Inno Setup installer hash mismatch: got $actual, expected $env:INNO_SHA256" }
-          $dir = Join-Path $env:RUNNER_TEMP 'InnoSetup'
-          $run = Start-Process -FilePath $setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', "/DIR=$dir" -Wait -PassThru
-          if ($run.ExitCode -ne 0) { throw "Inno Setup install failed (exit code $($run.ExitCode))" }
-          if (-not (Test-Path (Join-Path $dir 'ISCC.exe'))) { throw 'ISCC.exe not found after the Inno Setup install' }
-
       - name: Package (Clink.exe, Clink-framework.exe, sha256 files, installer)
         id: package
         shell: pwsh
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          ./tools/package.ps1 -ExePath dist/sc/Clink.exe -FrameworkExePath dist/fx/Clink.exe -Version $env:VERSION -OutDir dist/package -IsccPath (Join-Path $env:RUNNER_TEMP 'InnoSetup\ISCC.exe') -RuntimeInfoPath (Join-Path $env:RUNNER_TEMP 'dotnet-runtime.json') -RequireInstaller
+          . ./tools/lib/windows-signing-lib.ps1
+          $signInstaller = $null
+          $installerSignTool = $null
+          if (Get-WindowsSigningEnabled) {
+            Assert-WindowsSignature -Path dist/sc/Clink.exe, dist/fx/Clink.exe
+            $installerSignTool = Get-WindowsInstallerSignTool
+            $signInstaller = { param($file) Assert-WindowsSignature -Path $file }
+          }
+          ./tools/package.ps1 -ExePath dist/sc/Clink.exe -FrameworkExePath dist/fx/Clink.exe -Version $env:VERSION -OutDir dist/package -IsccPath (Join-Path $env:RUNNER_TEMP 'InnoSetup\ISCC.exe') -RuntimeInfoPath (Join-Path $env:RUNNER_TEMP 'dotnet-runtime.json') -RequireInstaller -SignInstaller $signInstaller -InstallerSignTool $installerSignTool
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $pkg = Get-Content -Raw dist/package/package.json | ConvertFrom-Json
           Add-Content -Path $env:GITHUB_OUTPUT -Value "exe_sha256=$($pkg.files.exe.sha256)"
@@ -329,6 +386,11 @@ jobs:
           Add-Content -Path $env:GITHUB_OUTPUT -Value "setup_sha256=$($pkg.files.installer.sha256)"
           Add-Content -Path $env:GITHUB_OUTPUT -Value "notices_sha256=$($pkg.files.notices.sha256)"
           Get-Content dist/package/Clink.exe.sha256, dist/package/Clink-framework.exe.sha256
+
+      - name: Verify the signed installer and embedded uninstaller
+        if: steps.signing.outputs.enabled == 'true'
+        shell: pwsh
+        run: ./tools/test-signed-installer.ps1 -Path dist/package/Clink-Setup.exe
 
       - name: Upload package artifact
         id: upload

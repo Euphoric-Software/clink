@@ -18,6 +18,80 @@ How it fits together (decided 2026-10-28):
 
 ## Owner guide
 
+### Windows publisher signing
+
+Windows Authenticode signing is separate from the signed update feed. The stable and dev workflows support Azure
+Artifact Signing behind the repository Actions variable `ARTIFACT_SIGNING_ENABLED`. Keep it unset or `false` until the
+activation checks below are ready. A value other than lowercase `true`, `false`, or unset fails validation. Once
+enabled, authentication/signing failures, an invalid signature, a missing timestamp, or an unexpected publisher stop the
+build and prevent publishing. Previously published immutable objects are never re-signed or replaced.
+
+Use the Azure account `EuphoricSoftwareLLC` in East US (`https://eus.codesigning.azure.net`), its approved
+**Public** company identity, and the **Public Trust** certificate profile named `kithnote-public`. Clink and Kithnote
+share this company profile: the Basic tier permits only one profile of each type. The profile name does not limit
+which application can be signed. The approved publisher is `Euphoric Software LLC`.
+
+Setup verified on 2026-11-03: company identity **Completed**, restored shared profile **Active**, and both GitHub
+applications have **Artifact Signing Certificate Profile Signer** at this profile's scope. Recreating the original
+resource name `kithnote-public` worked around the Basic-tier quota error blocking the company-neutral name
+`euphoric-public`. Treat `kithnote-public` as the shared company profile for both apps; its internal name does not change
+the publisher. Keep this working profile while the naming issue is investigated. Matching reports are tracked in
+[Microsoft Q&A](https://learn.microsoft.com/en-us/answers/questions/6028053/artifact-signing-basic-public-trust-profile-quota).
+The repository Actions variable and latest successful dev release run are the source of truth for activation status.
+Profile creation and role assignments alone do not prove the release workflow can sign. See Microsoft's
+[pricing-tier limits](https://learn.microsoft.com/en-us/azure/artifact-signing/how-to-change-sku).
+
+Use the existing single-tenant Entra application/service principal named `clink-github-signing`, without a redirect URI
+or client secret. Its **Artifact Signing Certificate Profile Signer** assignment is scoped only to `kithnote-public`.
+Keep its GitHub federation separate from `kithnote-github-signing`; both identities can sign through the same profile.
+
+Federation uses GitHub issuer `https://token.actions.githubusercontent.com`, audience `api://AzureADTokenExchange`,
+repository `Euphoric-Software/clink`. This repository uses GitHub's immutable subject format (verified through
+`GET /repos/Euphoric-Software/clink/actions/oidc/customization/sub`), with organization ID `347167921` and repository
+ID `1427759131`. The dev subject is exactly:
+
+```text
+repo:Euphoric-Software@347167921/clink@1427759131:ref:refs/heads/dev
+```
+
+For a stable release, replace the final `refs/heads/dev` with its exact `refs/tags/vX.Y.Z`. Standard credentials do
+not accept a `v*` subject wildcard. Add exact-tag credentials for releases, or separately review Microsoft's flexible
+federated credentials before adopting a tag expression. Do not authorize pull requests. This works without GitHub
+environments on a private Free repository. Recheck the actual `sub_claim_prefix` when changing federation; name-only
+examples do not match this repository's current tokens.
+
+Set these **repository Actions variables**, not feed-signing secrets:
+
+| Variable | Value |
+| --- | --- |
+| `ARTIFACT_SIGNING_ENABLED` | `false` until the activation checks pass |
+| `ARTIFACT_SIGNING_ACCOUNT` | `EuphoricSoftwareLLC` |
+| `ARTIFACT_SIGNING_ENDPOINT` | `https://eus.codesigning.azure.net` |
+| `ARTIFACT_SIGNING_PROFILE` | `kithnote-public` (temporary shared company profile) |
+| `ARTIFACT_SIGNING_PUBLISHER` | `Euphoric Software LLC` |
+| `AZURE_CLIENT_ID` | Clink Entra application's Application/client ID |
+| `AZURE_TENANT_ID` | Its Directory/tenant ID |
+| `AZURE_SUBSCRIPTION_ID` | Subscription containing the signing account |
+
+The release build jobs have `id-token: write` for OIDC and use no long-lived Azure credentials. The stable job checks
+the tagged commit is on `main` before authenticating; dev signing requires a push or dispatch on `dev`. After the
+existing build checks, both application flavours are signed and verified. `tools/package.ps1` embeds the signed
+framework executable in the installer. Inno Setup uses the pinned Artifact Signing module through a SignTool hook to
+sign its embedded uninstaller, temporary setup copies and final setup. The verification callback runs before calculating
+the checksum and `package.json`; signing or verification failure aborts packaging. A fresh-runner installer check verifies
+the installed app and uninstaller signatures and removes the test installation. The signed update manifests then describe the final signed bytes. PR build workflows retain no
+signing access.
+
+Activation requires identity **Completed**, profile active, the profile signer assignment propagated, matching
+federation and complete variables. Review/merge the prepared changes, enable signing for a dev release, verify both
+application signatures and the installer signature/timestamps, verify the published checksums/feed, and exercise the
+updater before enabling a stable release. The ordinary `build.ps1`/local packaging flow remains unsigned unless a signer
+is explicitly supplied. Keep existing unsigned-release notices until a signed public release is verified; signing does
+not promise instant SmartScreen reputation.
+
+Offline checks: `pwsh -NoProfile -File tools/tests/windows-signing.tests.ps1`, `tools/tests/packaging.tests.ps1` and
+`tools/tests/private-ci.tests.ps1`. No test needs Azure credentials. Real signing must also be verified from the dev workflow and its published artifacts.
+
 ### One-time setup
 
 Do this once, in this order, before the first feed-on release. All of it is clicks except the keys (one script). Never paste a secret

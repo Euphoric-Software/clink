@@ -561,7 +561,8 @@ public partial class TrimWindow : Window
         var player = _player;
         if (player == null) return;
         if (player.LastError != null && _playing) { Pause(); StatusText.Text = L.T("Preview stopped: {error}", ("error", player.LastErrorShown ?? player.LastError)); }
-        if (player.AudioIssue is { } audioIssue && !_audioWarned && !_busy) { _audioWarned = true; StatusText.Text = L.T("Preview audio: {error}", ("error", ClipPlayer.AudioIssueText(audioIssue))); }
+        // A late audio warning must not replace the saved/failed share result after reopening the preview.
+        if (player.AudioIssue is { } audioIssue && !_audioWarned && !_busy && string.IsNullOrEmpty(StatusText.Text)) { _audioWarned = true; StatusText.Text = L.T("Preview audio: {error}", ("error", ClipPlayer.AudioIssueText(audioIssue))); }
         double pos = player.Position;
         if (_bitmap != null && player.TryGetFrame(pos, out byte[] bgra, out double pts))
         {

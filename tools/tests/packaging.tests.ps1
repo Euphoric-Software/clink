@@ -240,6 +240,31 @@ try {
         Assert-True (-not (Test-Path -LiteralPath (Join-Path $out 'Clink-Setup.exe.sha256'))) 'a setup .sha256 exists although no setup exe was produced'
     }
 
+    Invoke-Test 'installer signatures change the bytes before all installer hashes are calculated; signer failure prevents metadata' {
+        $out = Get-ScratchFolder 'pkg-signed-installer'
+        $fake = New-FakeIscc 'fake-iscc-signing' (Join-Path $out 'Clink-Setup.exe')
+        $parameters = @{ ExePath = $scExe; FrameworkExePath = $fxExe; Version = '0.4.2'; OutDir = $out; MinRuntime = '10.0.0'; IsccPath = $fake.Cmd; RuntimeInfoPath = $runtimeInfo; RequireInstaller = $true; SkipVersionCheck = $true; SkipSetupSizeCheck = $true }
+        $tool = '$qC:\Program Files\PowerShell\7\pwsh.exe$q -File $qC:\signing tools\sign.ps1$q $f'
+        & $packageScript @parameters -InstallerSignTool $tool -SignInstaller { param($file) [System.IO.File]::AppendAllText($file, 'synthetic-signature') } | Out-Null
+        $arguments = [System.IO.File]::ReadAllText($fake.Args)
+        Assert-True ($arguments.Contains('/DArtifactSigning') -and $arguments.Contains('/SartifactSigning=' + $tool)) 'Inno signing command or enable define was lost'
+        $setup = Join-Path $out 'Clink-Setup.exe'
+        Assert-True ([System.IO.File]::ReadAllText($setup).EndsWith('synthetic-signature')) 'signer did not alter installer bytes'
+        $hash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant()
+        $metadata = Get-Content -LiteralPath (Join-Path $out 'package.json') -Raw | ConvertFrom-Json
+        Assert-True ($metadata.files.installer.sha256 -ceq $hash) 'package.json hashed the installer before signing'
+        Assert-True ($metadata.files.installer.size -eq (Get-Item -LiteralPath $setup).Length) 'package.json has the unsigned size'
+        Assert-True ([System.IO.File]::ReadAllText((Join-Path $out 'Clink-Setup.exe.sha256')) -ceq "$hash *Clink-Setup.exe`n") 'checksum file hashed the unsigned installer'
+        $failed = Get-ScratchFolder 'pkg-failed-signer'
+        $parameters.OutDir = $failed
+        $parameters.IsccPath = (New-FakeIscc 'fake-iscc-signing-failure' (Join-Path $failed 'Clink-Setup.exe')).Cmd
+        $threw = $false
+        try { & $packageScript @parameters -SignInstaller { throw 'synthetic signing failure' } | Out-Null } catch { $threw = $_.Exception.Message -match 'synthetic signing failure' }
+        Assert-True $threw 'signer failure was ignored'
+        Assert-True (-not (Test-Path -LiteralPath (Join-Path $failed 'package.json'))) 'metadata was emitted after signing failed'
+        Assert-True (-not (Test-Path -LiteralPath (Join-Path $failed 'Clink-Setup.exe.sha256'))) 'checksum was emitted after signing failed'
+    }
+
     Invoke-Test 'package.ps1 fails closed on a non-zero ISCC exit (output echoed, stale setup sha256 deleted, no package.json) and echoes ISCC warnings' {
         # A fake ISCC that prints and exits 2. A stale Clink-Setup.exe.sha256 from an earlier run sits in the out dir.
         $failOut = Get-ScratchFolder 'pkg-iscc-exit2'
@@ -399,7 +424,7 @@ try {
         [System.IO.File]::WriteAllText($partial, ('{"version":"' + $rtVersion + '","url":"' + $rtUrl + '"}'), $utf8)
         $out = Get-ScratchFolder 'pkg-refuse-partial'
         $r = Invoke-ScriptChild $packageScript ($good + @('-OutDir', $out, '-RuntimeInfoPath', $partial))
-        Assert-True ($r.Code -ne 0 -and (($r.Out + $r.Err) -match "no 'sha256'")) "a runtime info file without sha256 was not refused clearly: $($r.Out) $($r.Err)"
+        Assert-True ($r.Code -ne 0 -and (($r.Out + $r.Err) -match "(?s)has no.*'sha256'")) "a runtime info file without sha256 was not refused clearly: $($r.Out) $($r.Err)"
     }
 
     Invoke-Test 'package.ps1 without -RequireInstaller and without runtime info warns and builds the installer without the runtime defines' {
@@ -1130,9 +1155,9 @@ try {
             $text = [System.IO.File]::ReadAllText((Join-Path $workflowDir $name))
             $build = $text.Substring($text.IndexOf("`n  build:"), $text.IndexOf("`n  publish:") - $text.IndexOf("`n  build:"))
             $publish = $text.Substring($text.IndexOf("`n  publish:"))
-            # Order inside the build job: publish -> notices check -> resolver -> freshness -> check-published -> Inno -> package.
+            # Exercise the signed EXEs before packaging: publish -> notices -> resolver -> freshness -> Inno -> sign -> check -> package.
             $order = @('publish-flavours.ps1', 'make-notices.ps1 -Check -AssetsFile Clink/obj_sc/project.assets.json', 'id: runtime', 'resolve-dotnet-runtime.ps1',
-                'check-runtime-freshness.ps1 -AssetsFile Clink/obj_sc/project.assets.json -LatestVersion $env:LATEST_RUNTIME', 'check-published.ps1', 'Install Inno Setup (pinned, hash-verified)', 'tools/package.ps1')
+                'check-runtime-freshness.ps1 -AssetsFile Clink/obj_sc/project.assets.json -LatestVersion $env:LATEST_RUNTIME', 'Install Inno Setup (pinned, hash-verified)', 'Sign both application executables', 'check-published.ps1', 'tools/package.ps1')
             $previous = -1
             foreach ($needle in $order) {
                 $at = $build.IndexOf($needle)
