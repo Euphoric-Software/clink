@@ -439,9 +439,16 @@ internal static unsafe class EncoderBench
             return 2;
         }
         Action<string>? echo = null;
+        // Log.Init appends to the out folder's clink-cli.log and, past 2 MB, moves it over clink-cli.prev.log: a reference that is (or may be) either file is refused first.
+        foreach (string logPath in new[] { Path.Combine(a!.OutFolder, Log.CliFile), Log.PrevPathFor(a.OutFolder, Log.CliFile) })
+        {
+            if (!MayBeReference(logPath, a.Reference)) continue;
+            Console.WriteLine($"encoder-bench: the reference clip {a.Reference} is (or may be) the bench log {logPath}: choose another out folder; nothing was changed");
+            return 1;
+        }
         try
         {
-            Directory.CreateDirectory(a!.OutFolder);
+            Directory.CreateDirectory(a.OutFolder);
             Log.Init(a.OutFolder, Log.CliFile);   // the out folder's own log: never the real Clink folder
             echo = Console.WriteLine;
             Log.Line += echo;

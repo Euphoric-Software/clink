@@ -105,6 +105,9 @@ internal static class Log
     /// <summary>clink.log → clink.prev.log, clink-cli.log → clink-cli.prev.log.</summary>
     private static string PrevPath(string path) => System.IO.Path.ChangeExtension(path, ".prev.log");
 
+    /// <summary>The .prev file that <see cref="Init"/> (and the rotation while running) overwrites for <paramref name="file"/> in <paramref name="folder"/>.</summary>
+    internal static string PrevPathFor(string folder, string file) => PrevPath(System.IO.Path.Combine(folder, file));
+
     private static void TryMove(string from, string to)
     {
         try { File.Move(from, to, true); } catch { }
