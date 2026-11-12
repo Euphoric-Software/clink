@@ -167,9 +167,15 @@ All screenshots are of Clink itself (the dark theme with the default accent unle
 2. `Clink.exe` is self-contained and needs no .NET runtime. The [Releases](../../releases/latest) page also has
    `Clink-framework.exe`, a smaller build that needs the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0)
    (it is what `Clink-Setup.exe` installs).
-3. Stable releases from v0.4.8 on are Authenticode-signed by Euphoric Software LLC (right-click the file, *Properties* →
-   *Digital Signatures*). Earlier releases are unsigned. A new or rarely downloaded file can still show SmartScreen's
-   "Windows protected your PC" until it builds reputation: *More info* → *Run anyway*.
+3. Check the signature before you run a download. v0.4.8 is the first stable release that is Authenticode-signed by
+   Euphoric Software LLC; v0.4.7 and earlier are unsigned. Check every download, later versions included: right-click
+   the file, *Properties* → *Digital Signatures* must list Euphoric Software LLC, and its *Details* must say "This
+   digital signature is OK". Or in PowerShell, `Get-AuthenticodeSignature .\Clink.exe | Format-List Status, SignerCertificate`
+   (with the name of the file you downloaded) must show `Status : Valid` and a subject with `O=Euphoric Software LLC`. If the file is not signed by Euphoric Software
+   LLC, or the signature is not valid, do not run it.
+4. A new or rarely downloaded file can still show SmartScreen's "Windows protected your PC" until it builds reputation.
+   Only for a file you downloaded from [euphoric.software](https://euphoric.software/#clink-card-title) or this
+   repository's [Releases](../../releases/latest) page and that passed the check in step 3: *More info* → *Run anyway*.
 
 **Updates are automatic.** Clink checks a signed update feed (`dl.euphoric.software`) when it starts and every 6 hours after
 that. When a newer version exists it downloads the new exe to `%LOCALAPPDATA%\Clink\updates`, checks it
