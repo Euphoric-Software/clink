@@ -763,6 +763,9 @@ public partial class TrimWindow : Window
     private void SetSaveEnabled(bool enabled) =>
         SaveButton.IsEnabled = SaveShareButton.IsEnabled = SaveShareMain.IsEnabled = SaveShareArrow.IsEnabled = enabled;
 
+    /// <summary>The main half of the split button: like the Library's Share, the share window (drag into Discord); Upload to Copium is in the menu.</summary>
+    private void SaveShareMain_Click(object sender, RoutedEventArgs e) => RunLogged(SaveAsync(share: true, ShareChoices.SplitMainChoice));
+
     /// <summary>The "▾" half: the menu with the other options.</summary>
     private void SaveShareArrow_Click(object sender, RoutedEventArgs e) => OpenShareMenu();
 

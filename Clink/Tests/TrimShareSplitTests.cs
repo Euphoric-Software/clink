@@ -54,6 +54,33 @@ internal static class TrimShareSplitTests
         }
     }
 
+    [UnitTest]
+    public static void The_main_half_shares_the_file_like_the_Library_and_the_menu_holds_the_upload_and_the_rest()
+    {
+        Check.Equal(ShareChoice.ShareFile, ShareChoices.SplitMainChoice, "the Library's main action");
+        var library = ShareChoices.For(true, true, false)!.Select(i => i.Choice).ToArray();
+        var trim = ShareChoices.ForTrim(true, true)!.Select(i => i.Choice).ToArray();
+        Check.Equal(library, trim, "the trim menu offers the Library menu's choices (Upload to Copium, Share file, Save a copy)");
+        using var rig = new Rig(true, true);
+        using var win = new Win(rig.Entry);
+        var window = win.Window;
+        window.Timeline.SelectionStart = 1;
+        window.Timeline.SelectionEnd = 4;
+        var opened = new List<string>();
+        var handler = new Offline();
+        CopiumClient.HttpOverride = new HttpClient(handler);
+        try
+        {
+            rig.App.ShareWindowOpener = e => { opened.Add(e.Path); return true; };
+            window.SaveShareMain.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+            ScreenshotUploadTests.Pump(() => win.Closed, "the main click", 30_000);
+            Check.Equal(1, opened.Count, "the main click opened the share window");
+            Check.True(opened[0].EndsWith("(trim).mp4"), "on the saved trim");
+            Check.Equal(0, handler.Requests, "the main click uploads nothing");
+        }
+        finally { CopiumClient.HttpOverride = null; }
+    }
+
     // ------------------------------------------------------------------ save, then the choice
 
     /// <summary>A handler that refuses every request (never a real network): the upload fails with "could not reach Copium".</summary>

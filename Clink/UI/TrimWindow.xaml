@@ -105,7 +105,7 @@
                         <Button x:Name="SaveShareButton" Style="{StaticResource AccentButton}" Content="{l:T 'Save &amp; share'}" Click="SaveShare_Click" />
                         <!-- with a token and cloud sharing on: a split button. Save & share = as before, ▾ = the other options (applied to the saved trim) -->
                         <StackPanel x:Name="SaveShareSplit" Orientation="Horizontal" Visibility="Collapsed">
-                            <Button x:Name="SaveShareMain" Style="{StaticResource AccentSplitMain}" Content="{l:T 'Save &amp; share'}" Click="SaveShare_Click" PreviewKeyDown="SaveShareMain_KeyDown" />
+                            <Button x:Name="SaveShareMain" Style="{StaticResource AccentSplitMain}" Content="{l:T 'Save &amp; share'}" Click="SaveShareMain_Click" PreviewKeyDown="SaveShareMain_KeyDown" />
                             <Button x:Name="SaveShareArrow" Style="{StaticResource AccentSplitArrow}" Content="{x:Static svc:ShareChoices.SplitArrowLabel}" Click="SaveShareArrow_Click"
                                     AutomationProperties.Name="{x:Static svc:ShareChoices.SplitArrowName}" ToolTip="{x:Static svc:ShareChoices.SplitArrowTip}" />
                         </StackPanel>
