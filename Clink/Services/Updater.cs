@@ -1097,11 +1097,7 @@ internal sealed class Updater : IDisposable
                 // Advice from the current state: retrying only helps where this process could install at all. The reason is
                 // capped so the advice still fits in a tray balloon (250 characters); the log has it in full.
                 var blocked = InstallProblemReason(Environment.ProcessPath ?? "");
-                string shown = reason.TrimEnd('.');   // (the reason is the English text the failed marker holds)
-                if (shown.Length > 150) shown = shown[..150] + "…";
-                InstallProblemNote = blocked != null
-                    ? Note.Of("Update to v{version} could not be installed: {reason}; {blocked}, so install it by hand from {folder}.", ("version", Note.Ltr(bestVer.ToString())), ("reason", shown), ("blocked", blocked), ("folder", Note.Ltr(UpdatesDir)))
-                    : Note.Of("Update to v{version} could not be installed: {reason}. To retry, click Check now under App → Updates.", ("version", Note.Ltr(bestVer.ToString())), ("reason", shown));
+                InstallProblemNote = InstallFailedNote(bestVer.ToString(), reason, blocked, UpdatesDir);   // (the reason is the English text the failed marker holds)
                 Log.Warn($"updater: skipping v{bestVer}, installing it failed earlier: {reason}");
                 return false;
             }
@@ -1170,6 +1166,27 @@ internal sealed class Updater : IDisposable
         ApplyRefusedException { ReasonNote: { } n } => n,
         _ => ex.Message,
     };
+
+    /// <summary>
+    /// The note for a download whose install failed earlier. The whole message stays within 250 characters (the status line is not cut like the
+    /// balloon): the reason gives way first, down to <c>MinReason</c> characters, and the folder stays whole whenever the message fits. When the
+    /// blocked clause and the folder alone are too long, the "downloaded but blocked" note is used (it keeps the cause, not the old reason).
+    /// </summary>
+    internal static Note InstallFailedNote(string version, string reason, Note? blocked, string folder)
+    {
+        const int MaxMessage = 250, MinReason = 20;
+        string shown = Shorten(reason);
+        Note Full(string r) => blocked != null
+            ? Note.Of("Update to v{version} could not be installed: {reason}; {blocked}, so install it by hand from {folder}.", ("version", Note.Ltr(version)), ("reason", r), ("blocked", blocked), ("folder", Note.Ltr(folder)))
+            : Note.Of("Update to v{version} could not be installed: {reason}. To retry, click Check now under App → Updates.", ("version", Note.Ltr(version)), ("reason", r));
+        var note = Full(shown);
+        int over = note.Shown.Length - MaxMessage;
+        if (over <= 0) return note;
+        int keep = shown.Length - over - 1;   // (the "…" takes one character)
+        if (keep >= MinReason) return Full(shown[..keep] + "…");
+        if (blocked != null) return Note.Of("Update to v{version} is downloaded but {blocked}; install it by hand from {folder}.", ("version", Note.Ltr(version)), ("blocked", blocked), ("folder", Note.Ltr(folder)));
+        return Full(shown.Length > MinReason ? shown[..MinReason] + "…" : shown);
+    }
 
     internal static string Shorten(string reason)
     {
