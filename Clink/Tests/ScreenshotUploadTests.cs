@@ -501,7 +501,7 @@ internal static class ScreenshotUploadTests
         Check.False(CopiumNudge.ShouldPrompt(false, false, true, 2, 2, now.AddDays(-30), now), "two is the most");
         Check.False(CopiumNudge.ShouldPrompt(false, false, true, 2, 1, now.AddHours(-23), now), "not twice in a day");
         Check.False(CopiumNudge.ShouldPrompt(false, false, true, 2, 1, now.AddHours(1), now), "a last time in the future shows nothing: IsDue starts the gap from now");
-        Check.True(CopiumNudge.ShouldPrompt(false, false, true, 2, 1, DateTime.SpecifyKind(now.AddHours(-30), DateTimeKind.Local).ToUniversalTime(), now), "local time stamps compare as UTC");
+        Check.True(CopiumNudge.ShouldPrompt(false, false, true, 2, 1, now.AddHours(-30).ToLocalTime(), now), "local time stamps compare as UTC");
     }
 
     [UnitTest]
