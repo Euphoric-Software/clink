@@ -1140,7 +1140,7 @@ internal sealed class Updater : IDisposable
         // Kept short: this text comes back at every start inside a longer message, and tray balloons stop at 250 characters.
         // (the reason is the English text the failed marker below holds as well)
         string why = appControl
-            ? "Smart App Control blocked it (Clink is not code-signed yet). Turn it off in Windows Security › App & browser control, or build Clink from source"
+            ? "Smart App Control blocked it; it may not be signed or trusted yet. Reinstall from euphoric.software (publisher Euphoric Software LLC)"
             : Describe(ex);
         InstallProblemNote = Note.Of("Update to v{version} could not start: {reason}. To retry, click Check now under App → Updates.", ("version", Note.Ltr(version.ToString())), ("reason", Shorten(why)));
         Log.Warn("updater: " + InstallProblemNote.English);
