@@ -21,8 +21,7 @@ How it fits together (decided 2026-10-28):
 ### Windows publisher signing
 
 Windows Authenticode signing is separate from the signed update feed. The stable and dev workflows support Azure
-Artifact Signing behind the repository Actions variable `ARTIFACT_SIGNING_ENABLED`. Keep it unset or `false` until the
-activation checks below are ready. A value other than lowercase `true`, `false`, or unset fails validation. Once
+Artifact Signing behind the repository Actions variable `ARTIFACT_SIGNING_ENABLED`. It is `true` (activated for v0.4.8); setting it to `false` turns signing off and releases then ship unsigned. A value other than lowercase `true`, `false`, or unset fails validation. Once
 enabled, authentication/signing failures, an invalid signature, a missing timestamp, or an unexpected publisher stop the
 build and prevent publishing. Previously published immutable objects are never re-signed or replaced.
 
@@ -64,7 +63,7 @@ Set these **repository Actions variables**, not feed-signing secrets:
 
 | Variable | Value |
 | --- | --- |
-| `ARTIFACT_SIGNING_ENABLED` | `false` until the activation checks pass |
+| `ARTIFACT_SIGNING_ENABLED` | `true` (activated for v0.4.8); `false` turns signing off and releases ship unsigned |
 | `ARTIFACT_SIGNING_ACCOUNT` | `EuphoricSoftwareLLC` |
 | `ARTIFACT_SIGNING_ENDPOINT` | `https://eus.codesigning.azure.net` |
 | `ARTIFACT_SIGNING_PROFILE` | `kithnote-public` (temporary shared company profile) |
@@ -88,8 +87,9 @@ Activation requires identity **Completed**, profile active, the profile signer a
 federation and complete variables. Review/merge the prepared changes, enable signing for a dev release, verify both
 application signatures and the installer signature/timestamps, verify the published checksums/feed, and exercise the
 updater before enabling a stable release. The ordinary `build.ps1`/local packaging flow remains unsigned unless a signer
-is explicitly supplied. Keep existing unsigned-release notices until a signed public release is verified; signing does
-not promise instant SmartScreen reputation.
+is explicitly supplied. v0.4.8 is the first signed stable release (Valid, publisher Euphoric Software LLC). A release is
+signed only while `ARTIFACT_SIGNING_ENABLED` is `true`, so users are told to check each download (README, "Installing &
+updating"); signing does not promise instant SmartScreen reputation.
 
 Offline checks: `pwsh -NoProfile -File tools/tests/windows-signing.tests.ps1`, `tools/tests/packaging.tests.ps1` and
 `tools/tests/private-ci.tests.ps1`. No test needs Azure credentials. Real signing must also be verified from the dev workflow and its published artifacts.
@@ -1006,8 +1006,7 @@ as a plain env entry, so CI runs the guard strict. `run-script-tests.ps1` picks 
 developer PC) one test skips: `upload-feed.ps1 needs PowerShell 7` in `feed.tests.ps1` (the run of `upload-feed.ps1` with a fake `aws` on PATH); CI runs it
 under pwsh 7. The packaging tests build their "outside the repo" folder under the root of the repo's drive, never under TEMP (TEMP may be inside the repo).
 
-## Recommended next step: Authenticode
+## Authenticode
 
-Sign `Clink.exe` and the setup exe with a code-signing certificate (or Azure Trusted Signing) in the `build` or a third job so
-SmartScreen reputation builds up and users can verify the publisher. The feed signature protects update integrity; it does not
-replace Authenticode for first-time downloads.
+Done: `Clink.exe`, `Clink-framework.exe` and the setup exe are signed, first in the v0.4.8 stable release (see "Windows publisher signing"). The feed signature protects
+update integrity; it does not replace Authenticode for first-time downloads.
