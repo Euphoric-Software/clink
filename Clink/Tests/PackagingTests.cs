@@ -935,6 +935,163 @@ internal static class PackagingTests
         Check.Equal(before.Length, Directory.GetFileSystemEntries(dir.Path, "*", SearchOption.AllDirectories).Length, "nothing was written anywhere");
     }
 
+    /// <summary>A file in the updates folder standing in for the downloaded exe that runs <c>--apply-update</c>.</summary>
+    private static string DownloadedSelf(byte fill)
+    {
+        Directory.CreateDirectory(Updater.UpdatesDir);
+        string self = Path.Combine(Updater.UpdatesDir, "Clink-9.9.9.exe");
+        File.WriteAllBytes(self, FakeExe(fill));
+        foreach (string marker in new[] { ".failed", ".installed", ".timeout" }) File.Delete(self + marker);   // no marker left by an earlier test
+        return self;
+    }
+
+    /// <summary>A copy of this very exe (its version resource says Clink) under a name a portable copy might have.</summary>
+    private static string ClinkTarget(TempDir dir)
+    {
+        string target = dir.File("MyClink.exe");
+        File.Copy(Environment.ProcessPath!, target);
+        return target;
+    }
+
+    [UnitTest]
+    public static void Packaging_apply_update_runs_only_from_the_updates_folder_onto_a_Clink_exe()
+    {
+        using var dir = new TempDir();
+        string settingsDir = dir.File("settings");
+        Settings.DirOverride = settingsDir;
+        Updater.IsElevatedOverride = false;
+        int launched = 0;
+        Updater.LaunchOverride = _ => { launched++; return true; };
+        try
+        {
+            string clink = ClinkTarget(dir);
+            byte[] clinkBytes = File.ReadAllBytes(clink);
+            string other = dir.File("Other.exe");
+            File.WriteAllBytes(other, FakeExe(5));   // an exe whose version resource does not say Clink (none at all)
+            string self = DownloadedSelf(9);
+            Check.Null(Updater.ApplyRefusal(self, clink), "a download onto a Clink exe is fine, whatever the exe is called");
+
+            // Run from anywhere but the updates folder (this test runs from bin): refused before anything is written or started.
+            Updater.ApplySelfPathOverride = null;
+            Check.Equal(Updater.ApplyRefusedExitCode, Updater.RunApplyUpdate(new[] { "--apply-update", clink, "0", "--show" }));
+            Updater.ApplySelfPathOverride = dir.File("Clink-9.9.9.exe");
+            File.WriteAllBytes(Updater.ApplySelfPathOverride, FakeExe(9));
+            Check.Equal(Updater.ApplyRefusedExitCode, Updater.RunApplyUpdate(new[] { "--apply-update", clink, "0", "--show" }), "the right name in the wrong folder");
+            Check.Equal(clinkBytes, File.ReadAllBytes(clink), "the Clink target is untouched");
+
+            // From the updates folder, onto anything that is not a Clink exe: refused too.
+            Updater.ApplySelfPathOverride = self;
+            Check.Equal(Updater.ApplyRefusedExitCode, Updater.RunApplyUpdate(new[] { "--apply-update", other, "0", "--show" }));
+            Check.Equal(FakeExe(5), File.ReadAllBytes(other), "the other exe is untouched");
+            foreach (string bad in new[] { "", "MyClink.exe", @"\\server\share\Clink.exe", @"\\?\" + clink, dir.File("missing.exe"), clink + ":s", self, dir.File("notes.txt") })
+            {
+                if (bad.EndsWith("notes.txt", StringComparison.Ordinal)) File.Copy(clink, bad, overwrite: true);   // a Clink exe with another extension
+                Check.NotNull(Updater.ApplyRefusal(self, bad), "refused: " + bad);
+            }
+            Check.Equal(0, launched, "nothing was started");
+            Check.False(Directory.Exists(settingsDir), "no log was written");
+            Check.False(File.Exists(clink + ".new") || File.Exists(clink + ".bak") || File.Exists(other + ".new") || File.Exists(other + ".bak"), "nothing staged, nothing backed up");
+            Check.False(File.Exists(self + ".failed"), "no marker either");
+        }
+        finally { Updater.ApplySelfPathOverride = null; }
+    }
+
+    [UnitTest]
+    public static void Packaging_a_failed_apply_update_starts_nothing_and_a_good_one_starts_the_new_exe()
+    {
+        using var dir = new TempDir();
+        Settings.DirOverride = dir.File("settings");
+        Updater.IsElevatedOverride = false;
+        var started = new List<System.Diagnostics.ProcessStartInfo>();
+        Updater.LaunchOverride = psi => { started.Add(psi); return true; };
+        string? logBefore = Log.Path;
+        try
+        {
+            string clink = ClinkTarget(dir);
+            byte[] clinkBytes = File.ReadAllBytes(clink);
+            Updater.ApplySelfPathOverride = DownloadedSelf(9);
+
+            // The copy cannot be staged (a folder sits where Clink.exe.new would go): the old exe stays. Unsigned (this test build,
+            // the fake download), or signed by someone else: nothing is started, not even the old version.
+            Directory.CreateDirectory(clink + ".new");
+            Check.Null(Updater.SignerOverride, "the real signature check");
+            Check.Equal(0, Updater.RunApplyUpdate(new[] { "--apply-update", clink, "0", "--show" }));
+            Check.Equal(clinkBytes, File.ReadAllBytes(clink), "the old exe stays");
+            Check.True(File.Exists(Updater.ApplySelfPathOverride + ".failed"), "the download is marked failed");
+            Check.Equal(0, started.Count, "unsigned: a failed apply starts nothing");
+            string self = Updater.ApplySelfPathOverride!;
+            Updater.SignerOverride = f => f == self ? "CN=Euphoric Software" : "CN=Someone Else";
+            Check.Equal(0, Updater.RunApplyUpdate(new[] { "--apply-update", clink, "0", "--show" }));
+            Check.Equal(0, started.Count, "another signer: nothing is started");
+            Updater.SignerOverride = f => f == self ? null : "CN=Euphoric Software";
+            Check.Equal(0, Updater.RunApplyUpdate(new[] { "--apply-update", clink, "0", "--show" }));
+            Check.Equal(0, started.Count, "an unsigned download vouches for nothing");
+
+            // Signed by the same signer as the download: the old version is started again, as it was.
+            Updater.SignerOverride = _ => "CN=Euphoric Software";
+            Check.Equal(0, Updater.RunApplyUpdate(new[] { "--apply-update", clink, "0", "--show" }));
+            Check.Equal(1, started.Count, "the validated previous version is restarted");
+            Check.Equal(clink, started[0].FileName);
+            Check.Equal(clinkBytes, File.ReadAllBytes(clink));
+            started.Clear();
+            Updater.SignerOverride = null;
+
+            // The same apply that works: the new exe is in place and is the one started, with the command line it was given.
+            Directory.Delete(clink + ".new");
+            Check.Equal(0, Updater.RunApplyUpdate(new[] { "--apply-update", clink, "0", "--show" }));
+            Check.Equal(FakeExe(9), File.ReadAllBytes(clink), "the download is installed");
+            Check.Equal(1, started.Count);
+            Check.Equal(clink, started[0].FileName);
+            Check.Equal(new[] { "--show" }, started[0].ArgumentList.ToArray());
+        }
+        finally
+        {
+            Updater.ApplySelfPathOverride = null;
+            Updater.SignerOverride = null;
+            if (logBefore != null) Log.Init(Path.GetDirectoryName(logBefore)!, Path.GetFileName(logBefore));   // RunApplyUpdate opened the log in this test's folder
+        }
+    }
+
+    [UnitTest]
+    public static void Packaging_a_new_exe_that_does_not_start_is_rolled_back_and_the_old_one_restarts_only_when_signed_alike()
+    {
+        using var dir = new TempDir();
+        Settings.DirOverride = dir.File("settings");
+        Updater.IsElevatedOverride = false;
+        var started = new List<System.Diagnostics.ProcessStartInfo>();
+        Updater.LaunchOverride = psi => { started.Add(psi); return started.Count > 1; };   // the first start (the new exe) fails
+        string? logBefore = Log.Path;
+        try
+        {
+            string clink = ClinkTarget(dir);
+            byte[] clinkBytes = File.ReadAllBytes(clink);
+            string self = DownloadedSelf(9);
+            Updater.ApplySelfPathOverride = self;
+
+            Updater.SignerOverride = f => f == self ? "CN=Euphoric Software" : "CN=Someone Else";
+            Check.Equal(0, Updater.RunApplyUpdate(new[] { "--apply-update", clink, "0", "--show" }));
+            Check.Equal(clinkBytes, File.ReadAllBytes(clink), "the previous exe is put back");
+            Check.Contains(File.ReadAllText(self + ".failed"), "did not start");
+            Check.False(File.Exists(self + ".installed"), "not counted as installed");
+            Check.Equal(1, started.Count, "only the new exe was tried: the restored one is signed by someone else");
+
+            started.Clear();
+            File.Delete(self + ".failed");
+            Updater.SignerOverride = _ => "CN=Euphoric Software";
+            Check.Equal(0, Updater.RunApplyUpdate(new[] { "--apply-update", clink, "0", "--show" }));
+            Check.Equal(clinkBytes, File.ReadAllBytes(clink));
+            Check.Equal(2, started.Count, "the new exe, then the restored previous one");
+            Check.Equal(clink, started[1].FileName);
+            Check.Equal(new[] { "--show" }, started[1].ArgumentList.ToArray());
+        }
+        finally
+        {
+            Updater.ApplySelfPathOverride = null;
+            Updater.SignerOverride = null;
+            if (logBefore != null) Log.Init(Path.GetDirectoryName(logBefore)!, Path.GetFileName(logBefore));
+        }
+    }
+
     [UnitTest]
     public static void Packaging_prepare_apply_refuses_while_the_gate_is_held()
     {

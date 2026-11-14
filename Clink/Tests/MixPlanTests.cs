@@ -209,6 +209,22 @@ internal static class MixPlanTests
     }
 
     [UnitTest]
+    public static void The_headless_trim_reads_its_times_with_a_dot_in_every_language_and_checks_its_arguments()
+    {
+        var culture = System.Globalization.CultureInfo.CurrentCulture;
+        System.Globalization.CultureInfo.CurrentCulture = System.Globalization.CultureInfo.GetCultureInfo("de-DE");   // where "1,5" is one and a half and "1.5" was read as 15
+        try
+        {
+            Check.Equal((1.5, 12.25), TrimCli.ParseRange("1.5", "12.25"));
+            Check.Equal((0.0, 3.0), TrimCli.ParseRange("0", "3"));
+            foreach (var (s, e) in new[] { ("1,5", "3"), ("x", "3"), ("NaN", "3"), ("1", "Infinity"), ("5", "5"), ("6", "5") })
+                Check.Throws<ArgumentException>(() => TrimCli.ParseRange(s, e), $"{s}..{e}");
+            Check.Contains(Check.Throws<ArgumentException>(() => TrimCli.Run(new[] { "--trim", "in.mp4", "out.mp4" })).Message, "Usage");
+        }
+        finally { System.Globalization.CultureInfo.CurrentCulture = culture; }
+    }
+
+    [UnitTest]
     public static void Without_roles_every_track_is_exported_as_ticked_at_its_own_volume()
     {
         var none = MixPlan.Roles(null, 3);

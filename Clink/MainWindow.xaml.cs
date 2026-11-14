@@ -1657,6 +1657,24 @@ public partial class MainWindow : Window
     private CopiumPanel? _copiumPanel;         // the panel shown last
     private SignInState? _copiumShown;         // the state shown last
 
+    /// <summary>
+    /// The window is kept out of every screen capture (Clink's own clips, recordings and screenshots, other recorders, screen sharing)
+    /// while the sign-in code is on it: whoever has the code can link a Copium account to this Clink until it expires.
+    /// </summary>
+    internal static bool WantsCaptureExclusion(CopiumCardModel m) => m.CodeVisible && !string.IsNullOrEmpty(m.CodeText);
+
+    private bool _codeExcludedFromCapture;
+
+    private void SetCodeCaptureExclusion(bool exclude)
+    {
+        if (exclude == _codeExcludedFromCapture) return;
+        nint hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+        if (hwnd == 0) return;   // no window yet: the next render, once there is one, sets it
+        _codeExcludedFromCapture = exclude;
+        if (exclude) ScreenPlacement.ExcludeFromCaptureUnlessDocShots(hwnd);
+        else ScreenPlacement.IncludeInCapture(hwnd);
+    }
+
     /// <summary>Shows <paramref name="st"/> (the latest state from the session). Everything comes from <see cref="CopiumCardModel"/>; texts are plain text.</summary>
     private void RenderCopiumCard(SignInState st)
     {
@@ -1696,6 +1714,7 @@ public partial class MainWindow : Window
             CopiumWaitingPanel.Visibility = Vis(m.Panel is CopiumPanel.Waiting or CopiumPanel.Finishing);
             CopiumCodeBox.Visibility = Vis(m.CodeVisible);
             CopiumCodeBox.Text = m.CodeText ?? "";
+            SetCodeCaptureExclusion(WantsCaptureExclusion(m));
             CopiumCodeHint.Visibility = Vis(m.CodeHintVisible);
             CopiumCodeHint.Text = m.CodeHintVisible ? CopiumCardModel.CodeCheckHint : "";
             SetLive(CopiumProgressText, m.StatusText ?? "");

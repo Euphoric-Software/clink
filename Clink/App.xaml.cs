@@ -128,7 +128,7 @@ public partial class App : System.Windows.Application
                     }
                     if (args.Length > 2 && !args[2].StartsWith("--", StringComparison.Ordinal))
                     {
-                        long at = args.Length > 3 && double.TryParse(args[3], out double sec) ? (long)(sec * 10_000_000) : 0;
+                        long at = args.Length > 3 && double.TryParse(args[3], NumberStyles.Float, CultureInfo.InvariantCulture, out double sec) ? (long)(sec * 10_000_000) : 0;
                         var frame = Engine.MediaProbe.DecodeFrame(args[1], at);
                         if (frame != null) { Engine.MediaProbe.SavePng(args[2], frame.Value.w, frame.Value.h, frame.Value.bgra); Log.Info($"[probe] frame saved to {args[2]}"); Console.WriteLine("frame saved to " + args[2]); }
                         else { Log.Warn("[probe] no frame decoded"); code = 4; }

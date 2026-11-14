@@ -1,4 +1,5 @@
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Windows.Threading;
 using Clink.Services;
@@ -209,6 +210,169 @@ internal static class SettingsImportTests
         Check.Equal(0, SettingsImport.FindForeignCopies().Count);
     }
 
+    /// <summary>Gives <paramref name="path"/> a Low mandatory integrity label, as a file an AppContainer (sandboxed) app writes carries (<c>icacls /setintegritylevel low</c>).</summary>
+    private static void LabelLow(string path)
+    {
+        if (!ConvertStringSecurityDescriptorToSecurityDescriptor("S:(ML;;NW;;;LW)", 1, out nint sd, out _))
+            throw new TestFailure("could not build a Low label: " + Marshal.GetLastWin32Error());
+        try
+        {
+            if (!GetSecurityDescriptorSacl(sd, out bool present, out nint sacl, out _) || !present) throw new TestFailure("no SACL in the Low label");
+            uint error = SetNamedSecurityInfo(path, 1 /* SE_FILE_OBJECT */, 0x10 /* LABEL_SECURITY_INFORMATION */, 0, 0, 0, sacl);
+            if (error != 0) throw new TestFailure($"could not label {path} Low: error {error}");
+        }
+        finally { LocalFree(sd); }
+    }
+
+    [DllImport("advapi32.dll", EntryPoint = "ConvertStringSecurityDescriptorToSecurityDescriptorW", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool ConvertStringSecurityDescriptorToSecurityDescriptor(string sddl, uint revision, out nint sd, out uint size);
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool GetSecurityDescriptorSacl(nint sd, out bool present, out nint sacl, out bool defaulted);
+    [DllImport("advapi32.dll", EntryPoint = "SetNamedSecurityInfoW", CharSet = CharSet.Unicode)]
+    private static extern uint SetNamedSecurityInfo(string name, int type, uint info, nint owner, nint group, nint dacl, nint sacl);
+    [DllImport("kernel32.dll")]
+    private static extern nint LocalFree(nint mem);
+
+    [UnitTest]
+    public static void A_copy_written_at_low_integrity_is_neither_found_nor_taken_over()
+    {
+        using var home = new TempDir();
+        using var root = new TempDir();
+        Settings.DirOverride = home.Path;
+        SettingsImport.PackagesRoot = PackagesOf(root);
+        var now = DateTime.UtcNow;
+        FakeCopy(root, "Good_1", Json(s => s.Codec = "hevc"), savedUtc: now.AddHours(-3));
+        string lowSettings = FakeCopy(root, "Sandboxed_2", Json(s => s.Codec = "av1"), savedUtc: now.AddHours(-1));
+        LabelLow(Path.Combine(lowSettings, "settings.json"));
+        string lowClips = FakeCopy(root, "Sandboxed_3", Json(s => s.Fps = 30), "[]", savedUtc: now.AddHours(-1));
+        LabelLow(Path.Combine(lowClips, "clips.json"));
+        string lowFolder = FakeCopy(root, "Sandboxed_4", Json(s => s.Fps = 15), savedUtc: now.AddHours(-1));
+        LabelLow(lowFolder);
+        Check.Contains(IntegrityLabel.WhyUntrusted(Path.Combine(lowSettings, "settings.json")), "Low");
+        Check.Null(IntegrityLabel.WhyUntrusted(Path.Combine(root.File(@"Packages\Good_1\LocalCache\Roaming\Clink"), "settings.json")), "an ordinary file of this user");
+
+        Check.Equal(new[] { "Good_1" }, SettingsImport.FindForeignCopies().Select(f => f.Package).ToArray(), "the newer copies a sandboxed app wrote are skipped");
+        Check.Equal("Good_1", SettingsImport.ImportNewest()?.Package);
+        Check.Equal("hevc", Settings.Load().Codec, "the older ordinary copy was taken, not the sandboxed one");
+    }
+
+    [UnitTest]
+    public static void A_copy_is_trusted_only_at_Medium_or_above_and_when_owned_by_this_user()
+    {
+        var me = System.Security.Principal.WindowsIdentity.GetCurrent().User!;
+        var other = new System.Security.Principal.SecurityIdentifier("S-1-5-32-545");   // Users: not one owner
+        foreach (string trusted in new[] { "S-1-5-32-544", "S-1-5-18", "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464" })
+            Check.Null(IntegrityLabel.Judge(null, new System.Security.Principal.SecurityIdentifier(trusted), me), "Administrators, SYSTEM, TrustedInstaller: " + trusted);
+        Check.Null(IntegrityLabel.Judge(null, me, me), "no label is Medium");
+        Check.Null(IntegrityLabel.Judge(0x2000, me, me));
+        Check.Null(IntegrityLabel.Judge(0x3000, me, me), "High");
+        Check.Contains(IntegrityLabel.Judge(0x1000, me, me), "Low");
+        Check.Contains(IntegrityLabel.Judge(0, me, me), "Untrusted");
+        Check.Contains(IntegrityLabel.Judge(null, other, me), "not owned");
+        Check.Contains(IntegrityLabel.Judge(0x2000, null, me), "not owned");
+        Check.NotNull(IntegrityLabel.WhyUntrusted(@"C:\no\such\folder\settings.json"), "what cannot be read is not trusted");
+    }
+
+    /// <summary>The lowest RID <see cref="IntegrityLabel.LowestRid"/> reads from the SACL of <paramref name="sddl"/>.</summary>
+    private static int? RidOf(string sddl)
+    {
+        if (!ConvertStringSecurityDescriptorToSecurityDescriptor(sddl, 1, out nint sd, out _)) throw new TestFailure("bad SDDL " + sddl);
+        try
+        {
+            if (!GetSecurityDescriptorSacl(sd, out bool present, out nint sacl, out _)) throw new TestFailure("no SACL");
+            return IntegrityLabel.LowestRid(present ? sacl : 0);
+        }
+        finally { LocalFree(sd); }
+    }
+
+    [UnitTest]
+    public static void The_label_is_the_lowest_one_that_applies_to_the_object_itself()
+    {
+        Check.Equal(0x1000, RidOf("S:(ML;OICIIO;NW;;;ME)(ML;;NW;;;LW)"), "an inherit-only Medium label says nothing about the object; the Low one does");
+        Check.Equal(0x1000, RidOf("S:(ML;;NW;;;ME)(ML;;NW;;;LW)"), "the lowest of two");
+        Check.Null(RidOf("S:(ML;OICIIO;NW;;;LW)"), "only inherit-only: no label of its own (Medium)");
+        Check.Equal(0x2000, RidOf("S:(ML;;NW;;;ME)"));
+        Check.Null(RidOf("D:(A;;GA;;;WD)"), "no SACL");
+    }
+
+    [UnitTest]
+    public static void Import_checks_the_files_again_when_it_reads_them()
+    {
+        using var home = new TempDir();
+        using var root = new TempDir();
+        var ours = LoadFrom(home, Json(s => s.Codec = "h264"));
+        ours.Save();
+        string before = File.ReadAllText(home.File("settings.json"));
+        ClipLibrary.IndexPathOverride = home.File("clips.json");
+        const string ourClips = """[ { "Path": "C:\\clips\\mine.mp4", "Size": 1 } ]""";
+        File.WriteAllText(home.File("clips.json"), ourClips);
+        string folder = FakeCopy(root, "Foo_abc", Json(s => s.Codec = "hevc"));
+        var copy = SettingsImport.FindForeignCopies(root.Path).Single();   // found without a clip list
+
+        // A Low clip list planted after the scan: the settings are imported, the clips are not merged.
+        File.WriteAllText(Path.Combine(folder, "clips.json"), """[ { "Path": "C:\\clips\\planted.mp4" } ]""");
+        LabelLow(Path.Combine(folder, "clips.json"));
+        var result = SettingsImport.Import(copy);
+        Check.Contains(result.ClipsProblem, "not trusted");
+        Check.Equal(ourClips, File.ReadAllText(home.File("clips.json")), "our clip list is untouched");
+        Check.Equal("hevc", Settings.Load().Codec);
+
+        // The retry at the next start reads it again: still Low, still not merged.
+        Check.NotNull(SettingsImport.PendingClipMerge(), "a retry is pending");
+        SettingsImport.RetryPendingClipMerge();
+        Check.Equal(ourClips, File.ReadAllText(home.File("clips.json")), "the retry does not merge it either");
+        Check.Equal(2, SettingsImport.PendingClipMerge()?.Attempts);
+
+        // A settings.json made Low after the scan: refused, nothing changed.
+        File.WriteAllText(home.File("settings.json"), before);
+        LabelLow(copy.SettingsPath);
+        Check.Contains(Check.Throws<IOException>(() => SettingsImport.Import(copy)).Message, "not trusted");
+        Check.Equal(before, File.ReadAllText(home.File("settings.json")));
+    }
+
+    [UnitTest]
+    public static void A_copy_whose_Clink_folder_is_a_junction_is_neither_found_nor_read()
+    {
+        using var home = new TempDir();
+        using var root = new TempDir();
+        using var elsewhere = new TempDir();
+        Settings.DirOverride = home.Path;
+        File.WriteAllText(elsewhere.File("settings.json"), Json(s => s.Codec = "hevc"));
+        string link = root.File(@"Packages\Linked_1\LocalCache\Roaming\Clink");
+        Directory.CreateDirectory(Path.GetDirectoryName(link)!);
+        if (!TestJunction.TryMake(link, elsewhere.Path, out string why)) TestJunction.Skipped(nameof(A_copy_whose_Clink_folder_is_a_junction_is_neither_found_nor_read), why);
+        try
+        {
+            Check.Equal(0, SettingsImport.FindForeignCopies(root.Path).Count, "a junction is not offered");
+            var forged = new ForeignSettings("Linked_1", link, DateTime.UtcNow, Array.Empty<string>());
+            Check.Contains(Check.Throws<IOException>(() => SettingsImport.Import(forged)).Message, "junction");
+            Check.False(File.Exists(home.File("settings.json")), "nothing was written");
+        }
+        finally { TestJunction.Remove(link); }
+    }
+
+    [UnitTest]
+    public static void A_silent_import_never_turns_on_run_at_startup_but_an_import_the_user_asked_for_does()
+    {
+        using var home = new TempDir();
+        using var root = new TempDir();
+        Settings.DirOverride = home.Path;
+        SettingsImport.PackagesRoot = PackagesOf(root);
+        FakeCopy(root, "Foo_abc", Json(s => { s.RunAtStartup = true; s.Codec = "hevc"; }));
+        Check.NotNull(SettingsImport.ImportNewest());
+        var loaded = Settings.Load();
+        Check.Equal("hevc", loaded.Codec, "the rest is taken over");
+        Check.False(loaded.RunAtStartup, "a fresh store's first start does not register Clink to start with Windows");
+
+        SettingsImport.Import(SettingsImport.FindForeignCopies().Single());
+        Check.True(Settings.Load().RunAtStartup, "the user's own import takes it");
+
+        // Silent, with ours on: ours stays on; any non-false incoming value becomes off when ours is off.
+        Check.Contains(SettingsImport.KeepOurOwn("""{ "RunAtStartup": true }""", """{ "RunAtStartup": true }""", false, keepOurStartup: true), "true");
+        Check.Equal(false, Settings.FromJson(SettingsImport.KeepOurOwn("""{ "runatstartup": true }""", null, false, keepOurStartup: true)).RunAtStartup);
+        Check.DoesNotContain(SettingsImport.KeepOurOwn("""{ "RunAtStartup": 1 }""", """{ "RunAtStartup": false }""", false, keepOurStartup: true), "1");
+    }
+
     // ------------------------------------------------------------------ what would change
 
     [UnitTest]
@@ -325,6 +489,30 @@ internal static class SettingsImportTests
         Check.Equal("https://theirs/c", c2.GetProperty("CopiumLink").GetString());
         Check.Equal(7, c2.GetProperty("FutureField").GetInt32(), "fields this version does not know are carried along");
         Check.Equal(1, clips.Count(c => !c.TryGetProperty("Path", out _)), "only our own clip without a path is kept");
+    }
+
+    [UnitTest]
+    public static void Merged_clip_indexes_never_take_a_network_or_device_path_from_the_other_copy()
+    {
+        const string ours = """[ { "Path": "C:\\clips\\a.mp4", "Size": 1 }, { "Path": "\\\\nas\\clips\\ours.mp4", "ArchivedAt": "2026-10-21T01:00:00" } ]""";
+        const string theirs = """
+            [
+              { "Path": "C:\\clips\\a.mp4", "IsTrim": true, "SourcePath": "\\\\evil\\share\\src.mp4", "CopiumLink": "https://theirs/a" },
+              { "Path": "\\\\evil\\share\\b.mp4", "CopiumLink": "https://theirs/b" },
+              { "path": "\\\\?\\UNC\\evil\\share\\c.mp4" },
+              { "Path": "//evil/share/d.mp4" },
+              { "Path": "\\\\.\\GLOBALROOT\\Device\\x\\e.mp4" },
+              { "Path": "C:\\clips\\f.mp4", "IsTrim": true, "SourcePath": "\\\\evil\\share\\src.mp4" },
+              { "Path": "C:\\clips\\g.mp4", "IsTrim": true, "SourcePath": "C:\\clips\\a.mp4" }
+            ]
+            """;
+        var skipped = new List<string>();
+        using var doc = JsonDocument.Parse(SettingsImport.MergeClips(ours, theirs, skipped));
+        var clips = doc.RootElement.EnumerateArray().ToList();
+        Check.Equal(new[] { @"C:\clips\a.mp4", @"\\nas\clips\ours.mp4", @"C:\clips\g.mp4" }, clips.Select(c => c.GetProperty("Path").GetString()!).ToArray(), "our own network clip stays; theirs are left out");
+        Check.Equal("https://theirs/a", clips[0].GetProperty("CopiumLink").GetString(), "the rest of a known clip is still filled in");
+        Check.False(clips[0].TryGetProperty("SourcePath", out _), "but not from a network path");
+        Check.True(skipped.Any(s => s.Contains("5 entries on a network or device path")), string.Join(" | ", skipped));
     }
 
     [UnitTest]

@@ -930,6 +930,13 @@ internal static unsafe class ScreenPlacement
         if (!AppController.DocShots) ExcludeFromCapture(hwnd);
     }
 
+    /// <summary>Undoes <see cref="ExcludeFromCapture"/> (WDA_NONE): for a window that is kept out of captures only while it shows a secret.</summary>
+    public static void IncludeInCapture(nint hwnd)
+    {
+        if (hwnd != 0) SetWindowDisplayAffinity(hwnd, WDA_NONE);
+    }
+    private const uint WDA_NONE = 0;
+
     /// <summary>Current size in physical pixels.</summary>
     public static (int w, int h) SizeOf(Window w)
     {

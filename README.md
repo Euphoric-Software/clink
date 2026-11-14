@@ -486,7 +486,7 @@ and a banner under *App → Settings*) and, for a Clink that is not itself insid
 * on its **first start**, with no settings of its own, it takes over the newest copy it finds before anything reads
   settings: `settings.json` as it is and the clip index merged (every clip once; Copium links, archive times, audio
   tracks and the like fill in what yours leaves empty), and says *Imported the settings Clink saved while started from
-  inside <app> (2026-10-21 14:32)*;
+  inside <app> (2026-10-21 14:32)*. This import nobody asked for leaves *Run at startup* off (unless yours was on);
 * **otherwise** it never changes your settings unasked. It looks, after start, for a copy that differs (this
   installation's own settings do not count: where the window sits, the update state, which copies you turned down; the
   Copium token is compared decrypted and never logged) and offers it: one tray balloon (*Settings from another copy of
@@ -506,7 +506,10 @@ comes from the other copy. An incoming Copium token that cannot be decrypted her
 never replaces a working one: your own stays, and the offer lists *the incoming Copium token cannot be used on this
 machine* beside what else differs, never as a reason to offer a copy on its own. The clip index is merged as above, its
 paths compared as the file system does (slashes either way, `.` and `..`, a trailing separator, `\\?\` prefixes, case; an
-8.3 name, or a mapped drive for a network path, may stay a duplicate). If the clip lists cannot be merged (the other
+8.3 name, or a mapped drive for a network path, may stay a duplicate); the other copy's clips on a network or device path
+are left out. A copy is never offered or read when its folder is a junction or link, or its folder or files are labelled
+below Medium integrity (written by a sandboxed app) or owned by another user; the files are checked again when they are
+read. If the clip lists cannot be merged (the other
 copy's is over 4,000,000 bytes, or a list does not read) the settings are imported all the same and Clink says *Settings
 imported; the clip list could not be merged: the other copy's clip list cannot be read (not valid JSON: error on line 3)*
 in the footer. A marker, `clips-merge.pending` in the settings folder, makes every later start try the merge again,

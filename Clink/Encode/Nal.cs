@@ -110,7 +110,7 @@ internal static class Nal
         {
             int len = (lengthPrefixed[i] << 24) | (lengthPrefixed[i + 1] << 16) | (lengthPrefixed[i + 2] << 8) | lengthPrefixed[i + 3];
             i += 4;
-            if (len < 0 || i + len > lengthPrefixed.Length) break;
+            if (len < 0 || len > lengthPrefixed.Length - i) break;   // not i + len: that overflows for a length near int.MaxValue
             ms.Write(sc);
             ms.Write(lengthPrefixed.Slice(i, len));
             i += len;
