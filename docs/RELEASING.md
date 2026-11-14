@@ -25,6 +25,18 @@ Artifact Signing behind the repository Actions variable `ARTIFACT_SIGNING_ENABLE
 activation checks below are ready. A value other than lowercase `true`, `false`, or unset fails validation. Once
 enabled, authentication/signing failures, an invalid signature, a missing timestamp, or an unexpected publisher stop the
 build and prevent publishing. Previously published immutable objects are never re-signed or replaced.
+The dev workflow reads its own variable, `ARTIFACT_SIGNING_DEV_ENABLED` (same values as above). **Dev builds are unsigned until
+Jason sets it to `true`; setting it is a step to do when this change merges.** It is a kill switch, not access control: anyone
+who can push `dev` can edit the workflow. Closing that gap (the Entra federated credential's subject, the `dev` and tag
+rulesets) is Jason's work in Azure and GitHub, not something this repository can do.
+
+What is verified before signing (`tools/lib/windows-signing-lib.ps1`): the ArtifactSigning 0.1.8 PowerShell module is downloaded
+from the PowerShell Gallery and checked against a pinned SHA-256; `Microsoft.Windows.SDK.BuildTools` and
+`Microsoft.ArtifactSigning.Client` are downloaded from nuget.org and checked against pinned SHA-512 hashes (the hashes nuget.org
+publishes), then placed where the module looks, so it does not fetch them itself. A mismatch stops the build. The module's third
+download, the `sign` tool, is restored by `dotnet` under a generated `nuget.config` that requires package signatures: only the
+nuget.org repository signer is trusted, only for packages owned by Microsoft or SignTeam. Updating any pinned version means
+recomputing its hash in a reviewed change.
 
 Use the Azure account `EuphoricSoftwareLLC` in East US (`https://eus.codesigning.azure.net`), its approved
 **Public** company identity, and the **Public Trust** certificate profile named `kithnote-public`. Clink and Kithnote
@@ -65,6 +77,7 @@ Set these **repository Actions variables**, not feed-signing secrets:
 | Variable | Value |
 | --- | --- |
 | `ARTIFACT_SIGNING_ENABLED` | `false` until the activation checks pass |
+| `ARTIFACT_SIGNING_DEV_ENABLED` | Dev workflow only; unset = dev builds are not signed. `false` stops dev signing without touching stable |
 | `ARTIFACT_SIGNING_ACCOUNT` | `EuphoricSoftwareLLC` |
 | `ARTIFACT_SIGNING_ENDPOINT` | `https://eus.codesigning.azure.net` |
 | `ARTIFACT_SIGNING_PROFILE` | `kithnote-public` (temporary shared company profile) |

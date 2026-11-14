@@ -250,10 +250,11 @@ jobs:
         if: steps.signing.outputs.enabled == 'true'
         shell: pwsh
         run: |
-          # The module is the same pinned version used by Microsoft's Artifact Signing action.
-          # Its tool restore runs outside this repo's intentionally strict NuGet source mapping.
-          Install-Module -Name ArtifactSigning -RequiredVersion 0.1.8 -Force -Repository PSGallery
+          # Verified by hash, then imported by path (tools/lib/windows-signing-lib.ps1): the ArtifactSigning 0.1.8 module (SHA-256), and the
+          # BuildTools and ArtifactSigning.Client packages (SHA-512, pre-placed so the module skips its own fetch). Its `sign` tool restore
+          # runs under a nuget.config that requires signatures (nuget.org repository signer, Microsoft/SignTeam owners).
           . ./tools/lib/windows-signing-lib.ps1
+          Install-ArtifactSigningModule
           Invoke-WindowsInstallerSigning -Path dist/sc/Clink.exe
           Invoke-WindowsInstallerSigning -Path dist/fx/Clink.exe
 
