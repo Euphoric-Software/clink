@@ -168,11 +168,10 @@ internal static class L10nTreeCopiumTests
                 foreach (bool link in new[] { false, true })
                 {
                     string at = $" (token {token}, cloud {cloud}, link {link})";
-                    Marked(ShareChoices.ButtonLabel(token, cloud, link), "ButtonLabel" + at);
                     Marked(ShareChoices.ToastLabel(token, cloud, link), "ToastLabel" + at);
                     if (ShareChoices.ButtonName(token, cloud, link) is { } name) Marked(name, "ButtonName" + at);
-                    // a split button's main half carries the same label as the bar's (the bar itself acts by BulkBarButtonKind, not by this text)
-                    if (ShareChoices.IsSplit(token, cloud, link)) Check.Equal(ShareChoices.SplitMainLabel, ShareChoices.ButtonLabel(token, cloud, link));
+                    // a split toast button's main half carries the same label as the bar's (the bar itself acts by BulkBarButtonKind, not by this text)
+                    if (ShareChoices.IsSplit(token, cloud, link)) Check.Equal(ShareChoices.SplitMainLabel, ShareChoices.ToastLabel(token, cloud, link));
                 }
         var menus = new List<(string What, IReadOnlyList<ShareChoiceItem> Items)>
         {
@@ -206,7 +205,7 @@ internal static class L10nTreeCopiumTests
         Check.Equal("Share options", ShareChoices.SplitArrowName);
         Check.Equal("More share options", ShareChoices.SplitArrowTip);
         Check.Equal("Open the share window: drag the file into Discord, a browser or a folder", ShareChoices.SplitMainTip);
-        Check.Equal("Copy link", ShareChoices.ButtonLabel(false, true, true));
+        Check.Equal("Copy link", ShareChoices.ToastLabel(false, true, true));
         Check.Equal("Share to Copium", ShareChoices.ToastLabel(true, false, false));
         Check.Equal(new[] { "_Upload to Copium", "_Share file…", "S_ave a copy…" }, ShareChoices.For(true, true, false)!.Select(i => i.Header).ToArray());
         Check.Equal(new[] { "_Copy link", "_Share file…", "S_ave a copy…" }, ShareChoices.For(true, true, true)!.Select(i => i.Header).ToArray());

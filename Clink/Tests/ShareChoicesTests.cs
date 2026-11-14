@@ -51,6 +51,32 @@ internal static class ShareChoicesTests
     }
 
     [UnitTest]
+    public static void Library_row_menu_always_exists_with_Share_file_and_Save_a_copy()
+    {
+        var cases = new (bool Token, bool Cloud, bool Link, ShareChoice[] Expect)[]
+        {
+            (false, true, false, new[] { ShareChoice.ShareFile, ShareChoice.SaveCopy }),
+            (false, false, false, new[] { ShareChoice.ShareFile, ShareChoice.SaveCopy }),
+            (false, true, true, new[] { ShareChoice.CopyLink, ShareChoice.ShareFile, ShareChoice.SaveCopy }),
+            (true, false, false, new[] { ShareChoice.ShareFile, ShareChoice.SaveCopy }),
+            (true, false, true, new[] { ShareChoice.CopyLink, ShareChoice.ShareFile, ShareChoice.SaveCopy }),
+            (true, true, false, new[] { ShareChoice.Upload, ShareChoice.ShareFile, ShareChoice.SaveCopy }),
+            (true, true, true, new[] { ShareChoice.CopyLink, ShareChoice.ShareFile, ShareChoice.SaveCopy }),
+        };
+        foreach (var c in cases)
+            Check.Equal(c.Expect, ShareChoices.ForLibrary(c.Token, c.Cloud, c.Link).Select(i => i.Choice).ToArray(), $"library menu {c.Token}/{c.Cloud}/{c.Link}");
+        Check.Equal(ShareChoices.SplitMainChoice, ShareChoice.ShareFile, "the main half is Share file");
+        // the toast / trim / bulk gating (For, TrimSplit, ForTrim) is unchanged: still only with a token and cloud sharing on
+        foreach (bool token in new[] { false, true })
+            foreach (bool cloud in new[] { false, true })
+            {
+                Check.Equal(token && cloud, ShareChoices.TrimSplit(token, cloud), $"trim split {token}/{cloud}");
+                Check.Equal(token && cloud, ShareChoices.For(token, cloud, false) != null, $"For {token}/{cloud}");
+                Check.Equal(token && cloud, ShareChoices.ForTrim(token, cloud) != null, $"ForTrim {token}/{cloud}");
+            }
+    }
+
+    [UnitTest]
     public static void Menu_items_have_their_headers_access_keys_and_tooltips()
     {
         var items = ShareChoices.For(true, true, false)!;
@@ -67,17 +93,15 @@ internal static class ShareChoicesTests
     }
 
     [UnitTest]
-    public static void Button_and_toast_labels_for_all_eight_combinations()
+    public static void Toast_labels_for_all_eight_combinations()
     {
         foreach (bool token in new[] { false, true })
             foreach (bool cloud in new[] { false, true })
                 foreach (bool link in new[] { false, true })
                 {
                     bool split = token && cloud;
-                    string row = split ? "Share" : link ? "Copy link" : "Share";
                     string toast = split ? "Share" : link ? "Copy link" : token ? "Share to Copium" : "Share";
                     Check.Equal(split, ShareChoices.IsSplit(token, cloud, link), $"split {token}/{cloud}/{link}: only where a menu exists");
-                    Check.Equal(row, ShareChoices.ButtonLabel(token, cloud, link), $"row {token}/{cloud}/{link}");
                     Check.Equal(toast, ShareChoices.ToastLabel(token, cloud, link), $"toast {token}/{cloud}/{link}");
                     Check.Equal(split ? "Share file" : null, ShareChoices.ButtonName(token, cloud, link), $"name {token}/{cloud}/{link}");
                 }
@@ -94,24 +118,6 @@ internal static class ShareChoicesTests
         Check.Equal(ShareChoice.ShareFile, ShareChoices.SplitMainChoice, "the main half is the menu\u0027s Share file\u2026");
         foreach (bool link in new[] { false, true })
             Check.True(ShareChoices.For(true, true, link)!.Any(i => i.Choice == ShareChoices.SplitMainChoice), "the menu still holds Share file\u2026 too");
-    }
-
-    [UnitTest]
-    public static void Row_share_controls_are_exclusive_and_the_plain_button_keeps_its_old_visibility()
-    {
-        foreach (bool token in new[] { false, true })
-            foreach (bool? cloud in new bool?[] { true, false, null })
-                foreach (bool link in new[] { false, true })
-                {
-                    bool cloudOn = cloud != false;   // ClipRow.CloudOn: null (unset) means on
-                    string at = $"{token}/{cloud?.ToString() ?? "null"}/{link}";
-                    bool plain = ShareChoices.PlainVisible(token, cloudOn, link), split = ShareChoices.IsSplit(token, cloudOn, link);
-                    Check.False(plain && split, "plain and split never both show: " + at);
-                    Check.True((plain ? 1 : 0) + (split ? 1 : 0) <= 1, "at most one Share control: " + at);
-                    Check.Equal(link || cloudOn, ShareChoices.Visible(cloudOn, link), "Visible is the pre-change ShareVisible: " + at);
-                    if (!split) Check.Equal(link || cloudOn, plain, "plain-case visibility equals the pre-change logic: " + at);
-                    if (split) Check.True(token && cloudOn, "split only with a token and cloud on: " + at);
-                }
     }
 
     [UnitTest]

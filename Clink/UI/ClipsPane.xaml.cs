@@ -449,14 +449,6 @@ public partial class ClipsPane : UserControl
 
     private static ClipRow? RowOf(object sender) => (sender as FrameworkElement)?.DataContext as ClipRow;
 
-    private async void Share_Click(object sender, RoutedEventArgs e)
-    {
-        var row = RowOf(sender);
-        if (row == null) return;
-        if (row.IsUploading || row.IsDeleting) return;
-        await ShareAsync(row);   // the plain button (no menu): the split button has its own handlers below
-    }
-
     /// <summary>The "Share" half of the split button: the share window, as "Share file…" in the menu.</summary>
     private void ShareMain_Click(object sender, RoutedEventArgs e)
     {
@@ -486,8 +478,7 @@ public partial class ClipsPane : UserControl
     private void OpenShareMenu(ClipRow? row, Button arrow, Button main)
     {
         if (row == null || row.IsUploading || row.IsDeleting) return;
-        if (row.ShareMenuItems is { } items)
-            ShareMenu.Open(arrow, items, choice => _ = RunShareChoiceAsync(row, choice), below: main);   // drops from the whole split button
+        ShareMenu.Open(arrow, row.ShareMenuItems, choice => _ = RunShareChoiceAsync(row, choice), below: main);   // drops from the whole split button
     }
 
     private async Task RunShareChoiceAsync(ClipRow row, ShareChoice choice)
@@ -1081,19 +1072,14 @@ internal sealed class ClipRow : INotifyPropertyChanged
             return $"{L.Isolate(Entry.Created.ToString("MMM d, yyyy HH:mm", L.FormatCulture))}{size}{where}";
         }
     }
-    public string ShareLabel => ShareChoices.ButtonLabel(HasToken, CloudOn, HasLink);
-    /// <summary>"Share file" for the main half of the split button; null (the label names it) for the plain button.</summary>
-    public string? ShareName => ShareChoices.ButtonName(HasToken, CloudOn, HasLink);
-    /// <summary>The Share button is split (a token and cloud sharing on).</summary>
-    public bool ShareSplit => ShareChoices.IsSplit(HasToken, CloudOn, HasLink);
-    /// <summary>The plain Share button shows: the button shows and it is not split.</summary>
-    public bool SharePlainVisible => ShareChoices.PlainVisible(HasToken, CloudOn, HasLink);
-    /// <summary>The menu to show for this row's Share button, or null when it acts directly.</summary>
-    public IReadOnlyList<ShareChoiceItem>? ShareMenuItems => ShareChoices.For(HasToken, CloudOn, HasLink);
+    /// <summary>The main half of the row's split Share button (always split, whatever the account).</summary>
+    public string ShareLabel => ShareChoices.SplitMainLabel;
+    /// <summary>"Share file": the accessible name of the main half.</summary>
+    public string ShareName => ShareChoices.SplitMainName;
+    /// <summary>The menu behind the "▾" half: depends on the link, the token and cloud sharing.</summary>
+    public IReadOnlyList<ShareChoiceItem> ShareMenuItems => ShareChoices.ForLibrary(HasToken, CloudOn, HasLink);
     private static bool HasToken => AppController.Instance?.HasCopiumToken == true;
     private static bool CloudOn => AppController.Instance?.Settings.CloudSharingEnabled != false;
-    /// <summary>The Share button shows: always for a clip that has a link (Copy link needs no network), otherwise only while cloud sharing is on (Settings → App).</summary>
-    public bool ShareVisible => ShareChoices.Visible(CloudOn, HasLink);
     public bool HasLink => !string.IsNullOrEmpty(Entry.CopiumLink);
     public string? Link => Entry.CopiumLink;
     public bool IsShared => Entry.IsShared;
@@ -1199,7 +1185,7 @@ internal sealed class ClipRow : INotifyPropertyChanged
 
     public void Refresh()
     {
-        foreach (var p in new[] { nameof(ShareLabel), nameof(ShareName), nameof(ShareVisible), nameof(ShareSplit), nameof(SharePlainVisible), nameof(HasLink), nameof(Link), nameof(Meta), nameof(CloudMeta), nameof(Title), nameof(IsShared), nameof(IsTrim), nameof(IsArchived), nameof(IsLocalOnly), nameof(ArchiveTip), nameof(ToggleName), nameof(SelectName) })
+        foreach (var p in new[] { nameof(ShareLabel), nameof(ShareName), nameof(ShareMenuItems), nameof(HasLink), nameof(Link), nameof(Meta), nameof(CloudMeta), nameof(Title), nameof(IsShared), nameof(IsTrim), nameof(IsArchived), nameof(IsLocalOnly), nameof(ArchiveTip), nameof(ToggleName), nameof(SelectName) })
             Raise(p);
     }
 
