@@ -196,8 +196,8 @@ page if there is something newer.
 
 **Dev builds.** Every push to the `dev` branch publishes a *prerelease* named `vX.Y.Z-dev.N` (workflow
 `release-dev.yml`, only after the unit tests pass; the 10 newest builds are kept, as prereleases and on the feed) to a separate dev feed (`dl-dev.euphoric.software`). Clink ignores them unless you tick *Dev
-Build* in the popup that opens when you click the version in the footer: it then follows the newest of the latest
-release and the dev builds, and installs it like any update. Dev builds may be unstable. Untick *Dev Build* and
+Build* in the popup that opens when you click the version in the footer. The box is hidden until you click the version text in that popup 10 times in a row (no more than about 1.5 s between clicks); it then stays until you quit Clink, and it is always shown while it is ticked. Ticked, Clink follows the newest of the latest
+release and the dev builds, checks at once and then about every 2 minutes (slower after failed checks, up to 15 minutes; releases are checked every 6 hours), and installs it like any update. Dev builds may be unstable. Untick *Dev Build* and
 Clink goes back to releases: unticking checks for updates right away, and from a dev build that is newer than the
 latest release this switches back to that release (with auto-update on, the release is downloaded and installed at
 the next start, or at once with *Update to v…*; *Check for updates* does the same later). The background checks
@@ -472,7 +472,7 @@ copies of another Clink's settings you turned down, `<package>|<time>`, one per 
 | `HdrKnee` / `HdrPeak` | 0.75 / 4 | tone-mapper shoulder: everything below `knee` (relative to SDR white) is untouched, highlights roll off softly above it |
 | `ClickVolume` | 0.5 | 0..1 |
 | `StartMinimized` | false | |
-| `UseDevBuilds` | `false` | Follow the dev builds (`vX.Y.Z-dev.N`) instead of only releases: the *Dev Build* box in the popup that opens when you click the version in the footer. Per installation, never imported |
+| `UseDevBuilds` | `false` | Follow the dev builds (`vX.Y.Z-dev.N`) instead of only releases: the *Dev Build* box in the popup that opens when you click the version in the footer (hidden until the version text in that popup is clicked 10 times in a row; ticked, Clink checks about every 2 minutes instead of every 6 hours). Per installation, never imported |
 | `UpdateRepo` | *(ignored)* | Legacy key, kept so an old `settings.json` round-trips; updates come only from the signed feed |
 
 How `Hotkeys` is put in shape when a file is loaded (nothing that is bound changes what it does): a v0.1 file's single
