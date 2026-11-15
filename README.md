@@ -197,7 +197,7 @@ page if there is something newer.
 **Dev builds.** Every push to the `dev` branch publishes a *prerelease* named `vX.Y.Z-dev.N` (workflow
 `release-dev.yml`, only after the unit tests pass; the 10 newest builds are kept, as prereleases and on the feed) to a separate dev feed (`dl-dev.euphoric.software`). Clink ignores them unless you tick *Dev
 Build* in the popup that opens when you click the version in the footer: it then follows the newest of the latest
-release and the dev builds, and installs it like any update. Dev builds may be unstable. Untick *Dev Build* and
+release and the dev builds, and installs it like any update. Dev builds may be unstable, and they may be unsigned, so the signature check in the install steps can fail for a dev prerelease; stable releases from v0.4.8 on are signed. Untick *Dev Build* and
 Clink goes back to releases: unticking checks for updates right away, and from a dev build that is newer than the
 latest release this switches back to that release (with auto-update on, the release is downloaded and installed at
 the next start, or at once with *Update to v…*; *Check for updates* does the same later). The background checks

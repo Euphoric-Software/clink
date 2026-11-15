@@ -21,13 +21,14 @@ How it fits together (decided 2026-10-28):
 ### Windows publisher signing
 
 Windows Authenticode signing is separate from the signed update feed. The stable and dev workflows support Azure
-Artifact Signing behind the repository Actions variable `ARTIFACT_SIGNING_ENABLED`. Stable releases from v0.4.8 on must not be published with it off: `false` or unset makes releases ship unsigned. A value other than lowercase `true`, `false`, or unset fails validation. Once
+Artifact Signing: stable behind the repository Actions variable `ARTIFACT_SIGNING_ENABLED`, dev behind
+`ARTIFACT_SIGNING_DEV_ENABLED` (off when unset). Stable releases from v0.4.8 on must not be published with `ARTIFACT_SIGNING_ENABLED` off: `false` or unset makes releases ship unsigned. A value other than lowercase `true`, `false`, or unset fails validation. Once
 enabled, authentication/signing failures, an invalid signature, a missing timestamp, or an unexpected publisher stop the
 build and prevent publishing. Previously published immutable objects are never re-signed or replaced.
-The dev workflow reads its own variable, `ARTIFACT_SIGNING_DEV_ENABLED` (same values as above). **Dev builds are unsigned until
-Jason sets it to `true`; setting it is a step to do when this change merges.** It is a kill switch, not access control: anyone
+`ARTIFACT_SIGNING_DEV_ENABLED` takes the same values as above. **Until the repository owner sets it to `true`, dev builds
+are unsigned.** It is a kill switch, not access control: anyone
 who can push `dev` can edit the workflow. Closing that gap (the Entra federated credential's subject, the `dev` and tag
-rulesets) is Jason's work in Azure and GitHub, not something this repository can do.
+rulesets) is the repository owner's work in Azure and GitHub, not something this repository can do.
 
 What is verified before signing (`tools/lib/windows-signing-lib.ps1`): the ArtifactSigning 0.1.8 PowerShell module is downloaded
 from the PowerShell Gallery and checked against a pinned SHA-256; `Microsoft.Windows.SDK.BuildTools` and
