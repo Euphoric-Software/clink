@@ -9,13 +9,14 @@ internal enum ShareChoice { Upload, CopyLink, ShareFile, SaveCopy }
 internal sealed record ShareChoiceItem(ShareChoice Choice, string Header, string ToolTip);
 
 /// <summary>
-/// The Share button of a video clip (clip list row, clip-saved toast): with a Copium token and cloud sharing on it opens a menu
-/// (upload / copy link, share the file, save a copy); otherwise it does what it always did. Pure. The texts are looked up when asked
+/// The Share button of a video clip. The clip list row is always split (<see cref="ForLibrary"/>); the clip-saved toast and the trim
+/// editor are split only with a Copium token and cloud sharing on (<see cref="For"/>, <see cref="ForTrim"/>), otherwise the button does
+/// what it always did. Pure. The texts are looked up when asked
 /// for (the labels are properties, not constants), so they follow the UI language; callers compare labels only against labels from here.
 /// </summary>
 internal static class ShareChoices
 {
-    /// <summary>The menu to show, or null when the button acts directly (no token, or cloud sharing off).</summary>
+    /// <summary>The toast's menu, or null when the button acts directly (no token, or cloud sharing off).</summary>
     public static IReadOnlyList<ShareChoiceItem>? For(bool hasToken, bool cloudOn, bool hasLink)
     {
         if (!hasToken || !cloudOn) return null;
@@ -27,6 +28,21 @@ internal static class ShareChoices
             new ShareChoiceItem(ShareChoice.ShareFile, L.T("_Share file…"), L.T("Drag or copy the file into Discord, a browser or a folder")),
             new ShareChoiceItem(ShareChoice.SaveCopy, L.T("S_ave a copy…"), L.T("Save a copy of the clip file to another folder")),
         };
+    }
+
+    /// <summary>
+    /// The clip list row's menu: always there (the row's Share button is always split). "Copy link" for a clip with a link, else
+    /// "Upload to Copium" only with a token and cloud sharing on (without a token the main half's share window already explains
+    /// Copium; with cloud off an upload is declined), then "Share file…" and "Save a copy…" whatever the account state.
+    /// </summary>
+    public static IReadOnlyList<ShareChoiceItem> ForLibrary(bool hasToken, bool cloudOn, bool hasLink)
+    {
+        var items = new List<ShareChoiceItem>(3);
+        if (hasLink) items.Add(new ShareChoiceItem(ShareChoice.CopyLink, L.T("_Copy link"), L.T("Copy the clip's Copium link")));
+        else if (hasToken && cloudOn) items.Add(new ShareChoiceItem(ShareChoice.Upload, L.T("_Upload to Copium"), L.T("Upload to your Copium account and copy the link")));
+        items.Add(new ShareChoiceItem(ShareChoice.ShareFile, L.T("_Share file…"), L.T("Drag or copy the file into Discord, a browser or a folder")));
+        items.Add(new ShareChoiceItem(ShareChoice.SaveCopy, L.T("S_ave a copy…"), L.T("Save a copy of the clip file to another folder")));
+        return items;
     }
 
     // The split button (where there is a menu): a main "Share" half that opens the share window, and a "▾" half that opens the menu.
@@ -65,18 +81,8 @@ internal static class ShareChoices
         };
     }
 
-    /// <summary>The row's Share button shows at all: for a clip with a link, else while cloud sharing is on.</summary>
-    public static bool Visible(bool cloudOn, bool hasLink) => hasLink || cloudOn;
-
-    /// <summary>The plain (unsplit) Share button shows; never together with the split one.</summary>
-    public static bool PlainVisible(bool hasToken, bool cloudOn, bool hasLink) => Visible(cloudOn, hasLink) && !IsSplit(hasToken, cloudOn, hasLink);
-
-    /// <summary>The button is split (a menu exists): a token and cloud sharing on.</summary>
+    /// <summary>The toast's button is split (a menu exists): a token and cloud sharing on.</summary>
     public static bool IsSplit(bool hasToken, bool cloudOn, bool hasLink) => For(hasToken, cloudOn, hasLink) != null;
-
-    /// <summary>The clip row's Share button (the main half when split): "Share", else today's "Copy link" / "Share".</summary>
-    public static string ButtonLabel(bool hasToken, bool cloudOn, bool hasLink) =>
-        IsSplit(hasToken, cloudOn, hasLink) ? SplitMainLabel : hasLink ? L.T("Copy link") : L.T("Share");
 
     /// <summary>The clip-saved toast's Share button (the main half when split): "Share", else today's "Copy link" / "Share to Copium" / "Share".</summary>
     public static string ToastLabel(bool hasToken, bool cloudOn, bool hasLink) =>
