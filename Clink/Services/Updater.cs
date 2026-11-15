@@ -64,8 +64,6 @@ internal sealed class Updater : IDisposable
 {
     private const int MaxDownloadAttempts = 3;              // per version, per process; a broken release should not be re-fetched every cycle
     private static readonly TimeSpan FirstCheckDelay = TimeSpan.FromSeconds(30);
-    private static readonly TimeSpan CheckInterval = TimeSpan.FromHours(6);
-    private static readonly TimeSpan LoopTick = TimeSpan.FromMinutes(1);       // how soon the background loop notices AutoUpdate being switched
     private static readonly TimeSpan ReadTimeout = TimeSpan.FromSeconds(60);   // no bytes for this long = the download is stalled
     /// <summary>How long a pooled connection of the update clients is reused: a session that lasts days picks up DNS changes.</summary>
     private static readonly TimeSpan ConnectionLifetime = TimeSpan.FromMinutes(15);
@@ -1676,8 +1674,8 @@ internal sealed class Updater : IDisposable
 
     /// <summary>
     /// Cleans up after a finished install 30 s after start, then, while <see cref="Settings.AutoUpdate"/> is on, checks the feed
-    /// right away and every 6 hours, downloading a newer release automatically. The setting is read before every pass (once a
-    /// minute), so switching it off stops the checks without a restart, and <see cref="Wake"/> runs a check at once when it is
+    /// right away and every 6 hours (every ~2 minutes on the dev channel, see <see cref="DevBuildPolicy"/>), downloading a newer release automatically. The setting is read before every pass (every
+    /// tick: 1 min, 15 s on the dev channel), so switching it off stops the checks without a restart, and <see cref="Wake"/> runs a check at once when it is
     /// turned on. While it is off Clink never contacts the feed on its own (the version label in the footer and Check now still
     /// check on demand).
     /// </summary>
@@ -1697,18 +1695,25 @@ internal sealed class Updater : IDisposable
                 finally { _gate.Release(); }
                 if (!_settings.AutoUpdate) Log.Info("updater: AutoUpdate is off, not checking (click the version in the footer to check by hand)");
                 DateTime lastCheck = DateTime.MinValue;
+                int failedInARow = 0;
+                double jitter = Random.Shared.NextDouble();   // drawn once per pass, not per tick
                 while (!ct.IsCancellationRequested)
                 {
-                    if (_settings.AutoUpdate && DateTime.UtcNow - lastCheck >= CheckInterval)
+                    // Dev builds: every ~2 min (backing off after failures); stable: every 6 h. Read each tick, so switching the box takes effect at once.
+                    bool dev = _settings.UseDevBuilds;
+                    var interval = DevBuildPolicy.Interval(dev, failedInARow, jitter);
+                    // _gate busy = a check or download is under way (a manual one, say): this pass waits for the next tick.
+                    if (_settings.AutoUpdate && DateTime.UtcNow - lastCheck >= interval && _gate.CurrentCount > 0)
                     {
                         _wake.Wait(0);   // a Wake() from before this pass is answered by it
                         lastCheck = DateTime.UtcNow;
                         // One failed pass (timeout after sleep/resume, a full disk...) must not end the checks for the rest of the session.
-                        try { await CheckAndMaybeDownloadAsync(ct, manual: false).ConfigureAwait(false); }
-                        catch (Exception ex) when (!ct.IsCancellationRequested) { Log.Warn("updater: background check failed: " + ex.Message); }
+                        try { await CheckAndMaybeDownloadAsync(ct, manual: false).ConfigureAwait(false); failedInARow = DevBuildPolicy.NextFailures(failedInARow, LastError != null); }   // a failed download counts too
+                        catch (Exception ex) when (!ct.IsCancellationRequested) { failedInARow = DevBuildPolicy.NextFailures(failedInARow, true); Log.Warn("updater: background check failed: " + ex.Message); }
+                        jitter = Random.Shared.NextDouble();
                     }
                     // Wake() (auto-update just turned on) ends the wait early and makes the next pass check whenever it last did.
-                    if (await _wake.WaitAsync(LoopTick, ct).ConfigureAwait(false)) lastCheck = DateTime.MinValue;
+                    if (await _wake.WaitAsync(DevBuildPolicy.LoopTick(_settings.UseDevBuilds), ct).ConfigureAwait(false)) lastCheck = DateTime.MinValue;
                 }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
@@ -1842,6 +1847,7 @@ internal sealed class Updater : IDisposable
     /// </summary>
     internal bool TrySetPending(string path, ReleaseVersion version, string how, bool manual)
     {
+        string? previous;
         lock (_pendingLock)
         {
             if (!ShouldInstall(version, allowLeaveDev: manual))
@@ -1849,9 +1855,11 @@ internal sealed class Updater : IDisposable
                 Log.Info($"updater: v{version} {how}, but the update channel changed meanwhile ({(_settings.UseDevBuilds ? "dev builds" : "releases")}); not offering it");
                 return false;
             }
+            previous = PendingPath;
             PendingPath = path;
             PendingVersion = version;
         }
+        DeleteReplacedPending(previous, path, version);
         // Accepted by this exe now (a download adopted from an earlier run included), so the startup scan may install it (LeaveDevAllowedAtStart).
         string self = Current.ToString();
         if (RecFrom != self) { RecFrom = self; _settings.Save(); }
@@ -1861,6 +1869,24 @@ internal sealed class Updater : IDisposable
         Log.Info($"updater: v{version} {how}: {path}");
         try { UpdateReady?.Invoke(version); } catch (Exception ex) { Log.Warn("updater: UpdateReady handler: " + ex.Message); }
         return true;
+    }
+
+    /// <summary>
+    /// A newer download became pending: the previous pending file (and its markers) is removed so replaced dev builds do not pile up. Only a
+    /// <c>Clink-X.Y.Z[-dev.N].exe</c> directly in this copy's updates folder, of a version below the new one, and never the new file itself.
+    /// </summary>
+    private void DeleteReplacedPending(string? previous, string current, ReleaseVersion version)
+    {
+        try
+        {
+            if (string.IsNullOrEmpty(previous) || string.Equals(Path.GetFullPath(previous), Path.GetFullPath(current), StringComparison.OrdinalIgnoreCase)) return;
+            if (VersionFromFile(previous) is not { } old || old >= version) return;
+            if (!string.Equals(Path.GetDirectoryName(Path.GetFullPath(previous))?.TrimEnd('\\', '/'), Path.GetFullPath(UpdatesDir).TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase)) return;
+            TryDelete(previous);
+            DeleteMarkers(previous);
+            Log.Info($"updater: removed the replaced download of v{old}");
+        }
+        catch (Exception ex) { Log.Warn("updater: removing the replaced download: " + ex.Message); }
     }
 
     /// <summary>

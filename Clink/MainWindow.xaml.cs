@@ -1282,6 +1282,7 @@ public partial class MainWindow : Window
         try { DevBuildCheck.IsChecked = _app.Settings.UseDevBuilds; }
         finally { _loading = wasLoading; }
         bool canCheck = up.UpdatesEnabled || AppController.DocShots;   // the doc screenshots show the popup as an updating build has it
+        DevBuildCheck.Visibility = Vis(DevBuildPolicy.BoxVisible(_devBoxRevealed, _app.Settings.UseDevBuilds));   // hidden (no focus, no automation node) until 10 quick clicks on the version in this popup
         DevBuildCheck.IsEnabled = canCheck;
         VersionCheckButton.IsEnabled = canCheck;
         DevBuildCheck.ToolTip = canCheck
@@ -1290,6 +1291,17 @@ public partial class MainWindow : Window
         VersionCheckButton.ToolTip = canCheck ? null : NoUpdatesText;
         RefreshCopiumPopup();
         VersionPopup.IsOpen = true;
+    }
+
+    private bool _devBoxRevealed;   // the Dev Build box was uncovered this session: it stays until the app ends
+    private readonly SecretClickCounter _devBoxClicks = new();
+
+    /// <summary>10 clicks in a row on the version text of the popup uncover the Dev Build box (<see cref="SecretClickCounter"/>).</summary>
+    private void VersionPopupText_Click(object sender, MouseButtonEventArgs e)
+    {
+        if (!_devBoxClicks.Click(DateTime.UtcNow)) return;
+        _devBoxRevealed = true;
+        DevBuildCheck.Visibility = Vis(true);
     }
 
     // ------------------------------------------------------------------ the version popup's Copium section
