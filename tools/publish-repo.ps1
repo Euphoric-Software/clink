@@ -107,7 +107,8 @@ try {
     Write-Host '     That tags v0.1.0 and pushes it. GitHub Actions builds Clink.exe, writes Clink.exe.sha256 and'
     Write-Host "     creates the release at $url/releases (takes a few minutes)."
     Write-Host '  2. Install Clink.exe from that release (a locally built exe does not know which repository to'
-    Write-Host '     watch). Put it anywhere and run it; SmartScreen may warn once because the exe is not signed.'
+    Write-Host '     watch). Put it anywhere and run it. A new repository releases unsigned exes until Windows publisher'
+    Write-Host '     signing is set up (docs/RELEASING.md, "Windows publisher signing"); SmartScreen may warn either way.'
     Write-Host '  3. Turn on Settings > Run at startup so Clink is recording as soon as you log in. It checks'
     Write-Host '     GitHub Releases on start and every 6 hours, checks a new Clink.exe against its .sha256 and'
     Write-Host '     installs it the next time it starts (or right away via "Update to vX.Y.Z" in the footer/tray).'

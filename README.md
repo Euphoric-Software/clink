@@ -167,13 +167,20 @@ All screenshots are of Clink itself (the dark theme with the default accent unle
 2. `Clink.exe` is self-contained and needs no .NET runtime. The [Releases](../../releases/latest) page also has
    `Clink-framework.exe`, a smaller build that needs the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0)
    (it is what `Clink-Setup.exe` installs).
-3. The exe is not code-signed (yet, see [ROADMAP.md](ROADMAP.md)), so SmartScreen may show "Windows protected your
-   PC" the first time: *More info* → *Run anyway*. After that it does not ask again for that file.
+3. Check the signature before you run a download. v0.4.8 is the first stable release that is Authenticode-signed by
+   Euphoric Software LLC; v0.4.7 and earlier are unsigned. Check every download, later versions included: right-click
+   the file, *Properties* → *Digital Signatures* must list Euphoric Software LLC, and its *Details* must say "This
+   digital signature is OK". Or in PowerShell, `Get-AuthenticodeSignature .\Clink.exe | Format-List Status, SignerCertificate`
+   (with the name of the file you downloaded) must show `Status : Valid` and a subject with `O=Euphoric Software LLC`. If the file is not signed by Euphoric Software
+   LLC, or the signature is not valid, do not run it.
+4. A new or rarely downloaded file can still show SmartScreen's "Windows protected your PC" until it builds reputation.
+   Only for a file you downloaded from [euphoric.software](https://euphoric.software/#clink-card-title) or this
+   repository's [Releases](../../releases/latest) page and that passed the check in step 3: *More info* → *Run anyway*.
 
 **Updates are automatic.** Clink checks a signed update feed (`dl.euphoric.software`) when it starts and every 6 hours after
 that. When a newer version exists it downloads the new exe to `%LOCALAPPDATA%\Clink\updates`, checks it
 against the feed's signed manifest (the signature proves the feed published it, which catches a corrupted or tampered download; it is
-not code signing of the exe itself, see [ROADMAP.md](ROADMAP.md)), and installs it the next time
+separate from the exe's Authenticode signature), and installs it the next time
 Clink starts, so a recording session is never interrupted. The footer and the tray menu show **Update to vX.Y.Z** to
 install it right away instead. Before installing, the file is hashed again against what was verified, and the exe is
 swapped in by renaming with the previous `Clink.exe` kept as `Clink.exe.bak` until the new one has started, so a
@@ -211,7 +218,7 @@ installed on the release channel. The choice is kept in `UseDevBuilds` in
    program that uses Alt+C itself loses it; pick other keys under *Capture → Hotkeys* if that matters. A file from
    before v0.2.5 with no hotkey for the full replay gets Alt+C for it (left unset when another hotkey already uses
    Alt+C) and says so once, in the footer and a tray balloon.
-3. Click **Share** (in the toast, the clip list or the trim editor). With a token and cloud sharing on, the button is split: *Share* opens the Share window with the file (below), and the *▾* menu offers *Upload to Copium* (*Copy link* once shared), *Share file…* and *Save a copy…*. Pick *Upload to Copium* to upload: the first time, Clink asks *Share with Copium?* (see *Sharing is opt-in*); after *Enable Copium sharing* the clip is uploaded to Copium and the link is copied. Without a token, *Share* opens the Share window. With cloud sharing off nothing is uploaded and the Share buttons are hidden (a clip that already has a link can still have it copied). The share hotkey over a game does not open the pop-up: it says *Sharing needs your OK once — open Clink and press Share*. By default the copied link is the raw video file, so pasting it in Discord plays the video inline with no
+3. Click **Share** (in the toast, the clip list or the trim editor). In the clip list the button is always split: *Share* opens the Share window with the file (below), and the *▾* menu offers *Copy link* (once shared) or *Upload to Copium* (with a token and cloud sharing on), then *Share file…* and *Save a copy…*. In the toast and the trim editor the button is split only with a token and cloud sharing on. Pick *Upload to Copium* to upload: the first time, Clink asks *Share with Copium?* (see *Sharing is opt-in*); after *Enable Copium sharing* the clip is uploaded to Copium and the link is copied. Without a token, *Share* opens the Share window. With cloud sharing off nothing is uploaded and the toast and trim editor Share buttons are hidden (a clip that already has a link can still have it copied). The share hotkey over a game does not open the pop-up: it says *Sharing needs your OK once — open Clink and press Share*. By default the copied link is the raw video file, so pasting it in Discord plays the video inline with no
    embed card. If you turn on custom embeds on copium.pics, Copium's `link` becomes the share page instead; Clink
    just uses whatever Copium says to copy. A clip is uploaded once: choosing *Upload to Copium* again (or using the share hotkey) while
    it uploads waits for that upload. When an upload fails the toast and the clip row say why (*Copium rejected the

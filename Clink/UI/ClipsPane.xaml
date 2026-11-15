@@ -206,12 +206,8 @@
                     </StackPanel>
                     <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
                         <Button Content="{l:T 'Trim'}" Click="Trim_Click" Padding="9,5" Margin="0,0,4,0" />
-                        <!-- MinWidth = the "Copy link" width: Trim and the folder button stay in fixed columns down the list -->
-                        <Button Content="{Binding ShareLabel}" Click="Share_Click" Padding="9,5" Margin="0,0,4,0" MinWidth="76" Style="{StaticResource AccentButton}"
-                                AutomationProperties.Name="{Binding ShareName}"
-                                Visibility="{Binding SharePlainVisible, Converter={StaticResource Vis}}" />
-                        <!-- with a token and cloud sharing on: a split button. Share = the share window (Share file…), ▾ = every option -->
-                        <StackPanel Orientation="Horizontal" Margin="0,0,4,0" Visibility="{Binding ShareSplit, Converter={StaticResource Vis}}">
+                        <!-- always a split button (every row, whatever the account): Share = the share window (Share file…), ▾ = the other options -->
+                        <StackPanel Orientation="Horizontal" Margin="0,0,4,0">
                             <Button Content="{Binding ShareLabel}" Click="ShareMain_Click" PreviewKeyDown="ShareMain_KeyDown" Padding="9,5" MinWidth="52" Style="{StaticResource AccentSplitMain}"
                                     AutomationProperties.Name="{Binding ShareName}" ToolTip="{x:Static svc:ShareChoices.SplitMainTip}" />
                             <Button Content="{x:Static svc:ShareChoices.SplitArrowLabel}" Click="ShareArrow_Click" Style="{StaticResource AccentSplitArrow}"

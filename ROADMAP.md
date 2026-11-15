@@ -29,7 +29,7 @@ Things that were asked for or came up while building, roughly in the order they'
 ## Distribution
 
 - [x] Auto-update from GitHub Releases (checked on start and every 6 hours, SHA-256 verified, installed on next start).
-- [ ] Authenticode code signing for the release exe (SmartScreen + stronger update integrity).
+- [x] Authenticode code signing for the release exes (first signed stable release: v0.4.8).
 
 ## Stream Deck
 

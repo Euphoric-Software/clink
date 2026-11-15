@@ -858,6 +858,7 @@ internal static class PackagingTests
         Check.True(up.InstallProblem!.Length <= 250, $"other failure: {up.InstallProblem.Length} characters");
         up.ReportInstallFailure(new InvalidOperationException("blocked by Application Control policy"), longVersion, two.ScFile);
         Check.True(up.InstallProblem!.Length <= 250, $"Smart App Control: {up.InstallProblem.Length} characters");
+        Check.True(up.InstallProblem.Contains("Smart App Control blocked it") && !up.InstallProblem.Contains("…"), "Smart App Control: the reason is cut off: " + up.InstallProblem);
         File.Delete(two.ScFile + ".failed");
 
         // A preflight failure at start-up: one sentence, not "could not start: the downloaded exe was not applied: …" and not a second marker.
