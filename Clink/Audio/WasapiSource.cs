@@ -122,8 +122,9 @@ internal static class AudioText
     }
 }
 
+/// <param name="ContainerId">The container of the physical device the endpoint belongs to; null when Windows gives none.</param>
 /// <param name="ProblemKind">None for an active endpoint; otherwise why it cannot be used right now (not connected, disabled).</param>
-internal sealed record AudioDeviceInfo(string Id, string Name, AudioProblemKind ProblemKind = AudioProblemKind.None)
+internal sealed record AudioDeviceInfo(string Id, string Name, AudioProblemKind ProblemKind = AudioProblemKind.None, Guid? ContainerId = null)
 {
     /// <summary>null for an active endpoint; otherwise why it cannot be used right now, in English ("not connected", "disabled").</summary>
     public string? Problem => AudioText.Problem(ProblemKind);
@@ -420,7 +421,7 @@ internal abstract unsafe class WasapiSource : IDisposable
                         DEVICE_STATE.DEVICE_STATE_DISABLED => AudioProblemKind.Disabled,
                         _ => AudioProblemKind.NotConnected,
                     };
-                    list.Add(new AudioDeviceInfo(idStr, FriendlyName(dev) ?? idStr, problem));
+                    list.Add(new AudioDeviceInfo(idStr, FriendlyName(dev) ?? idStr, problem, ContainerOf(dev)));
                 }
                 finally { dev->Release(); }
             }
@@ -442,6 +443,22 @@ internal abstract unsafe class WasapiSource : IDisposable
             string? name = store->GetValue(&key, &pv).Succeeded && pv.vt == VARENUM.VT_LPWSTR ? pv.pwszVal.ToString() : null;
             PInvoke.PropVariantClear(ref pv);
             return string.IsNullOrWhiteSpace(name) ? null : name;
+        }
+        finally { store->Release(); }
+    }
+
+    /// <summary>The container of the physical device the endpoint belongs to (PKEY_Device_ContainerId), or null when it has none.</summary>
+    protected static Guid? ContainerOf(IMMDevice* dev)
+    {
+        Windows.Win32.UI.Shell.PropertiesSystem.IPropertyStore* store;
+        if (dev->OpenPropertyStore(STGM.STGM_READ, &store).Failed) return null;
+        try
+        {
+            PROPVARIANT pv = default;
+            PROPERTYKEY key = new() { fmtid = new Guid("8c7ed206-3f8a-4827-b3ab-ae9e1faefc6c"), pid = 2 };
+            Guid? id = store->GetValue(&key, &pv).Succeeded && pv.vt == VARENUM.VT_CLSID && pv.puuid != null ? *pv.puuid : null;
+            PInvoke.PropVariantClear(ref pv);
+            return id == Guid.Empty ? null : id;
         }
         finally { store->Release(); }
     }
@@ -513,6 +530,20 @@ internal sealed unsafe class EndpointSource : WasapiSource
             return true;
         }
         catch { return false; }
+        finally { ComUtil.Release(ref dev); ComUtil.Release(ref en); }
+    }
+
+    /// <summary>The id of the default capture endpoint (console role), or null when there is none.</summary>
+    public static string? DefaultCaptureId()
+    {
+        IMMDeviceEnumerator* en = null;
+        IMMDevice* dev = null;
+        try
+        {
+            en = CreateEnumerator();
+            return en->GetDefaultAudioEndpoint(EDataFlow.eCapture, ERole.eConsole, &dev).Failed ? null : EndpointId(dev);
+        }
+        catch { return null; }
         finally { ComUtil.Release(ref dev); ComUtil.Release(ref en); }
     }
 

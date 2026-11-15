@@ -102,7 +102,7 @@ internal sealed class Settings
     public string CaptureSource { get; set; } = CaptureTarget.SourceMonitor;
     /// <summary>The last name the capture card in <see cref="CaptureSource"/> showed, for labels and notices while it is not connected.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? CaptureDeviceName { get; set; }
-    /// <summary>Hidden (no UI, never written while 0): milliseconds to shift the capture card's sound against its picture (a card whose audio runs late or early).</summary>
+    /// <summary>Hidden (no UI, never written while 0): milliseconds to shift the capture card's sound against its picture (a card whose audio runs late or early). Positive: the picture is shown later; negative: earlier.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] public int CaptureDeviceAvOffsetMs { get; set; }
     public int Fps { get; set; } = SettingsDefaults.Fps;
     public int BitrateMbps { get; set; } = SettingsDefaults.BitrateMbps;

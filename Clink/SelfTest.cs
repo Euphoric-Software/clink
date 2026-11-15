@@ -82,6 +82,9 @@ internal static class SelfTest
         }
         else if (sourceArg != null && !sourceArg.Equals(CaptureTarget.SourceMonitor, StringComparison.OrdinalIgnoreCase)) { Say($"Unknown --source '{sourceArg}': use monitor or device:<link>"); return 2; }
         else Say($"Capturing {mon.Label}");
+        // The card's HDMI audio, paired by container then name: always the Game track while a card is the source (as AppController.BuildConfig).
+        AudioDeviceInfo? cardAudio = card != null ? CardAudio.Find(card) : null;
+        if (card != null) Say(cardAudio != null ? $"  capture card audio: {cardAudio.Name} ({cardAudio.Id}) on the Game track" : $"  no audio input found for card {card.Name}");
         Capabilities.PreferMonitor(mon);   // probe the encoders of the GPU that drives it, which is the one the engine opens
         // The same output size AppController.BuildConfig records at (the codec choice depends on it: H.264 stops at 4096 px). A card's
         // size comes from its mode when it opens (the engine sets it); the preset box stands in for the codec choice.
@@ -118,6 +121,8 @@ internal static class SelfTest
             MicDeviceId = settings.MicDeviceId,
             GameProcess = GameProcessTracker.NormalizeName(settings.GameProcess),
             VoiceApp = GameProcessTracker.NormalizeName(settings.VoiceApp),
+            CardAudioId = cardAudio?.Id,
+            CardAvOffsetMs = CardAudio.ClampOffsetMs(settings.CaptureDeviceAvOffsetMs),
             HdrKnee = settings.HdrKnee, HdrPeak = settings.HdrPeak,
             ClipsFolder = outDir ?? settings.ClipsFolder,
             GopSeconds = Math.Clamp(settings.KeyframeSeconds, 0.25f, 5f),

@@ -422,3 +422,10 @@ MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK
 IMFPresentationDescriptor
 IMFStreamDescriptor
 IMFMediaTypeHandler
+
+// ---- capture card audio pairing (Capture/VideoDevices.cs ContainerOf): the device container of a video device's interface ----
+CM_Get_Device_Interface_Property
+CM_Locate_DevNode
+CM_Get_DevNode_Property
+DEVPROPKEY
+DEVPROPTYPE

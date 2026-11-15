@@ -1,13 +1,14 @@
 using Clink.Native;
 using Windows.Win32;
+using Windows.Win32.Devices.Properties;
 using Windows.Win32.Foundation;
 using Windows.Win32.Media.MediaFoundation;
 using Windows.Win32.System.Com;
 
 namespace Clink.Capture;
 
-/// <summary>A video capture device (a capture card, a webcam): the stable Media Foundation symbolic link and the name it shows.</summary>
-internal sealed record VideoDevice(string Link, string Name);
+/// <summary>A video capture device (a capture card, a webcam): the stable Media Foundation symbolic link, the name it shows and the Windows container of the physical device (pairs it with its audio endpoint; null when unknown).</summary>
+internal sealed record VideoDevice(string Link, string Name, Guid? ContainerId = null);
 
 /// <summary>Lists the video capture devices through Media Foundation and reads the modes one offers.</summary>
 internal static unsafe class VideoDevices
@@ -38,7 +39,7 @@ internal static unsafe class VideoDevices
                 var a = (IMFAttributes*)list[i];
                 string? link = GetString(a, PInvoke.MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK);
                 if (string.IsNullOrEmpty(link)) continue;
-                result.Add(new VideoDevice(link, GetString(a, PInvoke.MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME) ?? "Video device"));
+                result.Add(new VideoDevice(link, GetString(a, PInvoke.MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME) ?? "Video device", ContainerOf(link)));
             }
         }
         catch (Exception ex) { Log.Warn("video devices: could not list them: " + ex.Message); return null; }
@@ -113,6 +114,43 @@ internal static unsafe class VideoDevices
     /// <summary>Whether a device with this link is connected now; null when the listing failed (unknown).</summary>
     public static bool? IsConnected(string link) =>
         Enumerate() is { } list ? list.Any(d => string.Equals(d.Link, link, StringComparison.OrdinalIgnoreCase)) : null;
+
+    // DEVPKEY_Device_InstanceId on a device interface; DEVPKEY_Device_ContainerId on a device (the same key as the audio endpoint's PKEY_Device_ContainerId).
+    private static readonly Guid InstanceIdFmt = new("78c34fc8-104a-4aca-9ea4-524d52996e57"), ContainerIdFmt = new("8c7ed206-3f8a-4827-b3ab-ae9e1faefc6c");
+
+    /// <summary>
+    /// The container of the physical device behind a video device's symbolic link (what its audio endpoint shares), or null when Windows
+    /// does not say. Interface link to device instance to container.
+    /// </summary>
+    internal static Guid? ContainerOf(string link)
+    {
+        try
+        {
+            var instKey = new DEVPROPKEY { fmtid = InstanceIdFmt, pid = 256 };
+            DEVPROPTYPE type;
+            uint size = 0;
+            fixed (char* l = link)
+            {
+                PInvoke.CM_Get_Device_Interface_Property(l, &instKey, &type, null, &size, 0);   // CR_BUFFER_SMALL: size says how much
+                if (size < 2 || size > 4096) return null;
+                var buf = new byte[size];
+                fixed (byte* b = buf)
+                {
+                    if (PInvoke.CM_Get_Device_Interface_Property(l, &instKey, &type, b, &size, 0) != 0) return null;
+                    fixed (char* inst = new string(System.Text.Encoding.Unicode.GetChars(buf, 0, (int)size)).TrimEnd('\0'))
+                    {
+                        uint node;
+                        if (PInvoke.CM_Locate_DevNode(&node, inst, 0) != 0) return null;
+                        var key = new DEVPROPKEY { fmtid = ContainerIdFmt, pid = 2 };
+                        Guid id; uint idSize = (uint)sizeof(Guid);
+                        if (PInvoke.CM_Get_DevNode_Property(node, &key, &type, (byte*)&id, &idSize, 0) != 0 || idSize != (uint)sizeof(Guid)) return null;
+                        return id == Guid.Empty ? null : id;
+                    }
+                }
+            }
+        }
+        catch (Exception ex) { Log.Warn("video devices: no container for a device: " + ex.Message); return null; }
+    }
 
     private static string? GetString(IMFAttributes* a, Guid key)
     {

@@ -37,6 +37,10 @@ internal sealed class EngineConfig
     public string? MicDeviceId;
     public string GameProcess = "auto";    // process name (no .exe) for the Game track, or "auto" = detect the fullscreen app
     public string VoiceApp = "auto";
+    /// <summary>With a capture card: the Windows id of its HDMI audio endpoint (<see cref="CardAudio.Find"/>); it is the Game track whatever <see cref="GameProcess"/> says. Null: none paired, or no card.</summary>
+    public string? CardAudioId;
+    /// <summary>With a capture card: milliseconds the picture is shown later (negative: earlier) than the card stamps it, so a card whose sound runs late or early lines up (<see cref="CardAudio.ApplyOffset"/>).</summary>
+    public int CardAvOffsetMs;
     public float HdrKnee = 0.75f, HdrPeak = 4f;
     public string ClipsFolder = "";
     /// <summary>The hidden encoder experiment (Settings.EncoderExperiment) for the live encoder; null = today's setup.</summary>
@@ -436,11 +440,11 @@ internal sealed unsafe class Engine : IDisposable
             ok = false;
         }
         tex->Release();
-        if (ok) enc.Submit(sample, t);
+        if (ok) enc.Submit(sample, frameTime && _cfg.Device != null ? CardAudio.ApplyOffset(t, _cfg.CardAvOffsetMs) : t);
         else sample->Release();
         // After a GPU reset every convert fails: stop rather than show "Recording" while nothing reaches the ring.
         if (!ok) ThrowIfDeviceLost();
-        return ok ? t : 0;
+        return ok ? t : 0;   // the frame's own time, not the offset one: the pacer tells a repeated frame by it
     }
 
     /// <summary>
@@ -516,11 +520,22 @@ internal sealed unsafe class Engine : IDisposable
             // Each track joins _tracks as soon as it exists, so TearDown disposes a partly built set when a later one fails.
             _gameTrack = new AudioTrack(AudioText.TrackName(TrackKind.Game)) { Enabled = _cfg.TrackGame };
             _tracks.Add(_gameTrack);   // (track names are AudioText.TrackName(TrackKind): GetStats maps a track back to its kind by name)
-            var mic = new AudioTrack(AudioText.TrackName(TrackKind.Mic)) { Source = new EndpointSource(false, _cfg.MicDeviceId, "Microphone"), Enabled = _cfg.TrackMic };
+            bool cardAudio = _cfg.Device != null && _cfg.CardAudioId is { Length: > 0 };
+            // The Mic that is the card's own endpoint (the default input is the card) would put the sound in the mix twice: it is left out.
+            bool micIsCard = cardAudio && CardAudio.MicIsCardAudio(_cfg.MicDeviceId, _cfg.CardAudioId, EndpointSource.DefaultCaptureId());
+            if (micIsCard) Log.Info("Mic is the capture card's audio input: the Mic is not recorded, so the sound is not doubled");
+            var mic = new AudioTrack(AudioText.TrackName(TrackKind.Mic)) { Source = micIsCard ? null : new EndpointSource(false, _cfg.MicDeviceId, "Microphone"), Enabled = _cfg.TrackMic && !micIsCard };
             _tracks.Add(mic);
             _voiceTrack = new AudioTrack(AudioText.TrackName(TrackKind.Voice)) { Enabled = _cfg.TrackVoice };
             _tracks.Add(_voiceTrack);
-            if (TryDeviceSource(_cfg.GameProcess, "Game device", out var gameDevice)) { _gameTrack.Source = gameDevice; _gameIsDevice = true; }
+            if (cardAudio)
+            {
+                // A capture card: its HDMI audio is the Game track, whatever the Game setting says (which stays as saved for a screen).
+                _gameTrack.Source = new EndpointSource(false, _cfg.CardAudioId, "Capture card audio");
+                _gameIsDevice = true;
+                Log.Info("Game track: the capture card's audio (" + _cfg.CardAudioId + ")");
+            }
+            else if (TryDeviceSource(_cfg.GameProcess, "Game device", out var gameDevice)) { _gameTrack.Source = gameDevice; _gameIsDevice = true; }
             if (TryDeviceSource(_cfg.VoiceApp, "Voice device", out var voiceDevice)) { _voiceTrack.Source = voiceDevice; _voiceIsDevice = true; }
             var mix = new AudioTrack(AudioText.TrackName(TrackKind.Mix), new[] { _gameTrack, mic, _voiceTrack }) { Enabled = true };
             _tracks.Insert(0, mix);   // always track 1

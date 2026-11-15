@@ -277,6 +277,9 @@ internal sealed partial class AppController : IDisposable
     private DateTime _lastClipAt = DateTime.MinValue;
     private int _startGen;
     private bool _starting;
+    private VideoDevice? _cardWithoutAudio;   // the card the engine was last configured for when none of its audio inputs was found (null: has audio, or no card)
+    private DateTime _nextCardAudioCheck;
+    private int _cardAudioChecking;
     private bool _stopping;                 // a StopEngine is in flight: Engine.IsRunning reads true until its teardown has finished
     private DateTime _lastStartAt = DateTime.MinValue;
     private int _startFailures;             // engine starts that failed in a row (Tick's retry backoff, one balloon per streak)
@@ -760,6 +763,7 @@ internal sealed partial class AppController : IDisposable
             NotifyProblem(L.T("Recording not started"), L.T("The recorder did not get ready"));
         }
         CheckCaptureCard(now);
+        CheckCardAudio(now);
         // Not while a capture card switch waits (for the card to leave the list, or to settle): it starts the engine itself.
         bool wanted = Settings.ClipsEnabled && !IsPaused && !_restarting && !_cardSwitching && (!GameOnly || _gamePid != 0);
         int failedWait = Engine.DeviceLost ? 10 : 30;
@@ -771,6 +775,32 @@ internal sealed partial class AppController : IDisposable
             StartEngine();
         }
         RaiseStateChanged();
+    }
+
+    /// <summary>
+    /// A card that records without sound because its audio input was not there at the start (it can appear later): about every 5 s the inputs
+    /// are listed again, and once it is there the recorder restarts once onto it. The restart reads the input as found, so it does not repeat.
+    /// </summary>
+    private void CheckCardAudio(DateTime now)
+    {
+        var card = _cardWithoutAudio;
+        if (card == null || !Engine.IsRunning || _stopping || _starting || _restarting || _cardSwitching || IsPaused || now < _nextCardAudioCheck) return;
+        _nextCardAudioCheck = now + TimeSpan.FromSeconds(5);
+        if (Interlocked.Exchange(ref _cardAudioChecking, 1) == 1) return;
+        Task.Run(() =>
+        {
+            AudioDeviceInfo? found = null;
+            try { found = CardAudio.Find(card); }
+            finally { Interlocked.Exchange(ref _cardAudioChecking, 0); }
+            if (found == null) return;
+            _ui.BeginInvoke(() =>
+            {
+                if (_cardWithoutAudio != card || !Engine.IsRunning || _stopping) return;
+                _cardWithoutAudio = null;   // once: the start below finds it again, or sets this again and waits for a later one
+                Log.Info($"Audio input found for card {card.Name}: '{found.Name}', restarting onto it");
+                StartEngine();
+            });
+        });
     }
 
     // ------------------------------------------------------------------ game detection (docs/SPEC-v2.md §5)
@@ -1264,6 +1294,10 @@ internal sealed partial class AppController : IDisposable
         var mon = (target.Kind == CaptureKind.Monitor ? target.Monitor : null) ?? SelectedMonitor ?? throw new InvalidOperationException("No monitor found");
         var card = target.Kind == CaptureKind.Device ? target.Device : null;
         var (maxW, maxH) = VideoModePick.LimitOf(Settings.Resolution);
+        var cardAudio = card != null ? CardAudio.Find(card) : null;
+        _cardWithoutAudio = card != null && cardAudio == null ? card : null;
+        if (card != null)
+            Log.Info(cardAudio != null ? $"Game track: capture card audio '{cardAudio.Name}' ({cardAudio.Id})" : $"no audio input found for card {card.Name}");
         (uint w, uint h) = card == null ? OutputSize(mon, Settings.Resolution) : (Math.Min(maxW, 3840u), Math.Min(maxH, 2160u));
         int secs = Math.Clamp(Settings.BufferSeconds, 5, 3600);
         var (mbps, _) = Capabilities.ResolveBitrate(Settings, AudioTrackCount, secs);
@@ -1286,6 +1320,9 @@ internal sealed partial class AppController : IDisposable
             MicDeviceId = Settings.MicDeviceId,
             GameProcess = GameProcessTracker.NormalizeName(Settings.GameProcess),
             VoiceApp = GameProcessTracker.NormalizeName(Settings.VoiceApp),
+            // A card's HDMI audio is the Game track whatever the Game setting is (never written); a fallback screen has no card, so the saved choice applies again.
+            CardAudioId = cardAudio?.Id,
+            CardAvOffsetMs = CardAudio.ClampOffsetMs(Settings.CaptureDeviceAvOffsetMs),
             HdrKnee = Settings.HdrKnee, HdrPeak = Settings.HdrPeak,
             ClipsFolder = Settings.ClipsFolder,
             EncoderTuning = Clink.Encode.EncoderExperiments.Resolve(Settings.EncoderExperiment, Capabilities.SizeTargetBytes(Settings.SizeTarget) > 0),
