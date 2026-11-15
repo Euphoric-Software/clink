@@ -258,7 +258,7 @@ installed on the release channel. The choice is kept in `UseDevBuilds` in
    rebuilt. The in point snaps to a keyframe (every second by default) so
    the cut is exact in every player, and the export copies the video without re-encoding. *Save trimmed* writes
    `<clip> (trim).mp4` next to the original (tick *Replace original* to replace the clip with the cut instead), or
-   *Save & share*. The *Trim* button on a clip row, the toast's *Trim* and `--trim-last` open the editor directly; a
+   *Save & share* (saves, then opens the Share window; with a Copium token the *▾* menu uploads). The *Trim* button on a clip row, the toast's *Trim* and `--trim-last` open the editor directly; a
    second click on a clip that is already open brings its window forward.
 
 **Manual recording.** Besides the replay buffer you can record from now until you stop: press a hotkey with the action
