@@ -180,6 +180,7 @@
   "Input: {name}": "入力：{name}",
   "Outputs (whatever plays on them)": "出力（再生されるすべての音）",
   "No monitor": "モニターなし",
+  "Follow Windows main display": "Windows のメインディスプレイに従う",
   "{name}  ·  {size}  ·  primary": "{name}  ·  {size}  ·  メイン",
   "{name}  ·  {size}": "{name}  ·  {size}",
   "HDR on · tone-mapped to SDR (SDR white {nits} nits) · {adapter}": "HDRオン · SDRにトーンマッピング済み（SDRホワイト {nits} nit） · {adapter}",

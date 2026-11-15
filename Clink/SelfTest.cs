@@ -37,8 +37,7 @@ internal static class SelfTest
         var monitors = Monitors.Enumerate();
         foreach (var m in monitors)
             Say($"  monitor {m.ShortName,-9} {m.FriendlyName,-12} {m.Width}x{m.Height} @({m.Left},{m.Top}) primary={m.IsPrimary} hdr={m.IsHdr} sdrWhite={m.SdrWhiteNits:0}nits maxLum={m.MaxLuminance:0} gpu={m.AdapterName}");
-        var mon = monitors.FirstOrDefault(m => string.Equals(m.DeviceName, settings.MonitorDevice, StringComparison.OrdinalIgnoreCase))
-            ?? monitors.FirstOrDefault(m => m.IsPrimary) ?? monitors.FirstOrDefault();
+        var mon = CaptureTarget.Resolve(settings.FollowPrimaryMonitor, settings.MonitorDevice, monitors);
         if (mon == null) { Say("No monitor found"); return 2; }
         Say($"Capturing {mon.Label}");
         Capabilities.PreferMonitor(mon);   // probe the encoders of the GPU that drives it, which is the one the engine opens

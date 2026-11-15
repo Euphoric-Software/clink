@@ -180,6 +180,7 @@
   "Input: {name}": "输入：{name}",
   "Outputs (whatever plays on them)": "输出（其上播放的任何声音）",
   "No monitor": "无显示器",
+  "Follow Windows main display": "跟随 Windows 主显示器",
   "{name}  ·  {size}  ·  primary": "{name}  ·  {size}  ·  主显示器",
   "{name}  ·  {size}": "{name}  ·  {size}",
   "HDR on · tone-mapped to SDR (SDR white {nits} nits) · {adapter}": "HDR 已开启 · 已色调映射到 SDR（SDR 白色 {nits} 尼特）· {adapter}",

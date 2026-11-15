@@ -147,6 +147,7 @@
                                         <ui:MonitorMap x:Name="MonitorMap" />
                                         <TextBlock x:Name="MonitorLabel" Margin="2,6,0,0" FontWeight="SemiBold" Text="" />
                                         <TextBlock x:Name="MonitorDetail" Style="{StaticResource MutedText}" Margin="2,2,0,0" Text="" />
+                                        <CheckBox x:Name="FollowPrimaryCheck" Content="{l:T 'Follow Windows main display'}" Margin="2,8,0,0" Checked="FollowPrimaryChanged" Unchecked="FollowPrimaryChanged" />
                                         <UniformGrid Columns="4" Margin="0,10,0,0">
                                             <StackPanel Margin="0,0,6,0">
                                                 <TextBlock Style="{StaticResource FieldLabel}" Text="{l:T 'Resolution'}" />

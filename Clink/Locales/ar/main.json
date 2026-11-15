@@ -180,6 +180,7 @@
   "Input: {name}": "المدخل: {name}",
   "Outputs (whatever plays on them)": "المخارج (كل ما يُشغَّل عليها)",
   "No monitor": "لا توجد شاشة",
+  "Follow Windows main display": "اتباع الشاشة الرئيسية في Windows",
   "{name}  ·  {size}  ·  primary": "{name}  ·  {size}  ·  رئيسية",
   "{name}  ·  {size}": "{name}  ·  {size}",
   "HDR on · tone-mapped to SDR (SDR white {nits} nits) · {adapter}": "HDR مفعّل · محوّل نغميًا إلى SDR (أبيض SDR {nits} نيت) · {adapter}",

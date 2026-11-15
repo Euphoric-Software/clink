@@ -180,6 +180,7 @@
   "Input: {name}": "इनपुट: {name}",
   "Outputs (whatever plays on them)": "आउटपुट (उन पर जो भी चलता है)",
   "No monitor": "कोई मॉनिटर नहीं",
+  "Follow Windows main display": "Windows की मुख्य डिस्प्ले का अनुसरण करें",
   "{name}  ·  {size}  ·  primary": "{name}  ·  {size}  ·  मुख्य",
   "{name}  ·  {size}": "{name}  ·  {size}",
   "HDR on · tone-mapped to SDR (SDR white {nits} nits) · {adapter}": "HDR चालू · SDR में टोन-मैप किया गया (SDR सफ़ेद {nits} nits) · {adapter}",

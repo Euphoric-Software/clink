@@ -180,6 +180,7 @@
   "Input: {name}": "Вхід: {name}",
   "Outputs (whatever plays on them)": "Виходи (усе, що на них відтворюється)",
   "No monitor": "Немає монітора",
+  "Follow Windows main display": "Слідувати за основним екраном Windows",
   "{name}  ·  {size}  ·  primary": "{name}  ·  {size}  ·  основний",
   "{name}  ·  {size}": "{name}  ·  {size}",
   "HDR on · tone-mapped to SDR (SDR white {nits} nits) · {adapter}": "HDR увімкнено · тонове відображення в SDR (білий SDR {nits} ніт) · {adapter}",

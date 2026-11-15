@@ -95,7 +95,9 @@ internal sealed class Settings
     /// </summary>
     public int SchemaVersion { get; set; } = CurrentSchema;
 
-    public string? MonitorDevice { get; set; }                 // "\\.\DISPLAY1"; null = primary
+    public string? MonitorDevice { get; set; }                 // "\\.\DISPLAY1"; the last screen picked on the map, null = never picked
+    /// <summary>Capture whichever screen is the Windows main display. Off: the screen in <see cref="MonitorDevice"/> (the primary one when it is not connected). A file without the key gets <see cref="CaptureTarget.MigratedFollowPrimary"/>.</summary>
+    public bool FollowPrimaryMonitor { get; set; } = true;
     public int Fps { get; set; } = SettingsDefaults.Fps;
     public int BitrateMbps { get; set; } = SettingsDefaults.BitrateMbps;
     /// <summary>The user picked <see cref="BitrateMbps"/> in the bitrate box. Kept for settings import; no app logic reads it.</summary>
@@ -565,6 +567,7 @@ internal sealed class Settings
                 if (!quiet) Log.Warn($"settings: {prop.Name} could not be read ({(ex is JsonException ? "wrong kind of value" : ex.Message)}); it keeps its default");
             }
         }
+        if (!HasKey(root, nameof(FollowPrimaryMonitor))) s.FollowPrimaryMonitor = CaptureTarget.MigratedFollowPrimary(s.MonitorDevice);
         s.HotkeysFromFile = HasKey(root, nameof(Hotkeys));
         s._fileSchema = SchemaOf(root);
         // v1 "ShowToast": false becomes the clip toast's switch when the file has no v2 toast setting yet.

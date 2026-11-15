@@ -1240,9 +1240,7 @@ internal sealed partial class AppController : IDisposable
         if (e.Mode == PowerModes.Resume) _ui.BeginInvoke(async () => { BeginTechnicalRestart(TimeSpan.FromMilliseconds(3000)); await Task.Delay(3000); Monitors = Native.Monitors.Enumerate(); MarkTechnicalRestart(); StartEngine(); });
     }
 
-    public MonitorInfo? SelectedMonitor =>
-        Monitors.FirstOrDefault(m => string.Equals(m.DeviceName, Settings.MonitorDevice, StringComparison.OrdinalIgnoreCase))
-        ?? Monitors.FirstOrDefault(m => m.IsPrimary) ?? Monitors.FirstOrDefault();
+    public MonitorInfo? SelectedMonitor => CaptureTarget.Resolve(Settings.FollowPrimaryMonitor, Settings.MonitorDevice, Monitors);
 
     /// <summary>Audio tracks in a clip: the mix plus each enabled part (the size arithmetic in <see cref="Capabilities"/> needs the count).</summary>
     public int AudioTrackCount => 1 + (Settings.TrackGame ? 1 : 0) + (Settings.TrackMic ? 1 : 0) + (Settings.TrackVoice ? 1 : 0) + (Settings.TrackDesktop ? 1 : 0);

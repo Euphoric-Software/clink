@@ -180,6 +180,7 @@
   "Input: {name}": "입력: {name}",
   "Outputs (whatever plays on them)": "출력 (재생되는 모든 소리)",
   "No monitor": "모니터 없음",
+  "Follow Windows main display": "Windows 기본 디스플레이 따라가기",
   "{name}  ·  {size}  ·  primary": "{name}  ·  {size}  ·  주 모니터",
   "{name}  ·  {size}": "{name}  ·  {size}",
   "HDR on · tone-mapped to SDR (SDR white {nits} nits) · {adapter}": "HDR 켜짐 · SDR로 톤 매핑됨 (SDR 흰색 {nits} 니트) · {adapter}",

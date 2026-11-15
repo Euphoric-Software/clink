@@ -180,6 +180,7 @@
   "Input: {name}": "Ingresso: {name}",
   "Outputs (whatever plays on them)": "Uscite (tutto ciò che viene riprodotto)",
   "No monitor": "Nessun monitor",
+  "Follow Windows main display": "Segui lo schermo principale di Windows",
   "{name}  ·  {size}  ·  primary": "{name}  ·  {size}  ·  principale",
   "{name}  ·  {size}": "{name}  ·  {size}",
   "HDR on · tone-mapped to SDR (SDR white {nits} nits) · {adapter}": "HDR attivo · convertito in SDR con tone mapping (bianco SDR {nits} nit) · {adapter}",

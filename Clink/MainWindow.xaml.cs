@@ -461,7 +461,15 @@ public partial class MainWindow : Window
         var s = _app.Settings;
         _shownMonitors = _app.Monitors;
         MonitorMap.SetMonitors(_app.Monitors, _app.SelectedMonitor?.DeviceName);
-        MonitorMap.Selected += m => { s.MonitorDevice = m.DeviceName; s.Save(); UpdateMonitorLabel(); FillCodecs(); UpdateEstimates(); _app.ApplyStatusDot(); ScheduleRestart(); };
+        SetFollowPrimaryBox(s.FollowPrimaryMonitor);
+        MonitorMap.Selected += m =>
+        {
+            // A click on the map is an explicit choice of that screen: it stops following the main display.
+            s.MonitorDevice = m.DeviceName;
+            s.FollowPrimaryMonitor = false;
+            SetFollowPrimaryBox(false);
+            s.Save(); UpdateMonitorLabel(); FillCodecs(); UpdateEstimates(); _app.ApplyStatusDot(); ScheduleRestart();
+        };
         UpdateMonitorLabel();
 
         Fill(ResolutionCombo, new[] { new Choice(L.T("resolution|Native"), "native"), new Choice("1440p", "1440p"), new Choice("1080p", "1080p"), new Choice("720p", "720p") }, s.Resolution);
@@ -939,6 +947,30 @@ public partial class MainWindow : Window
         }
         if (IsDeviceValue(current) && !items.Any(i => Same(i.Value, current)))
             items.Add(new Choice(L.T("Saved device (not connected)"), current));
+    }
+
+    private void SetFollowPrimaryBox(bool on)
+    {
+        _syncingUi = true;
+        try { FollowPrimaryCheck.IsChecked = on; }
+        finally { _syncingUi = false; }
+    }
+
+    private void FollowPrimaryChanged(object sender, RoutedEventArgs e)
+    {
+        if (_loading || _syncingUi) return;
+        var s = _app.Settings;
+        bool on = FollowPrimaryCheck.IsChecked == true;
+        if (s.FollowPrimaryMonitor == on) return;
+        // Unticking keeps the screen being captured right now (the main one), so nothing jumps; ticking moves to the main one.
+        string? before = _app.SelectedMonitor?.DeviceName;
+        if (!on) s.MonitorDevice = before ?? s.MonitorDevice;
+        s.FollowPrimaryMonitor = on;
+        s.Save();
+        string? after = _app.SelectedMonitor?.DeviceName;
+        MonitorMap.SetMonitors(_app.Monitors, after);
+        UpdateMonitorLabel(); FillCodecs(); UpdateEstimates(); _app.ApplyStatusDot();
+        if (!string.Equals(before, after, StringComparison.OrdinalIgnoreCase)) ScheduleRestart();   // re-selecting the same screen must not drop the replay
     }
 
     private void UpdateMonitorLabel()

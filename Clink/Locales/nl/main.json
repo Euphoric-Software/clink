@@ -180,6 +180,7 @@
   "Input: {name}": "Ingang: {name}",
   "Outputs (whatever plays on them)": "Uitgangen (alles wat erop wordt afgespeeld)",
   "No monitor": "Geen monitor",
+  "Follow Windows main display": "Hoofdscherm van Windows volgen",
   "{name}  ·  {size}  ·  primary": "{name}  ·  {size}  ·  primair",
   "{name}  ·  {size}": "{name}  ·  {size}",
   "HDR on · tone-mapped to SDR (SDR white {nits} nits) · {adapter}": "HDR aan · tone-mapped naar SDR (SDR-wit {nits} nits) · {adapter}",
