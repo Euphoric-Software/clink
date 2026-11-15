@@ -325,13 +325,51 @@ internal static unsafe class GameProcessTracker
     public static bool IsAuto(string? name) => NormalizeName(name) == "auto";
 
     /// <summary>Finds the root process of the voice app (oldest process with that name) so include-tree captures all of it.</summary>
+    /// <remarks>"auto" looks for all of <see cref="VoiceAppNames"/> in one process list (it runs every 5 s on the audio thread; one
+    /// GetProcessesByName per name would list every process nine times).</remarks>
     public static (uint pid, string name)? FindVoiceApp(string? preferredName)
     {
-        IEnumerable<string> names = IsAuto(preferredName) ? VoiceAppNames : new[] { NormalizeName(preferredName) };
+        if (!IsAuto(preferredName)) return FindProcessByName(NormalizeName(preferredName));
+        Process[] all;
+        try { all = Process.GetProcesses(); } catch { return null; }
+        try
+        {
+            var wanted = new HashSet<string>(VoiceAppNames, StringComparer.OrdinalIgnoreCase);
+            var found = new List<NamedProcess>();
+            foreach (var p in all)
+            {
+                string name;
+                try { name = p.ProcessName; } catch { continue; }
+                if (!wanted.Contains(name)) continue;
+                DateTime? start = null;
+                try { start = p.StartTime; } catch { }
+                found.Add(new NamedProcess(name, (uint)p.Id, start));
+            }
+            return PickByName(found, VoiceAppNames);
+        }
+        finally { foreach (var p in all) p.Dispose(); }
+    }
+
+    /// <param name="Start">Null when it could not be read (another user's process, one that has exited).</param>
+    internal readonly record struct NamedProcess(string Name, uint Pid, DateTime? Start);
+
+    /// <summary>
+    /// The first of <paramref name="names"/> (in order, case-insensitive) that has a process in <paramref name="processes"/>, and its oldest
+    /// one (a process whose start time is unknown only when no other has one), as <see cref="FindProcessByName"/> picks it.
+    /// </summary>
+    internal static (uint pid, string name)? PickByName(IReadOnlyList<NamedProcess> processes, IReadOnlyList<string> names)
+    {
         foreach (var n in names)
         {
-            var found = FindProcessByName(n);
-            if (found != null) return found;
+            NamedProcess? root = null;
+            DateTime best = DateTime.MaxValue;
+            foreach (var p in processes)
+            {
+                if (!string.Equals(p.Name, n, StringComparison.OrdinalIgnoreCase)) continue;
+                if (p.Start is { } s) { if (s < best) { best = s; root = p; } }
+                else root ??= p;
+            }
+            if (root != null) return (root.Value.Pid, n);
         }
         return null;
     }

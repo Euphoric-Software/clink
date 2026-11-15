@@ -1027,8 +1027,9 @@ public partial class MainWindow : Window
             // Each entry says what the track is actually capturing ("● Game (Overwatch)", "● Game (everything except Discord)",
             // "● Mic (USB Microphone)") or why it is not ("○ Voice (waiting for app)"), so a pick is confirmed here and the
             // fallback is not mistaken for the real thing. Entries are separated by spaces and the line wraps wherever it must.
-            AudioStatus.Text = st.Audio.Count == 0 ? L.T("No audio tracks") :
-                EngineStatusText.AudioLine(st.Audio);
+            if (st.Audio != null)   // null: the audio thread is busy (a source starting), keep the line as it is
+                AudioStatus.Text = st.Audio.Count == 0 ? L.T("No audio tracks") :
+                    EngineStatusText.AudioLine(st.Audio);
         }
         else
         {

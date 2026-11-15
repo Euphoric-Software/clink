@@ -17,9 +17,12 @@ internal sealed class VideoSample
 /// </summary>
 internal sealed unsafe class RingStore : IDisposable
 {
-    private struct Entry { public long Offset; public int Length; public long Pts; public bool Key; }
+    /// <param name="Seq">Push order (never reused, not even after <see cref="Clear"/>): an entry is still in the ring while its Seq is at least the oldest entry's.</param>
+    private struct Entry { public long Offset; public int Length; public long Pts; public bool Key; public long Seq; }
 
     public const long MinBytes = 32L << 20;
+    /// <summary>Most bytes <see cref="Snapshot"/> copies per hold of the lock (a push waits for at most one such copy).</summary>
+    internal const int SnapshotChunkBytes = 4 << 20;
 
     private byte* _buf;
     private readonly long _cap;
@@ -27,7 +30,11 @@ internal sealed unsafe class RingStore : IDisposable
     private Entry[] _entries = new Entry[4096];
     private int _first;              // index of oldest entry in the circular entries array
     private int _count;
+    private long _nextSeq;
     private readonly object _gate = new();
+
+    /// <summary>Tests only: runs between two chunks of a <see cref="Snapshot"/>, outside the lock.</summary>
+    internal Action? BetweenSnapshotChunks;
 
     /// <summary>Bytes actually allocated (may be less than asked for when the allocation had to be retried smaller).</summary>
     public long Capacity => _cap;
@@ -134,7 +141,7 @@ internal sealed unsafe class RingStore : IDisposable
             data.CopyTo(new Span<byte>(_buf + _head, data.Length));
             if (_count == _entries.Length) Grow();
             ref var ne = ref _entries[(_first + _count) % _entries.Length];
-            ne.Offset = _head; ne.Length = data.Length; ne.Pts = pts; ne.Key = keyframe;
+            ne.Offset = _head; ne.Length = data.Length; ne.Pts = pts; ne.Key = keyframe; ne.Seq = _nextSeq++;
             _count++;
             _head += data.Length;
         }
@@ -160,12 +167,19 @@ internal sealed unsafe class RingStore : IDisposable
         }
     }
 
-    /// <summary>Copies out all samples from the last keyframe at or before <paramref name="fromPts"/> (or the first keyframe after it).</summary>
+    /// <summary>
+    /// Copies out all samples from the last keyframe at or before <paramref name="fromPts"/> (or the first keyframe after it) up to
+    /// <paramref name="toPts"/>. A clip is hundreds of MB, and the encoder thread pushes into the ring at the frame rate, so the bytes are
+    /// copied in chunks of at most <see cref="SnapshotChunkBytes"/>, taking the lock once per chunk. The ring only ever drops its oldest
+    /// entries: when it has dropped the next ones to copy in the meantime (a clip as long as the ring), the clip starts again at the first
+    /// keyframe still held (empty when none is).
+    /// </summary>
     public List<VideoSample> Snapshot(long fromPts, long toPts)
     {
+        var list = new List<VideoSample>();
+        Entry[] want;
         lock (_gate)
         {
-            var list = new List<VideoSample>();
             if (_buf == null) return list;
             int start = -1;
             for (int i = 0; i < _count; i++)
@@ -177,16 +191,46 @@ internal sealed unsafe class RingStore : IDisposable
             if (start < 0)
                 for (int i = 0; i < _count; i++) if (At(i).Key && At(i).Pts >= fromPts) { start = i; break; }
             if (start < 0) return list;
-            for (int i = start; i < _count; i++)
-            {
-                ref var e = ref At(i);
-                if (e.Pts > toPts) break;
-                var data = new byte[e.Length];
-                new ReadOnlySpan<byte>(_buf + e.Offset, e.Length).CopyTo(data);
-                list.Add(new VideoSample { Pts = e.Pts, Keyframe = e.Key, Data = data });
-            }
-            return list;
+            int end = start;
+            while (end < _count && At(end).Pts <= toPts) end++;
+            want = new Entry[end - start];
+            for (int i = 0; i < want.Length; i++) want[i] = At(start + i);
         }
+        int at = 0;
+        while (at < want.Length)
+        {
+            if (at > 0) BetweenSnapshotChunks?.Invoke();
+            int stop = at;
+            long bytes = 0;
+            while (stop < want.Length && (stop == at || bytes + want[stop].Length <= SnapshotChunkBytes)) bytes += want[stop++].Length;
+            var arrays = new byte[stop - at][];   // allocated outside the lock
+            for (int k = 0; k < arrays.Length; k++) arrays[k] = GC.AllocateUninitializedArray<byte>(want[at + k].Length);
+            lock (_gate)
+            {
+                if (_buf == null) return new List<VideoSample>();   // disposed meanwhile
+                long oldestSeq = _count > 0 ? At(0).Seq : _nextSeq;
+                if (want[at].Seq < oldestSeq)
+                {
+                    // Evicted (or cleared) meanwhile: what was copied no longer joins up with what is left. Entries newer than a
+                    // surviving one survive too, so the first keyframe at or after the oldest survivor is where the clip can start.
+                    list.Clear();
+                    while (at < want.Length && (want[at].Seq < oldestSeq || !want[at].Key)) at++;
+                    continue;
+                }
+                for (int k = 0; k < arrays.Length; k++)
+                {
+                    ref var e = ref want[at + k];
+                    new ReadOnlySpan<byte>(_buf + e.Offset, e.Length).CopyTo(arrays[k]);
+                }
+            }
+            for (int k = 0; k < arrays.Length; k++)
+            {
+                ref var e = ref want[at + k];
+                list.Add(new VideoSample { Pts = e.Pts, Keyframe = e.Key, Data = arrays[k] });
+            }
+            at = stop;
+        }
+        return list;
     }
 
     public void Clear()
