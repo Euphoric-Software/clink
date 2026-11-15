@@ -25,7 +25,7 @@ internal enum CaptureBorderState { Hidden, UnsupportedOs, Denied, SetFailed, Unc
 /// Works with borderless and exclusive-fullscreen games. On HDR displays it captures FP16 scRGB so the
 /// converter can tone-map properly instead of producing the usual washed-out SDR frame.
 /// </summary>
-internal sealed unsafe class MonitorCapture : IDisposable
+internal sealed unsafe class MonitorCapture : IVideoFrameSource
 {
     private static readonly Guid IID_GraphicsCaptureItem = new("79C3F95B-31F7-4EC2-A464-632EF5D30760");
 
@@ -50,6 +50,9 @@ internal sealed unsafe class MonitorCapture : IDisposable
     public long FramesReceived => Interlocked.Read(ref _frameCount);
     public long FramesCopied => Interlocked.Read(ref _copyCount);
     public bool HasFrame => Volatile.Read(ref _hasFrame);
+    /// <summary>Always null: the engine paces a monitor on its own timer and samples the latest frame.</summary>
+    public WaitHandle? FrameArrived => null;
+    public long LatestTime => Interlocked.Read(ref _latestTime);
 
     public MonitorCapture(D3DDevice d3d, nint hmonitor, bool hdr, bool captureCursor, uint targetFps)
     {

@@ -129,7 +129,7 @@ internal sealed unsafe class Engine : IDisposable
     private readonly ManualResetEventSlim _ready = new();
 
     private D3DDevice? _d3d;
-    private MonitorCapture? _capture;
+    private IVideoFrameSource? _capture;
     private FrameConverter? _converter;
     private VideoEncoder? _encoder;
     private RingStore? _ring;
@@ -223,8 +223,9 @@ internal sealed unsafe class Engine : IDisposable
             var m = _cfg.Monitor;
             _d3d = D3DDevice.CreateForMonitor(m.Handle);
             Log.Info($"D3D device on {_d3d.AdapterName}; monitor {m.Label} HDR={m.IsHdr} sdrWhite={m.SdrWhiteNits}nits");
-            _capture = new MonitorCapture(_d3d, m.Handle, m.IsHdr, _cfg.CaptureCursor, _cfg.Fps);
-            try { CaptureBorderDetermined?.Invoke(_capture.BorderState, _capture.BorderDetail); } catch (Exception ex) { Log.Warn("capture border: " + ex.Message); }
+            var monitorCapture = new MonitorCapture(_d3d, m.Handle, m.IsHdr, _cfg.CaptureCursor, _cfg.Fps);
+            _capture = monitorCapture;
+            try { CaptureBorderDetermined?.Invoke(monitorCapture.BorderState, monitorCapture.BorderDetail); } catch (Exception ex) { Log.Warn("capture border: " + ex.Message); }
             _converter = new FrameConverter(_d3d, _cfg.OutWidth, _cfg.OutHeight)
             {
                 IsHdr = m.IsHdr, SdrWhiteNits = m.SdrWhiteNits, Knee = _cfg.HdrKnee, Peak = _cfg.HdrPeak,
