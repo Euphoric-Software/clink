@@ -2904,6 +2904,7 @@ internal static class UpdateFeedTests
     public static void A_legacy_failed_marker_beside_an_unsigned_download_is_cleaned_up_quietly()
     {
         using var dir = new TempDir();
+        Updater.IsElevatedOverride = false;   // the marker's report is what is tested, not the elevation refusal an administrator runner would get instead
         Updater.UpdatesDirOverride = dir.File("updates");
         Directory.CreateDirectory(Updater.UpdatesDir);
         byte[] exe = FakeExe();
