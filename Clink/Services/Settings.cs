@@ -98,6 +98,12 @@ internal sealed class Settings
     public string? MonitorDevice { get; set; }                 // "\\.\DISPLAY1"; the last screen picked on the map, null = never picked
     /// <summary>Capture whichever screen is the Windows main display. Off: the screen in <see cref="MonitorDevice"/> (the primary one when it is not connected). A file without the key gets <see cref="CaptureTarget.MigratedFollowPrimary"/>.</summary>
     public bool FollowPrimaryMonitor { get; set; } = true;
+    /// <summary>What is captured: "monitor" (a screen) or "device:&lt;Media Foundation symbolic link&gt;" (a capture card). A missing, null or unrecognised value is "monitor" (<see cref="CaptureTarget.ParseSource"/>).</summary>
+    public string CaptureSource { get; set; } = CaptureTarget.SourceMonitor;
+    /// <summary>The last name the capture card in <see cref="CaptureSource"/> showed, for labels and notices while it is not connected.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? CaptureDeviceName { get; set; }
+    /// <summary>Hidden (no UI, never written while 0): milliseconds to shift the capture card's sound against its picture (a card whose audio runs late or early).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] public int CaptureDeviceAvOffsetMs { get; set; }
     public int Fps { get; set; } = SettingsDefaults.Fps;
     public int BitrateMbps { get; set; } = SettingsDefaults.BitrateMbps;
     /// <summary>The user picked <see cref="BitrateMbps"/> in the bitrate box. Kept for settings import; no app logic reads it.</summary>
@@ -655,6 +661,7 @@ internal sealed class Settings
         ToastClip ??= new ToastSetting { Enabled = true, Seconds = 7 };
         ToastShared ??= new ToastSetting { Enabled = true, Seconds = 4 };
         ToastRecording ??= new ToastSetting { Enabled = true, Seconds = 4 };
+        if (string.IsNullOrWhiteSpace(CaptureSource)) CaptureSource = CaptureTarget.SourceMonitor;
         Codec ??= SettingsDefaults.Codec;
         Resolution ??= SettingsDefaults.Resolution;
         GameProcess ??= "auto";

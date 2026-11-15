@@ -1,5 +1,6 @@
 ﻿using System.IO;
 using Clink.Audio;
+using Clink.Capture;
 using Clink.Engine;
 using Clink.Native;
 using Clink.Services;
@@ -14,6 +15,28 @@ namespace Clink;
 internal static class SelfTest
 {
     private static void Say(string s) { Console.WriteLine(s); Log.Info("[selftest] " + s); }
+
+    /// <summary>Lists the video capture devices (capture cards, webcams) with the mode that would be recorded at the saved Resolution and Fps. "None found" is normal on a PC without one.</summary>
+    private static void SayVideoDevices(Settings settings)
+    {
+        var devices = VideoDevices.Enumerate();
+        if (devices.Count == 0) { Say("  capture devices: none found"); return; }
+        string? chosen = CaptureTarget.ParseSource(settings.CaptureSource);
+        var (maxW, maxH) = VideoModePick.LimitOf(settings.Resolution);
+        foreach (var d in devices)
+        {
+            string mark = string.Equals(d.Link, chosen, StringComparison.OrdinalIgnoreCase) ? " [selected]" : "";
+            try
+            {
+                var modes = VideoDevices.ReadModes(d.Link);
+                var pick = VideoModePick.Pick(modes, maxW, maxH, settings.Fps);
+                Say($"  capture device {d.Name}{mark}: {modes.Count} modes, would record {(pick.HasValue ? pick.Value.ToString() : "nothing usable")}{(pick is { Hdr: true } ? " (HDR card: recorded as SDR)" : "")}");
+                foreach (var m in modes.OrderByDescending(m => (long)m.Width * m.Height).ThenByDescending(m => m.Fps)) Say($"    mode {m}");
+            }
+            catch (Exception ex) { Say($"  capture device {d.Name}{mark}: modes not readable ({ex.Message})"); }
+            Say($"    link {d.Link}");
+        }
+    }
 
     public static int Run(string[] args)
     {
@@ -37,6 +60,7 @@ internal static class SelfTest
         var monitors = Monitors.Enumerate();
         foreach (var m in monitors)
             Say($"  monitor {m.ShortName,-9} {m.FriendlyName,-12} {m.Width}x{m.Height} @({m.Left},{m.Top}) primary={m.IsPrimary} hdr={m.IsHdr} sdrWhite={m.SdrWhiteNits:0}nits maxLum={m.MaxLuminance:0} gpu={m.AdapterName}");
+        SayVideoDevices(settings);
         var mon = CaptureTarget.Resolve(settings.FollowPrimaryMonitor, settings.MonitorDevice, monitors);
         if (mon == null) { Say("No monitor found"); return 2; }
         Say($"Capturing {mon.Label}");

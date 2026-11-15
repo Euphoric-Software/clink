@@ -409,3 +409,13 @@ FindClose
 // ---- UI language (Services/Localization) ----
 GetUserPreferredUILanguages
 MUI_LANGUAGE_NAME
+
+// ---- Media Foundation video capture devices (capture cards) ----
+MFEnumDeviceSources
+MFCreateDeviceSource
+MFCreateSourceReaderFromMediaSource
+IMFMediaSource
+MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE
+MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID
+MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME
+MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK
