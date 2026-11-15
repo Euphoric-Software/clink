@@ -53,6 +53,8 @@ internal sealed unsafe class MonitorCapture : IVideoFrameSource
     /// <summary>Always null: the engine paces a monitor on its own timer and samples the latest frame.</summary>
     public WaitHandle? FrameArrived => null;
     public long LatestTime => Interlocked.Read(ref _latestTime);
+    /// <summary>Always null: a frame that fails is logged and the next one is taken.</summary>
+    public Exception? Fault => null;
 
     public MonitorCapture(D3DDevice d3d, nint hmonitor, bool hdr, bool captureCursor, uint targetFps)
     {
@@ -266,13 +268,13 @@ internal sealed unsafe class MonitorCapture : IVideoFrameSource
         finally { Marshal.Release(abi); }
     }
 
-    /// <summary>Runs <paramref name="use"/> with the latest frame texture while holding the context lock.</summary>
-    public bool WithLatest(Action<nint, uint, uint> use)
+    /// <summary>Runs <paramref name="use"/> with the latest frame texture and its time while holding the context lock.</summary>
+    public bool WithLatest(Action<nint, uint, uint, long> use)
     {
         lock (_d3d.ContextLock)
         {
             if (!_hasFrame || _latest == null) return false;
-            use((nint)_latest, _latestW, _latestH);
+            use((nint)_latest, _latestW, _latestH, _latestTime);
             return true;
         }
     }

@@ -139,7 +139,7 @@ internal static class CaptureTargetTests
 
     private static CaptureChoice OnCard(VideoDevice c) => new(CaptureKind.Device, c, null, CaptureFallback.None);
     private static CaptureChoice OnScreen(MonitorInfo m) => new(CaptureKind.Monitor, null, m, CaptureFallback.None);
-    private static CaptureChoice Fallback(MonitorInfo m) => new(CaptureKind.Monitor, null, m, CaptureFallback.CardMissing);
+    private static CaptureChoice Fallback(MonitorInfo m, VideoDevice? missing = null) => new(CaptureKind.Monitor, null, m, CaptureFallback.CardMissing, (missing ?? CardA).Link);
 
     [UnitTest]
     public static void The_same_target_needs_no_action()
@@ -190,5 +190,70 @@ internal static class CaptureTargetTests
         Check.Equal(SwitchAction.Restart, CaptureTarget.NextAction(OnCard(CardA), OnScreen(D1), false).Action);
         Check.Equal(SwitchAction.Restart, CaptureTarget.NextAction(OnScreen(D1), OnCard(CardA), false).Action);
         Check.Equal(SwitchAction.Restart, CaptureTarget.NextAction(OnCard(CardA), OnCard(CardB), false).Action, "another card");
+    }
+
+    [UnitTest]
+    public static void A_missing_card_remembers_its_link()
+    {
+        var r = Resolve("device:" + CardA.Link, false, D2.DeviceName, CardB);
+        Check.Equal(CardA.Link, r.MissingLink);
+        Check.Null(Resolve("device:" + CardA.Link, false, null, CardA).MissingLink, "connected: nothing is missing");
+        Check.Null(Resolve("monitor", false, null).MissingLink);
+    }
+
+    [UnitTest]
+    public static void Picking_another_connected_card_during_a_fallback_is_a_plain_restart_not_a_return()
+    {
+        var other = CaptureTarget.NextAction(Fallback(D1, CardA), OnCard(CardB), true);
+        Check.Equal(SwitchAction.Restart, other.Action, "card A is still missing: B is no return");
+        Check.False(other.FallbackNoticed);
+        Check.Equal(SwitchAction.RestartAndNotifyReturn, CaptureTarget.NextAction(Fallback(D1, CardA), OnCard(CardA), true).Action, "A itself is back");
+    }
+
+    [UnitTest]
+    public static void Another_card_going_missing_is_a_new_stretch_with_its_own_notice()
+    {
+        var d = CaptureTarget.NextAction(Fallback(D1, CardA), Fallback(D1, CardB), true);
+        Check.Equal(SwitchAction.NotifyFallback, d.Action, "same screen: the notice, no restart");
+        Check.True(d.FallbackNoticed);
+        Check.Equal(SwitchAction.None, CaptureTarget.NextAction(Fallback(D1, CardB), Fallback(D1, CardB), d.FallbackNoticed).Action);
+    }
+
+    [UnitTest]
+    public static void Picking_a_missing_card_while_its_fallback_screen_is_recorded_gives_the_notice_without_a_restart()
+    {
+        var d = CaptureTarget.NextAction(OnScreen(D1), Fallback(D1), false);
+        Check.Equal(SwitchAction.NotifyFallback, d.Action);
+        Check.True(d.FallbackNoticed);
+        Check.Equal(SwitchAction.RestartAndNotifyFallback, CaptureTarget.NextAction(OnScreen(D2), Fallback(D1), false).Action, "another screen: restart onto the fallback");
+        Check.Equal(SwitchAction.RestartAndNotifyFallback, CaptureTarget.NextAction(null, Fallback(D1), false).Action, "nothing runs yet: start");
+    }
+
+    [UnitTest]
+    public static void A_failed_device_listing_keeps_the_card_instead_of_falling_back()
+    {
+        var r = CaptureTarget.Resolve("device:" + CardA.Link, true, null, new List<MonitorInfo> { D1, D2 }, null, "Elgato HD60 X");
+        Check.Equal(CaptureKind.Device, r.Kind, "unknown is not missing");
+        Check.Equal(CardA.Link, r.Device!.Link);
+        Check.Equal("Elgato HD60 X", r.Device.Name, "named after the last name it showed");
+        Check.Equal(CaptureFallback.None, r.Fallback);
+        Check.Equal(CardA.Link, CaptureTarget.Resolve("device:" + CardA.Link, true, null, new List<MonitorInfo> { D1 }, null).Device!.Name, "no saved name: the link");
+        Check.Equal(SwitchAction.None, CaptureTarget.NextAction(OnCard(CardA), r, false).Action, "a one-off failed listing does not switch to the screen");
+        Check.Equal(CaptureKind.Monitor, CaptureTarget.Resolve("monitor", true, null, new List<MonitorInfo> { D1 }, null).Kind, "a screen source needs no listing");
+    }
+
+    [UnitTest]
+    public static void A_failed_device_listing_during_a_fallback_keeps_the_fallback_with_no_back_notice()
+    {
+        var monitors = new List<MonitorInfo> { D1, D2 };
+        var r = CaptureTarget.Resolve("device:" + CardA.Link, true, null, monitors, null, "Elgato HD60 X", CardA.Link.ToUpperInvariant());
+        Check.Equal(CaptureFallback.CardMissing, r.Fallback, "unknown is not back");
+        Check.Equal(CaptureKind.Monitor, r.Kind);
+        Check.Equal(D1.DeviceName, r.Monitor!.DeviceName, "the same fallback screen");
+        Check.Equal(CardA.Link, r.MissingLink);
+        Check.Equal(SwitchAction.None, CaptureTarget.NextAction(Fallback(D1), r, true).Action, "no restart and no \"back\" notice");
+        var other = CaptureTarget.Resolve("device:" + CardB.Link, true, null, monitors, null, "Elgato Cam Link 4K", CardA.Link);
+        Check.Equal(CaptureKind.Device, other.Kind, "another card chosen meanwhile: unknown, so it is the target");
+        Check.Equal(CaptureKind.Device, CaptureTarget.Resolve("device:" + CardA.Link, true, null, monitors, new[] { CardA }, null, CardA.Link).Kind, "listed again: back");
     }
 }

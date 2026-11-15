@@ -205,8 +205,11 @@ internal sealed partial class AppController : IDisposable
     public string? CurrentGame { get; private set; }
     /// <summary>"fullscreen" | "library" | "custom": which signal found <see cref="CurrentGame"/>.</summary>
     public string? CurrentGameSource { get; private set; }
-    /// <summary>Settings.RecordingMode == "game": the engine runs only while a game or custom app is running.</summary>
-    public bool GameOnly => string.Equals(Settings.RecordingMode, "game", StringComparison.OrdinalIgnoreCase);
+    /// <summary>
+    /// Settings.RecordingMode == "game": the engine runs only while a game or custom app is running. Not while a capture card is recorded
+    /// (<see cref="CardIsTarget"/>: it counts as always); the screen a missing card falls back to follows the mode again.
+    /// </summary>
+    public bool GameOnly => string.Equals(Settings.RecordingMode, "game", StringComparison.OrdinalIgnoreCase) && !CardIsTarget;
 
     public RecordingState State
     {
@@ -678,7 +681,7 @@ internal sealed partial class AppController : IDisposable
         // Hardware encoder enumeration loads vendor DLLs and can take a while on some machines: warm it on a worker so the
         // window's codec list and the first engine start find the answer ready instead of probing on the UI thread.
         Task.Run(() => { try { _ = Capabilities.Codecs; } catch (Exception ex) { Log.Warn("codec probe: " + ex.Message); } });
-        Engine.StateChanged += () => _ui.BeginInvoke(RaiseStateChanged);
+        Engine.StateChanged += () => _ui.BeginInvoke(() => { OnEngineStateForCard(); RaiseStateChanged(); });
         Engine.CaptureBorderDetermined += (state, detail) => { try { _ui.BeginInvoke(() => OnCaptureBorder(state, detail)); } catch (Exception ex) { Log.Warn("capture border: " + ex.Message); } };
         // Once, for the one engine this controller owns. Raised on the recorder's thread: only ever BeginInvoke here (an Invoke
         // would deadlock against a UI thread that waits for the recording to finish: StopRecordingForExit, Engine.Dispose).
@@ -691,6 +694,7 @@ internal sealed partial class AppController : IDisposable
         SystemEvents.DisplaySettingsChanged += OnDisplayChanged;
         SystemEvents.PowerModeChanged += OnPowerModeChanged;
         if (Settings.RunAtStartup) SetRunAtStartup(true); // keep the Run entry pointing at wherever the exe lives now
+        if (Settings.ClipsEnabled) ApplyCaptureChoice(ResolveCapture());   // first: a capture card that is connected counts as always (GameOnly)
         if (!Settings.ClipsEnabled) Log.Info("Clips are turned off (Settings → App → Features): the recorder is not started");
         else if (GameOnly) { Log.Info("Recording mode: only while a game or custom app runs"); PollGame(); }
         else StartEngine();
@@ -755,7 +759,9 @@ internal sealed partial class AppController : IDisposable
             SayT("Recording not started: the recorder did not get ready");
             NotifyProblem(L.T("Recording not started"), L.T("The recorder did not get ready"));
         }
-        bool wanted = Settings.ClipsEnabled && !IsPaused && !_restarting && (!GameOnly || _gamePid != 0);
+        CheckCaptureCard(now);
+        // Not while a capture card switch waits (for the card to leave the list, or to settle): it starts the engine itself.
+        bool wanted = Settings.ClipsEnabled && !IsPaused && !_restarting && !_cardSwitching && (!GameOnly || _gamePid != 0);
         int failedWait = Engine.DeviceLost ? 10 : 30;
         var backoff = TimeSpan.FromSeconds(Engine.Error == null ? 10 : failedWait << Math.Clamp(_startFailures - 1, 0, 2));
         if (wanted && !Engine.IsRunning && !_starting && now - _lastStartAt > backoff)
@@ -1252,13 +1258,20 @@ internal sealed partial class AppController : IDisposable
     /// </summary>
     public EngineConfig BuildConfig()
     {
-        var mon = SelectedMonitor ?? throw new InvalidOperationException("No monitor found");
-        (uint w, uint h) = OutputSize(mon, Settings.Resolution);
+        // The target of the last resolve: a card, or a screen (the fallback one while the card is missing). With a card the screen still
+        // picks the GPU and is where the game detection looks; the output size is the card's mode (set by the engine when it opens it).
+        var target = _target ?? ResolveCapture();
+        var mon = (target.Kind == CaptureKind.Monitor ? target.Monitor : null) ?? SelectedMonitor ?? throw new InvalidOperationException("No monitor found");
+        var card = target.Kind == CaptureKind.Device ? target.Device : null;
+        var (maxW, maxH) = VideoModePick.LimitOf(Settings.Resolution);
+        (uint w, uint h) = card == null ? OutputSize(mon, Settings.Resolution) : (Math.Min(maxW, 3840u), Math.Min(maxH, 2160u));
         int secs = Math.Clamp(Settings.BufferSeconds, 5, 3600);
         var (mbps, _) = Capabilities.ResolveBitrate(Settings, AudioTrackCount, secs);
         return new EngineConfig
         {
             Monitor = mon,
+            Device = card,
+            DeviceMaxWidth = maxW, DeviceMaxHeight = maxH,
             OutWidth = w,
             OutHeight = h,
             Fps = (uint)Math.Clamp(Settings.Fps, 15, 120),
@@ -1306,6 +1319,7 @@ internal sealed partial class AppController : IDisposable
             return;
         }
         if (IsPaused || _restarting) return;   // a restart is under way: the recorder was stopped for it and stays stopped
+        ApplyCaptureChoice(ResolveCapture());   // before the mode check: a connected capture card counts as always (GameOnly)
         if (GameOnly && _gamePid == 0)
         {
             if (Engine.IsRunning) { EndRecordingWish(EngineStopCause.GameEnded); StopEngine(); }
@@ -1354,14 +1368,18 @@ internal sealed partial class AppController : IDisposable
                     {
                         _startFailures = 0;
                         _engineRunGen++;
+                        OnCardEngineStarted();
                         StartQueuedRecording();
                     }
                     else if (Engine.ErrorInfo is { } failed)
                     {
-                        SayT("Recording failed: {error}", ("error", EngineStatusText.ErrorNote(failed)));
+                        // A capture card's own reason (in use by another app, not connected, blocked) in the user's language.
+                        var why = CardProblemNote() ?? EngineStatusText.ErrorNote(failed);
+                        SayT("Recording failed: {error}", ("error", why));
                         // The window is usually in the tray while a game runs, so the footer alone is invisible. Once per
-                        // streak: Tick keeps retrying.
-                        if (_startFailures++ == 0) NotifyProblem(L.T("Clink is not recording"), EngineStatusText.Error(failed));
+                        // streak: Tick keeps retrying. Not when the card is gone and the switch to the fallback screen has begun
+                        // (OnEngineStateForCard): its own notice says what happens, one notice per unplug.
+                        if (!_cardSwitching && _startFailures++ == 0) NotifyProblem(L.T("Clink is not recording"), why.Shown);
                     }
                 }
                 if (Engine.IsRunning && _announceGame is string game) { _announceGame = null; Toasts.ShowRecordingStarted(game); }

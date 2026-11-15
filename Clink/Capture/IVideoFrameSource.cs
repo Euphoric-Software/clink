@@ -2,7 +2,7 @@ namespace Clink.Capture;
 
 /// <summary>
 /// Where the engine gets video frames from: the most recent frame is kept in a GPU texture on the engine's D3D device,
-/// and the pacer samples it. <see cref="MonitorCapture"/> is the implementation for a monitor.
+/// and the pacer samples it. <see cref="MonitorCapture"/> is the implementation for a monitor, <see cref="VideoDeviceCapture"/> for a capture card.
 /// </summary>
 internal interface IVideoFrameSource : IDisposable
 {
@@ -25,8 +25,15 @@ internal interface IVideoFrameSource : IDisposable
     long LatestTime { get; }
 
     /// <summary>
-    /// Runs <paramref name="use"/> with the latest frame's texture (pointer, width, height) while holding the device's
-    /// context lock. Returns false, without calling it, when no frame has arrived yet.
+    /// Why the source stopped delivering frames for good (a capture card unplugged or taken by another app), raised on its own
+    /// thread; null while it works. The engine checks it on every pass and fails with it.
     /// </summary>
-    bool WithLatest(Action<nint, uint, uint> use);
+    Exception? Fault { get; }
+
+    /// <summary>
+    /// Runs <paramref name="use"/> with the latest frame's texture (pointer, width, height) and its QPC time (100 ns units) while
+    /// holding the device's context lock, so the time always belongs to that texture. Returns false, without calling it, when no
+    /// frame has arrived yet.
+    /// </summary>
+    bool WithLatest(Action<nint, uint, uint, long> use);
 }

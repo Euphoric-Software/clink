@@ -17,8 +17,11 @@ internal static unsafe class VideoDevices
     private const uint TransferFunctionPq = 15;   // MFVideoTransFunc_2084
     private static readonly HRESULT MF_E_NO_MORE_TYPES = (HRESULT)unchecked((int)0xC00D36B9);
 
-    /// <summary>The video capture devices connected now, in the order Windows lists them. Empty when there are none or the listing fails (logged).</summary>
-    public static IReadOnlyList<VideoDevice> Enumerate()
+    /// <summary>
+    /// The video capture devices connected now, in the order Windows lists them; empty when there are none. Null when the listing failed
+    /// (logged): that says nothing about the cards, so a caller must not take it for "no card" and switch away from one.
+    /// </summary>
+    public static IReadOnlyList<VideoDevice>? Enumerate()
     {
         var result = new List<VideoDevice>();
         IMFAttributes* attrs = null;
@@ -38,7 +41,7 @@ internal static unsafe class VideoDevices
                 result.Add(new VideoDevice(link, GetString(a, PInvoke.MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME) ?? "Video device"));
             }
         }
-        catch (Exception ex) { Log.Warn("video devices: could not list them: " + ex.Message); }
+        catch (Exception ex) { Log.Warn("video devices: could not list them: " + ex.Message); return null; }
         finally
         {
             for (uint i = 0; list != null && i < count; i++) ((IUnknown*)list[i])->Release();
@@ -54,17 +57,11 @@ internal static unsafe class VideoDevices
     public static IReadOnlyList<VideoMode> ReadModes(string link)
     {
         var modes = new List<VideoMode>();
-        Mf.EnsureStarted();
-        IMFAttributes* attrs = null;
         IMFMediaSource* source = null;
         IMFSourceReader* reader = null;
         try
         {
-            attrs = Mf.CreateAttributes(2);
-            Mf.SetGuid(attrs, PInvoke.MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE, PInvoke.MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID);
-            Guid key = PInvoke.MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK;
-            fixed (char* p = link) attrs->SetString(&key, new PCWSTR(p)).Check("SetString");
-            PInvoke.MFCreateDeviceSource(attrs, &source).Check("MFCreateDeviceSource");
+            source = CreateSource(link);
             PInvoke.MFCreateSourceReaderFromMediaSource(source, null, &reader).Check("MFCreateSourceReaderFromMediaSource");
             for (uint i = 0; ; i++)
             {
@@ -72,16 +69,7 @@ internal static unsafe class VideoDevices
                 HRESULT hr = reader->GetNativeMediaType(FirstVideoStream, i, &t);
                 if (hr == MF_E_NO_MORE_TYPES) break;
                 hr.Check("GetNativeMediaType");
-                try
-                {
-                    var a = (IMFAttributes*)t;
-                    ulong size = Mf.GetU64(a, PInvoke.MF_MT_FRAME_SIZE), rate = Mf.GetU64(a, PInvoke.MF_MT_FRAME_RATE);
-                    uint num = (uint)(rate >> 32), den = (uint)rate;
-                    if (den == 0 || num == 0) continue;
-                    modes.Add(new VideoMode((uint)(size >> 32), (uint)size, (double)num / den,
-                        VideoModePick.FormatOf(Mf.GetGuid(a, PInvoke.MF_MT_SUBTYPE)),
-                        Mf.GetU32(a, PInvoke.MF_MT_TRANSFER_FUNCTION) == TransferFunctionPq));
-                }
+                try { if (ModeOf(t) is { } mode) modes.Add(mode); }
                 finally { ((IUnknown*)t)->Release(); }
             }
         }
@@ -89,10 +77,42 @@ internal static unsafe class VideoDevices
         {
             if (reader != null) ((IUnknown*)reader)->Release();
             if (source != null) { source->Shutdown(); ((IUnknown*)source)->Release(); }
-            if (attrs != null) ((IUnknown*)attrs)->Release();
         }
         return modes;
     }
+
+    /// <summary>Opens the device with this symbolic link (the caller shuts it down and releases it). Throws when it cannot be opened.</summary>
+    internal static IMFMediaSource* CreateSource(string link)
+    {
+        Mf.EnsureStarted();
+        IMFAttributes* attrs = Mf.CreateAttributes(2);
+        try
+        {
+            Mf.SetGuid(attrs, PInvoke.MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE, PInvoke.MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID);
+            Guid key = PInvoke.MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK;
+            fixed (char* p = link) attrs->SetString(&key, new PCWSTR(p)).Check("SetString");
+            IMFMediaSource* source;
+            PInvoke.MFCreateDeviceSource(attrs, &source).Check("MFCreateDeviceSource");
+            return source;
+        }
+        finally { ((IUnknown*)attrs)->Release(); }
+    }
+
+    /// <summary>The mode a native media type of a card describes; null when it has no size or frame rate.</summary>
+    internal static VideoMode? ModeOf(IMFMediaType* t)
+    {
+        var a = (IMFAttributes*)t;
+        ulong size = Mf.GetU64(a, PInvoke.MF_MT_FRAME_SIZE), rate = Mf.GetU64(a, PInvoke.MF_MT_FRAME_RATE);
+        uint num = (uint)(rate >> 32), den = (uint)rate;
+        if (den == 0 || num == 0) return null;
+        return new VideoMode((uint)(size >> 32), (uint)size, (double)num / den,
+            VideoModePick.FormatOf(Mf.GetGuid(a, PInvoke.MF_MT_SUBTYPE)),
+            Mf.GetU32(a, PInvoke.MF_MT_TRANSFER_FUNCTION) == TransferFunctionPq);
+    }
+
+    /// <summary>Whether a device with this link is connected now; null when the listing failed (unknown).</summary>
+    public static bool? IsConnected(string link) =>
+        Enumerate() is { } list ? list.Any(d => string.Equals(d.Link, link, StringComparison.OrdinalIgnoreCase)) : null;
 
     private static string? GetString(IMFAttributes* a, Guid key)
     {

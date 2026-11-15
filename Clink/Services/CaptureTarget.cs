@@ -9,8 +9,11 @@ internal enum CaptureKind { Monitor, Device }
 /// <summary>Why the target is not the one the user chose: <see cref="CardMissing"/> = a card is chosen but not connected, so a screen is recorded until it is back.</summary>
 internal enum CaptureFallback { None, CardMissing }
 
-/// <summary>The resolved target. <see cref="Monitor"/> is set for a screen (null only when there is no screen at all); <see cref="Device"/> for a card.</summary>
-internal sealed record CaptureChoice(CaptureKind Kind, VideoDevice? Device, MonitorInfo? Monitor, CaptureFallback Fallback)
+/// <summary>
+/// The resolved target. <see cref="Monitor"/> is set for a screen (null only when there is no screen at all); <see cref="Device"/> for a card.
+/// <see cref="MissingLink"/>: during a <see cref="CaptureFallback.CardMissing"/> fallback, the link of the card that is missing.
+/// </summary>
+internal sealed record CaptureChoice(CaptureKind Kind, VideoDevice? Device, MonitorInfo? Monitor, CaptureFallback Fallback, string? MissingLink = null)
 {
     /// <summary>The same thing is captured: the same card, or the same screen.</summary>
     public bool SameTarget(CaptureChoice? other) =>
@@ -20,8 +23,11 @@ internal sealed record CaptureChoice(CaptureKind Kind, VideoDevice? Device, Moni
             : string.Equals(Monitor?.DeviceName, other.Monitor?.DeviceName, StringComparison.OrdinalIgnoreCase));
 }
 
-/// <summary>What the controller does when the resolved target changes.</summary>
-internal enum SwitchAction { None, Restart, RestartAndNotifyFallback, RestartAndNotifyReturn }
+/// <summary>
+/// What the controller does when the resolved target changes. <see cref="NotifyFallback"/>: the card is missing and the screen it falls back
+/// to is the one recorded already: the notice, and no restart.
+/// </summary>
+internal enum SwitchAction { None, Restart, RestartAndNotifyFallback, RestartAndNotifyReturn, NotifyFallback }
 
 /// <summary>The action, and whether a fallback notice has been shown for the card that is now missing (pass it back into the next <see cref="CaptureTarget.NextAction"/>).</summary>
 internal readonly record struct SwitchDecision(SwitchAction Action, bool FallbackNoticed);
@@ -50,18 +56,25 @@ internal static class CaptureTarget
     /// The target for the saved <see cref="Settings.CaptureSource"/>. A card that is connected: the card. A card that is chosen but not
     /// connected: the screen <see cref="Resolve(bool, string?, IReadOnlyList{MonitorInfo})"/> gives, marked <see cref="CaptureFallback.CardMissing"/>.
     /// A card that is connected but held by another app is still listed, so it stays the target (the capture retries; it is not a fallback).
-    /// A source that is not "monitor" or "device:&lt;link&gt;" is the screen.
+    /// A source that is not "monitor" or "device:&lt;link&gt;" is the screen. <paramref name="devices"/> null: the listing failed, which says
+    /// nothing about the card, so it stays the target (named <paramref name="cardName"/>, the last name it showed); opening it tells. Except
+    /// during a fallback for that same card (<paramref name="missingLink"/>, the <see cref="CaptureChoice.MissingLink"/> of the current target): it
+    /// is not known to be back, so the fallback stays (no restart, no "back" notice).
     /// </summary>
     public static CaptureChoice Resolve(string? captureSource, bool followPrimary, string? monitorDevice,
-        IReadOnlyList<MonitorInfo> monitors, IReadOnlyList<VideoDevice> devices)
+        IReadOnlyList<MonitorInfo> monitors, IReadOnlyList<VideoDevice>? devices, string? cardName = null, string? missingLink = null)
     {
         string? link = ParseSource(captureSource);
         var monitor = Resolve(followPrimary, monitorDevice, monitors);
         if (link == null) return new CaptureChoice(CaptureKind.Monitor, null, monitor, CaptureFallback.None);
-        var card = devices.FirstOrDefault(d => string.Equals(d.Link, link, StringComparison.OrdinalIgnoreCase));
+        if (devices == null && missingLink != null && string.Equals(link, missingLink, StringComparison.OrdinalIgnoreCase))
+            return new CaptureChoice(CaptureKind.Monitor, null, monitor, CaptureFallback.CardMissing, link);
+        var card = devices == null
+            ? new VideoDevice(link, string.IsNullOrWhiteSpace(cardName) ? link : cardName)
+            : devices.FirstOrDefault(d => string.Equals(d.Link, link, StringComparison.OrdinalIgnoreCase));
         return card != null
             ? new CaptureChoice(CaptureKind.Device, card, null, CaptureFallback.None)
-            : new CaptureChoice(CaptureKind.Monitor, null, monitor, CaptureFallback.CardMissing);
+            : new CaptureChoice(CaptureKind.Monitor, null, monitor, CaptureFallback.CardMissing, link);
     }
 
     /// <summary>The card's symbolic link in a <see cref="Settings.CaptureSource"/> value; null for a screen (missing, "monitor", an empty link, anything else).</summary>
@@ -78,24 +91,30 @@ internal static class CaptureTarget
     /// <summary>
     /// What to do now that the target is <paramref name="next"/> and was <paramref name="prev"/> (null: nothing runs yet, so the target is
     /// started). The same target: nothing. A different one: restart on it. Falling back to a screen because the card is missing also
-    /// asks for the notice, but only once per stretch of the card being missing (<paramref name="fallbackNoticed"/> is the
+    /// asks for the notice, but only once per stretch of that card being missing (<paramref name="fallbackNoticed"/> is the
     /// <see cref="SwitchDecision.FallbackNoticed"/> of the previous call): a screen change while the card is still missing restarts
-    /// quietly. When the card is back after a fallback the "back" notice is asked for and the stretch ends.
+    /// quietly; another card going missing is a new stretch. When the fallback screen is the one recorded already, only the notice
+    /// (<see cref="SwitchAction.NotifyFallback"/>). When the card that was missing is back the "back" notice is asked for and the stretch
+    /// ends; another card chosen meanwhile is a plain restart.
     /// </summary>
     public static SwitchDecision NextAction(CaptureChoice? prev, CaptureChoice next, bool fallbackNoticed)
     {
         bool missing = next.Fallback == CaptureFallback.CardMissing;
         bool wasMissing = prev?.Fallback == CaptureFallback.CardMissing;
         if (!missing) fallbackNoticed = false;   // the stretch is over (or never began)
+        else if (wasMissing && !SameLink(prev!.MissingLink, next.MissingLink)) fallbackNoticed = false;   // another card is missing now
         bool changed = !next.SameTarget(prev);
         if (missing)
         {
-            if (!fallbackNoticed) return new SwitchDecision(SwitchAction.RestartAndNotifyFallback, true);
+            if (!fallbackNoticed) return new SwitchDecision(changed ? SwitchAction.RestartAndNotifyFallback : SwitchAction.NotifyFallback, true);
             return new SwitchDecision(changed ? SwitchAction.Restart : SwitchAction.None, true);
         }
-        if (wasMissing && next.Kind == CaptureKind.Device) return new SwitchDecision(SwitchAction.RestartAndNotifyReturn, false);
+        if (wasMissing && next.Kind == CaptureKind.Device && SameLink(next.Device?.Link, prev!.MissingLink))
+            return new SwitchDecision(SwitchAction.RestartAndNotifyReturn, false);
         return new SwitchDecision(changed ? SwitchAction.Restart : SwitchAction.None, false);
     }
+
+    private static bool SameLink(string? a, string? b) => a != null && b != null && string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>The value of <see cref="Settings.FollowPrimaryMonitor"/> for a file that does not have the key: a screen was never picked (null) means the main display was followed.</summary>
     public static bool MigratedFollowPrimary(string? monitorDevice) => monitorDevice == null;

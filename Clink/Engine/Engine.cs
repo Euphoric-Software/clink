@@ -13,7 +13,12 @@ namespace Clink.Engine;
 
 internal sealed class EngineConfig
 {
+    /// <summary>The screen that is captured; with a <see cref="Device"/> it still picks the GPU and the area the game detection looks at.</summary>
     public MonitorInfo Monitor = null!;
+    /// <summary>A capture card to record instead of the monitor (null: the monitor). The engine sets <see cref="OutWidth"/> / <see cref="OutHeight"/> from the card's mode and lowers <see cref="Fps"/> to the card's rate.</summary>
+    public VideoDevice? Device;
+    /// <summary>The Resolution preset as a box (<see cref="VideoModePick.LimitOf"/>): the largest card mode chosen, and what a larger one is scaled into.</summary>
+    public uint DeviceMaxWidth = uint.MaxValue, DeviceMaxHeight = uint.MaxValue;
     public uint OutWidth, OutHeight;
     public uint Fps = 60;
     /// <summary>Video bitrate; fractional values are fine (a Discord size target can land below 1 Mbps).</summary>
@@ -165,6 +170,10 @@ internal sealed unsafe class Engine : IDisposable
     /// </summary>
     public bool DeviceLost { get; private set; }
     public string? GameName => _gameName;
+    /// <summary>The capture card's mode this run records (null: a monitor, or the card is not open yet). <see cref="VideoMode.Hdr"/>: an HDR card recorded as SDR.</summary>
+    public VideoMode? CardMode { get; private set; }
+    /// <summary>Why the capture card stopped the engine (unplugged, in use, blocked), set with <see cref="Error"/>; null for any other failure and while it runs.</summary>
+    public CaptureCardProblem? CardProblem { get; private set; }
     public event Action? StateChanged;
     /// <summary>Capture is up and the yellow border outcome is known (state, detail). Raised on the recorder's thread, once per start.</summary>
     public event Action<CaptureBorderState, string>? CaptureBorderDetermined;
@@ -181,6 +190,8 @@ internal sealed unsafe class Engine : IDisposable
         _error = null;
         // Per-run state: the game/voice picks may have changed (a device now, another app), and the stats count this run only.
         _gamePid = 0; _gameName = null; _voicePid = 0; _voiceName = null; _gameHintSeen = 0;
+        CardMode = null;
+        CardProblem = null;
         Interlocked.Exchange(ref _pacerDropped, 0);
         _ticks = 0;
         _firstTick = true;
@@ -222,13 +233,27 @@ internal sealed unsafe class Engine : IDisposable
         {
             var m = _cfg.Monitor;
             _d3d = D3DDevice.CreateForMonitor(m.Handle);
-            Log.Info($"D3D device on {_d3d.AdapterName}; monitor {m.Label} HDR={m.IsHdr} sdrWhite={m.SdrWhiteNits}nits");
-            var monitorCapture = new MonitorCapture(_d3d, m.Handle, m.IsHdr, _cfg.CaptureCursor, _cfg.Fps);
-            _capture = monitorCapture;
-            try { CaptureBorderDetermined?.Invoke(monitorCapture.BorderState, monitorCapture.BorderDetail); } catch (Exception ex) { Log.Warn("capture border: " + ex.Message); }
+            if (_cfg.Device is { } card)
+            {
+                Log.Info($"D3D device on {_d3d.AdapterName}; capture card {card.Name}");
+                var cardCapture = new VideoDeviceCapture(_d3d, card, _cfg.DeviceMaxWidth, _cfg.DeviceMaxHeight, _cfg.Fps);
+                _capture = cardCapture;
+                CardMode = cardCapture.Mode;
+                // The clip is the card's picture: its size (inside the preset), at most the card's rate.
+                (_cfg.OutWidth, _cfg.OutHeight) = VideoModePick.OutputSize(cardCapture.Mode.Width, cardCapture.Mode.Height, _cfg.DeviceMaxWidth, _cfg.DeviceMaxHeight);
+                _cfg.Fps = VideoModePick.EncodeFps(cardCapture.Mode.Fps, _cfg.Fps);
+                Log.Info($"Capture card output {_cfg.OutWidth}x{_cfg.OutHeight} @ {_cfg.Fps} fps");
+            }
+            else
+            {
+                Log.Info($"D3D device on {_d3d.AdapterName}; monitor {m.Label} HDR={m.IsHdr} sdrWhite={m.SdrWhiteNits}nits");
+                var monitorCapture = new MonitorCapture(_d3d, m.Handle, m.IsHdr, _cfg.CaptureCursor, _cfg.Fps);
+                _capture = monitorCapture;
+                try { CaptureBorderDetermined?.Invoke(monitorCapture.BorderState, monitorCapture.BorderDetail); } catch (Exception ex) { Log.Warn("capture border: " + ex.Message); }
+            }
             _converter = new FrameConverter(_d3d, _cfg.OutWidth, _cfg.OutHeight)
             {
-                IsHdr = m.IsHdr, SdrWhiteNits = m.SdrWhiteNits, Knee = _cfg.HdrKnee, Peak = _cfg.HdrPeak,
+                IsHdr = _capture.IsHdr, SdrWhiteNits = m.SdrWhiteNits, Knee = _cfg.HdrKnee, Peak = _cfg.HdrPeak,
             };
             double mbps = Math.Clamp(_cfg.BitrateMbps, 0.1, 500);
             uint bitrate = (uint)Math.Round(mbps * 1_000_000);
@@ -272,12 +297,18 @@ internal sealed unsafe class Engine : IDisposable
             SetStatus(EngineStatusKind.Recording);
             _ready.Set();
 
-            timer = PInvoke.CreateWaitableTimerEx(null, null, PInvoke.CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, 0x1F0003);
-            if (timer.IsNull) timer = PInvoke.CreateWaitableTimerEx(null, null, 0, 0x1F0003);
             long period = 10_000_000L / _cfg.Fps;
-            long next = ComUtil.QpcNow100ns() + period;
-            while (!_stop)
+            var arrived = _capture.FrameArrived;
+            if (arrived != null) PaceByFrames(arrived, period);   // a capture card: its own frames drive the encoder (returns when stopped)
+            else
             {
+                timer = PInvoke.CreateWaitableTimerEx(null, null, PInvoke.CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, 0x1F0003);
+                if (timer.IsNull) timer = PInvoke.CreateWaitableTimerEx(null, null, 0, 0x1F0003);
+            }
+            long next = ComUtil.QpcNow100ns() + period;
+            while (!_stop && arrived == null)   // a monitor: the latest frame is sampled on a timer at the clip's rate
+            {
+                if (_capture.Fault is { } fault) throw fault;
                 long now = ComUtil.QpcNow100ns();
                 long wait = next - now;
                 if (wait > 0)
@@ -319,6 +350,7 @@ internal sealed unsafe class Engine : IDisposable
             HRESULT removed = _d3d?.RemovedReason ?? default;
             if (removed.Failed) DeviceLost = true;
             _error = removed.Failed ? new EngineError(EngineErrorKind.GpuReset) : new EngineError(EngineErrorKind.Other, ex.Message);
+            CardProblem = removed.Failed ? null : (ex as CaptureCardException)?.Problem;
             Log.Error(removed.Failed ? $"Engine stopped: GPU device removed (0x{(uint)removed.Value:X8})" : "Engine failed", ex);
             SetStatus(EngineStatusKind.Error);
             _ready.Set();
@@ -338,10 +370,49 @@ internal sealed unsafe class Engine : IDisposable
         }
     }
 
-    private void Tick()
+    /// <summary>
+    /// A capture card's frames drive the encoder: each new frame is converted and submitted with its own (QPC) time, picked on the clip's
+    /// grid of due times (<see cref="VideoModePick.TakeFrame"/>: a 120 fps card for a 60 fps clip gives every second frame, a 60 fps card
+    /// for a 15 fps clip every fourth). The wait times out every 200 ms so a stop, a card failure and the GPU check still come through
+    /// without frames (no signal).
+    /// </summary>
+    private void PaceByFrames(WaitHandle arrived, long period)
+    {
+        long cardPeriod = CardMode is { Fps: > 0 } mode ? (long)(10_000_000 / mode.Fps) : period;
+        long nextDue = long.MinValue;
+        long lastSubmitted = 0;
+        long lastStats = ComUtil.QpcNow100ns();
+        while (!_stop)
+        {
+            if (_capture!.Fault is { } fault) throw fault;
+            if (arrived.WaitOne(200) && !_stop)
+            {
+                if (_capture.Fault is { } failed) throw failed;
+                long frameTime = _capture.LatestTime;
+                // The same frame twice (a wake without a new one) is never submitted again; a frame taken that the encoder cannot accept is a drop (Tick counts it).
+                if (frameTime != lastSubmitted && VideoModePick.TakeFrame(frameTime, period, cardPeriod, ref nextDue) && Tick(frameTime: true) is long submitted and > 0) lastSubmitted = submitted;
+            }
+            if (_orderGuard is { Tripped: true } tripped) ReopenWithoutTuning(tripped);
+            long now = ComUtil.QpcNow100ns();
+            if (now - lastStats >= 100_000_000)
+            {
+                lastStats = now;
+                ThrowIfDeviceLost();
+                var enc = _encoder; var cap = _capture;
+                if (enc != null && cap != null)
+                    Log.Info($"stats: capture {cap.FramesReceived} (copied {cap.FramesCopied}), encoded in={enc.FramesIn} out={enc.FramesOut} inflight={enc.FramesInFlight}, dropped pacer={Interlocked.Read(ref _pacerDropped)} queue-full={enc.Dropped}, ring holds {RingRangeSeconds:0.0}s");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Converts the latest frame and submits it. <paramref name="frameTime"/>: the frame's own time is its timestamp (a card); otherwise
+    /// the time of the tick (a monitor, sampled on the timer). Returns the timestamp submitted, or 0 when nothing was.
+    /// </summary>
+    private long Tick(bool frameTime = false)
     {
         var capture = _capture!; var enc = _encoder!; var conv = _converter!;
-        if (!capture.HasFrame) return;
+        if (!capture.HasFrame) return 0;
         long t = ComUtil.QpcNow100ns();
         bool firstTick = _firstTick;
         _firstTick = false;
@@ -349,13 +420,14 @@ internal sealed unsafe class Engine : IDisposable
         if (!enc.TryAcquireInput(out IMFSample* sample, out ID3D11Texture2D* tex, out uint sub))
         {
             Interlocked.Increment(ref _pacerDropped);
-            return;
+            return 0;
         }
         if (firstTick) Log.Info($"Pacer: got input texture (subresource {sub}), converting");
         bool ok;
         try
         {
-            ok = capture.WithLatest((src, w, h) => conv.Convert((ID3D11Texture2D*)src, tex, sub));
+            // The frame's time is read under the same lock as its texture, so a newer frame cannot slip in between the two.
+            ok = capture.WithLatest((src, w, h, time) => { conv.Convert((ID3D11Texture2D*)src, tex, sub); if (frameTime) t = time; });
             if (firstTick) Log.Info($"Pacer: converted={ok}, submitting");
         }
         catch (Exception ex)
@@ -368,6 +440,7 @@ internal sealed unsafe class Engine : IDisposable
         else sample->Release();
         // After a GPU reset every convert fails: stop rather than show "Recording" while nothing reaches the ring.
         if (!ok) ThrowIfDeviceLost();
+        return ok ? t : 0;
     }
 
     /// <summary>

@@ -8,9 +8,10 @@ using Clink.Services;
 namespace Clink;
 
 /// <summary>
-/// `Clink.exe --selftest [seconds] [outFolder] [--codec h264|hevc|av1] [--encoder-experiment off|vbr|lowlatency-off|vbr-lowlatency-off] [--quiet] [--record]`: runs the pipeline headless, saves a clip,
+/// `Clink.exe --selftest [seconds] [outFolder] [--codec h264|hevc|av1] [--encoder-experiment off|vbr|lowlatency-off|vbr-lowlatency-off] [--source monitor|device:&lt;link&gt;] [--quiet] [--record]`: runs the pipeline headless, saves a clip,
 /// prints what happened. --record also records for the whole length (a clip halfway), stops, and probes both files. The clip goes to outFolder (default: the clips folder from settings); --codec overrides the codec
-/// setting; --quiet skips the click sound.
+/// setting; --source records a capture card (its link as the device list prints it) instead of the screen, with no fallback: a card that
+/// is not connected fails the test (the screen is recorded unless --source names a card, whatever the saved source is); --quiet skips the click sound.
 /// </summary>
 internal static class SelfTest
 {
@@ -20,6 +21,7 @@ internal static class SelfTest
     private static void SayVideoDevices(Settings settings)
     {
         var devices = VideoDevices.Enumerate();
+        if (devices == null) { Say("  capture devices: could not be listed (see the log)"); return; }
         if (devices.Count == 0) { Say("  capture devices: none found"); return; }
         string? chosen = CaptureTarget.ParseSource(settings.CaptureSource);
         var (maxW, maxH) = VideoModePick.LimitOf(settings.Resolution);
@@ -43,11 +45,12 @@ internal static class SelfTest
         int seconds = 8, rest = 1; // rest: first argument after the optional length
         if (args.Length > 1 && int.TryParse(args[1], out int s)) { seconds = Math.Clamp(s, 2, 600); rest = 2; }
         bool quiet = args.Any(a => a.Equals("--quiet", StringComparison.OrdinalIgnoreCase));
-        string? codecArg = null, outDir = null, experimentArg = null;
+        string? codecArg = null, outDir = null, experimentArg = null, sourceArg = null;
         for (int i = rest; i < args.Length; i++)
         {
             if (args[i].Equals("--codec", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length) codecArg = args[++i];
             else if (args[i].Equals("--encoder-experiment", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length) experimentArg = args[++i];
+            else if (args[i].Equals("--source", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length) sourceArg = args[++i];
             else if (!args[i].StartsWith("--", StringComparison.Ordinal)) outDir ??= args[i];
         }
         var settings = Settings.Load();
@@ -63,10 +66,27 @@ internal static class SelfTest
         SayVideoDevices(settings);
         var mon = CaptureTarget.Resolve(settings.FollowPrimaryMonitor, settings.MonitorDevice, monitors);
         if (mon == null) { Say("No monitor found"); return 2; }
-        Say($"Capturing {mon.Label}");
+        // --source device:<link>: that card, never a fallback. A link Windows does not list still goes to the engine, which says why it
+        // cannot open it ("not connected").
+        VideoDevice? card = null;
+        if (sourceArg != null && CaptureTarget.ParseSource(sourceArg) is string link)
+        {
+            var listed = VideoDevices.Enumerate();
+            card = listed?.FirstOrDefault(d => string.Equals(d.Link, link, StringComparison.OrdinalIgnoreCase));
+            if (card == null)
+            {
+                Say(listed == null ? $"  capture card {link}: the devices could not be listed, trying it anyway" : $"  capture card {link}: not connected (Windows does not list it)");
+                card = new VideoDevice(link, link);
+            }
+            Say($"Capturing capture card {card.Name} (GPU of {mon.Label})");
+        }
+        else if (sourceArg != null && !sourceArg.Equals(CaptureTarget.SourceMonitor, StringComparison.OrdinalIgnoreCase)) { Say($"Unknown --source '{sourceArg}': use monitor or device:<link>"); return 2; }
+        else Say($"Capturing {mon.Label}");
         Capabilities.PreferMonitor(mon);   // probe the encoders of the GPU that drives it, which is the one the engine opens
-        // The same output size AppController.BuildConfig records at (the codec choice depends on it: H.264 stops at 4096 px).
-        (uint outWidth, uint outHeight) = AppController.OutputSize(mon, settings.Resolution);
+        // The same output size AppController.BuildConfig records at (the codec choice depends on it: H.264 stops at 4096 px). A card's
+        // size comes from its mode when it opens (the engine sets it); the preset box stands in for the codec choice.
+        var (maxW, maxH) = VideoModePick.LimitOf(settings.Resolution);
+        (uint outWidth, uint outHeight) = card == null ? AppController.OutputSize(mon, settings.Resolution) : (Math.Min(maxW, 3840u), Math.Min(maxH, 2160u));
 
         foreach (var c in Capabilities.Codecs)
             Say($"  codec {c.Name,-5} {(c.Supported ? c.EncoderName : c.Reason)}{(c.Experimental && c.Supported ? " (experimental)" : "")}");
@@ -84,6 +104,8 @@ internal static class SelfTest
         var cfg = new EngineConfig
         {
             Monitor = mon,
+            Device = card,
+            DeviceMaxWidth = maxW, DeviceMaxHeight = maxH,
             OutWidth = outWidth,
             OutHeight = outHeight,
             Fps = (uint)Math.Clamp(settings.Fps, 15, 120),
@@ -114,6 +136,8 @@ internal static class SelfTest
         {
             var st = engine.GetStats();
             Say($"  encoder {st.Encoder} ({st.Codec}), ring {Capabilities.FormatBytes(st.RingBytes)} = {st.RingSeconds}s");
+            if (engine.CardMode is { } mode)
+                Say($"  card mode {mode}, recorded at {cfg.OutWidth}x{cfg.OutHeight} @ {cfg.Fps} fps{(mode.Hdr ? " (HDR card: recorded as SDR)" : "")}");
         }
         bool record = args.Any(a => a.Equals("--record", StringComparison.OrdinalIgnoreCase));
         string? recordingPath = null, midClipPath = null;
