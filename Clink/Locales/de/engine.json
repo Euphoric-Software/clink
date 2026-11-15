@@ -14,6 +14,7 @@
 
   "audio-detail|game + mic + voice, always track 1": "Spiel + Mikrofon + Sprachchat, immer Spur 1",
   "audio-detail|waiting for app": "wartet auf App",
+  "audio-detail|same as the capture card audio": "wie der Ton der Capture-Karte",
   "audio-detail|everything": "alles",
   "audio-detail|everything except {app}": "alles außer {app}",
   "audio-detail|mix only": "nur Mix",

@@ -39,7 +39,7 @@ public partial class MainWindow : Window
 
     private readonly AppController _app = AppController.Instance;
     private readonly ObservableCollection<string> _customApps = new();
-    private readonly DispatcherTimer _restartTimer, _saveTimer, _bannerTimer;
+    private readonly DispatcherTimer _restartTimer, _saveTimer, _bannerTimer, _sourceTimer;
     private bool _loading = true;
     private bool _filling;                              // a combo is being (re)populated: its SelectionChanged is not a user choice
     private bool _pickingRunningApp;                    // the "Add running app…" list was opened: a selection now is a pick, not a key on the closed box
@@ -53,6 +53,10 @@ public partial class MainWindow : Window
     private FrameworkElement? _tabStrip;                // the TabControl template's strip (PART_TabStrip): the header row leaves room for it when wide
     private List<MonitorInfo>? _shownMonitors;          // the monitor list the map and label were built from (AppController replaces it on a display change)
     private DateTime _noticeUntil = DateTime.MinValue;   // keep a Say() notice visible this long before the stats line takes the footer back
+    private IReadOnlyList<VideoDevice>? _cards;         // the capture cards the last listing found (null: not listed yet, or the listing failed)
+    private List<SourceItem> _sourceItems = new();       // what the Source picker shows now
+    private string _sourceKey = "";                      // _sourceItems as one string: the picker is rebuilt only when it changes
+    private bool _listingCards;                          // a listing triggered by the picker opening is running on a worker
 
     public MainWindow()
     {
@@ -63,6 +67,8 @@ public partial class MainWindow : Window
         ApplyDevMarker();
         StatusHost.SizeChanged += (_, _) => UpdateHeaderFit();
         _restartTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(700) };
+        _sourceTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(700) };
+        _sourceTimer.Tick += (_, _) => { _sourceTimer.Stop(); _app.OnCaptureSourceChanged(); };   // lists the cards on a worker, restarts only when what is recorded changes
         _restartTimer.Tick += (_, _) => { _restartTimer.Stop(); _app.RequestEngineRestart(); };   // postponed while a recording runs
         _saveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(800) };
         _saveTimer.Tick += (_, _) => { _saveTimer.Stop(); if (!_loading) _app.Settings.Save(); };
@@ -462,13 +468,15 @@ public partial class MainWindow : Window
         _shownMonitors = _app.Monitors;
         MonitorMap.SetMonitors(_app.Monitors, _app.SelectedMonitor?.DeviceName);
         SetFollowPrimaryBox(s.FollowPrimaryMonitor);
+        RefreshSourceUi(force: true);
         MonitorMap.Selected += m =>
         {
             // A click on the map is an explicit choice of that screen: it stops following the main display.
             s.MonitorDevice = m.DeviceName;
             s.FollowPrimaryMonitor = false;
             SetFollowPrimaryBox(false);
-            s.Save(); UpdateMonitorLabel(); FillCodecs(); UpdateEstimates(); _app.ApplyStatusDot(); ScheduleRestart();
+            s.Save(); UpdateMonitorLabel(); FillCodecs(); UpdateEstimates(); _app.ApplyStatusDot();
+            if (AppController.ScreenChoiceNeedsRestart(_app.CardIsTarget)) ScheduleRestart();   // a connected card that is recorded keeps its replay
         };
         UpdateMonitorLabel();
 
@@ -956,6 +964,61 @@ public partial class MainWindow : Window
         finally { _syncingUi = false; }
     }
 
+    // ------------------------------------------------------------------ capture source: the screen or a capture card
+
+    /// <summary>
+    /// The Source picker and the lines around it follow the settings and what the recorder resolved: the card list (as last listed), the saved
+    /// card kept as "(not connected)" while the controller records the fallback screen, the card's mode / HDR warning / "in use" line, and the
+    /// caption that names the map and the "Follow Windows main display" box as the fallback screen while a card is the source. Cheap: it runs on
+    /// every status refresh, and the picker is rebuilt only when what it lists changes (never while its list is open).
+    /// </summary>
+    private void RefreshSourceUi(bool force = false, bool whileOpen = false)
+    {
+        var s = _app.Settings;
+        bool card = CaptureTarget.ParseSource(s.CaptureSource) != null;
+        bool? savedMissing = CaptureSourceList.SavedCardMissing(_app.CurrentCapture, s.CaptureSource);   // the controller's word on the saved card beats a stale listing
+        bool missing = savedMissing == true;
+        var items = CaptureSourceList.Build(_cards, s.CaptureSource, s.CaptureDeviceName, savedMissing);
+        string key = s.CaptureSource + "\n" + string.Join("\n", items.Select(i => i.Source + "\t" + i.Label));
+        if ((force || key != _sourceKey) && (whileOpen || !SourceCombo.IsDropDownOpen))
+        {
+            _sourceKey = key;
+            _sourceItems = items;
+            Refill(SourceCombo, items.Select(i => new Choice(i.Label, i.Source)).ToList(), s.CaptureSource);
+        }
+        FallbackCaption.Visibility = card ? Visibility.Visible : Visibility.Collapsed;
+        string? detail = card ? CaptureSourceList.Detail(missing, _app.CardStatusNote?.Shown, _app.Engine.IsRunning ? _app.Engine.CardMode : null) : null;
+        SourceDetail.Text = detail ?? "";
+        SourceDetail.Visibility = detail == null ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    /// <summary>The picker was opened: the cards are listed again on a worker (plugging one in must show without restarting Clink); the list fills in when it arrives.</summary>
+    private async void SourceCombo_DropDownOpened(object? sender, EventArgs e)
+    {
+        if (_listingCards) return;
+        _listingCards = true;
+        try
+        {
+            var listed = await Task.Run(() => VideoDevices.Enumerate());
+            if (listed != null) _cards = listed;   // a listing that failed keeps the last one
+            RefreshSourceUi(whileOpen: true);
+        }
+        catch (Exception ex) { Log.Warn("capture card list: " + ex.Message); }
+        finally { _listingCards = false; }
+    }
+    private void SourceChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_loading || _filling) return;
+        if (SourceCombo.SelectedItem is not Choice { Value: string source }) return;
+        var s = _app.Settings;
+        if (string.Equals(s.CaptureSource, source, StringComparison.OrdinalIgnoreCase)) return;   // the same pick again must not drop the replay
+        s.CaptureSource = source;
+        s.CaptureDeviceName = _sourceItems.FirstOrDefault(i => string.Equals(i.Source, source, StringComparison.OrdinalIgnoreCase))?.CardName;   // null for the screen
+        s.Save();
+        _sourceTimer.Stop(); _sourceTimer.Start();   // debounced: arrow keys on the closed box pass over entries
+        RefreshSourceUi();
+    }
+
     private void FollowPrimaryChanged(object sender, RoutedEventArgs e)
     {
         if (_loading || _syncingUi) return;
@@ -970,7 +1033,7 @@ public partial class MainWindow : Window
         string? after = _app.SelectedMonitor?.DeviceName;
         MonitorMap.SetMonitors(_app.Monitors, after);
         UpdateMonitorLabel(); FillCodecs(); UpdateEstimates(); _app.ApplyStatusDot();
-        if (!string.Equals(before, after, StringComparison.OrdinalIgnoreCase)) ScheduleRestart();   // re-selecting the same screen must not drop the replay
+        if (!string.Equals(before, after, StringComparison.OrdinalIgnoreCase) && AppController.ScreenChoiceNeedsRestart(_app.CardIsTarget)) ScheduleRestart();   // re-selecting the same screen must not drop the replay
     }
 
     private void UpdateMonitorLabel()
@@ -1038,6 +1101,7 @@ public partial class MainWindow : Window
             FillCodecs();
             UpdateEstimates();
         }
+        RefreshSourceUi();
         var eng = _app.Engine;
         var state = _app.State;
         // --dev-demo-status (quiet dev instances only, documentation screenshots): the normal recording look without recording anything.

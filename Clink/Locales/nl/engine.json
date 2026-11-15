@@ -9,6 +9,7 @@
   "audio-problem|disabled": "uitgeschakeld",
   "audio-detail|game + mic + voice, always track 1": "game + microfoon + spraakchat, altijd spoor 1",
   "audio-detail|waiting for app": "wacht op app",
+  "audio-detail|same as the capture card audio": "hetzelfde als het geluid van de capturekaart",
   "audio-detail|everything": "alles",
   "audio-detail|everything except {app}": "alles behalve {app}",
   "audio-detail|mix only": "alleen mix",

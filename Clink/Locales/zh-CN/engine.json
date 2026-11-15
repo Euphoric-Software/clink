@@ -14,6 +14,7 @@
 
   "audio-detail|game + mic + voice, always track 1": "游戏 + 麦克风 + 语音，始终为音轨 1",
   "audio-detail|waiting for app": "等待应用",
+  "audio-detail|same as the capture card audio": "与采集卡音频相同",
   "audio-detail|everything": "全部",
   "audio-detail|everything except {app}": "除 {app} 外的全部",
   "audio-detail|mix only": "仅混音",

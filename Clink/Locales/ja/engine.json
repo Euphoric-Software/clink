@@ -14,6 +14,7 @@
 
   "audio-detail|game + mic + voice, always track 1": "ゲーム＋マイク＋ボイス、常にトラック1",
   "audio-detail|waiting for app": "アプリ待ち",
+  "audio-detail|same as the capture card audio": "キャプチャカードの音声と同じ",
   "audio-detail|everything": "すべて",
   "audio-detail|everything except {app}": "{app}以外すべて",
   "audio-detail|mix only": "ミックスのみ",

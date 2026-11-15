@@ -144,7 +144,13 @@
                                 <TextBlock Style="{StaticResource H}" Text="{l:T 'CAPTURING'}" Margin="0,10,0,6" />
                                 <Border Style="{StaticResource Card}">
                                     <StackPanel>
-                                        <ui:MonitorMap x:Name="MonitorMap" />
+                                        <TextBlock Style="{StaticResource FieldLabel}" Text="{l:T 'Source'}" />
+                                        <ComboBox x:Name="SourceCombo" SelectionChanged="SourceChanged" DropDownOpened="SourceCombo_DropDownOpened"
+                                                  AutomationProperties.Name="{l:T 'Source'}" />
+                                        <TextBlock x:Name="SourceDetail" Style="{StaticResource MutedText}" Margin="2,4,0,0" TextWrapping="Wrap" Visibility="Collapsed" />
+                                        <TextBlock x:Name="FallbackCaption" Style="{StaticResource Hint}" Margin="2,12,0,6" Visibility="Collapsed"
+                                                   Text="{l:T 'Fallback screen, used while the card is missing'}" />
+                                        <ui:MonitorMap x:Name="MonitorMap" Margin="0,8,0,0" />
                                         <TextBlock x:Name="MonitorLabel" Margin="2,6,0,0" FontWeight="SemiBold" Text="" />
                                         <TextBlock x:Name="MonitorDetail" Style="{StaticResource MutedText}" Margin="2,2,0,0" Text="" />
                                         <CheckBox x:Name="FollowPrimaryCheck" Content="{l:T 'Follow Windows main display'}" Margin="2,8,0,0" Checked="FollowPrimaryChanged" Unchecked="FollowPrimaryChanged" />

@@ -501,7 +501,7 @@ internal sealed unsafe class Engine : IDisposable
             _tracks.Clear();
             _taps.Clear();
             _gameTrack = _voiceTrack = null;
-            _gameIsDevice = _voiceIsDevice = false;
+            _gameIsDevice = _voiceIsDevice = _micIsCardAudio = false;
         }
         try { _ring?.Dispose(); } catch { }
         _ring = null;
@@ -523,6 +523,7 @@ internal sealed unsafe class Engine : IDisposable
             bool cardAudio = _cfg.Device != null && _cfg.CardAudioId is { Length: > 0 };
             // The Mic that is the card's own endpoint (the default input is the card) would put the sound in the mix twice: it is left out.
             bool micIsCard = cardAudio && CardAudio.MicIsCardAudio(_cfg.MicDeviceId, _cfg.CardAudioId, EndpointSource.DefaultCaptureId());
+            _micIsCardAudio = micIsCard;
             if (micIsCard) Log.Info("Mic is the capture card's audio input: the Mic is not recorded, so the sound is not doubled");
             var mic = new AudioTrack(AudioText.TrackName(TrackKind.Mic)) { Source = micIsCard ? null : new EndpointSource(false, _cfg.MicDeviceId, "Microphone"), Enabled = _cfg.TrackMic && !micIsCard };
             _tracks.Add(mic);
@@ -601,6 +602,7 @@ internal sealed unsafe class Engine : IDisposable
 
     private int _voiceScan;
     private bool _gameIsDevice, _voiceIsDevice;
+    private bool _micIsCardAudio;   // the Mic is left out because it is the capture card's own audio input (the status says so instead of "waiting for app")
 
     /// <summary>"in:&lt;endpoint id&gt;" = a capture device, "out:&lt;endpoint id&gt;" = loopback of an output; anything else is a process name or "auto".</summary>
     private static bool TryDeviceSource(string? value, string name, out EndpointSource? source)
@@ -727,7 +729,7 @@ internal sealed unsafe class Engine : IDisposable
                     return null;
                 }
                 if (t.IsMix) return new AudioTrackStatus(kind, true, AudioDetail.MixParts);
-                var detail = t.Source == null ? AudioDetail.WaitingForApp : t.Source.IsRunning ? t.Source.DetailInfo : t.Source.LastErrorInfo;
+                var detail = t.Source == null ? (_micIsCardAudio && kind == TrackKind.Mic ? AudioDetail.SameAsCardAudio : AudioDetail.WaitingForApp) : t.Source.IsRunning ? t.Source.DetailInfo : t.Source.LastErrorInfo;
                 return new AudioTrackStatus(kind, t.Source?.IsRunning == true, detail, MixOnly: !t.Enabled);
             }).OfType<AudioTrackStatus>().ToList();
         return new EngineStats(_encoder?.EncoderName ?? "", _encoder?.FramesIn ?? 0, _encoder?.FramesOut ?? 0,

@@ -14,6 +14,7 @@
 
   "audio-detail|game + mic + voice, always track 1": "गेम + माइक + वॉइस, हमेशा ट्रैक 1",
   "audio-detail|waiting for app": "ऐप की प्रतीक्षा है",
+  "audio-detail|same as the capture card audio": "कैप्चर कार्ड की ऑडियो के समान",
   "audio-detail|everything": "सब कुछ",
   "audio-detail|everything except {app}": "{app} को छोड़कर सब कुछ",
   "audio-detail|mix only": "सिर्फ़ मिक्स",

@@ -9,6 +9,7 @@
   "audio-problem|disabled": "사용 안 함",
   "audio-detail|game + mic + voice, always track 1": "게임 + 마이크 + 음성, 항상 트랙 1",
   "audio-detail|waiting for app": "앱 대기 중",
+  "audio-detail|same as the capture card audio": "캡처 카드 오디오와 동일",
   "audio-detail|everything": "모든 소리",
   "audio-detail|everything except {app}": "{app} 제외 모든 소리",
   "audio-detail|mix only": "믹스만",

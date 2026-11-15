@@ -780,11 +780,13 @@ internal sealed partial class AppController : IDisposable
     /// <summary>
     /// A card that records without sound because its audio input was not there at the start (it can appear later): about every 5 s the inputs
     /// are listed again, and once it is there the recorder restarts once onto it. The restart reads the input as found, so it does not repeat.
+    /// Not while a recording runs (or is between two parts, or a technical restart is awaited): the restart would split it and empty the
+    /// replay buffer; the check goes on and the restart happens once the recording has ended.
     /// </summary>
     private void CheckCardAudio(DateTime now)
     {
         var card = _cardWithoutAudio;
-        if (card == null || !Engine.IsRunning || _stopping || _starting || _restarting || _cardSwitching || IsPaused || now < _nextCardAudioCheck) return;
+        if (card == null || !CardAudioRestartAllowed || now < _nextCardAudioCheck) return;
         _nextCardAudioCheck = now + TimeSpan.FromSeconds(5);
         if (Interlocked.Exchange(ref _cardAudioChecking, 1) == 1) return;
         Task.Run(() =>
@@ -795,13 +797,23 @@ internal sealed partial class AppController : IDisposable
             if (found == null) return;
             _ui.BeginInvoke(() =>
             {
-                if (_cardWithoutAudio != card || !Engine.IsRunning || _stopping) return;
+                // Time has passed since the check began: a recording may have started, or a switch, start or pause begun meanwhile.
+                if (_cardWithoutAudio != card || !CardAudioRestartAllowed) return;
                 _cardWithoutAudio = null;   // once: the start below finds it again, or sets this again and waits for a later one
                 Log.Info($"Audio input found for card {card.Name}: '{found.Name}', restarting onto it");
                 StartEngine();
             });
         });
     }
+
+    /// <summary>The engine runs and nothing is under way that a restart would cut: no recording (manual, or between its parts), no start, stop, switch, pause or awaited technical restart.</summary>
+    private bool CardAudioRestartAllowed => CardAudioRestartAllowedFor(Engine.IsRunning, _stopping, _starting, _restarting, _cardSwitching, IsPaused,
+        Engine.IsRecording, _wantRecording, AwaitingTechnicalRestart);
+
+    /// <summary><see cref="CardAudioRestartAllowed"/> for a given situation: only an engine that runs with nothing under way (nothing a restart would cut).</summary>
+    internal static bool CardAudioRestartAllowedFor(bool running, bool stopping, bool starting, bool restarting, bool cardSwitching, bool paused,
+        bool recording, bool wantRecording, bool awaitingTechnicalRestart) =>
+        running && !stopping && !starting && !restarting && !cardSwitching && !paused && !recording && !wantRecording && !awaitingTechnicalRestart;
 
     // ------------------------------------------------------------------ game detection (docs/SPEC-v2.md §5)
 

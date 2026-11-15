@@ -30,9 +30,12 @@ internal sealed partial class AppController
     /// (<see cref="CaptureTarget.Resolve(string?, bool, string?, IReadOnlyList{Native.MonitorInfo}, IReadOnlyList{VideoDevice}?, string?, string?)"/>),
     /// except during a fallback for that card: it is not known to be back.
     /// </summary>
-    internal CaptureChoice ResolveCapture()
+    internal CaptureChoice ResolveCapture() =>
+        ResolveCaptureWith(CaptureTarget.ParseSource(Settings.CaptureSource) == null ? Array.Empty<VideoDevice>() : VideoDevices.Enumerate());
+
+    /// <summary><see cref="ResolveCapture"/> for a device list the caller already has (null: the listing failed).</summary>
+    private CaptureChoice ResolveCaptureWith(IReadOnlyList<VideoDevice>? devices)
     {
-        var devices = CaptureTarget.ParseSource(Settings.CaptureSource) == null ? Array.Empty<VideoDevice>() : VideoDevices.Enumerate();
         return CaptureTarget.Resolve(Settings.CaptureSource, Settings.FollowPrimaryMonitor, Settings.MonitorDevice, Monitors, devices, Settings.CaptureDeviceName,
             _target?.Fallback == CaptureFallback.CardMissing ? _target.MissingLink : null);
     }
@@ -62,12 +65,37 @@ internal sealed partial class AppController
     /// The capture source setting changed (the source picker): restarts only when what is recorded changes. A card that is missing while its
     /// fallback screen is the one recorded already gives the notice and keeps the recorder going.
     /// </summary>
-    internal void OnCaptureSourceChanged()
+    internal async void OnCaptureSourceChanged()
     {
-        var action = ApplyCaptureChoice(ResolveCapture());
-        if (action is SwitchAction.None or SwitchAction.NotifyFallback && Engine.IsRunning) { RaiseStateChanged(); return; }
-        StartEngine();
+        try
+        {
+            // While a recording runs the target stays what the engine records (Tick, the card checks and the notes act on it): the setting is
+            // saved, and the deferred restart (StartEngine) applies the new choice.
+            if (!SourceChangeAppliesNow(Engine.IsRecording || _wantRecording)) { RequestEngineRestart(); return; }
+            // The cards are listed on a worker so the picking itself does not wait for Media Foundation. (The start that follows lists them
+            // again on the UI thread, in ResolveCapture, like any start.)
+            string source = Settings.CaptureSource;
+            IReadOnlyList<VideoDevice>? devices = CaptureTarget.ParseSource(source) == null ? Array.Empty<VideoDevice>() : await Task.Run(() => VideoDevices.Enumerate());
+            if (_disposed || !string.Equals(source, Settings.CaptureSource, StringComparison.Ordinal)) return;   // picked again meanwhile: that call carries on
+            if (Engine.IsRecording || _wantRecording) { RequestEngineRestart(); return; }   // a recording began while the cards were listed
+            var action = ApplyCaptureChoice(ResolveCaptureWith(devices));
+            if (action is SwitchAction.None or SwitchAction.NotifyFallback && Engine.IsRunning) { RaiseStateChanged(); return; }
+            RequestEngineRestart();
+        }
+        catch (Exception ex) { Log.Warn("capture source change: " + ex.Message); }
     }
+
+    /// <summary>A change of the source applies to the target at once only when no recording runs: a recording keeps what it records, and the deferred restart applies the choice.</summary>
+    internal static bool SourceChangeAppliesNow(bool recording) => !recording;
+
+    /// <summary>A click on the map or a change of "Follow Windows main display" only moves the fallback screen while a connected card is what is recorded: it is saved, but the engine is not restarted (the card's replay would be lost).</summary>
+    internal static bool ScreenChoiceNeedsRestart(bool cardIsTarget) => !cardIsTarget;
+
+    /// <summary>The card's problem in words (in use, blocked, not connected) while the engine is down for it; null when there is none or no card is recorded. For the Source line of the Capture tab.</summary>
+    internal Note? CardStatusNote => CardIsTarget && !Engine.IsRunning ? CardProblemNote() : null;
+
+    /// <summary>The target the last start resolved to (UI thread): a card, or a screen with <see cref="CaptureChoice.Fallback"/> set while the saved card is missing. Null before the first start.</summary>
+    internal CaptureChoice? CurrentCapture => _target;
 
     /// <summary>Why the card stopped the engine, in the user's language; null when it was not the card.</summary>
     private Note? CardProblemNote()

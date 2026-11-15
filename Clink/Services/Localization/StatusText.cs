@@ -59,6 +59,7 @@ internal static class EngineStatusText
         AudioDetailKind.EverythingExcept => L.T("audio-detail|everything except {app}", ("app", arg == null ? null : L.Isolate(arg))),
         AudioDetailKind.MixParts => L.T("audio-detail|game + mic + voice, always track 1"),
         AudioDetailKind.WaitingForApp => L.T("audio-detail|waiting for app"),
+        AudioDetailKind.SameAsCardAudio => L.T("audio-detail|same as the capture card audio"),
         AudioDetailKind.NotConnectedOrDisabled => L.T("audio-detail|not connected or disabled"),
         AudioDetailKind.InUseExclusive => L.T("audio-detail|in use by another app (exclusive mode)"),
         AudioDetailKind.AccessDenied => L.T("audio-detail|access denied"),

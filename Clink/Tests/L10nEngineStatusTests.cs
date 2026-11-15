@@ -43,6 +43,7 @@ internal static class L10nEngineStatusTests
         (AudioDetailKind.EverythingExcept, "Discord", "everything except " + "Discord", false),
         (AudioDetailKind.MixParts, null, "game + mic + voice, always track 1", false),
         (AudioDetailKind.WaitingForApp, null, "waiting for app", false),
+        (AudioDetailKind.SameAsCardAudio, null, "same as the capture card audio", false),
         (AudioDetailKind.NotConnectedOrDisabled, null, "not connected or disabled", false),
         (AudioDetailKind.InUseExclusive, null, "in use by another app (exclusive mode)", false),
         (AudioDetailKind.AccessDenied, null, "access denied", false),

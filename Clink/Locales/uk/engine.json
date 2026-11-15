@@ -14,6 +14,7 @@
 
   "audio-detail|game + mic + voice, always track 1": "гра + мікрофон + голос, завжди доріжка 1",
   "audio-detail|waiting for app": "очікування програми",
+  "audio-detail|same as the capture card audio": "те саме, що звук карти захоплення",
   "audio-detail|everything": "усе",
   "audio-detail|everything except {app}": "усе, крім {app}",
   "audio-detail|mix only": "лише мікс",

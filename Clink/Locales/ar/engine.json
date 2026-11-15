@@ -9,6 +9,7 @@
   "audio-problem|disabled": "معطّل",
   "audio-detail|game + mic + voice, always track 1": "اللعبة + الميكروفون + الدردشة الصوتية، دائمًا في المسار 1",
   "audio-detail|waiting for app": "بانتظار التطبيق",
+  "audio-detail|same as the capture card audio": "نفس صوت بطاقة الالتقاط",
   "audio-detail|everything": "كل شيء",
   "audio-detail|everything except {app}": "كل شيء عدا {app}",
   "audio-detail|mix only": "المزيج فقط",

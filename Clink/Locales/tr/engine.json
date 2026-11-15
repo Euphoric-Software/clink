@@ -14,6 +14,7 @@
 
   "audio-detail|game + mic + voice, always track 1": "oyun + mikrofon + sesli sohbet, her zaman 1. iz",
   "audio-detail|waiting for app": "uygulama bekleniyor",
+  "audio-detail|same as the capture card audio": "yakalama kartının sesiyle aynı",
   "audio-detail|everything": "her şey",
   "audio-detail|everything except {app}": "{app} dışındaki her şey",
   "audio-detail|mix only": "yalnızca karışım",

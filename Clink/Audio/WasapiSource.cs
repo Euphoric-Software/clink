@@ -27,6 +27,8 @@ internal enum AudioDetailKind
     /// <summary>The Mix track: "game + mic + voice, always track 1".</summary>
     MixParts,
     WaitingForApp,
+    /// <summary>The Mic is the capture card's own audio input, which is the Game track while a card is recorded: it is left out so the sound is not doubled.</summary>
+    SameAsCardAudio,
     NotConnectedOrDisabled,
     InUseExclusive,
     AccessDenied,
@@ -48,6 +50,7 @@ internal sealed record AudioDetail(AudioDetailKind Kind, string? Arg = null)
 {
     public static readonly AudioDetail MixParts = new(AudioDetailKind.MixParts);
     public static readonly AudioDetail WaitingForApp = new(AudioDetailKind.WaitingForApp);
+    public static readonly AudioDetail SameAsCardAudio = new(AudioDetailKind.SameAsCardAudio);
     public static readonly AudioDetail Everything = new(AudioDetailKind.Everything);
 
     /// <summary>A device or app name; null when there is none (then the track has no detail).</summary>
@@ -104,6 +107,7 @@ internal static class AudioText
         AudioDetailKind.EverythingExcept => $"everything except {arg}",
         AudioDetailKind.MixParts => "game + mic + voice, always track 1",
         AudioDetailKind.WaitingForApp => "waiting for app",
+        AudioDetailKind.SameAsCardAudio => "same as the capture card audio",
         AudioDetailKind.NotConnectedOrDisabled => "not connected or disabled",
         AudioDetailKind.InUseExclusive => "in use by another app (exclusive mode)",
         AudioDetailKind.AccessDenied => "access denied",

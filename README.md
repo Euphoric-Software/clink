@@ -72,7 +72,9 @@ Full guides: [docs.euphoric.software/clink](https://docs.euphoric.software/clink
 * Optional **archive**: clips land in the local folder first and move to a NAS share, mapped drive or any other folder
   in the background (slowly, oldest first, after N days and/or when the local folder is over N GB), or whenever you
   say so: *Archive now…* moves what is due, or every local clip, with progress and a result.
-* Shows which monitor it is capturing; click another one on the little map to switch.
+* Shows which monitor it is capturing; click another one on the little map to switch, or tick *Follow Windows main display*
+  to always capture the main one. The **Source** box above the map switches to a **capture card** (an Elgato, say) for
+  console clips: see [Capture cards](#capture-cards).
 * **Sharing is opt-in.** Nothing is uploaded until you say yes once: the first time you upload with a token saved (choose
   *Upload to Copium*, or press an *Upload* button), Clink asks *Share with Copium?* and warns that **anything you upload is immediately publicly
   accessible to anyone who has the link; links are not private and cannot be recalled by Clink**. *Not now* leaves it
@@ -118,6 +120,50 @@ A ShareX-style screenshot tool that lives next to the clip recorder (its own fol
   upload follows.
 * **Settings**: folder (default `Screenshots` inside the clips folder), copy image to clipboard, magnifier, after-capture mode,
   upload options. Files are named `Game yyyy-MM-dd HH-mm-ss.png` (`Screenshot yyyy-MM-dd HH-mm-ss.png` when no game is being recorded or the picture is not on the recorded monitor).
+
+## Capture cards
+
+Clink can record a capture card (a console on an Elgato, say) instead of a screen, with the card's HDMI sound, into the same
+replay buffer and clips.
+
+* **Which cards.** Cards that Windows lists as a video capture device through Media Foundation: USB (UVC) cards such as the
+  Elgato HD60 X, 4K X and Cam Link, other UVC dongles, and PCIe cards whose driver shows up as a camera (AVStream). A card
+  that only works inside its maker's own app, or only through DirectShow, is not listed. Clink installs no drivers.
+* **Choosing a source.** *Capture → Capturing → Source* lists *Screen* and then every card by the name Windows gives it.
+  The list is read again each time you open it, so a card you plugged in a moment ago shows up. Picking an entry saves it and
+  restarts the recorder (a manual recording keeps going and the change applies when it stops). The card is recorded at its own
+  mode: the largest size the *Resolution* preset allows, the frame rate closest to *FPS* (59.94 counts as 60), in the
+  best pixel format it offers. The line under the box says which (*1920×1080 · 60 fps · NV12*). The card counts as *Always*
+  for the recording mode, since a console runs no PC game Clink could detect.
+* **When the card is missing.** A card you chose stays in the list as *<name> (not connected)* and stays selected. While it is
+  gone Clink records the **fallback screen** instead (the little map and the *Follow Windows main display* box under the box
+  are captioned as such and keep working), says so once (*Capture card not found: recording DISPLAY1 until it is back*), and
+  looks for the card every few seconds. When the card is back it waits a moment for it to settle and switches back, with a
+  second notice. Both switches restart the recorder: the replay buffer starts over and a manual recording continues as a new
+  part. An unplug is noticed within a couple of seconds, not after the usual retry wait.
+* **Follow Windows main display** decides which screen is the fallback: the main one (the box ticked, the default on a fresh
+  install), or the screen you picked on the map. With a screen as the source it does the same job as before: the capture
+  moves when you change the main display in Windows. Clicking a screen on the map unticks it.
+* **Sound.** The card's HDMI audio is a separate Windows input. Clink pairs it with the card (same physical device, else a
+  matching name) and records it as the **Game** track, whatever the Game picker says (the picker's choice comes back with a
+  screen). If it finds none, the clip has no card sound (the log says so); it looks again every few seconds and
+  restarts the recorder once the input appears, after a running recording has ended. When the **Mic** is that same input
+  (the default microphone is the card), it is left out of the mix so the sound is not doubled, and the audio line reads
+  *○ Mic (same as the capture card audio)*.
+* **Sound a little off the picture.** Some cards deliver the picture later or earlier than their sound. The hidden setting
+  `CaptureDeviceAvOffsetMs` (in `settings.json`, 0 by default, −500 to 500) moves the picture in time: a **positive** value
+  shows the picture later (use it when the sound plays late in the clip), a **negative** one earlier. Find the value with a
+  clap in front of a camera, or a game with a sharp sound, and look at a clip.
+* **In use.** A capture card is open for one program at a time. While OBS or the Elgato software holds
+  it, Clink says *Capture card <name> is in use by another app* in the Source line and the footer and tries again; close
+  the other app to record. Windows can also block it: *Settings → Privacy & security → Camera → Let desktop apps access
+  your camera* must be on.
+* **HDR is recorded as SDR.** A card that sends HDR (PQ) is recorded as SDR, so the picture can look flat; Clink says so once
+  per card and shows *HDR, recorded as SDR* in the Source line. Turn HDR off on the console for correct colours.
+* **Known limits.** A default microphone that changes to the card while Clink records is not re-checked until the next
+  recorder restart, so it may be recorded twice for a while. There is no preview of the card in Clink. How cards behave (start-up time, signal changes,
+  what they report when pulled out, the audio name) varies by model and driver; if one misbehaves, `Clink.exe --selftest 15
+  <folder> --source device:<link>` shows what Clink sees and the log says why.
 
 ## Screenshots of Clink
 
@@ -402,8 +448,10 @@ Two ways, no plugin needed:
   save, however long it takes, and if that clip could not be saved nothing is shared (never the clip before it).
 
 Other commands: `--show`, `--minimized` (start in the tray), `--no-update` (start without installing a downloaded
-update, handy for a debug build), `--selftest [seconds] [folder] [--codec h264|hevc|av1] [--quiet]` (records headless
-and writes a clip to that folder, the clips folder by default, and prints what it did),
+update, handy for a debug build), `--selftest [seconds] [folder] [--codec h264|hevc|av1] [--source monitor|device:<link>] [--quiet]` (records headless
+and writes a clip to that folder, the clips folder by default, and prints what it did; it also lists the monitors and the
+capture cards with their modes and links. `--source device:<link>` records that card, with its audio, instead of the screen
+and with no fallback: a card Windows does not list fails the test with *not connected*; the link is the one the list prints),
 `--probe <file.mp4> [frame.png] [seconds] [--levels]` (stream timing report, for a Clink clip with its audio as Media
 Foundation reads it and again as Clink does, with the edit lists hidden; optional decoded frame; `--levels` also
 prints the RMS and peak level of every audio track),
@@ -468,6 +516,9 @@ copies of another Clink's settings you turned down, `<package>|<time>`, one per 
 
 | key | default | what |
 |-----|---------|------|
+| `CaptureSource` / `CaptureDeviceName` | `monitor` | what is recorded: `monitor`, or `device:<link>` for the capture card chosen under *Capture → Source* (and the name it had, shown while it is not connected); see [Capture cards](#capture-cards) |
+| `FollowPrimaryMonitor` | true on a fresh install; a file that has a saved `MonitorDevice` keeps `false` | follow the Windows main display (*Capture → Follow Windows main display*) instead of `MonitorDevice` |
+| `CaptureDeviceAvOffsetMs` | 0 | capture card only: milliseconds the picture is shown later (positive) or earlier (negative) against the card's sound, −500 to 500 |
 | `KeyframeSeconds` | 1 | keyframe interval; smaller = finer trim snapping, slightly bigger files |
 | `HdrKnee` / `HdrPeak` | 0.75 / 4 | tone-mapper shoulder: everything below `knee` (relative to SDR white) is untouched, highlights roll off softly above it |
 | `ClickVolume` | 0.5 | 0..1 |
