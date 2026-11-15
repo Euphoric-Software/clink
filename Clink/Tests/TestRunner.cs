@@ -585,6 +585,8 @@ internal static class TestRunner
         DotNetRuntimes.Override = scratch != null ? new[] { new Version(10, 0, 0) } : before.Runtimes;
         UI.Toasts.ShowOverride = scratch != null ? static _ => { } : null;   // a toast is built but never put on the screen (the controller raises them for notices a test provokes); a test installs its own to look at them
         Updater.LaunchOverride = null;   // no launch seam left over: the next test that would start the apply is refused (TestGuard), not served by a stale fake
+        Updater.ApplySelfPathOverride = null;   // --apply-update judges this very exe again
+        Updater.SignerOverride = null;          // and real signatures
         Updater.IsElevatedOverride = before.Elevated;   // null = ask Windows; a test that pretends to be elevated does not leave it so
         Settings.ThawSaves();
         Settings.SeedDefaults = scratch == null;   // off during a test (the older tests pin exact hotkey lists); the seeding tests turn it on themselves

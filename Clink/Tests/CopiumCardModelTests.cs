@@ -112,6 +112,19 @@ internal static class CopiumCardModelTests
     }
 
     [UnitTest]
+    public static void The_main_window_is_kept_out_of_captures_exactly_while_the_sign_in_code_shows()
+    {
+        Check.True(MainWindow.WantsCaptureExclusion(M(new SignInState(SignInStatus.Waiting, Code: "AB2C-DE9F"))), "the code is on screen");
+        Check.True(MainWindow.WantsCaptureExclusion(M(new SignInState(SignInStatus.Waiting, Code: "AB2C-DE9F", Retrying: true))), "and stays while retrying");
+        Check.False(MainWindow.WantsCaptureExclusion(M(new SignInState(SignInStatus.Waiting))), "waiting without a code");
+        Check.False(MainWindow.WantsCaptureExclusion(M(new SignInState(SignInStatus.Starting))), "contacting");
+        Check.False(MainWindow.WantsCaptureExclusion(M(Linked(status: SignInStatus.Starting))), "finishing: the code is gone");
+        Check.False(MainWindow.WantsCaptureExclusion(M(Linked())), "signed in");
+        Check.False(MainWindow.WantsCaptureExclusion(M(Out)), "signed out");
+        Check.False(MainWindow.WantsCaptureExclusion(M(new SignInState(SignInStatus.Failed, Failure: SignInFailure.Expired))), "failed");
+    }
+
+    [UnitTest]
     public static void Finishing_is_a_starting_state_with_a_connect_token_and_disables_cancel_and_sign_in()
     {
         var m = M(Linked(status: SignInStatus.Starting));

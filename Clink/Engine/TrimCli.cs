@@ -11,10 +11,13 @@ namespace Clink.Engine;
 /// </summary>
 internal static class TrimCli
 {
+    public const string Usage = "Clink.exe --trim <in> <out> <startSec> <endSec> [--gain Name=volume]... [--drop Name]...";
+
     public static void Run(string[] args)
     {
+        if (args.Length < 5) throw new ArgumentException("Usage: " + Usage);
         string src = args[1], dst = args[2];
-        double start = double.Parse(args[3]), end = double.Parse(args[4]);
+        var (start, end) = ParseRange(args[3], args[4]);
         var gains = new List<(string name, float gain)>();
         var drops = new List<string>();
         for (int i = 5; i < args.Length; i++)
@@ -46,6 +49,17 @@ internal static class TrimCli
         var mix = MixPlan.Export(roles, include, gain);
         for (int i = 0; i < mix.Length; i++) Console.WriteLine("  " + Describe(i, names, mix[i]));
         Trimmer.Trim(src, dst, start, end, names, mix);
+    }
+
+    /// <summary>The start and end in seconds, written with a '.' whatever the machine's language ("1.5"): finite, and the end after the start.</summary>
+    internal static (double Start, double End) ParseRange(string startText, string endText)
+    {
+        static double Seconds(string text, string what) =>
+            double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out double v) && double.IsFinite(v) ? v
+            : throw new ArgumentException($"{what} '{text}' is not a number of seconds (1.5, not 1,5). Usage: {Usage}");
+        double start = Seconds(startText, "startSec"), end = Seconds(endText, "endSec");
+        if (end <= start) throw new ArgumentException($"endSec ({endText}) must be after startSec ({startText})");
+        return (start, end);
     }
 
     /// <summary>"Game=0.5" or "Game=50%" as a track name and a linear volume (0 and up).</summary>

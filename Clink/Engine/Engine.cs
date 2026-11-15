@@ -113,11 +113,12 @@ internal sealed record AudioTrackStatus(TrackKind Kind, bool Running, AudioDetai
 }
 
 /// <param name="RingBytes">Bytes the ring actually holds (after the RAM clamp / allocation retry).</param>
+/// <param name="Audio">Null when unknown (the audio thread was busy and nothing was read yet in this run): keep showing what was shown.</param>
 /// <param name="RingSeconds">Replay length the ring can really keep at the configured bitrate (equals BufferSeconds unless it was clamped).</param>
 /// <param name="Codec">"h264" | "hevc" | "av1".</param>
 internal sealed record EngineStats(
     string Encoder, long FramesIn, long FramesOut, long Dropped, long CaptureFrames,
-    double BufferedSeconds, long RingBytes, IReadOnlyList<AudioTrackStatus> Audio, string? Game, bool Hdr,
+    double BufferedSeconds, long RingBytes, IReadOnlyList<AudioTrackStatus>? Audio, string? Game, bool Hdr,
     int RingSeconds, string Codec);
 
 /// <summary>Runs the whole replay-buffer pipeline: capture → convert → encode → ring, plus the audio tracks.</summary>
@@ -424,6 +425,7 @@ internal sealed unsafe class Engine : IDisposable
             _taps.Clear();
             _gameTrack = _voiceTrack = null;
             _gameIsDevice = _voiceIsDevice = false;
+            _lastAudio = null;   // the next run's tracks are not these
         }
         try { _ring?.Dispose(); } catch { }
         _ring = null;
@@ -624,12 +626,23 @@ internal sealed unsafe class Engine : IDisposable
     }
 
     private bool _warnedTrackName;
+    private volatile IReadOnlyList<AudioTrackStatus>? _lastAudio;   // null: not read yet in this run (reset by TearDown)
+
+    /// <summary>
+    /// The audio thread can hold the audio gate for seconds (a process-loopback activation waits up to 3 s), and the UI asks every second:
+    /// when the gate is busy for longer than <see cref="StatsGateWaitMs"/> the audio part is the last one read in this run, or null
+    /// (unknown) when there is none yet.
+    /// </summary>
+    internal const int StatsGateWaitMs = 20;
 
     public EngineStats GetStats()
     {
-        List<AudioTrackStatus> audio;
-        lock (_audioGate)
-            audio = _tracks.Select(t =>
+        IReadOnlyList<AudioTrackStatus>? audio;
+        bool taken = false;
+        try
+        {
+            Monitor.TryEnter(_audioGate, StatsGateWaitMs, ref taken);
+            audio = !taken ? _lastAudio : _lastAudio = _tracks.Select(t =>
             {
                 if (!AudioText.TryKindOf(t.Name, out var kind))
                 {
@@ -641,6 +654,8 @@ internal sealed unsafe class Engine : IDisposable
                 var detail = t.Source == null ? AudioDetail.WaitingForApp : t.Source.IsRunning ? t.Source.DetailInfo : t.Source.LastErrorInfo;
                 return new AudioTrackStatus(kind, t.Source?.IsRunning == true, detail, MixOnly: !t.Enabled);
             }).OfType<AudioTrackStatus>().ToList();
+        }
+        finally { if (taken) Monitor.Exit(_audioGate); }
         return new EngineStats(_encoder?.EncoderName ?? "", _encoder?.FramesIn ?? 0, _encoder?.FramesOut ?? 0,
             (_encoder?.Dropped ?? 0) + Interlocked.Read(ref _pacerDropped), _capture?.FramesReceived ?? 0,
             BufferedSeconds, _ring?.Capacity ?? 0, audio, _gameName, _capture?.IsHdr ?? false,

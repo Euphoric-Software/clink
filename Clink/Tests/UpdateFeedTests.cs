@@ -2907,6 +2907,7 @@ internal static class UpdateFeedTests
         Updater.IsElevatedOverride = false;   // the marker's report is what is tested, not the elevation refusal an administrator runner would get instead
         Updater.UpdatesDirOverride = dir.File("updates");
         Directory.CreateDirectory(Updater.UpdatesDir);
+        Updater.IsElevatedOverride = false;   // an elevated CI runner would get the "install it by hand" note instead of "could not be installed"
         byte[] exe = FakeExe();
         string file = Updater.FileFor(V("0.4.9"));
         void Lay() { File.WriteAllBytes(file, exe); File.WriteAllText(file + ".failed", "the update process did not finish\n2026-10-01 10:00:00 C:\\Clink.exe"); }
