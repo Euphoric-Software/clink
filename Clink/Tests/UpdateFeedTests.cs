@@ -2945,4 +2945,62 @@ internal static class UpdateFeedTests
         Check.False(File.Exists(file + ".failed"), "the stale marker went with the file");
         Check.Equal(Hex(exe), settings.PendingUpdateSignedSha256!.ToLowerInvariant());
     }
+
+    [UnitTest]
+    public static void A_long_failed_reason_and_a_long_version_still_fit_a_balloon()
+    {
+        using var dir = new TempDir();
+        Updater.UpdatesDirOverride = dir.File("updates");
+        Directory.CreateDirectory(Updater.UpdatesDir);
+        Updater.IsElevatedOverride = false;
+        byte[] exe = FakeExe();
+        var version = V("10000.20000.30000");
+        string file = Updater.FileFor(version);
+        File.WriteAllBytes(file, exe);
+        File.WriteAllText(file + ".failed", new string('x', 400) + "\n2026-10-01 10:00:00 launch failed");
+        var signed = new Settings { PendingUpdateVersion = "10000.20000.30000", PendingUpdateSha256 = Hex(exe), PendingUpdateSignedSha256 = Hex(exe), PendingUpdateFrom = "0.4.1" };
+        var up = new Updater(signed, V("0.4.1"));
+        Check.False(up.TryGetPendingUpdate(out _, out _));
+        Check.True(up.InstallProblem != null && up.InstallProblem.Length <= 250, $"{up.InstallProblem?.Length} characters: {up.InstallProblem}");
+        Check.Contains(up.InstallProblem, "…");
+    }
+
+    [UnitTest]
+    public static void The_note_for_an_install_that_failed_earlier_fits_the_status_line_and_keeps_the_folder_when_it_can()
+    {
+        Updater.IsElevatedOverride = true;
+        var blocked = Updater.InstallProblemReason(@"C:\x\Clink.exe")!;
+        string folder = @"C:\Users\someone\AppData\Local\Clink\updates";
+        string longReason = new string('x', 400);
+
+        // Short reason: nothing is cut and the folder is there.
+        string s = Updater.InstallFailedNote("0.4.9", "it did not start", blocked, folder).Shown;
+        Check.True(s.Length <= 250 && s.Contains(folder) && !s.Contains("…") && s.Contains("could not be installed"), s);
+
+        // A long reason (the usual case): the reason is shortened, the folder stays whole, the blocked clause stays.
+        s = Updater.InstallFailedNote("10000", longReason, blocked, folder).Shown;
+        Check.True(s.Length <= 250 && s.Contains(folder) && s.Contains("…") && s.Contains("could not be installed") && s.Contains("install it by hand from"), $"{s.Length}: {s}");
+
+        // A folder too long to leave 20 characters for the reason: the "downloaded but blocked" note, which keeps the cause and no retry advice.
+        s = Updater.InstallFailedNote("0.4.9", longReason, blocked, @"C:\" + new string('d', 120)).Shown;
+        Check.True(s.Contains("is downloaded but") && s.Contains("administrator") && !s.Contains("To retry") && !s.Contains("could not be installed"), s);
+
+        // Not blocked: the retry advice, the reason cut to fit a long version, "…" only on a reason that was cut.
+        s = Updater.InstallFailedNote("10000.20000.30000", longReason, null, folder).Shown;
+        Check.True(s.Length <= 250 && s.Contains("…") && s.Contains("To retry"), $"{s.Length}: {s}");
+        s = Updater.InstallFailedNote("0.4.9", "short", null, folder).Shown;
+        Check.True(!s.Contains("…") && s.Contains("short"), s);
+
+        // Through the real path: blocked and a failed marker.
+        using var dir = new TempDir();
+        Updater.UpdatesDirOverride = dir.File("updates");
+        Directory.CreateDirectory(Updater.UpdatesDir);
+        byte[] exe = FakeExe();
+        string file = Updater.FileFor(V("0.4.9"));
+        File.WriteAllBytes(file, exe);
+        File.WriteAllText(file + ".failed", new string('x', 400) + "\n2026-10-01 10:00:00 launch failed");
+        var up = new Updater(new Settings { PendingUpdateVersion = "0.4.9", PendingUpdateSha256 = Hex(exe), PendingUpdateSignedSha256 = Hex(exe), PendingUpdateFrom = "0.4.1" }, V("0.4.1"));
+        Check.False(up.TryGetPendingUpdate(out _, out _));
+        Check.Contains(up.InstallProblem, "by hand");
+    }
 }

@@ -21,7 +21,7 @@ How it fits together (decided 2026-10-28):
 ### Windows publisher signing
 
 Windows Authenticode signing is separate from the signed update feed. The stable and dev workflows support Azure
-Artifact Signing behind the repository Actions variable `ARTIFACT_SIGNING_ENABLED`. It is `true` (activated for v0.4.8); setting it to `false` turns signing off and releases then ship unsigned. A value other than lowercase `true`, `false`, or unset fails validation. Once
+Artifact Signing behind the repository Actions variable `ARTIFACT_SIGNING_ENABLED`. Stable releases from v0.4.8 on must not be published with it off: `false` or unset makes releases ship unsigned. A value other than lowercase `true`, `false`, or unset fails validation. Once
 enabled, authentication/signing failures, an invalid signature, a missing timestamp, or an unexpected publisher stop the
 build and prevent publishing. Previously published immutable objects are never re-signed or replaced.
 
@@ -63,7 +63,7 @@ Set these **repository Actions variables**, not feed-signing secrets:
 
 | Variable | Value |
 | --- | --- |
-| `ARTIFACT_SIGNING_ENABLED` | `true` (activated for v0.4.8); `false` turns signing off and releases ship unsigned |
+| `ARTIFACT_SIGNING_ENABLED` | `true` for every stable release from v0.4.8 on; `false` or unset ships unsigned |
 | `ARTIFACT_SIGNING_ACCOUNT` | `EuphoricSoftwareLLC` |
 | `ARTIFACT_SIGNING_ENDPOINT` | `https://eus.codesigning.azure.net` |
 | `ARTIFACT_SIGNING_PROFILE` | `kithnote-public` (temporary shared company profile) |
@@ -88,7 +88,7 @@ federation and complete variables. Review/merge the prepared changes, enable sig
 application signatures and the installer signature/timestamps, verify the published checksums/feed, and exercise the
 updater before enabling a stable release. The ordinary `build.ps1`/local packaging flow remains unsigned unless a signer
 is explicitly supplied. v0.4.8 is the first signed stable release (Valid, publisher Euphoric Software LLC). A release is
-signed only while `ARTIFACT_SIGNING_ENABLED` is `true`, so users are told to check each download (README, "Installing &
+signed only while `ARTIFACT_SIGNING_ENABLED` is `true` (check it before every stable release), so users are told to check each download (README, "Installing &
 updating"); signing does not promise instant SmartScreen reputation.
 
 Offline checks: `pwsh -NoProfile -File tools/tests/windows-signing.tests.ps1`, `tools/tests/packaging.tests.ps1` and
