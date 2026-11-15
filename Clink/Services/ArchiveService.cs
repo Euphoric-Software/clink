@@ -427,8 +427,9 @@ internal sealed class ArchiveService
             SetIdleStatus();
         }
         finally { IsBusy = false; }
-        req.Done.TrySetResult(result);
-        Schedule(DateTime.UtcNow + AfterManual);
+        // Put the automatic pass back first: whoever awaits Done then always sees the new due time. finally: Done is completed whatever happens.
+        try { Schedule(DateTime.UtcNow + AfterManual); }
+        finally { req.Done.TrySetResult(result); }
     }
 
     private ArchiveRunResult RunManual(ManualRequest req)

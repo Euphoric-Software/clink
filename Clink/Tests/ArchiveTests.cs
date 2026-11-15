@@ -710,9 +710,8 @@ internal static class ArchiveTests
         Check.Equal(2, r.Moved, "the manual run moved both itself: the automatic pass gave way in the middle of big.mp4");
         Check.Equal(0, Directory.GetFiles(rig.Archive.Path, "*.clinkpart").Length, "no partial copy left");
         Check.True(File.Exists(rig.Archive.File("big.mp4")) && File.Exists(rig.Archive.File("small.mp4")), "both are in the archive");
-        // The service completes the run's task and only then puts the automatic pass back (RunManualRequest), so the test thread can look
-        // in between, while it is still the normal 5 min period away: wait for the archive thread to get there (a bound, not a sleep).
-        WaitFor(() => rig.Service.NextAutomaticPassUtc - DateTime.UtcNow < TimeSpan.FromSeconds(90), "the automatic pass to be put back after the manual run", 5000);
+        // The service puts the automatic pass back before it completes the run's task (RunManualRequest), so the due time can be read
+        // straight after the run returns, with no waiting.
         var next = rig.Service.NextAutomaticPassUtc - DateTime.UtcNow;
         Check.True(next > TimeSpan.Zero && next < TimeSpan.FromSeconds(90), $"the automatic pass was put back to within about a minute (it is due in {next.TotalSeconds:0} s, not the 5 min of a normal period)");
     }
