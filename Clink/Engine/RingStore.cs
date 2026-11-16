@@ -9,6 +9,8 @@ internal sealed class VideoSample
     public long Pts;
     public bool Keyframe;
     public byte[] Data = Array.Empty<byte>();
+    /// <summary>The ring's push order of the sample (<see cref="RingStore.SamplesAfter"/>); 0 for samples that did not come from a ring.</summary>
+    public long Seq;
 }
 
 /// <summary>
@@ -226,11 +228,35 @@ internal sealed unsafe class RingStore : IDisposable
             for (int k = 0; k < arrays.Length; k++)
             {
                 ref var e = ref want[at + k];
-                list.Add(new VideoSample { Pts = e.Pts, Keyframe = e.Key, Data = arrays[k] });
+                list.Add(new VideoSample { Pts = e.Pts, Keyframe = e.Key, Data = arrays[k], Seq = e.Seq });
             }
             at = stop;
         }
         return list;
+    }
+
+    /// <summary>
+    /// Copies out the samples pushed after the one numbered <paramref name="seq"/> (a <see cref="VideoSample.Seq"/>), in one hold of the
+    /// lock: meant for the few pushed since a <see cref="Snapshot"/>. Null when they do not join up with it any more: the sample right
+    /// after <paramref name="seq"/> was evicted (or the ring cleared), or the ring is disposed.
+    /// </summary>
+    public List<VideoSample>? SamplesAfter(long seq)
+    {
+        lock (_gate)
+        {
+            if (_buf == null) return null;
+            long oldestSeq = _count > 0 ? At(0).Seq : _nextSeq;
+            if (oldestSeq > seq + 1) return null;
+            var list = new List<VideoSample>();
+            for (int i = (int)Math.Max(0, seq + 1 - oldestSeq); i < _count; i++)
+            {
+                ref var e = ref At(i);
+                var data = GC.AllocateUninitializedArray<byte>(e.Length);
+                new ReadOnlySpan<byte>(_buf + e.Offset, e.Length).CopyTo(data);
+                list.Add(new VideoSample { Pts = e.Pts, Keyframe = e.Key, Data = data, Seq = e.Seq });
+            }
+            return list;
+        }
     }
 
     public void Clear()
