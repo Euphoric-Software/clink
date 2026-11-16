@@ -1,25 +1,31 @@
-# Cuts a Clink release: sets <Version> in Clink\Clink.csproj, commits "Release vX.Y.Z",
-# creates the annotated tag vX.Y.Z and pushes branch + tag. GitHub Actions
-# (.github\workflows\release.yml) then builds Clink.exe and publishes the GitHub release.
+# Cuts a Clink release: renames "## Unreleased" in CHANGELOG.md to "## X.Y.Z - YYYY-MM-DD"
+# (stable versions only; see tools\lib\changelog-lib.ps1), sets <Version> in Clink\Clink.csproj,
+# commits both as "Release vX.Y.Z", creates the annotated tag vX.Y.Z and pushes branch + tag.
+# GitHub Actions (.github\workflows\release.yml) then builds Clink.exe and publishes the GitHub release.
 #
 #   .\tools\release.ps1 -Version 0.2.0
 #   .\tools\release.ps1 -Version 0.2.0 -Message "Per-track gain, mono mic option"
 #
-# Refuses to run if the working tree has uncommitted changes (other than Clink.csproj,
-# which this script edits) or if the tag already exists locally or on origin.
+# Refuses to run if the working tree has uncommitted changes (other than Clink.csproj and
+# CHANGELOG.md, which this script edits; CHANGELOG.md may differ from HEAD only by this script's
+# own rename, as left by an earlier run that failed before committing), if CHANGELOG.md has no
+# section for a stable release, or if the tag already exists locally or on origin.
 param(
     [Parameter(Mandatory = $true)] [string]$Version,
     [string]$Message
 )
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'lib\changelog-lib.ps1')
 
-if ($Version -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$') {
+if ($Version -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z][0-9A-Za-z.-]*)?\z') {
     throw "'$Version' is not a version like 1.2.3 (or 1.2.3-beta.1). Leave out the leading 'v'."
 }
 $tag = "v$Version"
 $root = Split-Path $PSScriptRoot -Parent
 $projRel = 'Clink/Clink.csproj'
 $proj = Join-Path $root 'Clink\Clink.csproj'
+$changelogRel = 'CHANGELOG.md'
+$changelog = Join-Path $root 'CHANGELOG.md'
 
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     throw 'git was not found on PATH. Install it with: winget install --id Git.Git -e   (then open a new terminal)'
@@ -54,7 +60,7 @@ try {
 
     $status = @(Get-GitOutput @('status', '--porcelain', '--untracked-files=no'))
     if ($LASTEXITCODE -ne 0) { throw 'git status failed.' }
-    $dirty = @($status | Where-Object { $_.Length -gt 3 -and $_.Substring(3) -ne $projRel })
+    $dirty = @($status | Where-Object { $_.Length -gt 3 -and $_.Substring(3) -ne $projRel -and $_.Substring(3) -ne $changelogRel })
     if ($dirty.Count -gt 0) {
         $dirty | ForEach-Object { Write-Host "  $_" }
         throw 'The working tree has uncommitted changes (listed above). Commit or stash them first.'
@@ -68,6 +74,18 @@ try {
     $remoteTag = Get-GitOutput @('ls-remote', '--tags', 'origin', "refs/tags/$tag")
     if ($LASTEXITCODE -ne 0) { throw "Could not reach origin ($origin)." }
     if ($remoteTag) { throw "Tag $tag already exists on origin. Pick a new version." }
+
+    # --- CHANGELOG.md: a stable release needs its section (refuses before anything is changed) ---------
+    $changelogText = [System.IO.File]::ReadAllText($changelog)
+    $changelogProblem = Get-ChangelogEditProblem -HeadText (Get-GitFileAtHead -RepoRoot $root -Path $changelogRel) -WorkingText $changelogText -Version $Version
+    if ($changelogProblem) { throw $changelogProblem }
+    $changelogNew = Update-ChangelogForRelease -Text $changelogText -Version $Version -Date (Get-Date).ToString('yyyy-MM-dd', [System.Globalization.CultureInfo]::InvariantCulture)
+
+    # written before the csproj, so a failure in between leaves no half-bumped version (a rerun accepts the renamed file)
+    if ($changelogNew.Changed) {
+        [System.IO.File]::WriteAllText($changelog, $changelogNew.Text, (New-Object System.Text.UTF8Encoding $false))
+        Write-Host "CHANGELOG.md: '## Unreleased' -> '## $Version'"
+    }
 
     # --- bump <Version> in Clink.csproj --------------------------------------
     $bytes = [System.IO.File]::ReadAllBytes($proj)
@@ -85,14 +103,14 @@ try {
     }
 
     # --- commit, tag, push ---------------------------------------------------
-    Invoke-Git @('add', '--', $projRel)
-    Get-GitOutput @('diff', '--cached', '--quiet', '--', $projRel) | Out-Null
+    Invoke-Git @('add', '--', $projRel, $changelogRel)
+    Get-GitOutput @('diff', '--cached', '--quiet', '--', $projRel, $changelogRel) | Out-Null
     if ($LASTEXITCODE -eq 1) {
         $commitArgs = @('commit', '-m', "Release $tag")
         if ($Message) { $commitArgs += @('-m', $Message) }
         Invoke-Git $commitArgs
     } else {
-        Write-Host "Clink.csproj is already at $Version; tagging the current commit."
+        Write-Host "Clink.csproj and CHANGELOG.md are already set for $Version; tagging the current commit."
     }
 
     $tagMessage = "Clink $tag"

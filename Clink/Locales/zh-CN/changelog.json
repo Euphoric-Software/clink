@@ -1,0 +1,9 @@
+{
+  "whatsnew|Record from a capture card: choose it under Source on the Capture tab. Its HDMI audio goes on the Game track, and Clink falls back to the screen when the card is missing.": "可从采集卡录制：在“捕获”选项卡的“来源”中选择它。其 HDMI 音频会进入“游戏”音轨，采集卡缺失时 Clink 会回退到屏幕。",
+  "whatsnew|New option to follow the Windows main display for the captured screen.": "新增选项：为捕获的屏幕跟随 Windows 主显示器。",
+  "whatsnew|Trim: Save & share now opens the Share window.": "裁剪：“保存并分享”现在会打开“分享”窗口。",
+  "whatsnew|Library: Share is a split button. Drag and drop is the default; the other options are in its menu.": "库：“分享”现在是拆分按钮。默认为拖放，其他选项在它的菜单中。",
+  "whatsnew|Recording is smoother and more reliable. Updates and settings import are hardened.": "录制更流畅、更可靠。更新和设置导入也得到了加固。",
+  "whatsnew|A What's new window shows what changed after an update. Open it again from the version menu.": "新增“新功能”窗口，在更新后显示有哪些变化。可从版本菜单再次打开。",
+  "whatsnew|Clink releases are now code-signed.": "Clink 发行版现已进行代码签名。"
+}

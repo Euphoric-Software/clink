@@ -1,0 +1,9 @@
+{
+  "whatsnew|Record from a capture card: choose it under Source on the Capture tab. Its HDMI audio goes on the Game track, and Clink falls back to the screen when the card is missing.": "Записуйте з карти захоплення: виберіть її в полі Джерело на вкладці Захоплення. Її звук HDMI потрапляє на доріжку Гра, а якщо карти немає, Clink повертається до екрана.",
+  "whatsnew|New option to follow the Windows main display for the captured screen.": "Новий параметр: слідувати за основним екраном Windows для захоплюваного екрана.",
+  "whatsnew|Trim: Save & share now opens the Share window.": "Обрізати: Зберегти й поділитися тепер відкриває вікно Поділитися.",
+  "whatsnew|Library: Share is a split button. Drag and drop is the default; the other options are in its menu.": "Бібліотека: Поділитися — це роздільна кнопка. Перетягування є типовим варіантом, інші варіанти є в її меню.",
+  "whatsnew|Recording is smoother and more reliable. Updates and settings import are hardened.": "Запис став плавнішим і надійнішим. Оновлення та імпорт налаштувань стали безпечнішими.",
+  "whatsnew|A What's new window shows what changed after an update. Open it again from the version menu.": "Вікно Що нового показує, що змінилося після оновлення. Знову відкрити його можна з меню версії.",
+  "whatsnew|Clink releases are now code-signed.": "Випуски Clink тепер підписано цифровим підписом."
+}

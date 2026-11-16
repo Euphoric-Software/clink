@@ -1,0 +1,9 @@
+{
+  "whatsnew|Record from a capture card: choose it under Source on the Capture tab. Its HDMI audio goes on the Game track, and Clink falls back to the screen when the card is missing.": "कैप्चर कार्ड से रिकॉर्ड करें: कैप्चर टैब में स्रोत के अंतर्गत उसे चुनें। उसका HDMI ऑडियो गेम ट्रैक पर जाता है, और कार्ड न होने पर Clink स्क्रीन पर लौट आता है।",
+  "whatsnew|New option to follow the Windows main display for the captured screen.": "कैप्चर की गई स्क्रीन के लिए Windows की मुख्य डिस्प्ले का अनुसरण करने का नया विकल्प।",
+  "whatsnew|Trim: Save & share now opens the Share window.": "ट्रिम करें: सेव करें और शेयर करें अब शेयर करें विंडो खोलता है।",
+  "whatsnew|Library: Share is a split button. Drag and drop is the default; the other options are in its menu.": "लाइब्रेरी: शेयर करें एक स्प्लिट बटन है। खींचकर छोड़ना डिफ़ॉल्ट है; बाकी विकल्प उसके मेनू में हैं।",
+  "whatsnew|Recording is smoother and more reliable. Updates and settings import are hardened.": "रिकॉर्डिंग अब ज़्यादा सहज और भरोसेमंद है। अपडेट और सेटिंग इंपोर्ट को ज़्यादा सुरक्षित बनाया गया है।",
+  "whatsnew|A What's new window shows what changed after an update. Open it again from the version menu.": "नया क्या है विंडो अपडेट के बाद हुए बदलाव दिखाती है। इसे वर्शन मेनू से फिर खोलें।",
+  "whatsnew|Clink releases are now code-signed.": "Clink रिलीज़ अब कोड-साइन की जाती हैं।"
+}

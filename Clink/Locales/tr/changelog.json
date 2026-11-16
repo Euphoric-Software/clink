@@ -1,0 +1,9 @@
+{
+  "whatsnew|Record from a capture card: choose it under Source on the Capture tab. Its HDMI audio goes on the Game track, and Clink falls back to the screen when the card is missing.": "Yakalama kartından kayıt yap: Yakalama sekmesinde Kaynak altından seç. HDMI sesi Oyun kanalına gider, kart yoksa Clink ekrana geri döner.",
+  "whatsnew|New option to follow the Windows main display for the captured screen.": "Yakalanan ekran için Windows ana ekranını izleme seçeneği eklendi.",
+  "whatsnew|Trim: Save & share now opens the Share window.": "Kırp: Kaydet ve paylaş artık Paylaş penceresini açıyor.",
+  "whatsnew|Library: Share is a split button. Drag and drop is the default; the other options are in its menu.": "Kitaplık: Paylaş bölünmüş bir düğmedir. Sürükle ve bırak varsayılandır; diğer seçenekler menüsündedir.",
+  "whatsnew|Recording is smoother and more reliable. Updates and settings import are hardened.": "Kayıt daha akıcı ve güvenilir. Güncellemeler ve ayarları içe aktarma sağlamlaştırıldı.",
+  "whatsnew|A What's new window shows what changed after an update. Open it again from the version menu.": "Yenilikler penceresi bir güncellemeden sonra nelerin değiştiğini gösterir. Sürüm menüsünden yeniden açabilirsin.",
+  "whatsnew|Clink releases are now code-signed.": "Clink sürümleri artık kod imzalı."
+}
