@@ -376,5 +376,6 @@
   "Automatic (Windows display language)": "अपने आप (Windows की डिस्प्ले भाषा)",
   "Restart Clink to use the new language.": "नई भाषा इस्तेमाल करने के लिए Clink रीस्टार्ट करें।",
   "Restart now": "अभी रीस्टार्ट करें",
-  "Restarting Clink clears the replay buffer: the moments recorded just before the restart are not kept.": "Clink रीस्टार्ट करने पर रीप्ले बफ़र साफ़ हो जाता है: रीस्टार्ट से ठीक पहले रिकॉर्ड हुए पल सेव नहीं रहते।"
+  "Restarting Clink clears the replay buffer: the moments recorded just before the restart are not kept.": "Clink रीस्टार्ट करने पर रीप्ले बफ़र साफ़ हो जाता है: रीस्टार्ट से ठीक पहले रिकॉर्ड हुए पल सेव नहीं रहते।",
+  "What's new": "नया क्या है"
 }

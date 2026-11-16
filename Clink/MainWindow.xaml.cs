@@ -1385,6 +1385,7 @@ public partial class MainWindow : Window
             ? L.T("Use the latest build from the dev branch instead of the latest release. Dev builds may be unstable; untick to go back to the latest release.")
             : NoUpdatesText;
         VersionCheckButton.ToolTip = canCheck ? null : NoUpdatesText;
+        WhatsNewLink.Visibility = Vis(WhatsNew.Current != null);   // a build without a readable changelog has nothing to open
         RefreshCopiumPopup();
         VersionPopup.IsOpen = true;
     }
@@ -1490,6 +1491,13 @@ public partial class MainWindow : Window
     private string FooterVersion => _app.Updater.UpdatesEnabled && _app.Settings.UseDevBuilds
         ? L.T("v{version} · dev builds", ("version", L.Ltr(_app.Updater.VersionDisplay)))
         : L.T("v{version}", ("version", L.Ltr(_app.Updater.VersionDisplay)));
+
+    /// <summary>"What's new" in the update menu: the whole changelog, in front (the version line and its Dev Build clicks are not involved).</summary>
+    private void WhatsNew_Click(object sender, RoutedEventArgs e)
+    {
+        VersionPopup.IsOpen = false;
+        _app.OpenWhatsNew();
+    }
 
     private async void CheckUpdate_Click(object sender, RoutedEventArgs e)
     {

@@ -1,0 +1,9 @@
+{
+  "whatsnew|Record from a capture card: choose it under Source on the Capture tab. Its HDMI audio goes on the Game track, and Clink falls back to the screen when the card is missing.": "Nagrywaj z karty przechwytującej: wybierz ją w polu Źródło na karcie Przechwytywanie. Jej dźwięk HDMI trafia na ścieżkę Gra, a gdy karty brakuje, Clink wraca do ekranu.",
+  "whatsnew|New option to follow the Windows main display for the captured screen.": "Nowa opcja podążania za głównym ekranem systemu Windows dla przechwytywanego ekranu.",
+  "whatsnew|Trim: Save & share now opens the Share window.": "Przytnij: Zapisz i udostępnij otwiera teraz okno Udostępnij.",
+  "whatsnew|Library: Share is a split button. Drag and drop is the default; the other options are in its menu.": "Biblioteka: Udostępnij to przycisk dzielony. Przeciąganie i upuszczanie to opcja domyślna; pozostałe opcje są w jego menu.",
+  "whatsnew|Recording is smoother and more reliable. Updates and settings import are hardened.": "Nagrywanie jest płynniejsze i bardziej niezawodne. Aktualizacje i import ustawień zostały zabezpieczone.",
+  "whatsnew|A What's new window shows what changed after an update. Open it again from the version menu.": "Okno Co nowego pokazuje, co zmieniło się po aktualizacji. Otwórz je ponownie z menu wersji.",
+  "whatsnew|Clink releases are now code-signed.": "Wydania Clink są teraz podpisane cyfrowo."
+}

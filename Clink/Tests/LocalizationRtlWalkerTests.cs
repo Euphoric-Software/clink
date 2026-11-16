@@ -117,6 +117,7 @@ internal static class LocalizationRtlWalkerTests
             One("MainWindow", main);
             One("ArchiveWindow", new ArchiveWindow(app));
             One("ThirdPartyNoticesWindow", new ThirdPartyNoticesWindow());
+            One("WhatsNewWindow", new WhatsNewWindow(WhatsNew.Current!.Sections, ReleaseVersion.Parse("0.4.9-dev.41")!.Value, null));
             One("ClipDeleteConfirmWindow", new ClipDeleteConfirmWindow(ClipDeleter.ConfirmBodyWithTrims("Neon Drift", 2, shared: true), null, 2, null));
             One("CopiumConsentWindow", new CopiumConsentWindow(CopiumConsentWindow.Mode.Consent, offerAutoUpload: true, excludeFromCapture: false));
             One("CopiumWelcomeWindow", new CopiumWelcomeWindow(new CopiumWelcomeModel(true, (_, _) => { }), "Jason", () => false));

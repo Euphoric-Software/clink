@@ -376,5 +376,6 @@
   "Automatic (Windows display language)": "自動（Windowsの表示言語）",
   "Restart Clink to use the new language.": "新しい言語を使うには、Clinkを再起動してください。",
   "Restart now": "今すぐ再起動",
-  "Restarting Clink clears the replay buffer: the moments recorded just before the restart are not kept.": "Clinkを再起動するとリプレイバッファーが消去され、再起動直前に録画した内容は保持されません。"
+  "Restarting Clink clears the replay buffer: the moments recorded just before the restart are not kept.": "Clinkを再起動するとリプレイバッファーが消去され、再起動直前に録画した内容は保持されません。",
+  "What's new": "新機能"
 }

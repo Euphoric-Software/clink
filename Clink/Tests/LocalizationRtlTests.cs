@@ -94,6 +94,7 @@ internal static class LocalizationRtlTests
         {
             built.Add(new ToastWindow());
             built.Add(new ThirdPartyNoticesWindow());
+            built.Add(new WhatsNewWindow(WhatsNew.Current!.Sections, ReleaseVersion.Parse("0.4.9-dev.41")!.Value, null));
             built.Add(new ClipDeleteConfirmWindow("Body", null));
             built.Add(new MainWindow());
             foreach (string code in new[] { "ar", L.PseudoRtlCode })
@@ -184,6 +185,7 @@ internal static class LocalizationRtlTests
         {
             built.Add(new ToastWindow());
             built.Add(new ThirdPartyNoticesWindow());
+            built.Add(new WhatsNewWindow(WhatsNew.Current!.Sections, ReleaseVersion.Parse("0.4.9-dev.41")!.Value, null));
             built.Add(new ClipDeleteConfirmWindow("Body", null));
             built.Add(new MainWindow());
             built.Add(new StatusDotWindow());

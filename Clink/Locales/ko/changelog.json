@@ -1,0 +1,9 @@
+{
+  "whatsnew|Record from a capture card: choose it under Source on the Capture tab. Its HDMI audio goes on the Game track, and Clink falls back to the screen when the card is missing.": "캡처 카드로 녹화하세요. 캡처 탭의 소스에서 선택합니다. HDMI 오디오는 게임 트랙에 들어가고, 카드가 없으면 Clink가 화면으로 되돌아갑니다.",
+  "whatsnew|New option to follow the Windows main display for the captured screen.": "캡처하는 화면에 Windows 기본 디스플레이를 따라가는 옵션이 추가되었습니다.",
+  "whatsnew|Trim: Save & share now opens the Share window.": "자르기: 저장 및 공유가 이제 공유 창을 엽니다.",
+  "whatsnew|Library: Share is a split button. Drag and drop is the default; the other options are in its menu.": "라이브러리: 공유는 분할 버튼입니다. 끌어다 놓기가 기본이며, 다른 옵션은 메뉴에 있습니다.",
+  "whatsnew|Recording is smoother and more reliable. Updates and settings import are hardened.": "녹화가 더 매끄럽고 안정적입니다. 업데이트와 설정 가져오기의 보안이 강화되었습니다.",
+  "whatsnew|A What's new window shows what changed after an update. Open it again from the version menu.": "업데이트 후 바뀐 내용을 보여 주는 새로운 기능 창이 추가되었습니다. 버전 메뉴에서 다시 열 수 있습니다.",
+  "whatsnew|Clink releases are now code-signed.": "Clink 릴리스에 이제 코드 서명이 적용됩니다."
+}

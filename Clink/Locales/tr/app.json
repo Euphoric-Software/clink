@@ -242,5 +242,9 @@
   "Not shared: your Copium plan changed while the copy was made. Share it again": "Paylaşılmadı: kopya oluşturulurken Copium planın değişti. Yeniden paylaş",
   "A recording is running. Restarting Clink ends it and saves what was recorded, and the replay buffer is cleared.\n\nRestart Clink to change the language?": "Bir kayıt sürüyor. Clink'i yeniden başlatmak kaydı bitirir ve o ana kadar kaydedilenleri saklar; tekrar arabelleği de temizlenir.\n\nDil değişsin diye Clink yeniden başlatılsın mı?",
   "Nothing recorded yet, wait a moment and try again.": "Henüz hiçbir şey kaydedilmedi, biraz bekleyip tekrar dene.",
-  "Clink could not restart itself ({error}), so the new language applies the next time Clink starts": "Clink kendini yeniden başlatamadı ({error}), bu yüzden yeni dil Clink'in bir sonraki başlatılışında uygulanır"
+  "Clink could not restart itself ({error}), so the new language applies the next time Clink starts": "Clink kendini yeniden başlatamadı ({error}), bu yüzden yeni dil Clink'in bir sonraki başlatılışında uygulanır",
+  "Version {version}": "Sürüm {version}",
+  "In this dev build (v{version})": "Bu geliştirici derlemesinde (v{version})",
+  "Not released yet": "Henüz yayımlanmadı",
+  "Click anywhere or press Esc to close": "Kapatmak için herhangi bir yere tıkla veya Esc'ye bas"
 }

@@ -376,5 +376,6 @@
   "Automatic (Windows display language)": "Автоматически (язык интерфейса Windows)",
   "Restart Clink to use the new language.": "Перезапустите Clink, чтобы использовать новый язык.",
   "Restart now": "Перезапустить сейчас",
-  "Restarting Clink clears the replay buffer: the moments recorded just before the restart are not kept.": "При перезапуске Clink буфер повтора очищается: моменты, записанные непосредственно перед перезапуском, не сохраняются."
+  "Restarting Clink clears the replay buffer: the moments recorded just before the restart are not kept.": "При перезапуске Clink буфер повтора очищается: моменты, записанные непосредственно перед перезапуском, не сохраняются.",
+  "What's new": "Что нового"
 }

@@ -238,6 +238,16 @@ internal sealed class Settings
     /// retired vbr-bframes, is kept as written and treated as off (with a log warning). A size target keeps the encoder CBR. Per installation: never imported.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? EncoderExperiment { get; set; }
+    /// <summary>
+    /// The highest version whose "What's new" entries were shown, as "X.Y.Z" or "X.Y.Z-dev.N" (<see cref="WhatsNewPolicy"/>). Null until the
+    /// window has been shown once; anything that is not such a version is read as null. Per installation: never imported. Left out while null.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? WhatsNewSeen { get; set; }
+    /// <summary>
+    /// The SHA-256 (64 lower-case hex digits) of the English "Unreleased" notes a dev build last showed (<see cref="WhatsNewPolicy"/>); anything
+    /// else is read as null. Per installation: never imported. Left out while null.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? WhatsNewSeenDevHash { get; set; }
 
     // ---- v3 (v0.2.5) ----
     /// <summary>dark | light</summary>
@@ -702,6 +712,8 @@ internal sealed class Settings
         if (!ClipsEnabled && !ScreenshotsEnabled) ScreenshotsEnabled = true;
         LibraryFeature = Clink.UI.LibraryView.NormalizeFeature(LibraryFeature);
         LibraryLevel = Clink.UI.LibraryView.NormalizeLevel(LibraryLevel);
+        WhatsNewSeen = WhatsNewPolicy.CanonicalVersionOrNull(WhatsNewSeen);
+        WhatsNewSeenDevHash = WhatsNewPolicy.HashOrNull(WhatsNewSeenDevHash);
         SeededHotkeyDefaults ??= new List<string>();
         SeededHotkeyDefaults.RemoveAll(a => string.IsNullOrWhiteSpace(a));
         EnsureHotkeyModel();

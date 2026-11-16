@@ -376,5 +376,6 @@
   "Automatic (Windows display language)": "Otomatik (Windows görüntüleme dili)",
   "Restart Clink to use the new language.": "Yeni dili kullanmak için Clink'i yeniden başlat.",
   "Restart now": "Şimdi yeniden başlat",
-  "Restarting Clink clears the replay buffer: the moments recorded just before the restart are not kept.": "Clink'i yeniden başlatmak tekrar arabelleğini temizler: yeniden başlatmadan hemen önce kaydedilen anlar saklanmaz."
+  "Restarting Clink clears the replay buffer: the moments recorded just before the restart are not kept.": "Clink'i yeniden başlatmak tekrar arabelleğini temizler: yeniden başlatmadan hemen önce kaydedilen anlar saklanmaz.",
+  "What's new": "Yenilikler"
 }

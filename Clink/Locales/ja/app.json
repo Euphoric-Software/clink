@@ -238,5 +238,9 @@
   "Not shared: your Copium plan changed while the copy was made. Share it again": "共有していません：コピーの作成中にCopiumのプランが変わりました。もう一度共有してください",
   "A recording is running. Restarting Clink ends it and saves what was recorded, and the replay buffer is cleared.\n\nRestart Clink to change the language?": "録画が実行中です。Clinkを再起動すると録画が終了して録画済みの分は保存され、リプレイバッファーは消去されます。\n\n言語を変更するためにClinkを再起動しますか？",
   "Nothing recorded yet, wait a moment and try again.": "まだ何も録画されていません。少し待ってから、もう一度お試しください。",
-  "Clink could not restart itself ({error}), so the new language applies the next time Clink starts": "Clinkを自動で再起動できなかった（{error}）ため、新しい言語は次回Clinkを起動したときに適用されます"
+  "Clink could not restart itself ({error}), so the new language applies the next time Clink starts": "Clinkを自動で再起動できなかった（{error}）ため、新しい言語は次回Clinkを起動したときに適用されます",
+  "Version {version}": "バージョン {version}",
+  "In this dev build (v{version})": "この開発ビルドの変更点 (v{version})",
+  "Not released yet": "未リリース",
+  "Click anywhere or press Esc to close": "どこかをクリックするか Esc キーを押すと閉じます"
 }

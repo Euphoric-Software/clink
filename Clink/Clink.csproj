@@ -46,6 +46,7 @@
     <!-- Trust anchors of the signed update feed (Services/UpdateFeed.cs, FeedTrust): {"schema":1,"feedUrl":"","stableKeys":[],"devKeys":[]}. Empty = no updates at all (the client contacts nothing). -->
     <EmbeddedResource Include="Assets\feed.json" LogicalName="feed.json" />
     <EmbeddedResource Include="..\THIRD-PARTY-NOTICES.txt" LogicalName="THIRD-PARTY-NOTICES.txt" />
+    <EmbeddedResource Include="..\CHANGELOG.md" LogicalName="CHANGELOG.md" />
     <!-- UI text catalogs (Services/Localization/L.cs): Locales/<language>/<area>.json and Locales/glossary.json. The language is the FOLDER (a "core.de.json" would be taken for a satellite-assembly culture); the logical name keeps the folder, the loader accepts \ and /. -->
     <EmbeddedResource Include="Locales\**\*.json" LogicalName="ClinkLocales/%(RecursiveDir)%(Filename)%(Extension)" />
   </ItemGroup>

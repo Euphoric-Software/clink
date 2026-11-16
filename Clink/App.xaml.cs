@@ -317,6 +317,10 @@ public partial class App : System.Windows.Application
         bool show = args.Any(a => a.Equals("--show", StringComparison.OrdinalIgnoreCase));
         bool minimized = !show && (settings.StartMinimized || cmd != null || args.Any(a => a.Equals("--minimized", StringComparison.OrdinalIgnoreCase)));
         if (!minimized) main.Show();
+        // What's new: a first install (no settings file, nothing imported) or a version not seen yet; once the start has settled, and
+        // held back while a game or full-screen app is in front. Never in a --dev instance (WhatsNewPolicy.Decide).
+        bool firstInstall = freshStore && settings.ImportedFrom == null;
+        Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, () => _controller?.StartWhatsNew(firstInstall, activate: !minimized));
         Log.Info($"Clink v{updater.VersionDisplay} started" + (dev != null ? $" (--dev: data in {dev.Folder}, hotkeys {(dev.BindHotkeys ? "on" : "off")}{(AppController.IsQuiet ? ", quiet" : "")})" : ""));
         if (cmd != null) _controller.RunStartupCommand(cmd);
     }

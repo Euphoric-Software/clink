@@ -1,0 +1,32 @@
+<Window x:Class="Clink.UI.WhatsNewWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:l="clr-namespace:Clink.UI"
+        Title="{l:T 'What\'s new'}" Width="460" SizeToContent="Height"
+        WindowStyle="None" ResizeMode="NoResize" AllowsTransparency="True" Background="Transparent"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False" FontFamily="{StaticResource UiFont}" TextOptions.TextFormattingMode="Display"
+        AutomationProperties.AutomationId="WhatsNewWindow" AutomationProperties.Name="{l:T 'What\'s new'}"
+        PreviewMouseDown="Window_PreviewMouseDown" PreviewMouseUp="Window_PreviewMouseUp" LostMouseCapture="Window_LostMouseCapture" PreviewKeyDown="Window_PreviewKeyDown" Loaded="Window_Loaded">
+    <!-- Every colour here is a DynamicResource, so the window follows the theme when it changes. Any press of a mouse button on it closes it
+         (after the input guard), so there is no drag header and no visible scroll bar: the wheel and the arrow keys scroll. -->
+    <Border Background="{DynamicResource Bg}" CornerRadius="10" BorderBrush="{DynamicResource Border}" BorderThickness="1">
+        <DockPanel>
+            <Grid DockPanel.Dock="Top" Height="44">
+                <TextBlock x:Name="TitleText" Style="{StaticResource Display}" Text="{l:T 'What\'s new'}" Margin="16,0,48,0" VerticalAlignment="Center" />
+                <Button x:Name="CloseButton" Style="{StaticResource LinkButton}" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,12,0"
+                        Click="Close_Click" AutomationProperties.Name="{l:T 'Close'}">
+                    <TextBlock Style="{StaticResource Glyph}" Text="&#xE711;" FontSize="12" />
+                </Button>
+            </Grid>
+
+            <TextBlock x:Name="HintText" DockPanel.Dock="Bottom" Style="{StaticResource Hint}" TextWrapping="Wrap" Margin="16,6,16,12"
+                       Text="{l:T 'Click anywhere or press Esc to close'}" />
+
+            <ScrollViewer x:Name="Scroller" Margin="16,0,10,0" Focusable="True" FocusVisualStyle="{x:Null}"
+                          VerticalScrollBarVisibility="Hidden" HorizontalScrollBarVisibility="Disabled" ScrollChanged="Scroller_ScrollChanged"
+                          AutomationProperties.Name="{l:T 'What\'s new'}">
+                <StackPanel x:Name="Body" Margin="0,0,6,4" />
+            </ScrollViewer>
+        </DockPanel>
+    </Border>
+</Window>

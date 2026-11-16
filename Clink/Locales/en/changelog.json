@@ -1,0 +1,9 @@
+{
+  "whatsnew|Record from a capture card: choose it under Source on the Capture tab. Its HDMI audio goes on the Game track, and Clink falls back to the screen when the card is missing.": "Record from a capture card: choose it under Source on the Capture tab. Its HDMI audio goes on the Game track, and Clink falls back to the screen when the card is missing.",
+  "whatsnew|New option to follow the Windows main display for the captured screen.": "New option to follow the Windows main display for the captured screen.",
+  "whatsnew|Trim: Save & share now opens the Share window.": "Trim: Save & share now opens the Share window.",
+  "whatsnew|Library: Share is a split button. Drag and drop is the default; the other options are in its menu.": "Library: Share is a split button. Drag and drop is the default; the other options are in its menu.",
+  "whatsnew|Recording is smoother and more reliable. Updates and settings import are hardened.": "Recording is smoother and more reliable. Updates and settings import are hardened.",
+  "whatsnew|A What's new window shows what changed after an update. Open it again from the version menu.": "A What's new window shows what changed after an update. Open it again from the version menu.",
+  "whatsnew|Clink releases are now code-signed.": "Clink releases are now code-signed."
+}

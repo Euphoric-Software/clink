@@ -1,0 +1,9 @@
+{
+  "whatsnew|Record from a capture card: choose it under Source on the Capture tab. Its HDMI audio goes on the Game track, and Clink falls back to the screen when the card is missing.": "キャプチャカードから録画できます。キャプチャタブの「ソース」で選択してください。HDMI の音声はゲームトラックに入り、カードがないときは Clink が画面に切り替わります。",
+  "whatsnew|New option to follow the Windows main display for the captured screen.": "キャプチャする画面に Windows のメインディスプレイに従うオプションを追加しました。",
+  "whatsnew|Trim: Save & share now opens the Share window.": "トリミング: 「保存して共有」で共有ウィンドウが開くようになりました。",
+  "whatsnew|Library: Share is a split button. Drag and drop is the default; the other options are in its menu.": "ライブラリ: 「共有」は分割ボタンになりました。ドラッグ＆ドロップが既定で、ほかの方法はそのメニューにあります。",
+  "whatsnew|Recording is smoother and more reliable. Updates and settings import are hardened.": "録画がよりスムーズで安定しました。アップデートと設定のインポートも強化されました。",
+  "whatsnew|A What's new window shows what changed after an update. Open it again from the version menu.": "更新後の変更点を表示する「新機能」ウィンドウを追加しました。バージョンメニューからもう一度開けます。",
+  "whatsnew|Clink releases are now code-signed.": "Clink のリリースがコード署名されるようになりました。"
+}

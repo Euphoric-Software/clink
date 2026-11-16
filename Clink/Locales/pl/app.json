@@ -250,5 +250,9 @@
   "Not shared: your Copium plan changed while the copy was made. Share it again": "Nie udostępniono: Twój plan Copium zmienił się podczas tworzenia kopii. Udostępnij ponownie",
   "A recording is running. Restarting Clink ends it and saves what was recorded, and the replay buffer is cleared.\n\nRestart Clink to change the language?": "Trwa nagrywanie. Ponowne uruchomienie Clink zakończy je i zapisze to, co nagrano, a bufor powtórek zostanie wyczyszczony.\n\nUruchomić Clink ponownie, aby zmienić język?",
   "Nothing recorded yet, wait a moment and try again.": "Nic jeszcze nie nagrano, poczekaj chwilę i spróbuj ponownie.",
-  "Clink could not restart itself ({error}), so the new language applies the next time Clink starts": "Clink nie mógł uruchomić się ponownie ({error}), więc nowy język zacznie obowiązywać przy następnym uruchomieniu Clink"
+  "Clink could not restart itself ({error}), so the new language applies the next time Clink starts": "Clink nie mógł uruchomić się ponownie ({error}), więc nowy język zacznie obowiązywać przy następnym uruchomieniu Clink",
+  "Version {version}": "Wersja {version}",
+  "In this dev build (v{version})": "W tej wersji deweloperskiej (v{version})",
+  "Not released yet": "Jeszcze niewydane",
+  "Click anywhere or press Esc to close": "Kliknij w dowolnym miejscu lub naciśnij Esc, aby zamknąć"
 }

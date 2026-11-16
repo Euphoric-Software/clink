@@ -115,6 +115,7 @@ internal static class LocalizationLayoutTests
         cases.Add(new("ShareWindow", prepare(new ShareWindow(SampleClip())), 480, 0));
         cases.Add(new("ShareFilesWindow", prepare(new ShareFilesWindow(new[] { new ShareFileItem(@"C:\Clips\x.mp4", false, 1000, 1), new ShareFileItem(@"C:\Clips\y.mp4", false, 1000, 1) }, false)), 480, 0));
         cases.Add(new("ThirdPartyNoticesWindow", prepare(new ThirdPartyNoticesWindow()), 780, 580));
+        cases.Add(new("WhatsNewWindow", prepare(new WhatsNewWindow(WhatsNew.Current!.Sections, ReleaseVersion.Parse("0.4.9-dev.41")!.Value, null)), 460, 0));
         cases.Add(new("InsertImagePicker", prepare(new InsertImagePicker(new InsertPickerModel(null), canPaste: true)), 640, 480));
         cases.Add(new("EditorToolbar", prepare(new Window { Content = new EditorToolbar() }), 1100, 0));
         string tokenless = L.T("Clip saved");
@@ -140,7 +141,7 @@ internal static class LocalizationLayoutTests
             foreach (var c in Windows(rig.App, w => { Mirror(w); return w; }))
             {
                 var root = (FrameworkElement)c.Window.Content;
-                double width = c.Window is MainWindow or ToastWindow or ArchiveWindow or ClipDeleteConfirmWindow or CopiumConsentWindow or CopiumWelcomeWindow or ShareWindow or ShareFilesWindow or InsertImagePicker or ThirdPartyNoticesWindow && !double.IsNaN(c.Window.Width) ? c.Window.Width : c.Width;
+                double width = c.Window is MainWindow or ToastWindow or ArchiveWindow or ClipDeleteConfirmWindow or CopiumConsentWindow or CopiumWelcomeWindow or ShareWindow or ShareFilesWindow or InsertImagePicker or ThirdPartyNoticesWindow or WhatsNewWindow && !double.IsNaN(c.Window.Width) ? c.Window.Width : c.Width;
                 if (c.Window is MainWindow main)
                 {
                     int index = 0;

@@ -444,7 +444,7 @@ internal static class SettingsImport
 
     /// <summary>
     /// The settings that belong to this installation and are never taken over: where the window sits, when updates were last looked
-    /// for and from where, what the updater holds, and which copies of the settings were turned down. <see cref="Import"/> keeps
+    /// for and from where, what the updater holds, which "What's new" entries were shown, and which copies of the settings were turned down. <see cref="Import"/> keeps
     /// ours (or leaves them out when we have none), and <see cref="Differences"/> ignores them, so an import never leaves a
     /// difference behind that would offer the same copy again.
     /// </summary>
@@ -459,6 +459,8 @@ internal static class SettingsImport
         || key.Equals(nameof(Settings.ImportDeclined), StringComparison.OrdinalIgnoreCase)
         || key.Equals(nameof(Settings.SaveCopyFolder), StringComparison.OrdinalIgnoreCase)   // the last "Save a copy" folder on this machine
         || key.Equals(nameof(Settings.EncoderExperiment), StringComparison.OrdinalIgnoreCase)   // a hidden per-machine experiment: never another copy's
+        || key.Equals(nameof(Settings.WhatsNewSeen), StringComparison.OrdinalIgnoreCase)   // which "What's new" entries this installation has shown: another copy's would hide or repeat them
+        || key.Equals(nameof(Settings.WhatsNewSeenDevHash), StringComparison.OrdinalIgnoreCase)
         // consent and sharing controls: what this person agreed to on this machine is never another copy's to decide
         || key.Equals(nameof(Settings.CloudSharingEnabled), StringComparison.OrdinalIgnoreCase)
         || key.StartsWith("CopiumConsent", StringComparison.OrdinalIgnoreCase)
