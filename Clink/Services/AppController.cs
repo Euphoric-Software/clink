@@ -416,14 +416,18 @@ internal sealed partial class AppController : IDisposable
 
     /// <summary>The pipe command a command line asks for: "clip" (--clip), "trim" (--trim-last), "share" (--share-last), "record" (--record), "screenshot" (--screenshot), or null.</summary>
     public static string? CommandFromArgs(string[] args) =>
-        args.Any(a => a.Equals("--clip", StringComparison.OrdinalIgnoreCase)) ? "clip"
+        args.Any(a => a.Equals("--clip", StringComparison.OrdinalIgnoreCase)) ? WithSource("clip", args, "--clip")
         : args.Any(a => a.Equals("--screenshot", StringComparison.OrdinalIgnoreCase)) ? "screenshot"
         : args.Any(a => a.Equals("--screenshot-edit-last", StringComparison.OrdinalIgnoreCase)) ? "screenshot-edit-last"
         : EditCommandFromArgs(args) is string edit ? edit
         : args.Any(a => a.Equals("--trim-last", StringComparison.OrdinalIgnoreCase)) ? "trim"
-        : args.Any(a => a.Equals("--share-last", StringComparison.OrdinalIgnoreCase)) ? "share"
-        : args.Any(a => a.Equals("--record", StringComparison.OrdinalIgnoreCase)) ? "record"   // toggles a manual recording (to a running Clink; a start finds the recorder not up yet and says so)
+        : args.Any(a => a.Equals("--share-last", StringComparison.OrdinalIgnoreCase)) ? WithSource("share", args, "--share-last")
+        : args.Any(a => a.Equals("--record", StringComparison.OrdinalIgnoreCase)) ? WithSource("record", args, "--record")   // toggles a manual recording (to a running Clink; a start finds the recorder not up yet and says so)
         : null;
+
+    /// <summary>The pipe line for a verb: "clip", or "clip card" when a source word follows its switch (<see cref="SourceCommand"/>).</summary>
+    private static string WithSource(string verb, string[] args, string switchName) =>
+        SourceCommand.WordAfter(args, switchName) is string word ? verb + " " + word : verb;
 
     /// <summary>
     /// <c>--screenshot-edit &lt;path&gt;</c> as the pipe command <c>screenshot-edit &lt;full path&gt;</c>: the path is made absolute here, in the
@@ -549,7 +553,8 @@ internal sealed partial class AppController : IDisposable
             ClipsOffNotice();
             return;
         }
-        switch (cmd.Trim().ToLowerInvariant())
+        // The source word ("clip card") is parsed but not used yet: every source word acts as the plain verb.
+        switch (SourceCommand.Parse(cmd).Verb)
         {
             case "clip": ClipNow(); break;
             case "screenshot": Screenshots.CaptureRegion(Clink.Screenshots.ScreenshotTrigger.Cli); break;
@@ -572,8 +577,9 @@ internal sealed partial class AppController : IDisposable
     internal void RunStartupCommand(string cmd)
     {
         if (!Settings.ClipsEnabled && IsClipsCommand(cmd)) { _ui.BeginInvoke(DispatcherPriority.ApplicationIdle, () => RunCommand(cmd)); return; }   // the notice
-        if (cmd == "record") { QueueRecordingAtLaunch(); return; }
-        if (cmd != "clip") { _ui.BeginInvoke(DispatcherPriority.ApplicationIdle, () => RunCommand(cmd)); return; }
+        string verb = SourceCommand.Parse(cmd).Verb;
+        if (verb == "record") { QueueRecordingAtLaunch(); return; }
+        if (verb != "clip") { _ui.BeginInvoke(DispatcherPriority.ApplicationIdle, () => RunCommand(cmd)); return; }
         // Marked now, not at idle: a --share-last sent right behind this --clip can reach the pipe while Clink is still starting.
         _clipRefusedAt = DateTime.UtcNow;
         _ui.BeginInvoke(DispatcherPriority.ApplicationIdle, () => ShowBalloon(L.T("Clink started"), GameOnly
@@ -587,7 +593,7 @@ internal sealed partial class AppController : IDisposable
     internal static string ClipsOffText => L.T("Clips are turned off — Settings → App → Features");
 
     /// <summary>A pipe / command-line command that needs the Clips feature (the replay buffer, recording, the clip library).</summary>
-    internal static bool IsClipsCommand(string cmd) => cmd.Trim().ToLowerInvariant() is "clip" or "trim" or "share" or "record" or "pause" or "resume";
+    internal static bool IsClipsCommand(string cmd) => SourceCommand.Parse(cmd).Verb is "clip" or "trim" or "share" or "record" or "pause" or "resume";
 
     /// <summary>The hotkey / tray / command line asked for a clip action while Clips is off: footer line, and a toast or balloon where the user is looking.</summary>
     private void ClipsOffNotice()
@@ -1258,7 +1264,14 @@ internal sealed partial class AppController : IDisposable
                 if (i + 1 < all.Count && !all[i + 1].StartsWith("--", StringComparison.Ordinal)) i++;
                 continue;
             }
-            if (!once.Contains(all[i], StringComparer.OrdinalIgnoreCase)) kept.Add(all[i]);
+            if (once.Contains(all[i], StringComparer.OrdinalIgnoreCase))
+            {
+                // --clip / --record / --share-last go with their source word ("--clip card"): a command for one start only.
+                if ((all[i].Equals("--clip", StringComparison.OrdinalIgnoreCase) || all[i].Equals("--record", StringComparison.OrdinalIgnoreCase)
+                    || all[i].Equals("--share-last", StringComparison.OrdinalIgnoreCase)) && i + 1 < all.Count && SourceCommand.IsWord(all[i + 1])) i++;
+                continue;
+            }
+            kept.Add(all[i]);
         }
         if (!kept.Contains("--show", StringComparer.OrdinalIgnoreCase)) kept.Add("--show");
         kept.AddRange(DevSwitches());

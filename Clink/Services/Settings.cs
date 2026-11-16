@@ -72,6 +72,8 @@ internal sealed class HotkeyAction
     /// <summary>clip | pause | share-last | record | screenshot | screenshot-edit-last; see <c>AppController.CommandFor</c>. Anything else is ignored (and logged) when pressed.</summary>
     public string Action { get; set; } = "clip";
     public int Seconds { get; set; } = 0;
+    /// <summary>"screen" | "card": the one replay buffer this hotkey acts on. Absent (null) = every running buffer. An older Clink keeps it in <see cref="Unknown"/>.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? Source { get; set; }
     /// <summary>Keys inside this hotkey that this version does not know (written by a newer Clink): kept and written back, like <see cref="Settings.Unknown"/>.</summary>
     [JsonExtensionData] public Dictionary<string, JsonElement>? Unknown { get; set; }
 }
@@ -104,6 +106,8 @@ internal sealed class Settings
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? CaptureDeviceName { get; set; }
     /// <summary>Hidden (no UI, never written while 0): milliseconds to shift the capture card's sound against its picture (a card whose audio runs late or early). Positive: the picture is shown later; negative: earlier.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] public int CaptureDeviceAvOffsetMs { get; set; }
+    /// <summary>Record the screen and the capture card in <see cref="CaptureSource"/> at once (two replay buffers). Never written while false.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] public bool CaptureBoth { get; set; }
     public int Fps { get; set; } = SettingsDefaults.Fps;
     public int BitrateMbps { get; set; } = SettingsDefaults.BitrateMbps;
     /// <summary>The user picked <see cref="BitrateMbps"/> in the bitrate box. Kept for settings import; no app logic reads it.</summary>

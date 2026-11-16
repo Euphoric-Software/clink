@@ -403,7 +403,7 @@ internal static class SettingsImport
         ("size target", new[] { nameof(Settings.SizeTarget) }),
         ("Discord plan", new[] { nameof(Settings.DiscordPlan) }),
         ("sharing", new[] { nameof(Settings.ShareCopiesDuringGames) }),
-        ("monitor", new[] { nameof(Settings.MonitorDevice), nameof(Settings.FollowPrimaryMonitor), nameof(Settings.CaptureSource), nameof(Settings.CaptureDeviceName), nameof(Settings.CaptureDeviceAvOffsetMs) }),
+        ("monitor", new[] { nameof(Settings.MonitorDevice), nameof(Settings.FollowPrimaryMonitor), nameof(Settings.CaptureSource), nameof(Settings.CaptureBoth), nameof(Settings.CaptureDeviceName), nameof(Settings.CaptureDeviceAvOffsetMs) }),
         ("replay length", new[] { nameof(Settings.BufferSeconds) }),
         ("recording mode", new[] { nameof(Settings.RecordingMode), nameof(Settings.CustomApps) }),
         ("hotkeys", new[] { nameof(Settings.Hotkey), nameof(Settings.Hotkeys) }),

@@ -22,6 +22,8 @@ internal sealed class ClipEntry
     public DateTime? ArchivedAt { get; set; }
     /// <summary>A manual recording, not a clip (hours long): "share last" and "trim last" skip it. Missing in older indexes: false.</summary>
     public bool IsRecording { get; set; }
+    /// <summary>"screen" | "card": which replay buffer the clip came from. Missing (older clips): unknown.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? Source { get; set; }
 
     [JsonIgnore] public bool IsShared => !string.IsNullOrEmpty(CopiumLink);
     [JsonIgnore] public bool IsArchived => ArchivedAt != null;
