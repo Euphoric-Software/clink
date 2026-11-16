@@ -171,7 +171,7 @@ internal static class SelfTest
             if (record && engine.Recording is { } rs)
                 Say($"  recording {rs.Seconds:0.0}s written={rs.BytesWritten / 1_048_576.0:0.0} MB queue={rs.QueueBytes / 1024} KB dropped={rs.Dropped}");
             var st = engine.GetStats();
-            string audio = string.Join(", ", st.Audio.Select(a => $"{a.Name}:{(a.Running ? "ok" : "off")}"));
+            string audio = st.Audio == null ? "busy" : string.Join(", ", st.Audio.Select(a => $"{a.Name}:{(a.Running ? "ok" : "off")}"));
             Say($"  t={i + 1}s capture={st.CaptureFrames} in={st.FramesIn} out={st.FramesOut} inflight={st.FramesIn - st.FramesOut} dropped={st.Dropped} buffered={st.BufferedSeconds:0.0}s game={st.Game ?? "-"} audio=[{audio}]");
         }
         if (record)

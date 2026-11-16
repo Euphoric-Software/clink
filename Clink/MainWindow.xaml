@@ -53,8 +53,8 @@
                         <Popup x:Name="VersionPopup" PlacementTarget="{Binding ElementName=VersionText}" Placement="Top" StaysOpen="False" AllowsTransparency="True" PopupAnimation="Fade" Closed="VersionPopup_Closed">
                             <Border Background="{DynamicResource Panel2}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="6" Padding="10" Margin="0,0,0,2">
                                 <StackPanel>
-                                    <TextBlock x:Name="VersionPopupText" Style="{StaticResource MutedText}" Margin="0,0,0,8" />
-                                    <CheckBox x:Name="DevBuildCheck" Content="{l:T 'Dev Build'}" Checked="DevBuildChanged" Unchecked="DevBuildChanged" Margin="0,0,0,8" ToolTipService.ShowOnDisabled="True"
+                                    <TextBlock x:Name="VersionPopupText" Style="{StaticResource MutedText}" Margin="0,0,0,8" MouseLeftButtonUp="VersionPopupText_Click" />
+                                    <CheckBox x:Name="DevBuildCheck" Visibility="Collapsed" Content="{l:T 'Dev Build'}" Checked="DevBuildChanged" Unchecked="DevBuildChanged" Margin="0,0,0,8" ToolTipService.ShowOnDisabled="True"
                                               ToolTip="{l:T 'Use the latest build from the dev branch instead of the latest release. Dev builds may be unstable; untick to go back to the latest release.'}" />
                                     <Button x:Name="VersionCheckButton" Style="{StaticResource LinkButton}" Content="{l:T 'Check for updates'}" Click="CheckUpdate_Click" HorizontalAlignment="Left" ToolTipService.ShowOnDisabled="True" />
                                     <!-- Copium: the account line and the automatic-upload box (the Screenshots tab's box in a second place), or the sign-in link. Set from CopiumPopupModel. -->

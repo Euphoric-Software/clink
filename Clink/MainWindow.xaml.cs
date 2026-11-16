@@ -1123,8 +1123,9 @@ public partial class MainWindow : Window
             // Each entry says what the track is actually capturing ("● Game (Overwatch)", "● Game (everything except Discord)",
             // "● Mic (USB Microphone)") or why it is not ("○ Voice (waiting for app)"), so a pick is confirmed here and the
             // fallback is not mistaken for the real thing. Entries are separated by spaces and the line wraps wherever it must.
-            AudioStatus.Text = st.Audio.Count == 0 ? L.T("No audio tracks") :
-                EngineStatusText.AudioLine(st.Audio);
+            if (st.Audio != null)   // null: the audio thread is busy (a source starting), keep the line as it is
+                AudioStatus.Text = st.Audio.Count == 0 ? L.T("No audio tracks") :
+                    EngineStatusText.AudioLine(st.Audio);
         }
         else
         {
@@ -1377,6 +1378,7 @@ public partial class MainWindow : Window
         try { DevBuildCheck.IsChecked = _app.Settings.UseDevBuilds; }
         finally { _loading = wasLoading; }
         bool canCheck = up.UpdatesEnabled || AppController.DocShots;   // the doc screenshots show the popup as an updating build has it
+        DevBuildCheck.Visibility = Vis(DevBuildPolicy.BoxVisible(_devBoxRevealed, _app.Settings.UseDevBuilds));   // hidden (no focus, no automation node) until 10 quick clicks on the version in this popup
         DevBuildCheck.IsEnabled = canCheck;
         VersionCheckButton.IsEnabled = canCheck;
         DevBuildCheck.ToolTip = canCheck
@@ -1385,6 +1387,17 @@ public partial class MainWindow : Window
         VersionCheckButton.ToolTip = canCheck ? null : NoUpdatesText;
         RefreshCopiumPopup();
         VersionPopup.IsOpen = true;
+    }
+
+    private bool _devBoxRevealed;   // the Dev Build box was uncovered this session: it stays until the app ends
+    private readonly SecretClickCounter _devBoxClicks = new();
+
+    /// <summary>10 clicks in a row on the version text of the popup uncover the Dev Build box (<see cref="SecretClickCounter"/>).</summary>
+    private void VersionPopupText_Click(object sender, MouseButtonEventArgs e)
+    {
+        if (!_devBoxClicks.Click(DateTime.UtcNow)) return;
+        _devBoxRevealed = true;
+        DevBuildCheck.Visibility = Vis(true);
     }
 
     // ------------------------------------------------------------------ the version popup's Copium section
@@ -1753,6 +1766,24 @@ public partial class MainWindow : Window
     private CopiumPanel? _copiumPanel;         // the panel shown last
     private SignInState? _copiumShown;         // the state shown last
 
+    /// <summary>
+    /// The window is kept out of every screen capture (Clink's own clips, recordings and screenshots, other recorders, screen sharing)
+    /// while the sign-in code is on it: whoever has the code can link a Copium account to this Clink until it expires.
+    /// </summary>
+    internal static bool WantsCaptureExclusion(CopiumCardModel m) => m.CodeVisible && !string.IsNullOrEmpty(m.CodeText);
+
+    private bool _codeExcludedFromCapture;
+
+    private void SetCodeCaptureExclusion(bool exclude)
+    {
+        if (exclude == _codeExcludedFromCapture) return;
+        nint hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+        if (hwnd == 0) return;   // no window yet: the next render, once there is one, sets it
+        _codeExcludedFromCapture = exclude;
+        if (exclude) ScreenPlacement.ExcludeFromCaptureUnlessDocShots(hwnd);
+        else ScreenPlacement.IncludeInCapture(hwnd);
+    }
+
     /// <summary>Shows <paramref name="st"/> (the latest state from the session). Everything comes from <see cref="CopiumCardModel"/>; texts are plain text.</summary>
     private void RenderCopiumCard(SignInState st)
     {
@@ -1792,6 +1823,7 @@ public partial class MainWindow : Window
             CopiumWaitingPanel.Visibility = Vis(m.Panel is CopiumPanel.Waiting or CopiumPanel.Finishing);
             CopiumCodeBox.Visibility = Vis(m.CodeVisible);
             CopiumCodeBox.Text = m.CodeText ?? "";
+            SetCodeCaptureExclusion(WantsCaptureExclusion(m));
             CopiumCodeHint.Visibility = Vis(m.CodeHintVisible);
             CopiumCodeHint.Text = m.CodeHintVisible ? CopiumCardModel.CodeCheckHint : "";
             SetLive(CopiumProgressText, m.StatusText ?? "");

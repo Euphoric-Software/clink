@@ -242,8 +242,8 @@ page if there is something newer.
 
 **Dev builds.** Every push to the `dev` branch publishes a *prerelease* named `vX.Y.Z-dev.N` (workflow
 `release-dev.yml`, only after the unit tests pass; the 10 newest builds are kept, as prereleases and on the feed) to a separate dev feed (`dl-dev.euphoric.software`). Clink ignores them unless you tick *Dev
-Build* in the popup that opens when you click the version in the footer: it then follows the newest of the latest
-release and the dev builds, and installs it like any update. Dev builds may be unstable. Untick *Dev Build* and
+Build* in the popup that opens when you click the version in the footer. The box is hidden until you click the version text in that popup 10 times in a row (no more than about 1.5 s between clicks); it then stays until you quit Clink, and it is always shown while it is ticked. Ticked, Clink follows the newest of the latest
+release and the dev builds, checks at once and then about every 2 minutes (slower after failed checks, up to 15 minutes; releases are checked every 6 hours), and installs it like any update. Dev builds may be unstable, and they may be unsigned, so the signature check in the install steps can fail for a dev prerelease; stable releases from v0.4.8 on are signed. Untick *Dev Build* and
 Clink goes back to releases: unticking checks for updates right away, and from a dev build that is newer than the
 latest release this switches back to that release (with auto-update on, the release is downloaded and installed at
 the next start, or at once with *Update to v…*; *Check for updates* does the same later). The background checks
@@ -264,7 +264,7 @@ installed on the release channel. The choice is kept in `UseDevBuilds` in
    program that uses Alt+C itself loses it; pick other keys under *Capture → Hotkeys* if that matters. A file from
    before v0.2.5 with no hotkey for the full replay gets Alt+C for it (left unset when another hotkey already uses
    Alt+C) and says so once, in the footer and a tray balloon.
-3. Click **Share** (in the toast, the clip list or the trim editor). With a token and cloud sharing on, the button is split: *Share* opens the Share window with the file (below), and the *▾* menu offers *Upload to Copium* (*Copy link* once shared), *Share file…* and *Save a copy…*. Pick *Upload to Copium* to upload: the first time, Clink asks *Share with Copium?* (see *Sharing is opt-in*); after *Enable Copium sharing* the clip is uploaded to Copium and the link is copied. Without a token, *Share* opens the Share window. With cloud sharing off nothing is uploaded and the Share buttons are hidden (a clip that already has a link can still have it copied). The share hotkey over a game does not open the pop-up: it says *Sharing needs your OK once — open Clink and press Share*. By default the copied link is the raw video file, so pasting it in Discord plays the video inline with no
+3. Click **Share** (in the toast, the clip list or the trim editor). In the clip list the button is always split: *Share* opens the Share window with the file (below), and the *▾* menu offers *Copy link* (once shared) or *Upload to Copium* (with a token and cloud sharing on), then *Share file…* and *Save a copy…*. In the toast and the trim editor the button is split only with a token and cloud sharing on. Pick *Upload to Copium* to upload: the first time, Clink asks *Share with Copium?* (see *Sharing is opt-in*); after *Enable Copium sharing* the clip is uploaded to Copium and the link is copied. Without a token, *Share* opens the Share window. With cloud sharing off nothing is uploaded and the toast and trim editor Share buttons are hidden (a clip that already has a link can still have it copied). The share hotkey over a game does not open the pop-up: it says *Sharing needs your OK once — open Clink and press Share*. By default the copied link is the raw video file, so pasting it in Discord plays the video inline with no
    embed card. If you turn on custom embeds on copium.pics, Copium's `link` becomes the share page instead; Clink
    just uses whatever Copium says to copy. A clip is uploaded once: choosing *Upload to Copium* again (or using the share hotkey) while
    it uploads waits for that upload. When an upload fails the toast and the clip row say why (*Copium rejected the
@@ -304,7 +304,7 @@ installed on the release channel. The choice is kept in `UseDevBuilds` in
    rebuilt. The in point snaps to a keyframe (every second by default) so
    the cut is exact in every player, and the export copies the video without re-encoding. *Save trimmed* writes
    `<clip> (trim).mp4` next to the original (tick *Replace original* to replace the clip with the cut instead), or
-   *Save & share*. The *Trim* button on a clip row, the toast's *Trim* and `--trim-last` open the editor directly; a
+   *Save & share* (saves, then opens the Share window; with a Copium token the *▾* menu uploads). The *Trim* button on a clip row, the toast's *Trim* and `--trim-last` open the editor directly; a
    second click on a clip that is already open brings its window forward.
 
 **Manual recording.** Besides the replay buffer you can record from now until you stop: press a hotkey with the action
@@ -523,7 +523,7 @@ copies of another Clink's settings you turned down, `<package>|<time>`, one per 
 | `HdrKnee` / `HdrPeak` | 0.75 / 4 | tone-mapper shoulder: everything below `knee` (relative to SDR white) is untouched, highlights roll off softly above it |
 | `ClickVolume` | 0.5 | 0..1 |
 | `StartMinimized` | false | |
-| `UseDevBuilds` | `false` | Follow the dev builds (`vX.Y.Z-dev.N`) instead of only releases: the *Dev Build* box in the popup that opens when you click the version in the footer. Per installation, never imported |
+| `UseDevBuilds` | `false` | Follow the dev builds (`vX.Y.Z-dev.N`) instead of only releases: the *Dev Build* box in the popup that opens when you click the version in the footer (hidden until the version text in that popup is clicked 10 times in a row; ticked, Clink checks about every 2 minutes instead of every 6 hours). Per installation, never imported |
 | `UpdateRepo` | *(ignored)* | Legacy key, kept so an old `settings.json` round-trips; updates come only from the signed feed |
 
 How `Hotkeys` is put in shape when a file is loaded (nothing that is bound changes what it does): a v0.1 file's single
@@ -544,7 +544,7 @@ and a banner under *App → Settings*) and, for a Clink that is not itself insid
 * on its **first start**, with no settings of its own, it takes over the newest copy it finds before anything reads
   settings: `settings.json` as it is and the clip index merged (every clip once; Copium links, archive times, audio
   tracks and the like fill in what yours leaves empty), and says *Imported the settings Clink saved while started from
-  inside <app> (2026-10-21 14:32)*;
+  inside <app> (2026-10-21 14:32)*. This import nobody asked for leaves *Run at startup* off (unless yours was on);
 * **otherwise** it never changes your settings unasked. It looks, after start, for a copy that differs (this
   installation's own settings do not count: where the window sits, the update state, which copies you turned down; the
   Copium token is compared decrypted and never logged) and offers it: one tray balloon (*Settings from another copy of
@@ -564,7 +564,10 @@ comes from the other copy. An incoming Copium token that cannot be decrypted her
 never replaces a working one: your own stays, and the offer lists *the incoming Copium token cannot be used on this
 machine* beside what else differs, never as a reason to offer a copy on its own. The clip index is merged as above, its
 paths compared as the file system does (slashes either way, `.` and `..`, a trailing separator, `\\?\` prefixes, case; an
-8.3 name, or a mapped drive for a network path, may stay a duplicate). If the clip lists cannot be merged (the other
+8.3 name, or a mapped drive for a network path, may stay a duplicate); the other copy's clips on a network or device path
+are left out. A copy is never offered or read when its folder is a junction or link, or its folder or files are labelled
+below Medium integrity (written by a sandboxed app) or owned by another user; the files are checked again when they are
+read. If the clip lists cannot be merged (the other
 copy's is over 4,000,000 bytes, or a list does not read) the settings are imported all the same and Clink says *Settings
 imported; the clip list could not be merged: the other copy's clip list cannot be read (not valid JSON: error on line 3)*
 in the footer. A marker, `clips-merge.pending` in the settings folder, makes every later start try the merge again,

@@ -87,12 +87,15 @@ internal sealed class ClipLibrary
             try
             {
                 if (Directory.Exists(clipsFolder))
+                {
+                    var known = new HashSet<string>(_entries.Select(e => e.Path), StringComparer.OrdinalIgnoreCase);   // (one lookup per file, not a pass over the index)
                     foreach (var f in Directory.EnumerateFiles(clipsFolder, "*.mp4"))
-                        if (!_entries.Any(e => string.Equals(e.Path, f, StringComparison.OrdinalIgnoreCase)))
+                        if (known.Add(f))
                         {
                             var fi = new FileInfo(f);
                             _entries.Add(new ClipEntry { Path = f, Created = fi.CreationTime, Size = fi.Length });
                         }
+                }
             }
             catch (Exception ex) { Log.Warn("scan clips: " + ex.Message); }
             _entries.Sort((a, b) => b.Created.CompareTo(a.Created));

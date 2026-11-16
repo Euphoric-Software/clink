@@ -366,6 +366,14 @@ internal static class SettingsImport
                         Log.Warn($"import: the settings.json in {folder} is {Bytes(file.Length)} bytes, more than the {Bytes(MaxFileBytes)} that are read: skipped");
                         continue;
                     }
+                    // A copy that a sandboxed (AppContainer) or low-integrity process wrote, that someone else owns, or whose folder is
+                    // a junction or link, is not offered. This is only the first look: the files can change after it, so Import and
+                    // the clip merge check them again on the handle they read from (IntegrityLabel.ReadTrusted).
+                    if (UntrustedPart(folder, file.FullName, Path.Combine(folder, "clips.json")) is { } why)
+                    {
+                        Log.Warn($"import: the copy in {folder} is skipped: {why}");
+                        continue;
+                    }
                     found.Add(new ForeignSettings(Path.GetFileName(pkgDir), folder, file.LastWriteTimeUtc, Array.Empty<string>()));
                 }
                 catch (Exception ex) { Log.Warn($"import: cannot look at {pkgDir}: {ex.Message}"); }
@@ -373,6 +381,17 @@ internal static class SettingsImport
         }
         catch (Exception ex) { Log.Warn("import: cannot look for other copies of the settings: " + ex.Message); }
         return found.OrderByDescending(f => f.SavedUtc).ToList();
+    }
+
+    /// <summary>"settings.json: it is labelled Low integrity …" for the first of <paramref name="paths"/> that exists and <see cref="IntegrityLabel.WhyUntrusted(string)"/> refuses; null when none does.</summary>
+    private static string? UntrustedPart(params string[] paths)
+    {
+        foreach (string path in paths)
+        {
+            if (!Path.Exists(path)) continue;
+            if (IntegrityLabel.WhyUntrusted(path) is { } why) return $"{Path.GetFileName(path)}: {why}";
+        }
+        return null;
     }
 
     // ------------------------------------------------------------------ what differs
@@ -707,7 +726,7 @@ internal static class SettingsImport
         {
             try
             {
-                Import(copy);
+                Import(copy, silent: true);
                 return copy;
             }
             catch (Exception ex) { Log.Warn($"import: the settings in {copy.Package} cannot be used ({ex.Message})"); }
@@ -724,18 +743,21 @@ internal static class SettingsImport
     /// here. The clip lists are merged as <see cref="TryMergeClips"/> says; when that does not work the settings are imported all
     /// the same, the reason is in the result and in <see cref="ClipsNotice"/>, and a marker makes every later start try again
     /// (<see cref="RetryPendingClipMerge"/>). The running Clink has to restart to use the result (<c>AppController.ImportForeignSettings</c>
-    /// freezes the settings and the clip index first, and restarts after).
+    /// freezes the settings and the clip index first, and restarts after). <paramref name="silent"/> (<see cref="ImportNewest"/>, nobody
+    /// asked): the copy's "run at startup" is not taken over either (<see cref="KeepOurOwn"/>).
     /// </summary>
-    public static ImportResult Import(ForeignSettings copy)
+    public static ImportResult Import(ForeignSettings copy, bool silent = false)
     {
-        string theirs = ReadCapped(copy.SettingsPath) ?? throw new IOException("settings.json is missing or too big");
+        var read = IntegrityLabel.ReadTrusted(copy.Folder, "settings.json", MaxFileBytes);   // checked again here: the copy may have changed since it was found
+        if (read.Refused != null) throw new IOException("settings.json is not trusted: " + read.Refused);
+        string theirs = read.Text ?? throw new IOException("settings.json is missing or too big");
         var incoming = Settings.FromJson(theirs);   // throws when it is not JSON, or not a JSON object
 
         string dir = Settings.Dir;
         TestGuard.Check(dir);
         Directory.CreateDirectory(dir);
         var networkKept = new List<string>();
-        string text = KeepOurOwn(theirs, ReadOurSettings(), keepOurToken: IsTokenUnusable(incoming), networkKept);
+        string text = KeepOurOwn(theirs, ReadOurSettings(), keepOurToken: IsTokenUnusable(incoming), networkKept, keepOurStartup: silent);
         string? backup = File.Exists(Settings.FilePath) ? KeepCurrentSettings(dir) : null;   // throws when it cannot be kept: nothing is changed yet
         AtomicFile.WriteAllText(Settings.FilePath, text);
 
@@ -787,9 +809,11 @@ internal static class SettingsImport
     /// <summary>
     /// <paramref name="theirs"/> (a settings.json) with this installation's own values put back from <paramref name="ours"/>: every
     /// key <see cref="IsOwnKey"/> says is ours is taken from ours, or left out when ours has none. With
-    /// <paramref name="keepOurToken"/> the Copium token is ours too. The text comes back as it was when none of that changes anything.
+    /// <paramref name="keepOurToken"/> the Copium token is ours too. With <paramref name="keepOurStartup"/> (an import nobody asked for) an
+    /// incoming "run at startup" that is not off becomes off unless ours is on: a copy never registers Clink to start with Windows by
+    /// itself. The text comes back as it was when none of that changes anything.
     /// </summary>
-    internal static string KeepOurOwn(string theirs, string? ours, bool keepOurToken, List<string>? networkPathsKept = null)
+    internal static string KeepOurOwn(string theirs, string? ours, bool keepOurToken, List<string>? networkPathsKept = null, bool keepOurStartup = false)
     {
         if (JsonNode.Parse(theirs, documentOptions: s_lenient) is not JsonObject t) return theirs;
         JsonObject? o = null;
@@ -827,6 +851,11 @@ internal static class SettingsImport
         bool ourConsent = Find(o, nameof(Settings.CopiumConsent)) is { Value: JsonValue cv } && cv.TryGetValue<bool>(out bool yes) && yes;
         if (!ourConsent && Find(t, nameof(Settings.ScreenshotUpload)) is { } su && su.Value is JsonValue sv && sv.TryGetValue<bool>(out bool sUp) && sUp)
             t[su.Key] = false;
+
+        bool ourStartup = Find(o, nameof(Settings.RunAtStartup)) is { Value: JsonValue rv } && rv.TryGetValue<bool>(out bool rOn) && rOn;
+        if (keepOurStartup && !ourStartup)
+            foreach (string key in t.Select(p => p.Key).Where(k => k.Equals(nameof(Settings.RunAtStartup), StringComparison.OrdinalIgnoreCase)).ToList())
+                if (!(t[key] is JsonValue v && v.TryGetValue<bool>(out bool on) && !on)) t[key] = false;   // anything but false: off
 
         if (keepOurToken)
         {
@@ -992,14 +1021,16 @@ internal static class SettingsImport
             return (() => L.T(key, ("error", Describe(ex))), en);
         }
 
-        string theirsPath = Path.Combine(folder, "clips.json");
         string theirs;
         try
         {
-            var info = new FileInfo(theirsPath);
-            if (!info.Exists) { Log.Info("import: the other copy has no clip list: nothing to merge"); return (null, null); }
-            if (info.Length > MaxFileBytes) return Skipped("the other copy's clip list is too big ({size} bytes; more than {limit} is not read)", ("size", Bytes(info.Length)), ("limit", Bytes(MaxFileBytes)));
-            theirs = File.ReadAllText(theirsPath);
+            // Read from the handle whose owner and label were checked (the folder held meanwhile): a clip list planted or relabelled
+            // after the copy was found, or a folder that is a junction, is not merged.
+            var read = IntegrityLabel.ReadTrusted(folder, "clips.json", MaxFileBytes);
+            if (read.Missing) { Log.Info("import: the other copy has no clip list: nothing to merge"); return (null, null); }
+            if (read.Refused != null) throw new IOException("it is not trusted: " + read.Refused);
+            if (read.Text == null) return Skipped("the other copy's clip list is too big ({size} bytes; more than {limit} is not read)", ("size", Bytes(read.Length)), ("limit", Bytes(MaxFileBytes)));
+            theirs = read.Text;
             _ = ClipObjects(theirs, null, "");
         }
         catch (Exception ex) { return SkippedBy("the other copy's clip list cannot be read ({error})", ex); }
@@ -1039,7 +1070,8 @@ internal static class SettingsImport
     /// it was archived, its audio tracks, its length and size, whether it is a trim and what it was cut from. Fields this version
     /// does not know are carried along. Both texts are JSON arrays of clips as ClipLibrary writes them; <paramref name="ours"/> may
     /// be null. What is left out is added to <paramref name="skipped"/>, one sentence each: an entry that is no clip, one without a
-    /// path (theirs), a path listed twice (ours).
+    /// path (theirs), one whose path or source is on a network or device path (theirs; such a field never fills ours either), a path
+    /// listed twice (ours).
     /// </summary>
     internal static string MergeClips(string? ours, string theirs, List<string>? skipped = null)
     {
@@ -1054,6 +1086,7 @@ internal static class SettingsImport
             else { var mine = (JsonObject)clip.DeepClone(); byPath[key] = mine; merged.Add(mine); }
         }
         if (twice > 0) skipped?.Add($"your clip list names {twice} clip{(twice == 1 ? "" : "s")} twice: the repeats are dropped");
+        int network = 0;
         foreach (var clip in ClipObjects(theirs, skipped, "the other copy's clip list"))
         {
             string? key = KeyOf(clip);
@@ -1061,11 +1094,13 @@ internal static class SettingsImport
             if (byPath.TryGetValue(key, out var mine))
             {
                 foreach (var field in clip)
-                    if (field.Value != null && IsEmpty(mine[field.Key]) && !IsEmpty(field.Value)) mine[field.Key] = field.Value.DeepClone();
+                    if (field.Value != null && IsEmpty(mine[field.Key]) && !IsEmpty(field.Value) && !IsNetworkPathField(field)) mine[field.Key] = field.Value.DeepClone();
             }
+            else if (clip.Any(IsNetworkPathField)) network++;   // like the folder settings (KeepOurOwn): a network path is not taken over from another copy
             else { var copy = (JsonObject)clip.DeepClone(); byPath[key] = copy; merged.Add(copy); }
         }
         if (noPath > 0) skipped?.Add($"the other copy's clip list has {noPath} entr{(noPath == 1 ? "y" : "ies")} without a path: left out");
+        if (network > 0) skipped?.Add($"the other copy's clip list has {network} entr{(network == 1 ? "y" : "ies")} on a network or device path: left out");
         return merged.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
     }
 
@@ -1083,6 +1118,11 @@ internal static class SettingsImport
         if (notClips > 0) skipped?.Add($"{whose} has {notClips} entr{(notClips == 1 ? "y" : "ies")} that {(notClips == 1 ? "is" : "are")} not a clip: left out");
         return clips;
     }
+
+    /// <summary>A clip's <c>Path</c> or <c>SourcePath</c> (any case) that names a network or device location (<see cref="Screenshots.ScreenshotService.IsNetworkFolder"/>).</summary>
+    private static bool IsNetworkPathField(KeyValuePair<string, JsonNode?> field) =>
+        (field.Key.Equals("Path", StringComparison.OrdinalIgnoreCase) || field.Key.Equals(nameof(ClipEntry.SourcePath), StringComparison.OrdinalIgnoreCase))
+        && field.Value is JsonValue v && v.TryGetValue<string>(out var s) && Screenshots.ScreenshotService.IsNetworkFolder(s);
 
     /// <summary>The clip's path as a comparison key (<see cref="NormalizePath"/>), or null when it has none.</summary>
     private static string? KeyOf(JsonObject clip)

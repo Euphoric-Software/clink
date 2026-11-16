@@ -21,9 +21,22 @@ How it fits together (decided 2026-10-28):
 ### Windows publisher signing
 
 Windows Authenticode signing is separate from the signed update feed. The stable and dev workflows support Azure
-Artifact Signing behind the repository Actions variable `ARTIFACT_SIGNING_ENABLED`. It is `true` (activated for v0.4.8); setting it to `false` turns signing off and releases then ship unsigned. A value other than lowercase `true`, `false`, or unset fails validation. Once
+Artifact Signing: stable behind the repository Actions variable `ARTIFACT_SIGNING_ENABLED`, dev behind
+`ARTIFACT_SIGNING_DEV_ENABLED` (off when unset). Stable releases from v0.4.8 on must not be published with `ARTIFACT_SIGNING_ENABLED` off: `false` or unset makes releases ship unsigned. A value other than lowercase `true`, `false`, or unset fails validation. Once
 enabled, authentication/signing failures, an invalid signature, a missing timestamp, or an unexpected publisher stop the
 build and prevent publishing. Previously published immutable objects are never re-signed or replaced.
+`ARTIFACT_SIGNING_DEV_ENABLED` takes the same values as above. **Until the repository owner sets it to `true`, dev builds
+are unsigned.** It is a kill switch, not access control: anyone
+who can push `dev` can edit the workflow. Closing that gap (the Entra federated credential's subject, the `dev` and tag
+rulesets) is the repository owner's work in Azure and GitHub, not something this repository can do.
+
+What is verified before signing (`tools/lib/windows-signing-lib.ps1`): the ArtifactSigning 0.1.8 PowerShell module is downloaded
+from the PowerShell Gallery and checked against a pinned SHA-256; `Microsoft.Windows.SDK.BuildTools` and
+`Microsoft.ArtifactSigning.Client` are downloaded from nuget.org and checked against pinned SHA-512 hashes (the hashes nuget.org
+publishes), then placed where the module looks, so it does not fetch them itself. A mismatch stops the build. The module's third
+download, the `sign` tool, is restored by `dotnet` under a generated `nuget.config` that requires package signatures: only the
+nuget.org repository signer is trusted, only for packages owned by Microsoft or SignTeam. Updating any pinned version means
+recomputing its hash in a reviewed change.
 
 Use the Azure account `EuphoricSoftwareLLC` in East US (`https://eus.codesigning.azure.net`), its approved
 **Public** company identity, and the **Public Trust** certificate profile named `kithnote-public`. Clink and Kithnote
@@ -63,7 +76,8 @@ Set these **repository Actions variables**, not feed-signing secrets:
 
 | Variable | Value |
 | --- | --- |
-| `ARTIFACT_SIGNING_ENABLED` | `true` (activated for v0.4.8); `false` turns signing off and releases ship unsigned |
+| `ARTIFACT_SIGNING_ENABLED` | `true` for every stable release from v0.4.8 on; `false` or unset ships unsigned |
+| `ARTIFACT_SIGNING_DEV_ENABLED` | Dev workflow only; unset = dev builds are not signed. `false` stops dev signing without touching stable |
 | `ARTIFACT_SIGNING_ACCOUNT` | `EuphoricSoftwareLLC` |
 | `ARTIFACT_SIGNING_ENDPOINT` | `https://eus.codesigning.azure.net` |
 | `ARTIFACT_SIGNING_PROFILE` | `kithnote-public` (temporary shared company profile) |
@@ -88,7 +102,7 @@ federation and complete variables. Review/merge the prepared changes, enable sig
 application signatures and the installer signature/timestamps, verify the published checksums/feed, and exercise the
 updater before enabling a stable release. The ordinary `build.ps1`/local packaging flow remains unsigned unless a signer
 is explicitly supplied. v0.4.8 is the first signed stable release (Valid, publisher Euphoric Software LLC). A release is
-signed only while `ARTIFACT_SIGNING_ENABLED` is `true`, so users are told to check each download (README, "Installing &
+signed only while `ARTIFACT_SIGNING_ENABLED` is `true` (check it before every stable release), so users are told to check each download (README, "Installing &
 updating"); signing does not promise instant SmartScreen reputation.
 
 Offline checks: `pwsh -NoProfile -File tools/tests/windows-signing.tests.ps1`, `tools/tests/packaging.tests.ps1` and

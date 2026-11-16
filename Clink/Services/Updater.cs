@@ -64,8 +64,6 @@ internal sealed class Updater : IDisposable
 {
     private const int MaxDownloadAttempts = 3;              // per version, per process; a broken release should not be re-fetched every cycle
     private static readonly TimeSpan FirstCheckDelay = TimeSpan.FromSeconds(30);
-    private static readonly TimeSpan CheckInterval = TimeSpan.FromHours(6);
-    private static readonly TimeSpan LoopTick = TimeSpan.FromMinutes(1);       // how soon the background loop notices AutoUpdate being switched
     private static readonly TimeSpan ReadTimeout = TimeSpan.FromSeconds(60);   // no bytes for this long = the download is stalled
     /// <summary>How long a pooled connection of the update clients is reused: a session that lasts days picks up DNS changes.</summary>
     private static readonly TimeSpan ConnectionLifetime = TimeSpan.FromMinutes(15);
@@ -1040,6 +1038,12 @@ internal sealed class Updater : IDisposable
     /// <summary>Exit code of <c>--apply-update</c> when it refuses to run elevated.</summary>
     internal const int ElevatedExitCode = 3;
 
+    /// <summary>Exit code of <c>--apply-update</c> when it is not a download in the updates folder, or the target is not a Clink exe (<see cref="ApplyRefusal"/>).</summary>
+    internal const int ApplyRefusedExitCode = 4;
+
+    /// <summary>Stands in for <see cref="Environment.ProcessPath"/> in <see cref="RunApplyUpdate"/> in the unit tests (they run from bin, not from the updates folder); null otherwise.</summary>
+    internal static string? ApplySelfPathOverride { get; set; }
+
     private const string ElevatedNote = "Clink is running as administrator and does not install updates from an elevated process";
 
     private static bool IsElevated()
@@ -1097,11 +1101,7 @@ internal sealed class Updater : IDisposable
                 // Advice from the current state: retrying only helps where this process could install at all. The reason is
                 // capped so the advice still fits in a tray balloon (250 characters); the log has it in full.
                 var blocked = InstallProblemReason(Environment.ProcessPath ?? "");
-                string shown = reason.TrimEnd('.');   // (the reason is the English text the failed marker holds)
-                if (shown.Length > 150) shown = shown[..150] + "…";
-                InstallProblemNote = blocked != null
-                    ? Note.Of("Update to v{version} could not be installed: {reason}; {blocked}, so install it by hand from {folder}.", ("version", Note.Ltr(bestVer.ToString())), ("reason", shown), ("blocked", blocked), ("folder", Note.Ltr(UpdatesDir)))
-                    : Note.Of("Update to v{version} could not be installed: {reason}. To retry, click Check now under App → Updates.", ("version", Note.Ltr(bestVer.ToString())), ("reason", shown));
+                InstallProblemNote = InstallFailedNote(bestVer.ToString(), reason, blocked, UpdatesDir);   // (the reason is the English text the failed marker holds)
                 Log.Warn($"updater: skipping v{bestVer}, installing it failed earlier: {reason}");
                 return false;
             }
@@ -1140,7 +1140,7 @@ internal sealed class Updater : IDisposable
         // Kept short: this text comes back at every start inside a longer message, and tray balloons stop at 250 characters.
         // (the reason is the English text the failed marker below holds as well)
         string why = appControl
-            ? "Smart App Control blocked it (Clink is not code-signed yet). Turn it off in Windows Security › App & browser control, or build Clink from source"
+            ? "Smart App Control blocked it; it may not be signed or trusted yet. Reinstall from euphoric.software (publisher Euphoric Software LLC)"
             : Describe(ex);
         InstallProblemNote = Note.Of("Update to v{version} could not start: {reason}. To retry, click Check now under App → Updates.", ("version", Note.Ltr(version.ToString())), ("reason", Shorten(why)));
         Log.Warn("updater: " + InstallProblemNote.English);
@@ -1171,6 +1171,27 @@ internal sealed class Updater : IDisposable
         _ => ex.Message,
     };
 
+    /// <summary>
+    /// The note for a download whose install failed earlier. The whole message stays within 250 characters (the status line is not cut like the
+    /// balloon): the reason gives way first, down to <c>MinReason</c> characters, and the folder stays whole whenever the message fits. When the
+    /// blocked clause and the folder alone are too long, the "downloaded but blocked" note is used (it keeps the cause, not the old reason).
+    /// </summary>
+    internal static Note InstallFailedNote(string version, string reason, Note? blocked, string folder)
+    {
+        const int MaxMessage = 250, MinReason = 20;
+        string shown = Shorten(reason);
+        Note Full(string r) => blocked != null
+            ? Note.Of("Update to v{version} could not be installed: {reason}; {blocked}, so install it by hand from {folder}.", ("version", Note.Ltr(version)), ("reason", r), ("blocked", blocked), ("folder", Note.Ltr(folder)))
+            : Note.Of("Update to v{version} could not be installed: {reason}. To retry, click Check now under App → Updates.", ("version", Note.Ltr(version)), ("reason", r));
+        var note = Full(shown);
+        int over = note.Shown.Length - MaxMessage;
+        if (over <= 0) return note;
+        int keep = shown.Length - over - 1;   // (the "…" takes one character)
+        if (keep >= MinReason) return Full(shown[..keep] + "…");
+        if (blocked != null) return Note.Of("Update to v{version} is downloaded but {blocked}; install it by hand from {folder}.", ("version", Note.Ltr(version)), ("blocked", blocked), ("folder", Note.Ltr(folder)));
+        return Full(shown.Length > MinReason ? shown[..MinReason] + "…" : shown);
+    }
+
     internal static string Shorten(string reason)
     {
         string s = reason.ReplaceLineEndings(" ").Trim().TrimEnd('.');
@@ -1197,6 +1218,7 @@ internal sealed class Updater : IDisposable
     /// whether the process started and kept running. Null otherwise (a real run). A fake installer is no PE file: starting it can take
     /// Windows many seconds (virus scan), never return, or open a modal dialog, so a test that only needs "the apply was launched" must
     /// not start it. In test mode with no override the launch is refused and recorded (<see cref="TestGuard.Start(ProcessStartInfo)"/>).
+    /// <see cref="RunApplyUpdate"/> hands it the restart of the installed exe as well (its return value is not used there).
     /// </summary>
     internal static Func<ProcessStartInfo, bool>? LaunchOverride { get; set; }
 
@@ -1422,14 +1444,16 @@ internal sealed class Updater : IDisposable
     /// Entry point of <c>Clink.exe --apply-update &lt;targetExePath&gt; &lt;pid&gt; [restart args...]</c>, run from the downloaded exe:
     /// waits for the old process, stages a copy of this exe next to the target as <c>Clink.exe.new</c>, swaps it in by renaming
     /// (the previous exe stays as <c>Clink.exe.bak</c> until the new one has started and cleaned up) and restarts the target with
-    /// the original command line. If the swap fails the previous exe is left in place and a <c>.failed</c> marker says why.
+    /// the original command line. If the swap fails the previous exe is left in place, a <c>.failed</c> marker says why, and the previous
+    /// exe is restarted only when it carries a valid signature of the same signer as this exe (<see cref="StartPrevious"/>). Refused (<see cref="ApplyRefusal"/>), with nothing written or started, unless this exe is a download in the updates
+    /// folder and the target a Clink exe.
     /// </summary>
     public static int RunApplyUpdate(string[] args)
     {
         string target = args.Length > 1 ? args[1] : "";
         int pid = args.Length > 2 && int.TryParse(args[2], out int p) ? p : 0;
         string[] restartArgs = args.Length > 3 ? args[3..] : Array.Empty<string>();
-        string self = Environment.ProcessPath ?? "";
+        string self = ApplySelfPathOverride ?? Environment.ProcessPath ?? "";
 
         // An elevated process never swaps the installed exe (the downloaded exe sits in a folder every process of this user can write to).
         // The target is not touched, nothing is restarted and this process writes nothing at all (no log, no marker: an elevated
@@ -1438,6 +1462,15 @@ internal sealed class Updater : IDisposable
         {
             try { Console.Error.WriteLine($"Clink --apply-update: {ElevatedNote}"); } catch { }
             return ElevatedExitCode;
+        }
+
+        // Only a download in the updates folder installs itself, and only over a Clink exe: any Clink exe started by hand with
+        // --apply-update <some path> would otherwise copy itself over that file and start it. Refused like the elevated case:
+        // nothing written, nothing started (the parent, if there is one, marks the download failed when this exits early).
+        if (ApplyRefusal(self, target) is { } refused)
+        {
+            try { Console.Error.WriteLine($"Clink --apply-update: {refused}"); } catch { }
+            return ApplyRefusedExitCode;
         }
 
         // Wait for the old process first: it still holds the log file open (and the exe we are about to replace).
@@ -1488,7 +1521,7 @@ internal sealed class Updater : IDisposable
         }
         else
         {
-            Log.Error($"[update] could not replace {target}, starting the old version", last ?? new IOException("unknown"));
+            Log.Error($"[update] could not replace {target}, the old version stays", last ?? new IOException("unknown"));
             TryDelete(staged);
             if (!File.Exists(target) && File.Exists(backup))
             {
@@ -1499,8 +1532,16 @@ internal sealed class Updater : IDisposable
             try { File.WriteAllText(FailedMarker(self), $"{Describe(last)}\n{DateTime.Now:yyyy-MM-dd HH:mm:ss} {target}"); } catch { }
         }
 
+        // The exe this process just put in place is started as it is. After a failed apply the file at the target is not ours, and
+        // its version resource proves nothing (any exe can copy it): the previous version is restarted only when it is signed, validly,
+        // by the same signer as this exe (StartPrevious). An unsigned build never restarts it.
+        if (!installed)
+        {
+            StartPrevious(self, target, restartArgs);
+            return 0;
+        }
         Exception? startError = StartClink(target, restartArgs);
-        if (startError != null && installed && File.Exists(backup))
+        if (startError != null && File.Exists(backup))
         {
             // The new exe will not even start from there (blocked by App Control or AV): put the previous one back instead of
             // leaving no working Clink, and mark this download failed so the old version does not hand over to it again.
@@ -1511,12 +1552,95 @@ internal sealed class Updater : IDisposable
                 Log.Info($"[update] restored {target} from {backup}");
                 TryDelete(InstalledMarker(self));
                 try { File.WriteAllText(FailedMarker(self), $"the new version did not start: {Describe(startError)}\n{DateTime.Now:yyyy-MM-dd HH:mm:ss} {target}"); } catch { }
-                startError = StartClink(target, restartArgs);
+                startError = null;
+                StartPrevious(self, target, restartArgs);
             }
             catch (Exception ex) { Log.Error($"[update] could not restore {target} from {backup}", ex); }
         }
         if (startError != null) Log.Error("[update] could not restart Clink", startError);
         return 0;
+    }
+
+    /// <summary>
+    /// Restarts the previous exe at <paramref name="target"/> after a failed apply, only when it still passes <see cref="ApplyRefusal"/>
+    /// and its Authenticode signature is valid and made by the same signer (certificate subject) as <paramref name="self"/>. The
+    /// target is held open (others may only read it) from the check until the start has returned, so what starts is what was checked.
+    /// Otherwise nothing is started and the log says why. True when it was started.
+    /// </summary>
+    private static bool StartPrevious(string self, string target, string[] restartArgs)
+    {
+        string? why;
+        try
+        {
+            using var hold = new FileStream(target, FileMode.Open, FileAccess.Read, FileShare.Read);
+            why = ApplyRefusal(self, target);
+            if (why == null)
+            {
+                string? own = SignerOf(self, null), theirs = SignerOf(target, hold.SafeFileHandle);
+                why = own == null ? "this exe has no valid signature, so nothing vouches for the previous one"
+                    : theirs == null ? "the previous exe has no valid signature"
+                    : !string.Equals(own, theirs, StringComparison.Ordinal) ? $"the previous exe is signed by \"{theirs}\", not \"{own}\""
+                    : null;
+            }
+            if (why == null)
+            {
+                if (StartClink(target, restartArgs) is not { } error) { Log.Info($"[update] restarted the previous version ({target})"); return true; }
+                why = "it could not be started: " + Describe(error);
+            }
+        }
+        catch (Exception ex) { why = "it cannot be checked: " + Describe(ex); }
+        Log.Warn($"[update] the previous version is not restarted ({why}); start Clink again from {target}");
+        return false;
+    }
+
+    /// <summary>Stands in for <see cref="SignerOf"/> in the unit tests: the signer subject of a validly signed file, or null; null otherwise (a real run).</summary>
+    internal static Func<string, string?>? SignerOverride { get; set; }
+
+    /// <summary>
+    /// The certificate subject of <paramref name="file"/>'s signer when WinVerifyTrust says its Authenticode signature is valid (no UI,
+    /// no revocation lookup over the network), else null. <paramref name="handle"/>: the file as already opened by the caller.
+    /// </summary>
+    internal static string? SignerOf(string file, Microsoft.Win32.SafeHandles.SafeFileHandle? handle)
+    {
+        if (SignerOverride is { } fake) return fake(file);
+        try
+        {
+            if (!WinTrust.IsValid(file, handle)) return null;
+#pragma warning disable SYSLIB0057
+            using var cert = System.Security.Cryptography.X509Certificates.X509Certificate.CreateFromSignedFile(file);
+#pragma warning restore SYSLIB0057
+            string subject = cert.Subject;
+            return string.IsNullOrWhiteSpace(subject) ? null : subject;
+        }
+        catch (Exception) { return null; }
+    }
+
+    /// <summary>
+    /// Why <c>--apply-update</c> must not install <paramref name="self"/> over <paramref name="target"/>, or null when it may. <paramref name="self"/>
+    /// must be a file in one of the updates folders (<see cref="FlavourOfFolder"/>: a download, not an installed or portable exe started
+    /// by hand). <paramref name="target"/> must be a full local path to an existing <c>.exe</c> outside the updates folder whose version
+    /// resource names this product (any file name: a renamed portable Clink is a fine target). Reads only; writes and logs nothing.
+    /// </summary>
+    internal static string? ApplyRefusal(string self, string target)
+    {
+        try
+        {
+            if (string.IsNullOrEmpty(self) || FlavourOfFolder(self) == null) return "this exe is not a download in the updates folder";
+            if (string.IsNullOrWhiteSpace(target) || !Path.IsPathFullyQualified(target) || target.Length < 3 || !char.IsAsciiLetter(target[0]) || target[1] != ':'
+                || Screenshots.ScreenshotService.IsNetworkFolder(target))
+                return "the target is not a full local path";
+            string full = Path.GetFullPath(target);
+            if (!Path.GetExtension(full).Equals(".exe", StringComparison.OrdinalIgnoreCase)) return "the target is not an .exe";
+            string root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(UpdatesRoot));
+            if (full.Equals(root, StringComparison.OrdinalIgnoreCase) || full.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                return "the target is in the updates folder";
+            if (!File.Exists(full)) return "the target does not exist";
+            string? own = EntryAssembly.GetCustomAttribute<AssemblyProductAttribute>()?.Product;
+            string? theirs = FileVersionInfo.GetVersionInfo(full).ProductName;
+            if (string.IsNullOrEmpty(own) || !string.Equals(own, theirs?.Trim(), StringComparison.Ordinal)) return "the target is not a Clink exe";
+            return null;
+        }
+        catch (Exception ex) { return "the target cannot be checked: " + ex.Message; }
     }
 
     private static Exception? StartClink(string exe, string[] args)
@@ -1525,6 +1649,8 @@ internal sealed class Updater : IDisposable
         {
             var psi = new ProcessStartInfo(exe) { UseShellExecute = true, WorkingDirectory = Path.GetDirectoryName(exe) ?? "" };
             foreach (string a in args) psi.ArgumentList.Add(a);
+            if (LaunchOverride is { } launch)   // a unit test stands in for the process; false = it did not start
+                return launch(psi) ? null : new InvalidOperationException("the process did not start");
             TestGuard.Start(psi)?.Dispose();
             return null;
         }
@@ -1548,8 +1674,8 @@ internal sealed class Updater : IDisposable
 
     /// <summary>
     /// Cleans up after a finished install 30 s after start, then, while <see cref="Settings.AutoUpdate"/> is on, checks the feed
-    /// right away and every 6 hours, downloading a newer release automatically. The setting is read before every pass (once a
-    /// minute), so switching it off stops the checks without a restart, and <see cref="Wake"/> runs a check at once when it is
+    /// right away and every 6 hours (every ~2 minutes on the dev channel, see <see cref="DevBuildPolicy"/>), downloading a newer release automatically. The setting is read before every pass (every
+    /// tick: 1 min, 15 s on the dev channel), so switching it off stops the checks without a restart, and <see cref="Wake"/> runs a check at once when it is
     /// turned on. While it is off Clink never contacts the feed on its own (the version label in the footer and Check now still
     /// check on demand).
     /// </summary>
@@ -1569,18 +1695,25 @@ internal sealed class Updater : IDisposable
                 finally { _gate.Release(); }
                 if (!_settings.AutoUpdate) Log.Info("updater: AutoUpdate is off, not checking (click the version in the footer to check by hand)");
                 DateTime lastCheck = DateTime.MinValue;
+                int failedInARow = 0;
+                double jitter = Random.Shared.NextDouble();   // drawn once per pass, not per tick
                 while (!ct.IsCancellationRequested)
                 {
-                    if (_settings.AutoUpdate && DateTime.UtcNow - lastCheck >= CheckInterval)
+                    // Dev builds: every ~2 min (backing off after failures); stable: every 6 h. Read each tick, so switching the box takes effect at once.
+                    bool dev = _settings.UseDevBuilds;
+                    var interval = DevBuildPolicy.Interval(dev, failedInARow, jitter);
+                    // _gate busy = a check or download is under way (a manual one, say): this pass waits for the next tick.
+                    if (_settings.AutoUpdate && DateTime.UtcNow - lastCheck >= interval && _gate.CurrentCount > 0)
                     {
                         _wake.Wait(0);   // a Wake() from before this pass is answered by it
                         lastCheck = DateTime.UtcNow;
                         // One failed pass (timeout after sleep/resume, a full disk...) must not end the checks for the rest of the session.
-                        try { await CheckAndMaybeDownloadAsync(ct, manual: false).ConfigureAwait(false); }
-                        catch (Exception ex) when (!ct.IsCancellationRequested) { Log.Warn("updater: background check failed: " + ex.Message); }
+                        try { await CheckAndMaybeDownloadAsync(ct, manual: false).ConfigureAwait(false); failedInARow = DevBuildPolicy.NextFailures(failedInARow, LastError != null); }   // a failed download counts too
+                        catch (Exception ex) when (!ct.IsCancellationRequested) { failedInARow = DevBuildPolicy.NextFailures(failedInARow, true); Log.Warn("updater: background check failed: " + ex.Message); }
+                        jitter = Random.Shared.NextDouble();
                     }
                     // Wake() (auto-update just turned on) ends the wait early and makes the next pass check whenever it last did.
-                    if (await _wake.WaitAsync(LoopTick, ct).ConfigureAwait(false)) lastCheck = DateTime.MinValue;
+                    if (await _wake.WaitAsync(DevBuildPolicy.LoopTick(_settings.UseDevBuilds), ct).ConfigureAwait(false)) lastCheck = DateTime.MinValue;
                 }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
@@ -1714,6 +1847,7 @@ internal sealed class Updater : IDisposable
     /// </summary>
     internal bool TrySetPending(string path, ReleaseVersion version, string how, bool manual)
     {
+        string? previous;
         lock (_pendingLock)
         {
             if (!ShouldInstall(version, allowLeaveDev: manual))
@@ -1721,9 +1855,11 @@ internal sealed class Updater : IDisposable
                 Log.Info($"updater: v{version} {how}, but the update channel changed meanwhile ({(_settings.UseDevBuilds ? "dev builds" : "releases")}); not offering it");
                 return false;
             }
+            previous = PendingPath;
             PendingPath = path;
             PendingVersion = version;
         }
+        DeleteReplacedPending(previous, path, version);
         // Accepted by this exe now (a download adopted from an earlier run included), so the startup scan may install it (LeaveDevAllowedAtStart).
         string self = Current.ToString();
         if (RecFrom != self) { RecFrom = self; _settings.Save(); }
@@ -1733,6 +1869,24 @@ internal sealed class Updater : IDisposable
         Log.Info($"updater: v{version} {how}: {path}");
         try { UpdateReady?.Invoke(version); } catch (Exception ex) { Log.Warn("updater: UpdateReady handler: " + ex.Message); }
         return true;
+    }
+
+    /// <summary>
+    /// A newer download became pending: the previous pending file (and its markers) is removed so replaced dev builds do not pile up. Only a
+    /// <c>Clink-X.Y.Z[-dev.N].exe</c> directly in this copy's updates folder, of a version below the new one, and never the new file itself.
+    /// </summary>
+    private void DeleteReplacedPending(string? previous, string current, ReleaseVersion version)
+    {
+        try
+        {
+            if (string.IsNullOrEmpty(previous) || string.Equals(Path.GetFullPath(previous), Path.GetFullPath(current), StringComparison.OrdinalIgnoreCase)) return;
+            if (VersionFromFile(previous) is not { } old || old >= version) return;
+            if (!string.Equals(Path.GetDirectoryName(Path.GetFullPath(previous))?.TrimEnd('\\', '/'), Path.GetFullPath(UpdatesDir).TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase)) return;
+            TryDelete(previous);
+            DeleteMarkers(previous);
+            Log.Info($"updater: removed the replaced download of v{old}");
+        }
+        catch (Exception ex) { Log.Warn("updater: removing the replaced download: " + ex.Message); }
     }
 
     /// <summary>
