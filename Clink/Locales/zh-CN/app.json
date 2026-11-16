@@ -238,5 +238,9 @@
   "Not shared: your Copium plan changed while the copy was made. Share it again": "未分享：制作副本期间你的 Copium 套餐发生了变化。请重新分享",
   "A recording is running. Restarting Clink ends it and saves what was recorded, and the replay buffer is cleared.\n\nRestart Clink to change the language?": "正在录制。重启 Clink 会结束录制并保存已录内容，同时清空回放缓冲区。\n\n要重启 Clink 以更改语言吗？",
   "Nothing recorded yet, wait a moment and try again.": "尚无录制内容，请稍等片刻后重试。",
-  "Clink could not restart itself ({error}), so the new language applies the next time Clink starts": "Clink 无法自行重启（{error}），因此新语言将在下次启动 Clink 时生效"
+  "Clink could not restart itself ({error}), so the new language applies the next time Clink starts": "Clink 无法自行重启（{error}），因此新语言将在下次启动 Clink 时生效",
+  "Version {version}": "版本 {version}",
+  "In this dev build (v{version})": "本开发版的更新 (v{version})",
+  "Not released yet": "尚未发布",
+  "Click anywhere or press Esc to close": "点击任意位置或按 Esc 关闭"
 }

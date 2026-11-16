@@ -376,5 +376,6 @@
   "Automatic (Windows display language)": "Automatisch (weergavetaal van Windows)",
   "Restart Clink to use the new language.": "Start Clink opnieuw om de nieuwe taal te gebruiken.",
   "Restart now": "Nu opnieuw starten",
-  "Restarting Clink clears the replay buffer: the moments recorded just before the restart are not kept.": "Als je Clink opnieuw start, wordt de replaybuffer gewist: de momenten die vlak voor de herstart zijn opgenomen, blijven niet bewaard."
+  "Restarting Clink clears the replay buffer: the moments recorded just before the restart are not kept.": "Als je Clink opnieuw start, wordt de replaybuffer gewist: de momenten die vlak voor de herstart zijn opgenomen, blijven niet bewaard.",
+  "What's new": "Wat is er nieuw"
 }

@@ -242,5 +242,9 @@
   "Not shared: your Copium plan changed while the copy was made. Share it again": "शेयर नहीं हुआ: कॉपी बनते समय आपका Copium प्लान बदल गया। इसे फिर शेयर करें",
   "A recording is running. Restarting Clink ends it and saves what was recorded, and the replay buffer is cleared.\n\nRestart Clink to change the language?": "एक रिकॉर्डिंग चल रही है। Clink रीस्टार्ट करने पर वह खत्म हो जाएगी और जो रिकॉर्ड हुआ है वह सेव होगा, और रीप्ले बफ़र साफ़ हो जाएगा।\n\nभाषा बदलने के लिए Clink रीस्टार्ट करें?",
   "Nothing recorded yet, wait a moment and try again.": "अभी कुछ रिकॉर्ड नहीं हुआ, थोड़ी देर रुकें और फिर कोशिश करें।",
-  "Clink could not restart itself ({error}), so the new language applies the next time Clink starts": "Clink खुद रीस्टार्ट नहीं हो सका ({error}), इसलिए नई भाषा अगली बार Clink शुरू होने पर लागू होगी"
+  "Clink could not restart itself ({error}), so the new language applies the next time Clink starts": "Clink खुद रीस्टार्ट नहीं हो सका ({error}), इसलिए नई भाषा अगली बार Clink शुरू होने पर लागू होगी",
+  "Version {version}": "वर्शन {version}",
+  "In this dev build (v{version})": "इस डेव बिल्ड में (v{version})",
+  "Not released yet": "अभी रिलीज़ नहीं हुआ",
+  "Click anywhere or press Esc to close": "बंद करने के लिए कहीं भी क्लिक करें या Esc दबाएँ"
 }

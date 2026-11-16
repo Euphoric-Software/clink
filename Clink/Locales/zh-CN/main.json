@@ -376,5 +376,6 @@
   "Automatic (Windows display language)": "自动（Windows 显示语言）",
   "Restart Clink to use the new language.": "重启 Clink 以使用新语言。",
   "Restart now": "立即重启",
-  "Restarting Clink clears the replay buffer: the moments recorded just before the restart are not kept.": "重启 Clink 会清空回放缓冲区：重启前刚刚录下的片段不会保留。"
+  "Restarting Clink clears the replay buffer: the moments recorded just before the restart are not kept.": "重启 Clink 会清空回放缓冲区：重启前刚刚录下的片段不会保留。",
+  "What's new": "新功能"
 }

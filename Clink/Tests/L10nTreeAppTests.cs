@@ -560,7 +560,7 @@ internal static class L10nTreeAppTests
     {
         string root = L10nSourceScan.Root() ?? throw new TestFailure("Clink.csproj was not found above " + AppContext.BaseDirectory);
         var files = new[] { "App.xaml.cs", "Services/AppController.cs", "Services/AppController.Connect.cs", "Services/AppController.Consent.cs", "Services/AppController.Recording.cs",
-            "Services/AppController.SaveCopy.cs", "Services/AppController.Screenshots.cs", "Services/AppController.ShareMany.cs", "Services/AppController.Language.cs", "Services/AppController.CaptureCard.cs", "Services/Updater.cs", "UI/ToastWindow.xaml.cs" };
+            "Services/AppController.SaveCopy.cs", "Services/AppController.Screenshots.cs", "Services/AppController.ShareMany.cs", "Services/AppController.Language.cs", "Services/AppController.CaptureCard.cs", "Services/AppController.WhatsNew.cs", "Services/Updater.cs", "UI/ToastWindow.xaml.cs" };
         var bad = new List<string>();
         foreach (var f in files)
         {
@@ -574,6 +574,50 @@ internal static class L10nTreeAppTests
             }
         }
         Check.Equal(Array.Empty<string>(), bad.ToArray(), "Say(\"…\") logs what it is given: use SayT / Say(Note)");
+    }
+
+    // ------------------------------------------------------------------ the What's new window
+
+    [UnitTest]
+    public static void The_whats_new_window_is_localized_body_included()
+    {
+        if (Application.Current == null) throw new TestFailure("needs the running application (run it with Clink.exe --unittest)");
+        var log = WhatsNew.Current ?? throw new TestFailure("the shipped CHANGELOG.md did not load");
+        // the whole changelog, on a dev build (the Unreleased heading names it) and on a release (another heading)
+        foreach (string version in new[] { "0.4.9-dev.41", "0.4.8" })
+        {
+            var current = ReleaseVersion.Parse(version)!.Value;
+            using (L.Scope("qps-ploc"))
+            {
+                L.ClearMissing();
+                var w = new WhatsNewWindow(log.Sections, current, null);
+                try
+                {
+                    NoneUnlocalized(w, "the What's new window (" + version + ")");
+                    Marked(w.Title, "title");
+                    Marked(System.Windows.Automation.AutomationProperties.GetName(w), "automation name");
+                    Marked(System.Windows.Automation.AutomationProperties.GetName(w.CloseButton), "close button name");
+                    Marked(w.HintText.Text, "hint");
+                    foreach (var text in w.Body.Children.OfType<System.Windows.Controls.TextBlock>()) Marked(text.Text, "heading");
+                    int entries = 0;
+                    foreach (var row in w.Body.Children.OfType<System.Windows.Controls.Grid>()) { Marked(((System.Windows.Controls.TextBlock)row.Children[1]).Text, "entry"); entries++; }
+                    Check.Equal(log.AllEntries.Count(), entries, "every entry is there");
+                    NoMissing("What's new window");
+                }
+                finally { w.Close(); }
+            }
+        }
+        using (L.Scope("en"))
+        {
+            var e = new WhatsNewWindow(log.Sections, ReleaseVersion.Parse("0.4.9-dev.41")!.Value, null);
+            try
+            {
+                Check.Equal("What's new", e.Title);
+                Check.Equal("Click anywhere or press Esc to close", e.HintText.Text);
+                Check.Equal("In this dev build (v0.4.9-dev.41)", ((System.Windows.Controls.TextBlock)e.Body.Children[0]).Text);
+            }
+            finally { e.Close(); }
+        }
     }
 
     // ------------------------------------------------------------------ the updater
@@ -644,10 +688,11 @@ internal static class L10nTreeAppTests
             @"Services\AppController.cs", @"Services\AppController.Connect.cs", @"Services\AppController.Consent.cs", @"Services\AppController.Recording.cs",
             @"Services\AppController.SaveCopy.cs", @"Services\AppController.Screenshots.cs", @"Services\AppController.ShareMany.cs", @"Services\AppController.Language.cs",
             @"Services\AppController.CaptureCard.cs",   // (the capture card notices)
+            @"Services\AppController.WhatsNew.cs", @"UI\WhatsNewWindow.xaml.cs",   // (the What's new window: its chrome and headings)
             @"UI\ToastWindow.xaml.cs", @"UI\StatusDotWindow.xaml.cs", @"Services\Updater.cs", "App.xaml.cs",
             @"Engine\Engine.cs",   // (the save's "The encoder restarted, try again" note, shown by the controller through UserText)
         }, new[] { L10nSourceScan.T, L10nSourceScan.Plural, "SayT(", "Note.Of(", "Note.PluralOf(" });
-        hits.AddRange(L10nSourceScan.Xaml(root, new[] { @"UI\ToastWindow.xaml", @"UI\StatusDotWindow.xaml" }));
+        hits.AddRange(L10nSourceScan.Xaml(root, new[] { @"UI\ToastWindow.xaml", @"UI\StatusDotWindow.xaml", @"UI\WhatsNewWindow.xaml" }));
         Check.True(hits.Count > 200, "found the literals of the slice's sources: " + hits.Count);
         var problems = hits.Where(h => !app.Contains(h.Key) && !core.Contains(h.Key)).Select(h => h.File + ": " + h.Key).Distinct().ToArray();
         Check.Equal(Array.Empty<string>(), problems, "keys the sources ask for that no catalog file has");

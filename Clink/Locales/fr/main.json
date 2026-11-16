@@ -376,5 +376,6 @@
   "Automatic (Windows display language)": "Automatique (langue d'affichage de Windows)",
   "Restart Clink to use the new language.": "Redémarrez Clink pour utiliser la nouvelle langue.",
   "Restart now": "Redémarrer maintenant",
-  "Restarting Clink clears the replay buffer: the moments recorded just before the restart are not kept.": "Redémarrer Clink vide le tampon de replay : les moments enregistrés juste avant le redémarrage ne sont pas conservés."
+  "Restarting Clink clears the replay buffer: the moments recorded just before the restart are not kept.": "Redémarrer Clink vide le tampon de replay : les moments enregistrés juste avant le redémarrage ne sont pas conservés.",
+  "What's new": "Nouveautés"
 }

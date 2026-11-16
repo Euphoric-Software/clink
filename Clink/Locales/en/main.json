@@ -376,5 +376,6 @@
   "Automatic (Windows display language)": "Automatic (Windows display language)",
   "Restart Clink to use the new language.": "Restart Clink to use the new language.",
   "Restart now": "Restart now",
-  "Restarting Clink clears the replay buffer: the moments recorded just before the restart are not kept.": "Restarting Clink clears the replay buffer: the moments recorded just before the restart are not kept."
+  "Restarting Clink clears the replay buffer: the moments recorded just before the restart are not kept.": "Restarting Clink clears the replay buffer: the moments recorded just before the restart are not kept.",
+  "What's new": "What's new"
 }

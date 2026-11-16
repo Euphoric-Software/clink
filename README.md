@@ -238,7 +238,9 @@ Updates* also shows *Last check failed: …* when the update feed could not be r
 problem: …* when a download failed. To turn auto-update off, untick *Install updates automatically* under *App →
 Updates*; this takes effect at once (no restart), Clink then never contacts the update feed on its own, and *Check now* (or
 *Check for updates* in the popup that clicking the version in the footer opens) checks by hand and opens the release
-page if there is something newer.
+page if there is something newer. After the first install and after each update, a *What's new* window lists what changed
+(held back while a game or full-screen app is in front, and shown once there is none); *What's new* in that same popup
+opens it again.
 
 **Dev builds.** Every push to the `dev` branch publishes a *prerelease* named `vX.Y.Z-dev.N` (workflow
 `release-dev.yml`, only after the unit tests pass; the 10 newest builds are kept, as prereleases and on the feed) to a separate dev feed (`dl-dev.euphoric.software`). Clink ignores them unless you tick *Dev

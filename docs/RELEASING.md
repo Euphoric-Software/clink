@@ -270,8 +270,12 @@ GitHub or R2), because a feed-less release would give every client an update pat
   `clink-dev`, checks the public URLs, records a private GitHub prerelease and keeps the 10 newest. Watch it in the repo's Actions tab.
 - **Stable**: merge to `main`, tag `vX.Y.Z`, push the tag. Everything else is automatic.
   1. Merge `dev` into `main` (the commit that is tagged must be on `origin/main`).
-  2. On `main`: `.\tools\release.ps1 -Version X.Y.Z` bumps `<Version>` in `Clink/Clink.csproj`, commits, creates the annotated tag `vX.Y.Z` and
-     pushes the branch and the tag. (Tagging by hand works too if `<Version>` already matches.)
+  2. On `main`: `.\tools\release.ps1 -Version X.Y.Z` renames `## Unreleased` in `CHANGELOG.md` to `## X.Y.Z - YYYY-MM-DD` (the "What's new"
+     window's section for the release; the catalog keys do not change), bumps `<Version>` in `Clink/Clink.csproj`, commits both as
+     "Release vX.Y.Z", creates the annotated tag `vX.Y.Z` and pushes the branch and the tag. It refuses a stable version that `CHANGELOG.md` has
+     no section for, and any change to `CHANGELOG.md` that it did not make itself (commit hand edits first). (Tagging by hand works too, but only
+     once `<Version>` matches AND the `## Unreleased` -> `## X.Y.Z` rename is committed: a release built with `## Unreleased` still in it has
+     no section for its own version, so its "What's new" shows nothing.)
   3. `release.yml` builds, checks the runtime is current, writes `notes.txt`, signs `stable.json`, uploads to `clink-stable`, checks the public URLs, drafts
      and verifies the GitHub release, publishes it and verifies it again. Watch it in the Actions tab; a red run almost never leaves a half-published feed.
      The one exception is a tiny window between the upload of `stable.json` and the upload of `stable.json.sig`: if the `.sig` upload fails, the next
