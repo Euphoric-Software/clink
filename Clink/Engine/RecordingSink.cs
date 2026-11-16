@@ -499,13 +499,16 @@ internal sealed class RecordingSink
 
 /// <summary>
 /// Where the encoder's output goes: into the replay ring and, while a recording runs, into its sink. Both happen under one gate, so a
-/// recording can start from the ring's last keyframe and attach in the same critical section: its first live sample is the one right after
-/// the snapshot's last (no gap, no duplicate), and it needs no forced keyframe. The gate is held for a copy and an enqueue.
+/// recording can start from the ring's last keyframe and attach without a gap or a duplicate, and it needs no forced keyframe. The start
+/// snapshot (up to a GOP, tens of MB) is copied outside the gate; under it go only the few samples pushed since and the attach.
 /// </summary>
 internal sealed class VideoFanOut
 {
     private readonly object _gate = new();
     private RecordingSink? _sink;
+
+    /// <summary>Tests only: runs in <see cref="Attach"/> after each snapshot taken outside the gate, before the gate is taken.</summary>
+    internal Action? AfterSnapshot;
 
     public bool HasSink { get { lock (_gate) return _sink != null; } }
 
@@ -531,13 +534,33 @@ internal sealed class VideoFanOut
     /// <summary>Feeds <paramref name="sink"/> the ring from the last keyframe and attaches it for the samples that follow. Returns the snapshot's first pts (the recording's origin), or null when the ring has no keyframe yet (the sink then starts at the first live one).</summary>
     public long? Attach(RingStore ring, RecordingSink sink)
     {
-        lock (_gate)
+        lock (_gate) if (_sink != null) throw new AlreadyRecordingException();
+        for (int attempt = 0; ; attempt++)
         {
-            if (_sink != null) throw new AlreadyRecordingException();
-            var snap = ring.Snapshot(long.MaxValue, long.MaxValue);   // everything in the ring is at or before now: the last keyframe on
-            foreach (var s in snap) sink.OnVideoOwned(s.Pts, s.Keyframe, s.Data);
-            _sink = sink;
-            return snap.Count > 0 ? snap[0].Pts : null;
+            // Outside the gate, so the encoder's pushes do not wait for the copy. Everything in the ring is at or before now: the last keyframe on.
+            var snap = attempt < 2 ? ring.Snapshot(long.MaxValue, long.MaxValue) : null;
+            if (snap != null) AfterSnapshot?.Invoke();
+            lock (_gate)
+            {
+                if (_sink != null) throw new AlreadyRecordingException();
+                List<VideoSample>? since = null;
+                if (snap is { Count: > 0 })
+                {
+                    // No push can happen now: what was pushed after the snapshot's last sample (by push order) joins it up to the next live push.
+                    since = ring.SamplesAfter(snap[^1].Seq);
+                    if (since == null) continue;   // the ring evicted (or cleared) the sample right after it meanwhile: snapshot again
+                }
+                else
+                {
+                    // No keyframe in the ring (it holds less than a GOP: a cheap copy), or two snapshots lost the seam to eviction: as
+                    // before, copy under the gate.
+                    snap = ring.Snapshot(long.MaxValue, long.MaxValue);
+                }
+                foreach (var s in snap) sink.OnVideoOwned(s.Pts, s.Keyframe, s.Data);
+                if (since != null) foreach (var s in since) sink.OnVideoOwned(s.Pts, s.Keyframe, s.Data);
+                _sink = sink;
+                return snap.Count > 0 ? snap[0].Pts : null;
+            }
         }
     }
 

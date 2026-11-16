@@ -690,6 +690,223 @@ internal static class RecordingSinkTests
         Check.NotNull(r.Path);
     }
 
+    /// <summary>
+    /// The issue #24 harness: a 256 MB ring of ~50 KB samples whose last keyframe is ~180 MB back, an attach on this thread while another
+    /// thread pushes through the fan-out at 60 Hz. It prints the attach time and the longest push wait, and fails when a push waited for
+    /// the attach's copy (see the limit below).
+    /// </summary>
+    [UnitTest]
+    public static void VideoFanOut_attach_does_not_block_pushes_for_the_whole_snapshot_copy()
+    {
+        const int Len = 50 * 1024, KeyEvery = 4096;
+        const long P60 = 166_667;
+        using var dir = new TempDir();
+        using var ring = new RingStore(256L << 20);
+        var fan = new VideoFanOut();
+        var buf = new byte[Len];
+        int n = 0;
+        // 1.5 laps: every push from here on evicts, and the last keyframe (4096) is far back, so the attach copies most of the ring.
+        long laps = ring.Capacity / Len * 3 / 2;
+        for (; n < laps; n++) { buf[0] = (byte)n; fan.Push(ring, T0 + n * P60, n % KeyEvery == 0, buf); }
+
+        long maxWaitTicks = 0;
+        int pushedDuring = 0;
+        using var stop = new ManualResetEventSlim(false);
+        using var started = new ManualResetEventSlim(false);
+        int next = n;
+        var pusher = new Thread(() =>
+        {
+            var pb = new byte[Len];
+            long period = Stopwatch.Frequency / 60;
+            long due = Stopwatch.GetTimestamp();
+            started.Set();
+            while (!stop.IsSet)
+            {
+                pb[0] = (byte)next;
+                long t0 = Stopwatch.GetTimestamp();
+                fan.Push(ring, T0 + next * P60, next % KeyEvery == 0, pb);
+                long waited = Stopwatch.GetTimestamp() - t0;
+                if (waited > maxWaitTicks) maxWaitTicks = waited;
+                next++; pushedDuring++;
+                due += period;
+                long sleep = (due - Stopwatch.GetTimestamp()) * 1000 / Stopwatch.Frequency;
+                if (sleep > 0) Thread.Sleep((int)sleep);
+                else due = Stopwatch.GetTimestamp();
+            }
+        }) { IsBackground = true, Name = "fan-pusher" };
+        pusher.Start();
+        started.Wait();
+        Thread.Sleep(50);   // a few pushes first
+
+        var cfg = Cfg(dir, new Written(), 1);
+        cfg.BudgetBytes = 1L << 30;   // (the sink is not started: everything stays queued)
+        var s = new RecordingSink(cfg);
+        var sw = Stopwatch.StartNew();
+        long? origin = fan.Attach(ring, s);
+        sw.Stop();
+        Thread.Sleep(50);
+        stop.Set();
+        pusher.Join();
+        Check.True(fan.Detach(s));
+        long queuedMb = s.QueueBytes >> 20;
+        s.Abort();
+        Done(s);
+
+        double attachMs = sw.Elapsed.TotalMilliseconds;
+        double waitMs = maxWaitTicks * 1000.0 / Stopwatch.Frequency;
+        Console.WriteLine($"  (attach fed {queuedMb} MB in {attachMs:0.0} ms; {pushedDuring} pushes, longest push wait {waitMs:0.00} ms)");
+        Check.Equal(T0 + KeyEvery * P60, origin, "the recording starts on the ring's last keyframe");
+        // Like the ring's own snapshot harness: the limit only catches a push that waited for the attach's copy, not a GC pause of the
+        // pusher on a loaded runner: over half the attach, and at least 50 ms (3 frames).
+        double limit = Math.Max(50.0, attachMs / 2);
+        Check.True(waitMs <= limit, $"longest push wait {waitMs:0.00} ms is at most {limit:0.0} ms (max of 50 ms and half the {attachMs:0.0} ms attach)");
+    }
+
+    /// <summary>The recording's video: starts on a keyframe at <paramref name="origin"/> and runs, with no gap and no duplicate, to sample <paramref name="last"/>.</summary>
+    private static void ContiguousFrom(Written log, long? origin, int last, string what)
+    {
+        var video = log.Video();
+        Check.NotNull(origin, what + ": an origin");
+        Check.True(video.Count > 0 && video[0].key && video[0].pts == origin, $"{what}: starts on the snapshot's keyframe");
+        Check.True((video[0].pts - T0) % (30 * Period) == 0, $"{what}: a keyframe of the stream");
+        for (int i = 1; i < video.Count; i++) Check.Equal(video[i - 1].pts + Period, video[i].pts, $"{what}: sample {i} follows the one before");
+        Check.Equal(VideoPts(last), video[^1].pts, $"{what}: runs up to the last sample pushed");
+    }
+
+    /// <summary>A 64 KB frame (a keyframe stays small): 512 fill the smallest ring, so a few hundred pushes evict.</summary>
+    private static byte[] BigFrame(int i, bool key)
+    {
+        if (key) return Frame(i, true);
+        var au = new byte[64 * 1024];
+        au[3] = 1; au[4] = 0x41; au[5] = 0x9A;
+        for (int k = 6; k < au.Length; k++) au[k] = (byte)(0x10 + (i * 13 + k * 7) % 200);
+        return au;
+    }
+
+    private static void PushBig(VideoFanOut fan, RingStore ring, int from, int to)
+    {
+        for (int i = from; i < to; i++) fan.Push(ring, VideoPts(i), i % 30 == 0, BigFrame(i, i % 30 == 0));
+    }
+
+    [UnitTest]
+    public static void VideoFanOut_samples_pushed_between_the_snapshot_and_the_attach_reach_the_sink_once()
+    {
+        using var dir = new TempDir();
+        var log = new Written();
+        using var ring = new RingStore(RingStore.MinBytes);
+        var fan = new VideoFanOut();
+        const int total = 1500;
+        int pushed = 0, seamPushes = -1, snapshots = 0;
+        using var go = new ManualResetEventSlim(false);
+        var pusher = new Thread(() =>
+        {
+            for (int i = 0; i < total; i++)
+            {
+                if (i == 100) go.Wait(10000);
+                fan.Push(ring, VideoPts(i), i % 30 == 0, Frame(i, i % 30 == 0));
+                Volatile.Write(ref pushed, i + 1);
+                long until = Stopwatch.GetTimestamp() + Stopwatch.Frequency / 10_000;   // 100 us
+                while (Stopwatch.GetTimestamp() < until) Thread.SpinWait(10);
+            }
+        });
+        pusher.Start();
+        while (Volatile.Read(ref pushed) < 100) Thread.Yield();
+        fan.AfterSnapshot = () =>
+        {
+            // The encoder keeps pushing (into the ring only) between the snapshot and the attach.
+            snapshots++;
+            int before = Volatile.Read(ref pushed);
+            Thread.Sleep(20);
+            seamPushes = Volatile.Read(ref pushed) - before;
+        };
+        var s = Sink(Cfg(dir, log, 1));
+        go.Set();
+        long? origin = fan.Attach(ring, s);
+        int pushedAtAttach = Volatile.Read(ref pushed);
+        pusher.Join();
+        Check.True(fan.Detach(s));
+        Stopped(s);
+        Check.Equal(1, snapshots, "one snapshot outside the gate");
+        Check.True(seamPushes > 0 && pushedAtAttach < total, $"pushes landed between the snapshot and the attach ({seamPushes}), and more came after it ({pushedAtAttach} of {total} at the attach)");
+        ContiguousFrom(log, origin, total - 1, "across the seam");
+    }
+
+    [UnitTest]
+    public static void VideoFanOut_attach_snapshots_again_when_the_ring_evicts_the_seam()
+    {
+        using var dir = new TempDir();
+        var log = new Written();
+        using var ring = new RingStore(RingStore.MinBytes);
+        var fan = new VideoFanOut();
+        PushBig(fan, ring, 0, 600);
+        int snapshots = 0;
+        fan.AfterSnapshot = () => { if (snapshots++ == 0) PushBig(fan, ring, 600, 1200); };   // a whole lap: the sample after the snapshot's last (600) is gone
+        var s = Sink(Cfg(dir, log, 1));
+        long? origin = fan.Attach(ring, s);
+        Check.True(ring.Range()!.Value.oldest > VideoPts(600), "the ring evicted the sample after the first snapshot");
+        PushBig(fan, ring, 1200, 1260);
+        Check.True(fan.Detach(s));
+        Stopped(s);
+        Check.Equal(2, snapshots, "a second snapshot");
+        Check.Equal(VideoPts(1170), origin, "the last keyframe at the second snapshot");
+        ContiguousFrom(log, origin, 1259, "after the eviction");
+    }
+
+    [UnitTest]
+    public static void VideoFanOut_attach_falls_back_to_a_copy_under_the_gate_when_every_snapshot_loses_the_seam()
+    {
+        using var dir = new TempDir();
+        var log = new Written();
+        using var ring = new RingStore(RingStore.MinBytes);
+        var fan = new VideoFanOut();
+        PushBig(fan, ring, 0, 600);
+        int snapshots = 0, next = 600;
+        fan.AfterSnapshot = () => { snapshots++; PushBig(fan, ring, next, next + 600); next += 600; };
+        var s = Sink(Cfg(dir, log, 1));
+        long? origin = fan.Attach(ring, s);
+        PushBig(fan, ring, next, next + 60);
+        Check.True(fan.Detach(s));
+        Stopped(s);
+        Check.Equal(2, snapshots, "two snapshots outside the gate, then the copy under it");
+        Check.Equal(1800, next);
+        Check.Equal(VideoPts(1770), origin, "the last keyframe at the attach");
+        ContiguousFrom(log, origin, 1859, "after the fallback");
+    }
+
+    [UnitTest]
+    public static void VideoFanOut_attach_racing_another_attach_or_a_dispose_of_the_ring()
+    {
+        using var dir = new TempDir();
+        var fan = new VideoFanOut();
+        using (var ring = new RingStore(RingStore.MinBytes))
+        {
+            for (int i = 0; i < 100; i++) fan.Push(ring, VideoPts(i), i % 30 == 0, Frame(i, i % 30 == 0));
+            var log2 = new Written();
+            var s1 = new RecordingSink(Cfg(dir, new Written(), 1, "one"));
+            var s2 = Sink(Cfg(dir, log2, 1, "two"));
+            long? origin2 = null;
+            fan.AfterSnapshot = () => { fan.AfterSnapshot = null; origin2 = fan.Attach(ring, s2); };
+            Check.Throws<InvalidOperationException>(() => fan.Attach(ring, s1), "the other attach came first");
+            Check.False(fan.Detach(s1), "the loser is not attached");
+            for (int i = 100; i < 130; i++) fan.Push(ring, VideoPts(i), i % 30 == 0, Frame(i, i % 30 == 0));
+            Check.True(fan.Detach(s2));
+            Stopped(s2);
+            s1.Abort();
+            Done(s1);
+            ContiguousFrom(log2, origin2, 129, "the winner");
+        }
+        using (var ring = new RingStore(RingStore.MinBytes))
+        {
+            for (int i = 0; i < 100; i++) fan.Push(ring, VideoPts(i), i % 30 == 0, Frame(i, i % 30 == 0));
+            var s = new RecordingSink(Cfg(dir, new Written(), 1, "three"));
+            fan.AfterSnapshot = ring.Dispose;
+            Check.Null(fan.Attach(ring, s), "nothing to start from in a disposed ring");
+            Check.True(fan.Detach(s), "attached all the same (it starts at the first live keyframe)");
+            s.Abort();
+            Done(s);
+        }
+    }
+
     [UnitTest]
     public static void VideoFanOut_without_a_keyframe_in_the_ring_the_recording_starts_at_the_first_live_one()
     {
