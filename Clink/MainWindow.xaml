@@ -4,8 +4,13 @@
         xmlns:ui="clr-namespace:Clink.UI"
         xmlns:l="clr-namespace:Clink.UI"
         Title="Clink" Width="470" Height="780" MinWidth="470" MinHeight="700"
-        WindowStyle="None" ResizeMode="CanResizeWithGrip" AllowsTransparency="True" Background="Transparent"
+        WindowStyle="None" ResizeMode="CanResize" AllowsTransparency="True" Background="#01000000"
         WindowStartupLocation="CenterScreen" ShowInTaskbar="True" FontFamily="{StaticResource UiFont}" TextOptions.TextFormattingMode="Display">
+    <!-- Resizable from all four edges and corners: a transparent window has no native sizing border, so WindowChrome supplies the hit-test border
+         (CaptionHeight 0 keeps the in-window header drag as it was; the old bottom-right grip is gone with CanResize). -->
+    <WindowChrome.WindowChrome>
+        <WindowChrome CaptionHeight="0" ResizeBorderThickness="6" GlassFrameThickness="0" CornerRadius="0" UseAeroCaptionButtons="False" />
+    </WindowChrome.WindowChrome>
     <Window.Resources>
         <!-- long device names / window titles get an ellipsis in the closed box; the dropdown shows them in full -->
         <DataTemplate x:Key="SourceLabel">
@@ -82,7 +87,7 @@
                 strip's spot (TabsSpacer) has no drag surface. PlaceHeader puts the header bar before the TabControl in the tree when narrow and
                 after it when wide, so keyboard and screen-reader order follow the picture.
             -->
-            <!-- the window's top 6 px: part of the drag area, as the header row below it is (a docked strip, so the body keeps its place) -->
+            <!-- the window's top 6 px: a docked spacer that keeps the body in place; the top edge here is the resize band (WindowChrome), so it no longer drags -->
             <Border x:Name="TopEdge" DockPanel.Dock="Top" Height="6" Background="Transparent" MouseLeftButtonDown="Header_MouseLeftButtonDown" />
             <Grid x:Name="Body" Margin="0,0,0,8">
                 <Grid.RowDefinitions>

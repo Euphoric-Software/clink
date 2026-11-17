@@ -3,9 +3,14 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:l="clr-namespace:Clink.UI"
         Title="{l:T 'Third-party notices'}" Width="780" Height="580" MinWidth="420" MinHeight="300"
-        WindowStyle="None" ResizeMode="CanResizeWithGrip" AllowsTransparency="True" Background="Transparent"
+        WindowStyle="None" ResizeMode="CanResize" AllowsTransparency="True" Background="#01000000"
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False" FontFamily="{StaticResource UiFont}" TextOptions.TextFormattingMode="Display"
         AutomationProperties.AutomationId="ThirdPartyNoticesWindow" AutomationProperties.Name="{l:T 'Third-party notices'}">
+    <!-- Resizable from all four edges and corners: a transparent window has no native sizing border, so WindowChrome supplies the hit-test border
+         (CaptionHeight 0 keeps the in-window header drag as it was; the old bottom-right grip is gone with CanResize). -->
+    <WindowChrome.WindowChrome>
+        <WindowChrome CaptionHeight="0" ResizeBorderThickness="6" GlassFrameThickness="0" CornerRadius="0" UseAeroCaptionButtons="False" />
+    </WindowChrome.WindowChrome>
     <!-- Every colour here is a DynamicResource, so the window follows the theme when it changes. -->
     <Border Background="{DynamicResource Bg}" CornerRadius="10" BorderBrush="{DynamicResource Border}" BorderThickness="1">
         <DockPanel>

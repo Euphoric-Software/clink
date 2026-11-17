@@ -4,8 +4,13 @@
         xmlns:sc="clr-namespace:Clink.UI.Screenshots"
         xmlns:l="clr-namespace:Clink.UI"
         Title="{l:T 'Clink screenshot editor'}" Width="1100" Height="760" MinWidth="860" MinHeight="520"
-        UseLayoutRounding="True" WindowStyle="None" ResizeMode="CanResizeWithGrip" AllowsTransparency="True" Background="Transparent"
+        UseLayoutRounding="True" WindowStyle="None" ResizeMode="CanResize" AllowsTransparency="True" Background="#01000000"
         WindowStartupLocation="Manual" FontFamily="{StaticResource UiFont}" PreviewKeyDown="Window_PreviewKeyDown" PreviewKeyUp="Window_PreviewKeyUp">
+    <!-- Resizable from all four edges and corners: a transparent window has no native sizing border, so WindowChrome supplies the hit-test border
+         (CaptionHeight 0 keeps the in-window header drag as it was; the old bottom-right grip is gone with CanResize). -->
+    <WindowChrome.WindowChrome>
+        <WindowChrome CaptionHeight="0" ResizeBorderThickness="6" GlassFrameThickness="0" CornerRadius="0" UseAeroCaptionButtons="False" />
+    </WindowChrome.WindowChrome>
     <Border Background="{DynamicResource Bg}" CornerRadius="10" BorderBrush="{DynamicResource Border}" BorderThickness="1">
         <DockPanel>
             <Grid DockPanel.Dock="Top" Height="42" MouseLeftButtonDown="Header_MouseLeftButtonDown" Background="Transparent">

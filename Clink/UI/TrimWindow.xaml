@@ -5,8 +5,13 @@
         xmlns:l="clr-namespace:Clink.UI"
         xmlns:svc="clr-namespace:Clink.Services"
         Title="{l:T 'Trim clip'}" Width="940" Height="720" MinWidth="720" MinHeight="560"
-        WindowStyle="None" ResizeMode="CanResizeWithGrip" AllowsTransparency="True" Background="Transparent"
+        WindowStyle="None" ResizeMode="CanResize" AllowsTransparency="True" Background="#01000000"
         WindowStartupLocation="CenterScreen" FontFamily="{StaticResource UiFont}" PreviewKeyDown="Window_PreviewKeyDown">
+    <!-- Resizable from all four edges and corners: a transparent window has no native sizing border, so WindowChrome supplies the hit-test border
+         (CaptionHeight 0 keeps the in-window header drag as it was; the old bottom-right grip is gone with CanResize). -->
+    <WindowChrome.WindowChrome>
+        <WindowChrome CaptionHeight="0" ResizeBorderThickness="6" GlassFrameThickness="0" CornerRadius="0" UseAeroCaptionButtons="False" />
+    </WindowChrome.WindowChrome>
     <Window.Resources>
         <!-- "Listen" pill: which single track the preview plays (radio, one per track row) -->
         <Style x:Key="MonitorRadio" TargetType="RadioButton">

@@ -1,10 +1,15 @@
 <Window x:Class="Clink.UI.Screenshots.InsertImagePicker"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         xmlns:l="clr-namespace:Clink.UI"
         Title="{l:T 'Insert image'}" Width="640" Height="480" MinWidth="460" MinHeight="360" ShowInTaskbar="False"
-        UseLayoutRounding="True" WindowStyle="None" ResizeMode="CanResizeWithGrip" AllowsTransparency="True" Background="Transparent"
+        UseLayoutRounding="True" WindowStyle="None" ResizeMode="CanResize" AllowsTransparency="True" Background="#01000000"
         WindowStartupLocation="CenterOwner" FontFamily="{StaticResource UiFont}" PreviewKeyDown="Window_PreviewKeyDown">
+    <!-- Resizable from all four edges and corners: a transparent window has no native sizing border, so WindowChrome supplies the hit-test border
+         (CaptionHeight 0 keeps the in-window header drag as it was; the old bottom-right grip is gone with CanResize). -->
+    <WindowChrome.WindowChrome>
+        <WindowChrome CaptionHeight="0" ResizeBorderThickness="6" GlassFrameThickness="0" CornerRadius="0" UseAeroCaptionButtons="False" />
+    </WindowChrome.WindowChrome>
     <Border Background="{DynamicResource Bg}" CornerRadius="10" BorderBrush="{DynamicResource Border}" BorderThickness="1">
         <DockPanel>
             <Grid DockPanel.Dock="Top" Height="42" MouseLeftButtonDown="Header_MouseLeftButtonDown" Background="Transparent">
@@ -30,7 +35,7 @@
                 </Grid>
             </Border>
 
-            <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="16,6,8,10">
+            <ScrollViewer shell:WindowChrome.IsHitTestVisibleInChrome="True" VerticalScrollBarVisibility="Auto" Padding="16,6,8,10">
                 <StackPanel>
                     <TextBlock Style="{StaticResource H}" Text="{l:T 'RECENT SCREENSHOTS'}" Margin="0,6,0,8" />
                     <WrapPanel x:Name="Tiles" />
