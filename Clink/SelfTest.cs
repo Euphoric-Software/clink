@@ -8,7 +8,7 @@ using Clink.Services;
 namespace Clink;
 
 /// <summary>
-/// `Clink.exe --selftest [seconds] [outFolder] [--codec h264|hevc|av1] [--encoder-experiment off|vbr|lowlatency-off|vbr-lowlatency-off] [--source monitor|device:&lt;link&gt;] [--quiet] [--record]`: runs the pipeline headless, saves a clip,
+/// `Clink.exe --selftest [seconds] [outFolder] [--codec h264|hevc|av1] [--encoder-experiment off|vbr|lowlatency-off|vbr-lowlatency-off] [--source monitor|device:&lt;link&gt;|both:&lt;link&gt;] [--quiet] [--record]`: runs the pipeline headless, saves a clip,
 /// prints what happened. --record also records for the whole length (a clip halfway), stops, and probes both files. The clip goes to outFolder (default: the clips folder from settings); --codec overrides the codec
 /// setting; --source records a capture card (its link as the device list prints it) instead of the screen, with no fallback: a card that
 /// is not connected fails the test (the screen is recorded unless --source names a card, whatever the saved source is); --quiet skips the click sound.
@@ -69,6 +69,9 @@ internal static class SelfTest
         // --source device:<link>: that card, never a fallback. A link Windows does not list still goes to the engine, which says why it
         // cannot open it ("not connected").
         VideoDevice? card = null;
+        // --source both:<link>: the screen and that card at once, two engines (the screen engine is the main one; the card engine saves a second clip).
+        bool both = sourceArg != null && sourceArg.StartsWith("both:", StringComparison.OrdinalIgnoreCase);
+        if (both && sourceArg != null) sourceArg =CaptureTarget.FormatSource(sourceArg[5..]);
         if (sourceArg != null && CaptureTarget.ParseSource(sourceArg) is string link)
         {
             var listed = VideoDevices.Enumerate();
@@ -78,9 +81,10 @@ internal static class SelfTest
                 Say(listed == null ? $"  capture card {link}: the devices could not be listed, trying it anyway" : $"  capture card {link}: not connected (Windows does not list it)");
                 card = new VideoDevice(link, link);
             }
-            Say($"Capturing capture card {card.Name} (GPU of {mon.Label})");
+            Say(both ? $"Capturing {mon.Label} and capture card {card.Name} at once (two engines)" : $"Capturing capture card {card.Name} (GPU of {mon.Label})");
         }
-        else if (sourceArg != null && !sourceArg.Equals(CaptureTarget.SourceMonitor, StringComparison.OrdinalIgnoreCase)) { Say($"Unknown --source '{sourceArg}': use monitor or device:<link>"); return 2; }
+        else if (both) { Say("--source both: needs a card: both:<link>"); return 2; }
+        else if (sourceArg != null && !sourceArg.Equals(CaptureTarget.SourceMonitor, StringComparison.OrdinalIgnoreCase)) { Say($"Unknown --source '{sourceArg}': use monitor, device:<link> or both:<link>"); return 2; }
         else Say($"Capturing {mon.Label}");
         // The card's HDMI audio, paired by container then name: always the Game track while a card is the source (as AppController.BuildConfig).
         AudioDeviceInfo? cardAudio = card != null ? CardAudio.Find(card) : null;
@@ -89,7 +93,7 @@ internal static class SelfTest
         // The same output size AppController.BuildConfig records at (the codec choice depends on it: H.264 stops at 4096 px). A card's
         // size comes from its mode when it opens (the engine sets it); the preset box stands in for the codec choice.
         var (maxW, maxH) = VideoModePick.LimitOf(settings.Resolution);
-        (uint outWidth, uint outHeight) = card == null ? AppController.OutputSize(mon, settings.Resolution) : (Math.Min(maxW, 3840u), Math.Min(maxH, 2160u));
+        (uint outWidth, uint outHeight) = card == null || both ? AppController.OutputSize(mon, settings.Resolution) : (Math.Min(maxW, 3840u), Math.Min(maxH, 2160u));
 
         foreach (var c in Capabilities.Codecs)
             Say($"  codec {c.Name,-5} {(c.Supported ? c.EncoderName : c.Reason)}{(c.Experimental && c.Supported ? " (experimental)" : "")}");
@@ -104,13 +108,13 @@ internal static class SelfTest
         Say($"  bitrate {bitrate:0.#} Mbps ({codec}){(note != null ? ": " + note : "")}; {Capabilities.DescribeEstimate(bitrate, audioTracks, secs)}; {Capabilities.DescribeRing(bitrate, secs).text}");
 
         // The same configuration AppController.BuildConfig makes, except for a short ring to keep the test light.
-        var cfg = new EngineConfig
+        EngineConfig MakeConfig(VideoDevice? device, AudioDeviceInfo? deviceAudio, uint width, uint height) => new EngineConfig
         {
             Monitor = mon,
-            Device = card,
+            Device = device,
             DeviceMaxWidth = maxW, DeviceMaxHeight = maxH,
-            OutWidth = outWidth,
-            OutHeight = outHeight,
+            OutWidth = width,
+            OutHeight = height,
             Fps = (uint)Math.Clamp(settings.Fps, 15, 120),
             BitrateMbps = bitrate,
             Codec = codec,
@@ -121,7 +125,7 @@ internal static class SelfTest
             MicDeviceId = settings.MicDeviceId,
             GameProcess = GameProcessTracker.NormalizeName(settings.GameProcess),
             VoiceApp = GameProcessTracker.NormalizeName(settings.VoiceApp),
-            CardAudioId = cardAudio?.Id,
+            CardAudioId = deviceAudio?.Id,
             CardAvOffsetMs = CardAudio.ClampOffsetMs(settings.CaptureDeviceAvOffsetMs),
             HdrKnee = settings.HdrKnee, HdrPeak = settings.HdrPeak,
             ClipsFolder = outDir ?? settings.ClipsFolder,
@@ -129,7 +133,20 @@ internal static class SelfTest
             // --encoder-experiment <mode> wins over the hidden setting, so experiments never edit the real settings.json.
             EncoderTuning = Encode.EncoderExperiments.Resolve(experimentArg ?? settings.EncoderExperiment, Capabilities.SizeTargetBytes(settings.SizeTarget) > 0),
         };
+        var cfg = both ? MakeConfig(null, null, outWidth, outHeight) : MakeConfig(card, cardAudio, outWidth, outHeight);
         if (cfg.EncoderTuning != null) Say($"  encoder experiment: {cfg.EncoderTuning}{(experimentArg != null ? " (from --encoder-experiment)" : " (from settings)")}");
+        EngineConfig? cardCfg = null;
+        if (both)
+        {
+            // As the controller will: each ring gets half of the one-ring limit, the card has no Desktop track and takes no PC game name.
+            long budget = RingStore.MaxBytes() / 2;
+            cfg.RingBudgetBytes = budget;
+            cardCfg = MakeConfig(card, cardAudio, Math.Min(maxW, 3840u), Math.Min(maxH, 2160u));
+            cardCfg.RingBudgetBytes = budget;
+            cardCfg.TrackDesktop = false;
+            cardCfg.IgnoreGameHint = true;
+            cardCfg.ClipBaseName = cardCfg.RecordingBaseName = card!.Name;
+        }
 
         using var engine = new Engine.Engine();
         engine.Start(cfg);
@@ -137,6 +154,19 @@ internal static class SelfTest
         {
             Say("ENGINE FAILED: " + engine.Error);
             return 2;
+        }
+        using var cardEngine = both ? new Engine.Engine() : null;
+        if (cardEngine != null)
+        {
+            cardEngine.Start(cardCfg!);
+            if (!cardEngine.IsRunning)
+            {
+                Say("CARD ENGINE FAILED: " + cardEngine.Error);
+                return 2;
+            }
+            var cst = cardEngine.GetStats();
+            Say($"  card encoder {cst.Encoder} ({cst.Codec}), ring {Capabilities.FormatBytes(cst.RingBytes)} = {cst.RingSeconds}s");
+            if (cardEngine.CardMode is { } cmode) Say($"  card mode {cmode}, recorded at {cardCfg!.OutWidth}x{cardCfg.OutHeight} @ {cardCfg.Fps} fps");
         }
         {
             var st = engine.GetStats();
@@ -173,6 +203,12 @@ internal static class SelfTest
             var st = engine.GetStats();
             string audio = st.Audio == null ? "busy" : string.Join(", ", st.Audio.Select(a => $"{a.Name}:{(a.Running ? "ok" : "off")}"));
             Say($"  t={i + 1}s capture={st.CaptureFrames} in={st.FramesIn} out={st.FramesOut} inflight={st.FramesIn - st.FramesOut} dropped={st.Dropped} buffered={st.BufferedSeconds:0.0}s game={st.Game ?? "-"} audio=[{audio}]");
+            if (cardEngine != null)
+            {
+                var cs = cardEngine.GetStats();
+                string caudio = cs.Audio == null ? "busy" : string.Join(", ", cs.Audio.Select(a => $"{a.Name}:{(a.Running ? "ok" : "off")}"));
+                Say($"  card t={i + 1}s capture={cs.CaptureFrames} in={cs.FramesIn} out={cs.FramesOut} dropped={cs.Dropped} buffered={cs.BufferedSeconds:0.0}s audio=[{caudio}]");
+            }
         }
         if (record)
         {
@@ -196,6 +232,12 @@ internal static class SelfTest
         {
             var clip = engine.SaveClip(seconds);
             Say($"Saved {clip.Path} ({clip.DurationSeconds:0.00}s, {clip.SizeBytes / 1_048_576.0:0.0} MB, audio [{string.Join(", ", clip.AudioTracks)}])");
+            if (cardEngine != null)
+            {
+                var cclip = cardEngine.SaveClip(seconds);
+                Say($"Saved card clip {cclip.Path} ({cclip.DurationSeconds:0.00}s, {cclip.SizeBytes / 1_048_576.0:0.0} MB, audio [{string.Join(", ", cclip.AudioTracks)}])");
+                Say(MediaProbe.Report(cclip.Path));
+            }
             if (!quiet) { ClickSound.Play(settings.ClickVolume); Thread.Sleep(300); }
             return 0;
         }

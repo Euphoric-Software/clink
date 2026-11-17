@@ -45,6 +45,28 @@ internal sealed class EngineConfig
     public string ClipsFolder = "";
     /// <summary>The hidden encoder experiment (Settings.EncoderExperiment) for the live encoder; null = today's setup.</summary>
     public LiveEncoderTuning? EncoderTuning;
+    /// <summary>Most RAM the ring may take; null or 0 = half of physical RAM (<see cref="RingStore.MaxBytes"/>). Two engines side by side pass half of that each. Never above the half-of-RAM limit.</summary>
+    public long? RingBudgetBytes;
+    /// <summary>Clip file name when there is no game (null/empty: "Clip").</summary>
+    public string? ClipBaseName;
+    /// <summary>Recording file name when there is no game (null/empty: "Recording").</summary>
+    public string? RecordingBaseName;
+    /// <summary>Do not take the app's game hint (<see cref="Engine.SetDetectedGame"/> and the hint passed to a save): the clip is not named after the PC game.</summary>
+    public bool IgnoreGameHint;
+
+    /// <summary>The ring limit in bytes: <see cref="RingBudgetBytes"/> when set (at least the ring minimum, at most half of RAM), else half of RAM.</summary>
+    internal static long RingLimit(long? budget, long maxBytes) => budget is > 0 ? Math.Min(Math.Max(budget.Value, RingStore.MinBytes), maxBytes) : maxBytes;
+
+    /// <summary>A card engine that ignores the PC game and has no card audio: the Game track gets no source and no game is detected (the PC's sound stays out of the card clip).</summary>
+    internal static bool NoGameTrack(bool hasDevice, bool ignoreGameHint, bool hasCardAudio) => hasDevice && ignoreGameHint && !hasCardAudio;
+
+    /// <summary>The game that names a file: none when <paramref name="ignoreGameHint"/>, else the engine's own pick, else the app's hint.</summary>
+    internal static string GameForName(bool ignoreGameHint, string? engineGame, string? hint) =>
+        ignoreGameHint ? "" : engineGame ?? (string.IsNullOrEmpty(hint) ? "" : hint);
+
+    /// <summary>File base name: the game when there is one, else the configured name, else <paramref name="fallback"/>.</summary>
+    internal static string NameBase(string? game, string? configured, string fallback) =>
+        !string.IsNullOrEmpty(game) ? game : string.IsNullOrWhiteSpace(configured) ? fallback : configured.Trim();
 
     /// <summary>"h264" / "hevc" / "av1" in any case or spacing; anything else (or null) is h264.</summary>
     public static string NormalizeCodec(string? codec)
@@ -227,7 +249,7 @@ internal sealed unsafe class Engine : IDisposable
     /// windowed custom app or library game need not be the focused window); with the Game track on a device it still names
     /// the game. Any thread.
     /// </summary>
-    public void SetDetectedGame(uint pid, string? name) => _gameHint = pid != 0 && !string.IsNullOrEmpty(name) ? new GameHint(pid, name) : null;
+    public void SetDetectedGame(uint pid, string? name) => _gameHint = pid != 0 && !string.IsNullOrEmpty(name) && !_cfg.IgnoreGameHint ? new GameHint(pid, name) : null;
 
     private void SetStatus(EngineStatusKind kind) { _statusKind = kind; StateChanged?.Invoke(); }
 
@@ -275,7 +297,7 @@ internal sealed unsafe class Engine : IDisposable
             mbps = EncoderExperiments.RingMbps(mbps, _encoder.Applied);
             if (mbps != configuredMbps) Log.Info($"Ring sized for the VBR peak {mbps:0.#} Mbps (mean {configuredMbps:0.#} Mbps)");
             long want = RingStore.BytesFor(mbps, _cfg.BufferSeconds);
-            long max = RingStore.MaxBytes();
+            long max = EngineConfig.RingLimit(_cfg.RingBudgetBytes, RingStore.MaxBytes());
             long ringBytes = Math.Min(want, max);
             if (ringBytes < want)
                 Log.Warn($"Ring buffer clamped to {ringBytes >> 20} MB (half of {RingStore.PhysicalRamBytes() >> 20} MB physical RAM); {_cfg.BufferSeconds}s at {mbps:0.#} Mbps would need {want >> 20} MB");
@@ -502,7 +524,7 @@ internal sealed unsafe class Engine : IDisposable
             _tracks.Clear();
             _taps.Clear();
             _gameTrack = _voiceTrack = null;
-            _gameIsDevice = _voiceIsDevice = _micIsCardAudio = false;
+            _gameIsDevice = _voiceIsDevice = _micIsCardAudio = _noGame = false;
             _lastAudio = null;   // the next run's tracks are not these
         }
         try { _ring?.Dispose(); } catch { }
@@ -523,6 +545,7 @@ internal sealed unsafe class Engine : IDisposable
             _gameTrack = new AudioTrack(AudioText.TrackName(TrackKind.Game)) { Enabled = _cfg.TrackGame };
             _tracks.Add(_gameTrack);   // (track names are AudioText.TrackName(TrackKind): GetStats maps a track back to its kind by name)
             bool cardAudio = _cfg.Device != null && _cfg.CardAudioId is { Length: > 0 };
+            _noGame = EngineConfig.NoGameTrack(_cfg.Device != null, _cfg.IgnoreGameHint, cardAudio);
             // The Mic that is the card's own endpoint (the default input is the card) would put the sound in the mix twice: it is left out.
             bool micIsCard = cardAudio && CardAudio.MicIsCardAudio(_cfg.MicDeviceId, _cfg.CardAudioId, EndpointSource.DefaultCaptureId());
             _micIsCardAudio = micIsCard;
@@ -538,6 +561,7 @@ internal sealed unsafe class Engine : IDisposable
                 _gameIsDevice = true;
                 Log.Info("Game track: the capture card's audio (" + _cfg.CardAudioId + ")");
             }
+            else if (_noGame) Log.Info("Game track: none (capture card without audio, PC sound is not recorded)");
             else if (TryDeviceSource(_cfg.GameProcess, "Game device", out var gameDevice)) { _gameTrack.Source = gameDevice; _gameIsDevice = true; }
             if (TryDeviceSource(_cfg.VoiceApp, "Voice device", out var voiceDevice)) { _voiceTrack.Source = voiceDevice; _voiceIsDevice = true; }
             var mix = new AudioTrack(AudioText.TrackName(TrackKind.Mix), new[] { _gameTrack, mic, _voiceTrack }) { Enabled = true };
@@ -604,6 +628,7 @@ internal sealed unsafe class Engine : IDisposable
 
     private int _voiceScan;
     private bool _gameIsDevice, _voiceIsDevice;
+    private bool _noGame;   // see EngineConfig.NoGameTrack
     private bool _micIsCardAudio;   // the Mic is left out because it is the capture card's own audio input (the status says so instead of "waiting for app")
 
     /// <summary>"in:&lt;endpoint id&gt;" = a capture device, "out:&lt;endpoint id&gt;" = loopback of an output; anything else is a process name or "auto".</summary>
@@ -632,8 +657,9 @@ internal sealed unsafe class Engine : IDisposable
                 if (newVoice != _voicePid) { _voicePid = newVoice; _voiceName = v?.name; Log.Info($"Voice app: {(_voiceName ?? "none")} pid={_voicePid}"); }
             }
             // Game
-            var hint = _gameHint;
-            if (_gameIsDevice)
+            var hint = _cfg.IgnoreGameHint ? null : _gameHint;
+            if (_noGame) { }   // a card engine with no card audio: no PC game, no game name
+            else if (_gameIsDevice)
             {
                 // The track records a device; the app's detection still says which game is running (stats, clip names).
                 uint pid = hint?.Pid ?? 0;
@@ -674,7 +700,7 @@ internal sealed unsafe class Engine : IDisposable
 
         lock (_audioGate)
         {
-            if (_gameTrack != null && !_gameIsDevice)
+            if (_gameTrack != null && !_gameIsDevice && !_noGame)
             {
                 // No game: everything except the voice app, or with no voice app everything except Clink itself (which keeps the
                 // click sound out of the clip).
@@ -796,10 +822,10 @@ internal sealed unsafe class Engine : IDisposable
 
         // The engine's own pick wins (live fullscreen detection or the manual Game process); the hint covers the rest (device
         // Game track, a save before the next poll picks the hint up).
-        string game = _gameName ?? (string.IsNullOrEmpty(gameHint) ? "" : gameHint);
+        string game = EngineConfig.GameForName(_cfg.IgnoreGameHint, _gameName, gameHint);
         Services.TestGuard.Check(_cfg.ClipsFolder);
         Directory.CreateDirectory(_cfg.ClipsFolder);
-        string baseName = string.IsNullOrEmpty(game) ? "Clip" : SanitizeName(game);
+        string baseName = SanitizeName(EngineConfig.NameBase(game, _cfg.ClipBaseName, "Clip"));
         string path = Path.Combine(_cfg.ClipsFolder, $"{baseName} {DateTime.Now:yyyy-MM-dd HH-mm-ss}.mp4");
         int n = 1;
         while (File.Exists(path)) path = Path.Combine(_cfg.ClipsFolder, $"{baseName} {DateTime.Now:yyyy-MM-dd HH-mm-ss} ({n++}).mp4");
@@ -892,8 +918,8 @@ internal sealed unsafe class Engine : IDisposable
         long free = FreeBytes(folder);
         if (free >= 0 && free < MinFreeBytes) throw new NotEnoughFreeSpaceException($"Not enough free disk space to record ({free / 1_048_576} MB free, 1024 MB needed)", free, MinFreeBytes);
 
-        string game = _gameName ?? (string.IsNullOrEmpty(gameHint) ? "" : gameHint);
-        string baseName = string.IsNullOrEmpty(game) ? "Recording" : SanitizeName(game);
+        string game = EngineConfig.GameForName(_cfg.IgnoreGameHint, _gameName, gameHint);
+        string baseName = SanitizeName(EngineConfig.NameBase(game, _cfg.RecordingBaseName, "Recording"));
         string stamp = $"{baseName} {DateTime.Now:yyyy-MM-dd HH-mm-ss}";
         string path = Path.Combine(folder, stamp + ".mp4");
         int n = 1;
