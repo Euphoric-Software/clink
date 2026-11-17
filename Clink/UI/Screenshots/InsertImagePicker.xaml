@@ -1,6 +1,6 @@
 <Window x:Class="Clink.UI.Screenshots.InsertImagePicker"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:l="clr-namespace:Clink.UI"
         Title="{l:T 'Insert image'}" Width="640" Height="480" MinWidth="460" MinHeight="360" ShowInTaskbar="False"
         UseLayoutRounding="True" WindowStyle="None" ResizeMode="CanResize" AllowsTransparency="True" Background="#01000000"
@@ -35,7 +35,7 @@
                 </Grid>
             </Border>
 
-            <ScrollViewer shell:WindowChrome.IsHitTestVisibleInChrome="True" VerticalScrollBarVisibility="Auto" Padding="16,6,8,10">
+            <ScrollViewer Margin="0,0,6,0" VerticalScrollBarVisibility="Auto" Padding="16,6,8,10">
                 <StackPanel>
                     <TextBlock Style="{StaticResource H}" Text="{l:T 'RECENT SCREENSHOTS'}" Margin="0,6,0,8" />
                     <WrapPanel x:Name="Tiles" />

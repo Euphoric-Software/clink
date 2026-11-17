@@ -38,6 +38,17 @@ internal static class ResizeEdgesTests
     public static void The_notices_and_insert_image_windows_resize_from_all_four_edges_and_corners()
     {
         CheckResizable(new ThirdPartyNoticesWindow(), "ThirdPartyNoticesWindow");
-        CheckResizable(new InsertImagePicker(new InsertPickerModel(null), canPaste: true), "InsertImagePicker");
+        var picker = new InsertImagePicker(new InsertPickerModel(null), canPaste: true);
+        var scroll = FindScroll(picker);
+        Check.True(scroll != null && scroll.Margin.Right >= WindowChrome.GetWindowChrome(picker).ResizeBorderThickness.Right, "the picker's list clears the right resize band, so its scrollbar is not under it");
+        CheckResizable(picker, "InsertImagePicker");
+    }
+
+    private static System.Windows.Controls.ScrollViewer? FindScroll(DependencyObject d)
+    {
+        if (d is System.Windows.Controls.ScrollViewer sv) return sv;
+        foreach (var c in LogicalTreeHelper.GetChildren(d))
+            if (c is DependencyObject o && FindScroll(o) is { } f) return f;
+        return null;
     }
 }
