@@ -28,15 +28,15 @@ internal sealed partial class AppController
     /// <summary>
     /// What the settings say to record now. The devices are listed only when the source is a card; a listing that fails keeps the card
     /// (<see cref="CaptureTarget.Resolve(string?, bool, string?, IReadOnlyList{Native.MonitorInfo}, IReadOnlyList{VideoDevice}?, string?, string?)"/>),
-    /// except during a fallback for that card: it is not known to be back.
+    /// except during a fallback for that card: it is not known to be back. In Both mode the screen, never a fallback (the card slot records the card).
     /// </summary>
     internal CaptureChoice ResolveCapture() =>
-        ResolveCaptureWith(CaptureTarget.ParseSource(Settings.CaptureSource) == null ? Array.Empty<VideoDevice>() : VideoDevices.Enumerate());
+        ResolveCaptureWith(CaptureTarget.ParseSource(PrimaryCaptureSource) == null ? Array.Empty<VideoDevice>() : VideoDevices.Enumerate());
 
     /// <summary><see cref="ResolveCapture"/> for a device list the caller already has (null: the listing failed).</summary>
     private CaptureChoice ResolveCaptureWith(IReadOnlyList<VideoDevice>? devices)
     {
-        return CaptureTarget.Resolve(Settings.CaptureSource, Settings.FollowPrimaryMonitor, Settings.MonitorDevice, Monitors, devices, Settings.CaptureDeviceName,
+        return CaptureTarget.Resolve(PrimaryCaptureSource, Settings.FollowPrimaryMonitor, Settings.MonitorDevice, Monitors, devices, Settings.CaptureDeviceName,
             _target?.Fallback == CaptureFallback.CardMissing ? _target.MissingLink : null);
     }
 
@@ -75,11 +75,11 @@ internal sealed partial class AppController
             // The cards are listed on a worker so the picking itself does not wait for Media Foundation. (The start that follows lists them
             // again on the UI thread, in ResolveCapture, like any start.)
             string source = Settings.CaptureSource;
-            IReadOnlyList<VideoDevice>? devices = CaptureTarget.ParseSource(source) == null ? Array.Empty<VideoDevice>() : await Task.Run(() => VideoDevices.Enumerate());
+            IReadOnlyList<VideoDevice>? devices = CaptureTarget.ParseSource(PrimaryCaptureSource) == null ? Array.Empty<VideoDevice>() : await Task.Run(() => VideoDevices.Enumerate());
             if (_disposed || !string.Equals(source, Settings.CaptureSource, StringComparison.Ordinal)) return;   // picked again meanwhile: that call carries on
             if (Engine.IsRecording || _wantRecording) { RequestEngineRestart(); return; }   // a recording began while the cards were listed
             var action = ApplyCaptureChoice(ResolveCaptureWith(devices));
-            if (action is SwitchAction.None or SwitchAction.NotifyFallback && Engine.IsRunning) { RaiseStateChanged(); return; }
+            if (action is SwitchAction.None or SwitchAction.NotifyFallback && Engine.IsRunning) { SyncCardSlot(); RaiseStateChanged(); return; }   // (Both mode: another card, or Both turned on or off, while the screen goes on)
             RequestEngineRestart();
         }
         catch (Exception ex) { Log.Warn("capture source change: " + ex.Message); }

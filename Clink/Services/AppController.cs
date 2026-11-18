@@ -632,6 +632,7 @@ internal sealed partial class AppController : IDisposable
             _recordWhenReadyUntil = DateTime.MinValue;
             if (Engine.IsRunning) StopEngine();
             else { Interlocked.Increment(ref _startGen); _starting = false; }   // a start that has not run yet is cancelled
+            SyncCardSlot();   // Both mode: Clips off stops the card too
             if (recording)
             {
                 SayT("Recording stopped");
@@ -707,6 +708,7 @@ internal sealed partial class AppController : IDisposable
         if (!Settings.ClipsEnabled) Log.Info("Clips are turned off (Settings → App → Features): the recorder is not started");
         else if (GameOnly) { Log.Info("Recording mode: only while a game or custom app runs"); PollGame(); }
         else StartEngine();
+        SyncCardSlot();   // Both mode: the card records whatever the recording mode says (StartEngine is not called while waiting for a game)
         Archive.Start();
         try { ShareCache.Current.StartSchedule(); }   // smaller share copies: cleaned up shortly after start and hourly, on a pool thread
         catch (Exception ex) { Log.Warn("share cache: cleanup not scheduled: " + ex.Message); }   // a bad root must not stop the start
@@ -780,6 +782,7 @@ internal sealed partial class AppController : IDisposable
             if (Engine.Error != null) Log.Info("Retrying the recorder after: " + Engine.Error);
             StartEngine();
         }
+        SyncCardSlot(apply: false);   // Both mode: the card slot's own start, retry, missing-card polling (a no-op in single-source mode)
         RaiseStateChanged();
     }
 
@@ -1202,6 +1205,7 @@ internal sealed partial class AppController : IDisposable
             else Log.Warn("restart: the recorder was still starting; it is left to the shutdown");
         }
         catch (Exception ex) { Log.Warn("restart: could not stop the recorder: " + ex.Message); }
+        StopCardSlotNow();
         try { Archive.Stop(); } catch (Exception ex) { Log.Warn("restart: could not stop the archive: " + ex.Message); }
     }
 
@@ -1289,6 +1293,7 @@ internal sealed partial class AppController : IDisposable
             Monitors = Native.Monitors.Enumerate();
             SayT("Display changed, restarting capture");
             MarkTechnicalRestart();
+            SyncCardSlot(restart: true);   // Both mode: the card engine's GPU and screen handle may have changed too
             StartEngine();
             ApplyStatusDot();
         });
@@ -1298,7 +1303,7 @@ internal sealed partial class AppController : IDisposable
     {
         // Monitor handles can change across sleep (a monitor that did not wake up, a dock): restart on fresh ones.
         if (e.Mode == PowerModes.Suspend) _ui.BeginInvoke(MarkTechnicalRestart);
-        if (e.Mode == PowerModes.Resume) _ui.BeginInvoke(async () => { BeginTechnicalRestart(TimeSpan.FromMilliseconds(3000)); await Task.Delay(3000); Monitors = Native.Monitors.Enumerate(); MarkTechnicalRestart(); StartEngine(); });
+        if (e.Mode == PowerModes.Resume) _ui.BeginInvoke(async () => { BeginTechnicalRestart(TimeSpan.FromMilliseconds(3000)); await Task.Delay(3000); Monitors = Native.Monitors.Enumerate(); MarkTechnicalRestart(); SyncCardSlot(restart: true); StartEngine(); });
     }
 
     public MonitorInfo? SelectedMonitor => CaptureTarget.Resolve(Settings.FollowPrimaryMonitor, Settings.MonitorDevice, Monitors);
@@ -1351,6 +1356,7 @@ internal sealed partial class AppController : IDisposable
             HdrKnee = Settings.HdrKnee, HdrPeak = Settings.HdrPeak,
             ClipsFolder = Settings.ClipsFolder,
             EncoderTuning = Clink.Encode.EncoderExperiments.Resolve(Settings.EncoderExperiment, Capabilities.SizeTargetBytes(Settings.SizeTarget) > 0),
+            RingBudgetBytes = BothMode ? CardSlot.RingBudget(RingStore.MaxBytes()) : null,   // Both mode: two rings share the one-ring limit
         };
     }
 
@@ -1373,6 +1379,7 @@ internal sealed partial class AppController : IDisposable
     public void StartEngine()
     {
         _technicalRestartUntil = DateTime.MinValue;   // the restart that was waited for is here (or will not come: paused, restarting)
+        SyncCardSlot();   // Both mode: the card follows Clips, pause and a changed setting, not the game-only rule below
         if (!Settings.ClipsEnabled)
         {
             // Clips are off (Settings → App → Features): the replay buffer is never started; one that runs is stopped.
@@ -1485,6 +1492,7 @@ internal sealed partial class AppController : IDisposable
             _announceGame = CurrentGame;   // "Recording started · Game" once the engine is back up, when a game is running
             StartEngine();
         }
+        SyncCardSlot();   // Both mode: one pause pauses both
         if (_pauseItem != null) _pauseItem.Text = PauseItemText;
         RaiseStateChanged();
     }
@@ -2694,6 +2702,7 @@ internal sealed partial class AppController : IDisposable
         try { _dot?.Close(); _dot = null; } catch { }
         try { Updater.Dispose(); } catch { }
         try { Engine.Dispose(); } catch { }
+        try { _cardSlot?.Dispose(); } catch { }
         AddFinishedRecordingOnExit();   // the recording Dispose finished (the 15 s wait): the exit paths that skipped StopRecordingForExit did not add it
         if (_tray != null) { _tray.Visible = false; _tray.Dispose(); _tray = null; }
         try { _trayIcon?.Dispose(); _trayIcon = null; } catch { }
